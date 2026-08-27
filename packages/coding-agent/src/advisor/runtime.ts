@@ -18,6 +18,8 @@ import {
 	formatToolResultErrorPreview,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
+import { ADVISOR_RENDER_OPTIONS } from "./delta-split";
+import { fingerprintMessage } from "./message-fingerprint";
 
 /**
  * Minimal slice of `Agent` the runtime drives — satisfied by pi-agent-core
@@ -91,6 +93,8 @@ export interface AdvisorRuntimeHost {
 	): Promise<boolean | undefined> | boolean | undefined;
 	/** Called after a successful advisor turn so the host can finish fallback lifecycle reporting. */
 	onTurnSuccess?(): Promise<void> | void;
+	/** Called when a failed batch is permanently dropped so replay-only state can be discarded. */
+	onTurnAbandoned?(): void;
 	/** Surface a non-recovering advisor failure to the host UI without adding model-visible context. */
 	notifyFailure?(error: unknown): void;
 	/** Signal that the advisor paused on a quota/rate-limit after host-level recovery declined. */
@@ -244,12 +248,6 @@ const MAX_COALESCE_ROUNDS = 3;
 const MAX_QUARANTINE_RETRIES = 2;
 
 /** A queued advisor session-update delta (one or more coalesced primary turns). */
-const ADVISOR_RENDER_OPTIONS = {
-	includeToolIntent: true,
-	watchedRoles: true,
-	expandPrimaryContext: true,
-	expandEditDiffs: true,
-} as const;
 interface PendingDelta {
 	kind: "delta";
 	text: string;
@@ -322,16 +320,6 @@ type PendingItem = PendingDelta | PendingConsult;
 interface DeliveredMessage {
 	message: AgentMessage;
 	fingerprint: bigint | undefined;
-}
-
-function fingerprintMessage(message: AgentMessage): bigint | undefined {
-	try {
-		const { timestamp: _timestamp, usage: _usage, ...stable } = message as AgentMessage & { usage?: unknown };
-		const serialized = JSON.stringify(stable);
-		return serialized === undefined ? undefined : Bun.hash.wyhash(serialized);
-	} catch {
-		return undefined;
-	}
 }
 
 export interface AdvisorRuntimeOptions {
@@ -1227,6 +1215,13 @@ export class AdvisorRuntime {
 			logger.warn("advisor failure notification failed", { err: String(notifyErr) });
 		}
 	}
+	#notifyTurnAbandoned(): void {
+		try {
+			this.host.onTurnAbandoned?.();
+		} catch (err) {
+			logger.debug("advisor onTurnAbandoned hook failed", { err: String(err) });
+		}
+	}
 
 	async #invokeTurnError(
 		error: unknown,
@@ -1389,6 +1384,7 @@ export class AdvisorRuntime {
 					continue;
 				}
 
+				const contextWasFresh = this.agent.state.messages.length === 0;
 				let deltaPart: string;
 				let finalTurns: number;
 				if (shouldReprime) {
@@ -1683,6 +1679,7 @@ export class AdvisorRuntime {
 						if (this.#consecutiveQuarantines >= MAX_QUARANTINE_RETRIES) {
 							this.#notifyFailureOnce(err);
 							this.#consecutiveQuarantines = 0;
+							this.#notifyTurnAbandoned();
 							this.#resetAdvisorContext(true, true, "quarantine-retry-exhausted");
 							if (consult && !consult.terminated) {
 								consult.resolve({
@@ -1758,15 +1755,15 @@ export class AdvisorRuntime {
 						break;
 					}
 					if (!terminalFailureRetriable) {
+						logger.warn("advisor terminal failure is non-retriable; dropping bounded batch");
+						this.#notifyFailureOnce(err);
+						this.#notifyTurnAbandoned();
 						this.#halted = true;
 						this.#clearPending("terminal advisor failure");
 						this.#backlog = 0;
+						this.#consecutiveFailures = 0;
 						this.#invalidateRenderedContext();
-						if (!this.#failureNotified) {
-							this.#failureNotified = true;
-							this.host.notifyFailure?.(err);
-						}
-						if (consult) {
+						if (consult && !consult.terminated) {
 							consult.resolve({
 								status: "provider_error",
 								attempts: snapshotConsultAttempts(consult.attempts),
@@ -1774,16 +1771,14 @@ export class AdvisorRuntime {
 								retryable: false,
 							});
 						}
-						this.#wakeAllWaiters();
 						success = true;
 					} else if (contextOverflow) {
 						this.#clearAdvisorContextAtCurrentCursor();
-						if (recoveringOverflow) {
-							if (!this.#failureNotified) {
-								this.#failureNotified = true;
-								this.host.notifyFailure?.(err);
-							}
-							if (consult) {
+						if (contextWasFresh) {
+							logger.warn("advisor update overflowed a fresh context; dropping bounded batch");
+							this.#notifyFailureOnce(err);
+							this.#notifyTurnAbandoned();
+							if (consult && !consult.terminated) {
 								consult.resolve({
 									status: "provider_error",
 									attempts: snapshotConsultAttempts(consult.attempts),
@@ -1812,6 +1807,9 @@ export class AdvisorRuntime {
 					} else {
 						this.#consecutiveFailures++;
 						if (this.#consecutiveFailures >= 3) {
+							logger.warn("advisor failed consecutively 3 times; dropping backlog to prevent stall");
+							this.#notifyFailureOnce(err);
+							this.#notifyTurnAbandoned();
 							this.#consecutiveFailures = 0;
 							this.#droppedBacklogs++;
 							if (isPermanentAdvisorError(err) || this.#droppedBacklogs >= 3) this.#halted = true;

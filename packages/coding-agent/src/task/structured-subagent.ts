@@ -719,6 +719,10 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 	let requiresRecoveryArtifacts = false;
 	let completedSuccessfully = false;
 	let deferredCleanup: Promise<void> | undefined;
+	const onSubprocessResult =
+		request.invocationKind === "eval"
+			? (result: SingleResult) => request.session.recordEvalSubagentUsage?.(result.usage?.output ?? 0)
+			: undefined;
 	try {
 		const id = await reserveStructuredSubagentId(request.session, {
 			...request.identity,
@@ -745,7 +749,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				const message = error instanceof Error ? error.message : String(error);
 				throw new StructuredSubagentError(
 					"isolation",
-					`Isolated subagent execution requires a git repository. ${message}`,
+					`Isolated subagent execution could not be prepared: ${message}`,
 					{ cause: error },
 				);
 			}
@@ -912,6 +916,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				afterRun: (implementationResult, worktree, baseline) =>
 					runReviewGateForResult(implementationResult, () => captureDeltaPatch(worktree, baseline), worktree),
 				buildFailureResult: buildFailureResult(request, policy, id, Date.now()),
+				onSubprocessResult,
 			});
 		} else {
 			const releaseReviewLock =
@@ -923,6 +928,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 					reviewBaseline = await captureBaseline(reviewRepoRoot);
 				}
 				result = await runSubprocess(baseOptions);
+				onSubprocessResult?.(result);
 				if (reviewBaseline) {
 					if (!reviewRepoRoot) throw new Error("Review gate repository root not initialized.");
 					result = (

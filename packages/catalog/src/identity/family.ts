@@ -209,6 +209,16 @@ export const isOpenAIGptOssModelId = memo((modelId: string): boolean => {
 	return /(^|\/)gpt-oss[-:]/i.test(modelId);
 });
 
+/**
+ * Meta Muse Spark ids (`muse-spark-1.1`, `muse-spark-1.2`,
+ * `muse-spark-1.2-contributor`, `meta/muse-spark-1.2`). The Responses
+ * `reasoning.effort` wire accepts `none` (thinking-off) plus
+ * `minimal`/`low`/`medium`/`high`/`xhigh`.
+ */
+export const isMuseSparkModelId = memo((modelId: string): boolean => {
+	return /(^|\/)muse-spark(?:[-.]|$)/i.test(modelId);
+});
+
 /** OpenAI model ids (gpt-*, chatgpt-*, o1/o3/o4 SKUs, codex-*, or openai/*). */
 export const isOpenAIModelId = memo((modelId: string): boolean => {
 	return (
@@ -408,7 +418,7 @@ export const supportsMidConversationSystemMessages = memo((modelId: string): boo
  * Models that reliably follow the hashline line-anchored edit dialect
  * (`[path#TAG]` headers plus 1-indexed anchors). Kimi, MiMo, DeepSeek V4
  * Flash, and Step 3.7 Flash miscount anchors or drop the tag header often
- * enough that hosts fall back to a literal search-replace edit format for
+ * enough that hosts fall back to the sloppy edit format for
  * them.
  */
 export const supportsHashlineEdits = memo((modelId: string): boolean => {

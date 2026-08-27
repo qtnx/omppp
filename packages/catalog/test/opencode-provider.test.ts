@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
+import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 import {
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
@@ -119,13 +121,98 @@ describe("OpenCode provider discovery", () => {
 		expect(apiById.get("brand-new-model")).toBe("openai-completions");
 	});
 
+	test("enriches gateway-first ids from stencil without changing their route", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-zen-gateway-first-"));
+		try {
+			const options = opencodeZenModelManagerOptions({
+				apiKey: "zen-account-key",
+				fetch: async () => modelListResponse(["brand-new-stencil-model"]),
+			});
+			const modelsDev = options.modelsDev;
+			if (!modelsDev) throw new Error("OpenCode model manager did not configure stencil fallback");
+			const catalog = {
+				opencode: {
+					models: {
+						"brand-new-stencil-model": {
+							id: "brand-new-stencil-model",
+							name: "Gateway First Test Model",
+							tool_call: true,
+							reasoning: true,
+							limit: { context: 1_000_000, output: 131_072 },
+							modalities: { input: ["text", "image", "video"], output: ["text"] },
+							provider: { npm: "@ai-sdk/anthropic" },
+						},
+					},
+				},
+			};
+			const managerOptions = {
+				...options,
+				cacheDbPath: path.join(tempDir, "models.db"),
+				modelsDev: { ...modelsDev, fetch: async () => catalog },
+			};
+			const online = await resolveProviderModels(managerOptions, "online");
+			const model = online.models.find(candidate => candidate.id === "brand-new-stencil-model");
+			expect(model).toMatchObject({
+				name: "Gateway First Test Model",
+				api: "openai-completions",
+				baseUrl: "https://opencode.ai/zen/v1",
+				contextWindow: 1_000_000,
+				maxTokens: 131_072,
+				reasoning: true,
+				input: ["text", "image"],
+			});
+			if (!model) throw new Error("Gateway-first model was not resolved");
+			expect(getSupportedEfforts(model)).toEqual([
+				Effort.Minimal,
+				Effort.Low,
+				Effort.Medium,
+				Effort.High,
+				Effort.XHigh,
+			]);
+
+			const cached = await resolveProviderModels(managerOptions, "online-if-uncached");
+			expect(cached.models.find(candidate => candidate.id === model.id)).toMatchObject({
+				contextWindow: 1_000_000,
+				maxTokens: 131_072,
+				reasoning: true,
+			});
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test("recovers muse-spark thinking levels from live OpenCode Go discovery", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-go-muse-"));
+		try {
+			const options = opencodeGoModelManagerOptions({
+				apiKey: "go-account-key",
+				fetch: async () => modelListResponse(["muse-spark-1.2", "muse-spark-1.2-contributor"]),
+			});
+			const result = await resolveProviderModels(
+				{ ...options, cacheDbPath: path.join(tempDir, "models.db") },
+				"online-if-uncached",
+			);
+			const expected = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
+			for (const id of ["muse-spark-1.2", "muse-spark-1.2-contributor"]) {
+				const model = result.models.find(item => item.id === id);
+				expect(model?.api).toBe("openai-responses");
+				expect(model?.reasoning).toBe(true);
+				expect(model?.thinking?.efforts).toEqual(expected);
+				expect(model?.thinking?.requiresEffort).toBeUndefined();
+			}
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	test("replaces stale bundled Zen models with each credential's live endpoint list", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-zen-"));
 		try {
 			let freeFetches = 0;
 			const freeOptions = opencodeZenModelManagerOptions({
 				apiKey: "free-account-key",
-				fetch: async () => {
+				fetch: async input => {
+					if (String(input).includes("catalog.stencil.so")) return Response.json({});
 					freeFetches++;
 					return modelListResponse(LIVE_FREE_MODEL_IDS);
 				},
@@ -138,7 +225,8 @@ describe("OpenCode provider discovery", () => {
 			let paidFetches = 0;
 			const paidOptions = opencodeZenModelManagerOptions({
 				apiKey: "paid-account-key",
-				fetch: async () => {
+				fetch: async input => {
+					if (String(input).includes("catalog.stencil.so")) return Response.json({});
 					paidFetches++;
 					return modelListResponse(LIVE_PAID_MODEL_IDS);
 				},

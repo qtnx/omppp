@@ -49,12 +49,21 @@ const taskAgent: AgentDefinition = {
 	source: "bundled",
 };
 
+const scoutAgent: AgentDefinition = {
+	name: "scout",
+	description: "Read-only research agent",
+	systemPrompt: "You are a scout agent.",
+	tools: ["read"],
+	source: "bundled",
+};
+
 function createSession(
 	options: {
 		manager?: AsyncJobManager;
 		settings?: Record<string, unknown>;
 		agentId?: string;
 		planMode?: boolean;
+		spawns?: string;
 	} = {},
 ): ToolSession {
 	return {
@@ -62,7 +71,7 @@ function createSession(
 		hasUI: false,
 		settings: Settings.isolated(options.settings ?? {}),
 		getSessionFile: () => null,
-		getSessionSpawns: () => "*",
+		getSessionSpawns: () => options.spawns ?? "*",
 		getAgentId: () => options.agentId ?? null,
 		getPlanModeState: options.planMode ? () => ({ enabled: true }) : undefined,
 		asyncJobManager: options.manager,
@@ -149,6 +158,27 @@ describe("task.batch schema gating", () => {
 		expect(itemProperties.outputSchema).toBeDefined();
 		expect(typeof itemProperties.outputSchema).toBe("object");
 		expect(itemProperties.schemaMode).toBeDefined();
+	});
+
+	it("documents same-file overlap as safe without shrinking the fan-out", async () => {
+		mockDiscovery();
+		const tool = await TaskTool.create(createSession({ settings: { "task.batch": true } }));
+
+		expect(tool.description).toContain("Concurrent edits to the same files auto-resolve");
+		expect(tool.description).toContain("agents coordinate directly over IRC");
+		expect(tool.description).toContain("NEVER shrink or serialize a batch to avoid file overlap");
+		expect(tool.description).not.toContain("Same-file edits are not guaranteed to merge");
+	});
+
+	it("describes a restricted specialist as the spawn-policy default", async () => {
+		mockDiscovery(scoutAgent);
+		const tool = await TaskTool.create(createSession({ spawns: "scout" }));
+
+		expect(tool.description).toContain("spawn-policy default (`scout`)");
+		expect(tool.description).not.toContain("general-purpose worker");
+		expect(tool.description).not.toContain("default worker");
+		expect(tool.description).toContain("Omit `agent` when the spawn-policy default is the best fit");
+		expect(tool.description).toContain("### scout (READ-ONLY)");
 	});
 
 	it("hides effort by default and exposes it when task.enableEffort is enabled", async () => {
@@ -699,6 +729,27 @@ describe("task.batch spawning", () => {
 			["Alpha", 3_000],
 			["Beta", 9_000],
 		]);
+	});
+
+	it("keeps a long result inline when no readable output artifact exists", async () => {
+		mockDiscovery();
+		const fullOutput = `REPORT:${"x".repeat(6_000)}:END`;
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options =>
+			makeResult(options.id ?? "?", {
+				output: fullOutput,
+				outputMeta: { lineCount: 1, charCount: fullOutput.length },
+			}),
+		);
+
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false, "task.batch": false } }));
+		const result = await tool.execute("tc-missing-artifact", {
+			name: "MissingArtifact",
+			task: "Return a long report.",
+		} as TaskParams);
+		const text = getFirstText(result);
+
+		expect(text).not.toContain("agent://MissingArtifact");
+		expect(text).toContain(":END");
 	});
 
 	it("settles the batch async aggregate when a queued spawn is cancelled mid-flight", async () => {

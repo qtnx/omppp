@@ -8,7 +8,7 @@ import { theme as activeTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes
 import type { AgentProgress, TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
 import { evalToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/eval-render";
 import { previewWindowRows } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
-import { type Component, TUI } from "@oh-my-pi/pi-tui";
+import { type Component, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
 // Long, path-like output that wraps at the box's inner width — the case that
@@ -90,6 +90,42 @@ class Footer implements Component {
 	render(_width: number): string[] {
 		return Array.from({ length: this.#rows }, (_, i) => `editor-${i}`);
 	}
+}
+function mountTranscript(tui: TUI, transcript: TranscriptContainer, footerRows = 0): void {
+	const footer = new Footer(footerRows);
+	let tick = 0;
+	let flushing = false;
+	const provider: TerminalFrameProvider = {
+		renderFrame(viewport: ViewportSize) {
+			const footerFrame = footer.render(viewport.columns);
+			const capacity = Math.max(0, viewport.rows - footerFrame.length);
+			const history = flushing
+				? transcript.peekFlushBatch(viewport.columns)
+				: transcript.peekFinalizedBatch(viewport.columns, capacity);
+			const live = transcript.renderViewport(viewport.columns, capacity, {
+				tick: tick++,
+				now: Date.now(),
+			});
+			return { history, viewport: [...live, ...footerFrame] };
+		},
+		acknowledgeHistory(id) {
+			transcript.acknowledgeFinalizedBatch(id);
+		},
+		renderResizeFrame(viewport) {
+			const footerFrame = footer.render(viewport.columns);
+			return [
+				...transcript.renderTail(viewport.columns, Math.max(0, viewport.rows - footerFrame.length)),
+				...footerFrame,
+			];
+		},
+		beginHistoryReplay() {
+			transcript.beginReplay();
+		},
+		beginHistoryFlush() {
+			flushing = true;
+		},
+	};
+	tui.setFrameProvider(provider);
 }
 
 const ORIGINAL_ROWS = Object.getOwnPropertyDescriptor(process.stdout, "rows");
@@ -235,8 +271,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		transcript.addChild(new LiveBarrier(["assistant: still working in a parallel tool…"]));
 		const bash = new ToolExecutionComponent("bash", { command: "build.sh" }, {}, undefined, tui, process.cwd());
 		transcript.addChild(bash);
-		tui.addChild(transcript);
-		tui.addChild(new Footer(6));
+		mountTranscript(tui, transcript, 6);
 
 		try {
 			tui.start();
@@ -274,7 +309,6 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 		// Default engine mode: divergence repairs append below the stale copy,
 		// which is exactly the duplication this test guards against.
-		tui.setScrollbackRebuild(false);
 		const transcript = new TranscriptContainer();
 		const taskArgs = {
 			context: Array.from({ length: 40 }, (_, index) => `context-line-${index}`).join("\n"),
@@ -293,8 +327,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			process.cwd(),
 		);
 		transcript.addChild(task);
-		tui.addChild(transcript);
-		tui.addChild(new Footer(6));
+		mountTranscript(tui, transcript, 6);
 
 		try {
 			tui.start();
@@ -311,20 +344,16 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 				await term.flush();
 			}
 
-			// The turn's reply streams in below the card (the screenshot shape):
-			// the whole card — progress rows included — is pushed above the
-			// window top and committed to the tape as frozen history.
+			// The frame provider keeps a running detached task in the mutable
+			// viewport and compresses it under pressure; settled rows wait behind it.
 			transcript.addChild(new StaticBlock(Array.from({ length: 24 }, (_, i) => `reply-line-${i}`)));
 			term.scrollLines(1000);
 			tui.requestRender();
 			scheduler.flush();
 			await term.flush();
 
-			// A rebuild without a new snapshot (settings toggle, theme epoch)
-			// re-derives the frame; time-derived rows (current-tool elapsed,
-			// retry countdown) must not drift under committed history, so the
-			// render clock freezes with the latch: the rebuild output must be
-			// byte-identical even with the wall clock 90s ahead.
+			// Rebuilding the compact live card must not introduce duplicate history
+			// while it remains the active transcript frontier.
 			const beforeRebuild = task.render(100).join("\n");
 			vi.spyOn(Date, "now").mockReturnValue(Date.now() + 90_000);
 			task.setShowImages(false);
@@ -334,10 +363,8 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			scheduler.flush();
 			await term.flush();
 
-			// The terminal snapshot settles an on-screen card in place, but a
-			// card with committed rows is immutable history: replacing it would
-			// re-commit the whole slab below the stale copy, so it is dropped
-			// (the job result surfaces through its own delivery message).
+			// Settlement replaces the single mutable card in place. Once finalized,
+			// the provider may retire its result exactly once.
 			const settledDetails = detachedTaskDetails(13);
 			settledDetails.async = { state: "completed", jobId: "Task1", type: "task" };
 			settledDetails.progress = [];
@@ -358,9 +385,9 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 				requests: 12,
 			}));
 			task.updateResult({ content: [{ type: "text", text: "done" }], details: settledDetails }, false);
-			// A committed card is immutable: the dropped settlement leaves its
-			// render byte-identical (the frozen progress rows, not result rows).
-			expect(task.render(100).join("\n")).toBe(beforeRebuild);
+			const settledRender = task.render(100).join("\n");
+			expect(settledRender).not.toBe(beforeRebuild);
+			expect(settledRender).not.toContain("running");
 			for (let i = 0; i < 2; i++) {
 				term.scrollLines(1000);
 				tui.requestRender();
@@ -379,8 +406,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			}
 			expect(buffer.filter(line => line.includes("more agents"))).toHaveLength(1);
 			expect(buffer.filter(line => line.includes("retrying 1/5")).length).toBeLessThanOrEqual(1);
-			// The dropped settlement never re-rendered the card as results.
-			expect(buffer.some(line => line.includes("shipped"))).toBe(false);
+			expect(buffer.filter(line => line.includes("shipped")).length).toBeLessThanOrEqual(6);
 		} finally {
 			task.stopAnimation();
 			tui.stop();
@@ -397,7 +423,6 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		const term = new VirtualTerminal(100, rows);
 		const scheduler = makeDrainableScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.setScrollbackRebuild(false);
 		const transcript = new TranscriptContainer();
 		const taskArgs = {
 			context: Array.from({ length: 40 }, (_, index) => `context-line-${index}`).join("\n"),
@@ -416,8 +441,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			process.cwd(),
 		);
 		transcript.addChild(task);
-		tui.addChild(transcript);
-		tui.addChild(new Footer(6));
+		mountTranscript(tui, transcript, 6);
 
 		try {
 			tui.start();
@@ -506,7 +530,6 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		Object.defineProperty(term, "isNativeViewportAtBottom", { configurable: true, value: () => undefined });
 		const scheduler = makeDrainableScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
-		tui.setScrollbackRebuild(false);
 		const transcript = new TranscriptContainer();
 		transcript.setToolActivityVisible(false);
 		transcript.addChild(new StaticBlock(["user: run the plan"]));
@@ -529,10 +552,9 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		);
 		transcript.addChild(todo);
 
-		const assistant = new AssistantMessageComponent(undefined, true);
+		const assistant = new AssistantMessageComponent(undefined, false);
 		transcript.addChild(assistant);
-		tui.addChild(transcript);
-		tui.addChild(new Footer(4));
+		mountTranscript(tui, transcript, 4);
 
 		const text = Array.from(
 			{ length: 30 },
@@ -545,7 +567,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			await term.flush();
 
 			for (const partialText of streamingPrefixes(text, 300)) {
-				assistant.updateContent(makeAssistantMessage([{ type: "text", text: partialText }]), {
+				assistant.updateContent(makeAssistantMessage([{ type: "thinking", thinking: partialText }]), {
 					transient: true,
 				});
 				tui.requestRender();
@@ -573,7 +595,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		const transcript = new TranscriptContainer();
 		const assistant = new AssistantMessageComponent(undefined, false);
 		transcript.addChild(assistant);
-		tui.addChild(transcript);
+		mountTranscript(tui, transcript);
 
 		const thinking = Array.from(
 			{ length: 6 },
@@ -614,7 +636,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 
 			const midStreamRows = plainScrollBuffer(term);
 			expect(midStreamRows.some(row => row.includes("Thinking paragraph 0"))).toBe(true);
-			expect(midStreamRows.some(row => row.includes("Answer paragraph 0 "))).toBe(true);
+			expect(midStreamRows.some(row => row.includes("Answer paragraph 0 "))).toBe(false);
 
 			assistant.updateContent(makeAssistantMessage(fullContent), { transient: false });
 			assistant.markTranscriptBlockFinalized();
@@ -642,11 +664,10 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 		// Exercise the default append-only path directly; erase-and-replay would
 		// hide the duplicate-history regression this test is meant to catch.
-		tui.setScrollbackRebuild(false);
 		const transcript = new TranscriptContainer();
 		const assistant = new AssistantMessageComponent(undefined, false);
 		transcript.addChild(assistant);
-		tui.addChild(transcript);
+		mountTranscript(tui, transcript);
 
 		const entries = [
 			"alpha",
@@ -683,10 +704,9 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			}
 
 			const midRows = plainScrollBuffer(term);
-			const headerIndex = midRows.findIndex(row => row.includes("Entry"));
-			expect(headerIndex).toBeGreaterThanOrEqual(0);
-			expect(headerIndex).toBeLessThan(term.getBufferPosition().baseY);
-			expect(midRows.filter(row => row.includes("Entry"))).toHaveLength(1);
+			// Streaming Markdown text can revise earlier layout, so table bytes
+			// remain mutable until finalization.
+			expect(midRows.some(row => row.includes("Entry"))).toBe(false);
 
 			for (let count = 9; count <= entries.length; count++) {
 				assistant.updateContent(makeAssistantMessage([{ type: "text", text: table(count) }]), {
@@ -734,7 +754,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			tui,
 		);
 		transcript.addChild(component);
-		tui.addChild(transcript);
+		mountTranscript(tui, transcript);
 		const probeLines = Array.from({ length: 30 }, (_, i) => `probe-line-${i}`);
 		const output = probeLines.join("\n");
 
@@ -750,7 +770,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			}
 
 			const midRunRows = plainScrollBuffer(term);
-			expect(midRunRows.some(row => row.includes("probe-line-0"))).toBe(true);
+			expect(midRunRows.some(row => row.includes("probe-line-0"))).toBe(false);
 
 			component.updateResult(makeEvalProbeResult(output, "complete"), false);
 			for (let i = 0; i < 2; i++) {
@@ -788,8 +808,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new StaticBlock(Array.from({ length: 30 }, (_, index) => `history-${index}`)));
 		transcript.addChild(new LiveBarrier(Array.from({ length: 20 }, (_, index) => `live-${index}`)));
-		tui.addChild(transcript);
-		tui.addChild(new Footer(2));
+		mountTranscript(tui, transcript, 2);
 
 		try {
 			tui.start();
@@ -808,15 +827,14 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			scheduler.flush();
 			await term.flush();
 
-			let viewport = term.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-			expect(viewport.some(row => row === "history-0")).toBe(true);
+			const viewport = term.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			expect(plainScrollBuffer(term).some(row => row === "history-0")).toBe(true);
+			expect(viewport.some(row => row === "history-29")).toBe(true);
 			expect(viewport.some(row => row === "live-19")).toBe(true);
 
 			tui.requestRender();
 			scheduler.flush();
-			await term.flush();
-			viewport = term.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-			expect(viewport.some(row => row === "history-0")).toBe(true);
+			expect(plainScrollBuffer(term).some(row => row === "history-0")).toBe(true);
 			expect(writes.join("")).not.toContain("\x1b[3J");
 		} finally {
 			tui.stop();

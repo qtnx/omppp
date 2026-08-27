@@ -44,7 +44,11 @@ describe("print mode + plan.defaultOnStartup (#8272)", () => {
 		});
 		vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-		const settingsOverrides = { "plan.defaultOnStartup": true, "plan.enabled": true } as const;
+		const settingsOverrides = {
+			"plan.defaultOnStartup": true,
+			"plan.enabled": true,
+			"advisor.enabled": false,
+		} as const;
 		const toolSession: ToolSession = {
 			cwd: tempDir,
 			hasUI: false,

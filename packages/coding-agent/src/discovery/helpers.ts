@@ -820,7 +820,7 @@ export function buildExtensionModuleItems(
  * Entry for an installed Claude Code plugin.
  */
 export interface ClaudePluginEntry {
-	/** Claude registry scope; local entries are restricted to their project path. */
+	/** Claude registry scope; project and local entries are restricted to their project path. */
 	scope?: "user" | "project" | "local";
 	installPath: string;
 	version: string;
@@ -828,7 +828,7 @@ export interface ClaudePluginEntry {
 	lastUpdated: string;
 	gitCommitSha?: string;
 	enabled?: boolean;
-	/** Project root recorded by Claude for a local installation. */
+	/** Project root recorded by Claude for a project-bound installation. */
 	projectPath?: string;
 }
 
@@ -1132,7 +1132,7 @@ export async function listClaudePluginRoots(
 	const claudeConfigDir = resolveClaudePaths(home).configDir;
 	const ompRegistryPath = path.join(getPluginsDir(home), "installed_plugins.json");
 	const resolvedProjectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
-	const projectRoot = getProjectRootFromRegistryPath(resolvedProjectPath);
+	const projectRoot = resolvedProjectPath ? getProjectRootFromRegistryPath(resolvedProjectPath) : cwd;
 	const activeClaudeProjectPath = projectRoot ? await canonicalClaudeProjectPath(projectRoot) : null;
 	const settingsSnapshot = await loadClaudePluginSettings(home, cwd, projectRoot);
 	const registryPath = path.join(claudeConfigDir, "plugins", "installed_plugins.json");
@@ -1182,11 +1182,11 @@ export async function listClaudePluginRoots(
 					if (entry.enabled === false) continue;
 					// Claude Code's own on/off switch: `enabledPlugins` in settings.json /
 					// settings.local.json. `false` hides the plugin here even though it is
-					// installed; `true` opts a local-scope install into this project even
+					// installed; `true` opts a project-bound install into this project even
 					// when its recorded projectPath is a different directory.
 					const override = enabledOverrides.enabled.get(pluginId);
 					if (override === false) continue;
-					if (entry.scope === "local" && override !== true) {
+					if ((entry.scope === "local" || entry.scope === "project") && override !== true) {
 						if (!entry.projectPath || !activeClaudeProjectPath) continue;
 						let entryProjectPath = canonicalClaudeProjectPaths.get(entry.projectPath);
 						if (entryProjectPath === undefined) {

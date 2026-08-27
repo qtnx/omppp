@@ -8,8 +8,8 @@ import { writethroughNoop } from "@oh-my-pi/pi-coding-agent/lsp";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { withFileWriteLock, withFileWriteLocks } from "@oh-my-pi/pi-coding-agent/tools/file-write-lock";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
-import { readArchiveEntries } from "@oh-my-pi/pi-coding-agent/utils/zip";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { readArchiveEntries } from "@oh-my-pi/pi-utils/ar";
 
 function createSession(cwd: string): ToolSession {
 	return {

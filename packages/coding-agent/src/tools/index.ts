@@ -1,5 +1,5 @@
 import type { Clipboard, InMemorySnapshotStore } from "@oh-my-pi/hashline";
-import type { AgentOptions, AgentTelemetryConfig, AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AgentOptions, AgentTelemetryConfig, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AdvisorConsultResult } from "../advisor";
@@ -190,6 +190,8 @@ export type ImageAttachmentEntry = {
 	label: string;
 	uri: string;
 	image: ImageContent;
+	/** Existing content-addressed file path containing the original image bytes. */
+	sourcePath: string;
 };
 
 export type {
@@ -267,6 +269,8 @@ export interface ToolSession {
 	secretVault?: SecretVaultLike;
 	/** Whether UI is available */
 	hasUI: boolean;
+	/** Whether `ask` can reach a human. Defaults to `hasUI`. */
+	canPromptUser?: boolean;
 	/** Whether this session has begun disposal. */
 	isDisposed?: () => boolean;
 	/**
@@ -376,6 +380,14 @@ export interface ToolSession {
 	hasPendingAgentAsides?: () => boolean;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
+	/** Look up an enabled tool through the eval bridge's normal permission pipeline. */
+	getToolForEvalBridge?: (name: string) => AgentTool | undefined;
+	/** Current session context for eval-bridged tool execution. */
+	getToolContext?: () => AgentToolContext | undefined;
+	/** Names currently authorized for invocation through the eval bridge. */
+	getEvalBridgeToolNames?: () => readonly string[];
+	/** Direct partition of the active Code Mode surface; undefined when Code Mode is inactive. */
+	getCodeModeDirectToolNames?: () => readonly string[] | undefined;
 	/** Return whether a built-in tool is active in this turn's tool set. */
 	isToolActive?: (name: string) => boolean;
 	/** Update the active built-in tool predicate when a session changes tools mid-run. */

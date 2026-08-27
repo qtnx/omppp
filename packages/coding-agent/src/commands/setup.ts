@@ -3,7 +3,7 @@
  */
 
 import { APP_NAME } from "@oh-my-pi/pi-utils";
-import { Args, Command, Flags, renderCommandHelp } from "@oh-my-pi/pi-utils/cli";
+import { Args, CliUsageError, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { parseArgs } from "../cli/args";
 import { setupHelp as commandHelp } from "../cli/command-help";
 import { runSetupCommand, type SetupCommandArgs, type SetupComponent } from "../cli/setup-cli";
@@ -50,8 +50,10 @@ export default class Setup extends Command {
 		const { args, flags } = await this.parse(Setup);
 		if (!args.component) {
 			if (flags.check || flags.json) {
-				renderCommandHelp(APP_NAME, "setup", Setup);
-				return;
+				// A check/JSON request with no COMPONENT has nothing to probe. Emit a
+				// usage error on stderr (exit 1) rather than printing help to stdout at
+				// exit 0, which would mask failures in scripted `--json` health checks.
+				throw new CliUsageError("setup --check/--json requires a COMPONENT (python|speech)");
 			}
 			await runOnboardingSetup();
 			return;

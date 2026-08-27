@@ -854,7 +854,6 @@ describe("ACP builtin slash commands", () => {
 			"/btw hi",
 			"/new",
 			"/drop",
-			"/handoff",
 			"/fork",
 		];
 		for (const cmd of removedCommands) {
@@ -1120,6 +1119,13 @@ describe("wave 3 commands", () => {
 		const result = await executeAcpBuiltinSlashCommand("/todo edit", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toContain("TUI editor");
+	});
+
+	it("/todo expand: returns HUD-only usage message in ACP mode", async () => {
+		const { output, runtime } = createRuntime();
+		const result = await executeAcpBuiltinSlashCommand("/todo expand", runtime);
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toContain("interactive HUD");
 	});
 
 	it("/todo unknown: returns usage message", async () => {

@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
-import { writeArchive } from "../utils/zip";
+import { writeArchive } from "@oh-my-pi/pi-utils/ar";
 import { PreviewAuth, type PreviewAuthIdentity, previewSessionCookie } from "./auth";
 // Bridge IIFE injected inline into /mockup/<id> (not a route; CSP allows only unsafe-inline scripts).
 import bridgeSource from "./bridge.js" with { type: "text" };

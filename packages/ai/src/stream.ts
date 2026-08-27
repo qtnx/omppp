@@ -7,9 +7,9 @@ import { isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isVertexExpressOpenAIUrl, isVertexRawPredictUrl, resolveVertexEndpointHost } from "@oh-my-pi/pi-catalog/hosts";
 import {
+	defaultSupportedEffort,
 	mapEffortToAnthropicAdaptiveEffort,
 	mapEffortToGoogleThinkingLevel,
-	minimumSupportedEffort,
 	requireSupportedEffort,
 	resolveWireModelId,
 } from "@oh-my-pi/pi-catalog/model-thinking";
@@ -20,7 +20,6 @@ import { getCustomApi } from "./api-registry";
 import { createAuthRetryKeyState, isApiKeyResolver, resolveNextAuthRetryKey } from "./auth-retry";
 import * as AIError from "./error";
 import { ProviderHttpError } from "./error";
-import { isInvalidatedOAuthTokenError } from "./error/auth-classify";
 import { extractRotationRetryAfterMs, isConcurrencyCapExclusion, isUsageLimitOutcome } from "./error/rate-limit";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
@@ -80,6 +79,7 @@ import type {
 import { resolveCacheRetention } from "./utils";
 import { AssistantMessageEventStream } from "./utils/event-stream";
 import { isFoundryEnabled } from "./utils/foundry";
+import { applyGlyphCodec } from "./utils/glyph-codec";
 import { wrapLeakedThinkingStream } from "./utils/leaked-thinking-stream";
 import { wrapFetchForProxy } from "./utils/proxy";
 import { withRequestDebugFetch } from "./utils/request-debug";
@@ -897,8 +897,19 @@ export function stream<TApi extends Api>(
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
-	return withThinkingLoopGuard(model, options, opts =>
-		withProviderInFlightLimit(model, opts, () => streamDispatch(model, context, opts)),
+	if (!model.requiresGlyphTokenization) {
+		return withThinkingLoopGuard(model, options, opts =>
+			withProviderInFlightLimit(model, opts, () => streamDispatch(model, context, opts)),
+		);
+	}
+	const codec = applyGlyphCodec(context);
+	const execHandlers = options?.execHandlers;
+	const wireOptions: OptionsForApi<TApi> | undefined =
+		execHandlers === undefined ? options : { ...options, execHandlers: codec.wrapCursorExecHandlers(execHandlers) };
+	return codec.wrap(
+		withThinkingLoopGuard(model, wireOptions, opts =>
+			withProviderInFlightLimit(model, opts, () => streamDispatch(model, codec.context, opts)),
+		),
 	);
 }
 
@@ -1115,6 +1126,7 @@ function isRetryableUpstreamError(
 	status: number | undefined,
 	message: string | undefined,
 ): boolean {
+	if (AIError.isAuthRetryableError(error)) return true;
 	// 401 means the credential is bad; 403 is its valid-token twin (access
 	// denied by plan, model policy, or org restriction — a sibling account may
 	// not share it). Explicit account-scoped policy errors such as Codex
@@ -1131,9 +1143,6 @@ function isRetryableUpstreamError(
 	// classify as RATE_LIMIT_EXCEEDED in `parseRateLimitReason` and stay in the
 	// provider's own backoff layer instead of burning siblings.
 	if (AIError.isCodexChatGPTAccountPolicyError(error, model.provider, model.id)) return true;
-	if (AIError.isAccountPolicyError(error)) return true;
-	if (AIError.isUsageLimit(error)) return true;
-	if (isInvalidatedOAuthTokenError(error)) return true;
 	if (status === 401 || (status === 403 && !isConcurrencyCapExclusion(status, message))) return true;
 	return isUsageLimitOutcome(status, message, extractRotationRetryAfterMs(error, message));
 }
@@ -1448,7 +1457,21 @@ export function streamSimple<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-	return streamSimpleWithAnthropicCacheRefresh(model, context, options);
+	if (!model.requiresGlyphTokenization) {
+		return streamSimpleWithAnthropicCacheRefresh(model, context, options);
+	}
+	const codec = applyGlyphCodec(context);
+	const execHandlers = options?.cursorExecHandlers ?? options?.execHandlers;
+	const wrappedExecHandlers = execHandlers === undefined ? undefined : codec.wrapCursorExecHandlers(execHandlers);
+	const wireOptions =
+		wrappedExecHandlers === undefined
+			? options
+			: {
+					...options,
+					execHandlers: wrappedExecHandlers,
+					cursorExecHandlers: wrappedExecHandlers,
+				};
+	return codec.wrap(streamSimpleWithAnthropicCacheRefresh(model, codec.context, wireOptions));
 }
 
 function streamSimpleRequest<TApi extends Api>(
@@ -1586,7 +1609,18 @@ function streamSimpleRequest<TApi extends Api>(
 	// pi-native transport.
 	if (model.transport === "pi-native") {
 		return withThinkingLoopGuard(model, requestOptions, opts =>
-			withProviderInFlightLimit(model, opts, () => streamPiNative(model, context, opts)),
+			withProviderInFlightLimit(model, opts, () => {
+				const nativeOptions =
+					model.api === "bedrock-converse-stream"
+						? {
+								...(opts ?? {}),
+								guardrailIdentifier: model.guardrailIdentifier ?? opts?.guardrailIdentifier,
+								guardrailVersion: model.guardrailVersion ?? opts?.guardrailVersion,
+								guardrailTrace: model.guardrailTrace ?? opts?.guardrailTrace,
+							}
+						: opts;
+				return streamPiNative(model, context, nativeOptions);
+			}),
 		);
 	}
 
@@ -1895,7 +1929,7 @@ function normalizeMandatoryReasoningOptions<TApi extends Api>(
 	) {
 		return options;
 	}
-	const floor = minimumSupportedEffort(model);
+	const floor = defaultSupportedEffort(model);
 	if (floor === undefined) return options;
 	const dropsThinkingWhenReasoningEffort =
 		model.compat !== undefined &&
@@ -1981,6 +2015,7 @@ function mapOptionsForApi<TApi extends Api>(
 		codexSseMaxAttempts: options?.codexSseMaxAttempts,
 		providerSessionState: options?.providerSessionState,
 		maxInFlightRequests: options?.maxInFlightRequests,
+		toolNamespacesInfo: options?.toolNamespacesInfo,
 		onPayload: options?.onPayload,
 		onResponse: options?.onResponse,
 		onSseEvent: options?.onSseEvent,
@@ -2097,6 +2132,9 @@ function mapOptionsForApi<TApi extends Api>(
 				thinkingBudgets: options?.thinkingBudgets,
 				toolChoice: mapAnthropicToolChoice(options?.toolChoice),
 				thinkingDisplay: resolveAnthropicThinkingDisplayOption(options),
+				guardrailIdentifier: model.guardrailIdentifier ?? options?.guardrailIdentifier,
+				guardrailVersion: model.guardrailVersion ?? options?.guardrailVersion,
+				guardrailTrace: model.guardrailTrace ?? options?.guardrailTrace,
 			};
 			// Adaptive mode sends effort directly, no budget_tokens — skip budget inflation.
 			if (model.thinking?.mode === "anthropic-adaptive") {
@@ -2370,10 +2408,16 @@ function mapOptionsForApi<TApi extends Api>(
 		case "cursor-agent": {
 			const execHandlers = options?.cursorExecHandlers ?? options?.execHandlers;
 			const onToolResult = options?.cursorOnToolResult ?? execHandlers?.onToolResult;
+			const cursorModel = model as Model<"cursor-agent">;
+			const effort =
+				options?.reasoning && !options.disableReasoning && !options.forceReasoningOff && cursorModel.reasoning
+					? requireSupportedEffort(cursorModel, options.reasoning)
+					: undefined;
 			return castApi<"cursor-agent">({
 				...base,
 				execHandlers,
 				onToolResult,
+				wireModelId: resolveWireModelId(cursorModel, effort),
 			});
 		}
 

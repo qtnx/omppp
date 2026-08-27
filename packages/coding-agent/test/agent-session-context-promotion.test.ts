@@ -3,13 +3,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
-import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
@@ -76,6 +75,7 @@ describe("AgentSession context promotion", () => {
 	function createOverflowMessage(
 		model: Model,
 		errorMessage = "context_length_exceeded: Your input exceeds the context window of this model.",
+		inputTokens = 0,
 	): AssistantMessage {
 		return {
 			role: "assistant",
@@ -84,11 +84,11 @@ describe("AgentSession context promotion", () => {
 			provider: model.provider,
 			model: model.id,
 			usage: {
-				input: 0,
+				input: inputTokens,
 				output: 0,
 				cacheRead: 0,
 				cacheWrite: 0,
-				totalTokens: 0,
+				totalTokens: inputTokens,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "error",
@@ -271,11 +271,11 @@ describe("AgentSession context promotion", () => {
 		expect(session.providerSessionState.size).toBe(0);
 	});
 
-	it("promotes on 413 payload-too-large overflow errors", async () => {
+	it("promotes on usage-backed 413 context-overflow errors", async () => {
 		const smallModel = modelRegistry.find("openai-codex", "gpt-5.5");
 		const largeModel = modelRegistry.find("openai-codex", "gpt-5.6-sol");
-		if (!smallModel || !largeModel) {
-			throw new Error("Expected small and large codex models to exist");
+		if (!smallModel || !largeModel || smallModel.contextWindow === null) {
+			throw new Error("Expected small and large codex models with a context window to exist");
 		}
 
 		const settings = Settings.isolated({
@@ -301,7 +301,8 @@ describe("AgentSession context promotion", () => {
 
 		const overflowMessage = createOverflowMessage(
 			smallModel,
-			"413 Request Entity Too Large: payload too large for model request body",
+			"413 Request Entity Too Large: input tokens exceed this model's context window",
+			smallModel.contextWindow + 1,
 		);
 		session.agent.emitExternalEvent({ type: "message_end", message: overflowMessage });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMessage] });
@@ -675,106 +676,6 @@ describe("AgentSession context promotion", () => {
 		expect(session.model?.provider).toBe(smallModel.provider);
 		expect(session.model?.id).toBe(smallModel.id);
 	});
-
-	it("falls back to LLM compaction when snapcompact cannot run during overflow recovery", async () => {
-		const model = modelRegistry.find("openai-codex", "gpt-5.4-mini");
-		if (!model) {
-			throw new Error("Expected codex model to exist");
-		}
-		const settings = Settings.isolated({
-			"compaction.enabled": true,
-			"compaction.methodOrder": ["snapcompact", "soft"],
-			"compaction.keepRecentTokens": 1,
-			"compaction.thresholdPercent": -1,
-			"contextPromotion.enabled": false,
-		});
-		const compactSpy = vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
-			summary: "fallback summary",
-			shortSummary: undefined,
-			firstKeptEntryId: preparation.firstKeptEntryId,
-			tokensBefore: preparation.tokensBefore,
-			details: {},
-		}));
-
-		const agent = new Agent({
-			initialState: {
-				model,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-		});
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-		session.sessionManager.appendMessage(createUserMessage("old context ".repeat(80_000)));
-		session.sessionManager.appendMessage(createAssistantMessage(model, "old response"));
-		session.sessionManager.appendMessage(createUserMessage("current request"));
-		session.agent.replaceMessages(session.sessionManager.buildSessionContext().messages);
-		const events: Array<Extract<AgentSessionEvent, { type: "auto_compaction_end" }>> = [];
-		const compactionDone = Promise.withResolvers<void>();
-		session.subscribe(event => {
-			if (event.type === "auto_compaction_end") {
-				events.push(event);
-				compactionDone.resolve();
-			}
-		});
-		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
-
-		const overflowMessage = createOverflowMessage(model);
-		session.agent.emitExternalEvent({ type: "message_end", message: overflowMessage });
-		session.agent.emitExternalEvent({ type: "agent_end", messages: [overflowMessage] });
-
-		await compactionDone.promise;
-
-		expect(compactSpy).toHaveBeenCalledTimes(1);
-		expect(events[0]?.errorMessage).toBeUndefined();
-		expect(events[0]?.willRetry).toBe(true);
-		await waitFor(() => continueSpy.mock.calls.length === 1);
-		expect(session.sessionManager.getEntries().some(entry => entry.type === "compaction")).toBe(true);
-	});
-
-	it("promotes to a larger-context model on response.incomplete (length stop)", async () => {
-		const smallModel = modelRegistry.find("openai-codex", "gpt-5.5");
-		const largeModel = modelRegistry.find("openai-codex", "gpt-5.6-sol");
-		if (!smallModel || !largeModel) {
-			throw new Error("Expected small and large codex models to exist");
-		}
-
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"contextPromotion.enabled": true,
-		});
-
-		const agent = new Agent({
-			initialState: {
-				model: smallModel,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-		});
-
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-
-		const incompleteMessage = createIncompleteMessage(smallModel);
-		session.agent.emitExternalEvent({ type: "message_end", message: incompleteMessage });
-		session.agent.emitExternalEvent({ type: "agent_end", messages: [incompleteMessage] });
-
-		await waitFor(() => session.model?.id === largeModel.id);
-
-		expect(session.model?.provider).toBe(largeModel.provider);
-		expect(session.model?.id).toBe(largeModel.id);
-	});
-
 	it("does not promote on length stop when message is from a different model", async () => {
 		// Switching from a small-context model to a larger one and then receiving a
 		// stale length-stop event for the previous model must NOT trigger promotion

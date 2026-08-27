@@ -46,6 +46,8 @@ function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent)
 			onPrompt({ emit });
 		},
 		waitForIdle: async () => {},
+		prepareForHeadlessAdvisorDrain: () => {},
+		waitForAdvisorCatchup: async () => true,
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
 		dispose: async () => {},
@@ -219,6 +221,19 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.outputSchemaMode).toBe("strict");
 		expect(persistedInits).toHaveLength(1);
 		expect(persistedInits[0]).toMatchObject({ restrictToolNames: true, tools: ["read", "yield"] });
+	});
+
+	it("persists bridge-only tools in the enabled Code Mode set", async () => {
+		const session = yieldEmittingSession();
+		vi.spyOn(session, "getActiveToolNames").mockReturnValue(["eval", "yield"]);
+		vi.spyOn(session, "getEnabledToolNames").mockReturnValue(["eval", "read", "yield"]);
+		const appendSessionInit = vi.spyOn(session.sessionManager, "appendSessionInit");
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({ ...baseOptions, id: "code-mode-child" });
+
+		expect(result.exitCode).toBe(0);
+		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: ["eval", "read", "yield"] }));
 	});
 
 	it("retains inherited MCP proxy tools for normal children", async () => {

@@ -8,6 +8,7 @@ import {
 	getBehaviorDashboardStats,
 	getCostDashboardStats,
 	getDashboardStats,
+	getFolderStats,
 	getModelDashboardStats,
 	getOverviewStats,
 	getProviderDashboardStats,
@@ -416,8 +417,8 @@ export async function handleStatsApiRequest(req: Request, options: StatsApiOptio
 	}
 
 	if (path === "/api/stats/folders") {
-		const stats = await getDashboardStats(range);
-		return Response.json(stats.byFolder);
+		const stats = await getFolderStats(range);
+		return Response.json(stats);
 	}
 
 	if (path === "/api/stats/timeseries") {
