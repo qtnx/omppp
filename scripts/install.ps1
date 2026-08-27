@@ -261,9 +261,11 @@ theme:
   dark: titanium
 display:
   syntaxHighlighting: basic
-setupVersion: 4
+setupVersion: 5
 retry:
   fallbackChains:
+    openai-codex/gpt-5.6-sol:
+      - anthropic/claude-opus-5
     task:
       - anthropic/claude-opus-5
       - openai-codex/gpt-5.5:low

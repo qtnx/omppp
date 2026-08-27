@@ -714,6 +714,10 @@ migrate_heavy_task_fallback_chain() {
                 print key_indent "  - openai-codex/gpt-5.3-codex-spark"
                 print key_indent "  - anthropic/claude-haiku-4-5"
             }
+            if (seen_child && !have_sol) {
+                print key_indent "openai-codex/gpt-5.6-sol:"
+                print key_indent "  - anthropic/claude-opus-5"
+            }
         }
         BEGIN {
             in_retry = 0
@@ -724,6 +728,7 @@ migrate_heavy_task_fallback_chain() {
             seen_child = 0
             have_heavy_task = 0
             have_scout = 0
+            have_sol = 0
         }
         {
             if (in_chains) {
@@ -738,6 +743,8 @@ migrate_heavy_task_fallback_chain() {
                         have_heavy_task = 1
                     } else if ($0 ~ /^[[:space:]]*scout:[[:space:]]*($|#)/) {
                         have_scout = 1
+                    } else if ($0 ~ /^[[:space:]]*"?openai-codex\/gpt-5\.6-sol"?[[:space:]]*:/) {
+                        have_sol = 1
                     }
                     print
                     next
@@ -762,6 +769,7 @@ migrate_heavy_task_fallback_chain() {
                     seen_child = 0
                     have_heavy_task = 0
                     have_scout = 0
+                    have_sol = 0
                     print
                     next
                 } else {
@@ -784,104 +792,9 @@ migrate_heavy_task_fallback_chain() {
     ' "$config_file" > "$tmp_config"
     mv "$tmp_config" "$config_file"
     chmod 600 "$config_file" 2>/dev/null || true
-    echo "✓ Ensured heavy_task and scout fallback chains at ${config_file}"
+    echo "✓ Ensured heavy_task, scout, and GPT-5.6 Sol fallback chains at ${config_file}"
 }
 
-migrate_sol_fallback_chain_config() {
-    config_file="$1"
-
-    if [ ! -f "$config_file" ]; then
-        return
-    fi
-
-    tmp_config="$(mktemp "${config_file}.XXXXXX")"
-    awk '
-        function indent_length(line) {
-            match(line, /^[[:space:]]*/)
-            return RLENGTH
-        }
-        function append_sol_chain(indent) {
-            print indent "\"openai-codex/gpt-5.6-sol\":"
-            print indent "  - anthropic/claude-opus-5"
-        }
-        function append_fallback_chains(indent) {
-            print indent "  fallbackChains:"
-            append_sol_chain(indent "    ")
-        }
-        BEGIN {
-            in_retry = 0
-            in_chains = 0
-            seen_retry = 0
-            retry_indent = 0
-            chains_indent = 0
-            key_indent = ""
-            have_sol = 0
-        }
-        {
-            if (in_chains) {
-                if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
-                    print
-                    next
-                }
-                current_indent = indent_length($0)
-                if (current_indent > chains_indent) {
-                    if ($0 ~ /^[[:space:]]*"?openai-codex\/gpt-5\.6-sol"?[[:space:]]*:/) {
-                        have_sol = 1
-                    }
-                    print
-                    next
-                }
-                if (!have_sol) {
-                    append_sol_chain(key_indent)
-                }
-                in_chains = 0
-            }
-
-            if (in_retry) {
-                if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
-                    print
-                    next
-                }
-                current_indent = indent_length($0)
-                if (current_indent > retry_indent) {
-                    if ($0 ~ /^[[:space:]]*fallbackChains:[[:space:]]*($|#)/) {
-                        in_chains = 1
-                        chains_indent = current_indent
-                        key_indent = substr($0, 1, current_indent) "  "
-                        have_sol = 0
-                    }
-                    print
-                    next
-                }
-                append_fallback_chains(substr($0, 1, retry_indent))
-                in_retry = 0
-            }
-
-            if ($0 ~ /^[[:space:]]*retry:[[:space:]]*($|#)/) {
-                in_retry = 1
-                seen_retry = 1
-                retry_indent = indent_length($0)
-            }
-            print
-        }
-        END {
-            if (in_chains) {
-                if (!have_sol) {
-                    append_sol_chain(key_indent)
-                }
-            } else if (in_retry) {
-                append_fallback_chains(substr("", 1, retry_indent))
-            } else if (!seen_retry) {
-                print ""
-                print "retry:"
-                append_fallback_chains("")
-            }
-        }
-    ' "$config_file" > "$tmp_config"
-    mv "$tmp_config" "$config_file"
-    chmod 600 "$config_file" 2>/dev/null || true
-    echo "✓ Ensured GPT-5.6 Sol fallback chain at ${config_file}"
-}
 
 migrate_opus_model_config() {
     config_file="$1"
@@ -1219,7 +1132,6 @@ install_via_bun() {
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
-    migrate_sol_fallback_chain_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     install_or_update_codegraph
     refresh_herdr_entrypoint
@@ -1321,7 +1233,6 @@ install_binary() {
     migrate_gpt_5_6_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_opus_model_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     migrate_heavy_task_fallback_chain "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
-    migrate_sol_fallback_chain_config "${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/config.yml"
     install_superpowers_skill
     install_or_update_codegraph
     refresh_herdr_entrypoint
