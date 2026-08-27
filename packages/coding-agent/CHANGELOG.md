@@ -9,6 +9,7 @@
 ### Fixed
 
 - Workflow fan-out now disposes completed agents immediately and uses a host-aware automatic concurrency cap to prevent memory exhaustion and swap thrashing.
+- Running-agent input now steers with Enter and queues with Ctrl+Enter, Ctrl+Q, or Tab; Tab keeps its normal editor behavior while idle.
 
 ## [1.7.4] - 2026-08-21
 

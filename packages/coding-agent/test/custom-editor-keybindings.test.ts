@@ -42,6 +42,17 @@ describe("CustomEditor keybindings", () => {
 		expect(customHandler).toHaveBeenCalledTimes(1);
 		expect(onRetry).not.toHaveBeenCalled();
 	});
+	it("lets a conditional custom handler decline and preserve base editor input", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const customHandler = vi.fn(() => false);
+
+		editor.setCustomKeyHandler("x", customHandler);
+		editor.handleInput("x");
+
+		expect(customHandler).toHaveBeenCalledTimes(1);
+		expect(editor.getText()).toBe("x");
+	});
+
 
 	it("lets copy-prompt remaps keep precedence over the default retry chord", () => {
 		const editor = new CustomEditor(getEditorTheme());

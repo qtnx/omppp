@@ -136,10 +136,10 @@ export const KEYBINDINGS = {
 		description: "Open external editor",
 	},
 	"app.message.followUp": {
-		// Ctrl+Enter is preserved for terminals that deliver it (Kitty/iTerm2/WezTerm/Ghostty),
-		// but Windows Terminal does not emit a distinct event for Ctrl+Enter — Ctrl+Q is listed
-		// first so the default binding works there without remapping (#1903).
-		defaultKeys: ["ctrl+q", "ctrl+enter"],
+		// Ctrl+Enter is preserved for terminals that deliver it (Kitty/iTerm2/WezTerm/Ghostty).
+		// Windows Terminal cannot distinguish Ctrl+Enter, so Ctrl+Q remains its fallback.
+		// Tab queues only while the agent is running; while idle it keeps normal editor behavior.
+		defaultKeys: ["ctrl+q", "ctrl+enter", "tab"],
 		description: "Send follow-up message",
 	},
 	"app.retry": {

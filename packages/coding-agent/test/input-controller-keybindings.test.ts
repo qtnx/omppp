@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { KEYBINDINGS } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -36,7 +37,7 @@ type FakeEditor = {
 	composerChips(): unknown[];
 	addToHistory(text: string): void;
 	setActionKeys(action: string, keys: string[]): void;
-	setCustomKeyHandler(key: string, handler: () => void): void;
+	setCustomKeyHandler(key: string, handler: () => boolean | void): void;
 	clearCustomKeyHandlers(): void;
 	pasteText(text: string): void;
 	imageLinks?: (string | undefined)[];
@@ -71,9 +72,9 @@ async function createContext() {
 		"app.tools.toggleVisibility": ["ctrl+shift+o"],
 		"app.tools.expand": ["ctrl+o"],
 	};
-	const customHandlers = new Map<string, () => void>();
+	const customHandlers = new Map<string, () => boolean | void>();
 	const setActionKeys = vi.fn();
-	const setCustomKeyHandler = vi.fn((key: string, handler: () => void) => {
+	const setCustomKeyHandler = vi.fn((key: string, handler: () => boolean | void) => {
 		customHandlers.set(key, handler);
 	});
 	const clearCustomKeyHandlers = vi.fn(() => {
@@ -212,7 +213,7 @@ async function createContext() {
 		isPythonMode: false,
 		hideToolActivity: false,
 		toolOutputExpanded: false,
-		settings: { set: vi.fn() },
+		settings: { get: vi.fn(() => "steer"), set: vi.fn() },
 		chatContainer: { children: [], setToolActivityVisible: vi.fn() },
 		handleHotkeysCommand: vi.fn(),
 		handlePlanModeCommand: vi.fn(),
@@ -241,6 +242,7 @@ async function createContext() {
 		ctx,
 		editor,
 		customHandlers,
+		session,
 		setFocused(target: unknown) {
 			focused = target;
 		},
@@ -275,6 +277,42 @@ async function createContext() {
 }
 
 describe("InputController keybinding setup", () => {
+	it("defaults running-agent submissions to Enter steer and Ctrl+Enter/Tab queue", async () => {
+		expect(KEYBINDINGS["app.message.followUp"].defaultKeys).toEqual(["ctrl+q", "ctrl+enter", "tab"]);
+
+		const { InputController, ctx, editor, customHandlers, session, setKeybinding, spies } = await createContext();
+		setKeybinding("app.message.followUp", ["ctrl+enter", "tab"]);
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		controller.setupEditorSubmitHandler();
+		session.isStreaming = true;
+
+		editor.setText("steer now");
+		await editor.onSubmit?.("steer now");
+		expect(spies.prompt).toHaveBeenLastCalledWith("steer now", { streamingBehavior: "steer", images: undefined });
+
+		editor.setText("queue with control");
+		customHandlers.get("ctrl+enter")?.();
+		await Bun.sleep(0);
+		expect(spies.prompt).toHaveBeenLastCalledWith("queue with control", {
+			streamingBehavior: "followUp",
+			images: undefined,
+		});
+
+		editor.setText("queue with tab");
+		expect(customHandlers.get("tab")?.()).toBe(true);
+		await Bun.sleep(0);
+		expect(spies.prompt).toHaveBeenLastCalledWith("queue with tab", {
+			streamingBehavior: "followUp",
+			images: undefined,
+		});
+
+		session.isStreaming = false;
+		editor.setText("keep editing");
+		expect(customHandlers.get("tab")?.()).toBe(false);
+		expect(editor.getText()).toBe("keep editing");
+	});
+
 	it("registers model selector and display reset actions separately", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const controller = new InputController(ctx);

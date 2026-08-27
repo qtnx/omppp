@@ -56,8 +56,8 @@ function makeContext(options: { messageDelivery?: "steer" | "queue"; isCompactin
 }
 
 describe("message delivery setting", () => {
-	it("defines queue as the default interaction channel", () => {
-		expect(getDefault("messageDelivery")).toBe("queue");
+	it("defines steer as the default interaction channel", () => {
+		expect(getDefault("messageDelivery")).toBe("steer");
 		expect(getEnumValues("messageDelivery")).toEqual(["steer", "queue"]);
 		expect(getUi("messageDelivery")).toMatchObject({
 			label: "Message Delivery",
@@ -65,15 +65,15 @@ describe("message delivery setting", () => {
 		});
 	});
 
-	it("routes ordinary streaming input through the default follow-up queue", async () => {
+	it("routes ordinary streaming input through default steering", async () => {
 		const { ctx, prompt } = makeContext();
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 
-		await ctx.editor.onSubmit?.("send after this turn");
+		await ctx.editor.onSubmit?.("steer this turn");
 
-		expect(prompt).toHaveBeenCalledWith("send after this turn", {
-			streamingBehavior: "followUp",
+		expect(prompt).toHaveBeenCalledWith("steer this turn", {
+			streamingBehavior: "steer",
 			images: undefined,
 		});
 	});
