@@ -53,7 +53,11 @@ describe("orchestrate keyword detection", () => {
 
 describe("orchestrate request intent", () => {
 	it("accepts explicit orchestration directives", () => {
-		for (const text of ["orchestrate", "please orchestrate this rollout", "hãy orchestrate the independent changes"]) {
+		for (const text of [
+			"orchestrate",
+			"please orchestrate this rollout",
+			"hãy orchestrate the independent changes",
+		]) {
 			expect(requestsOrchestrate(text)).toBe(true);
 		}
 	});

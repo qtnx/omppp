@@ -36,7 +36,12 @@ describe("workflow keyword detection", () => {
 
 describe("workflow request intent", () => {
 	it("accepts explicit workflow-tool directives", () => {
-		for (const text of ["workflow", "please workflow this rollout", "run these workflows", "hãy dùng workflow cho task này"]) {
+		for (const text of [
+			"workflow",
+			"please workflow this rollout",
+			"run these workflows",
+			"hãy dùng workflow cho task này",
+		]) {
 			expect(requestsWorkflow(text)).toBe(true);
 		}
 	});
