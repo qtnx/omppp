@@ -15,6 +15,7 @@ import concurrencyCorrectness from "./bundled-skills/concurrency-correctness.md"
 import databaseCraft from "./bundled-skills/database-craft.md" with { type: "text" };
 import dependencyDoctor from "./bundled-skills/dependency-doctor.md" with { type: "text" };
 import featureAnatomy from "./bundled-skills/feature-anatomy.md" with { type: "text" };
+import featureGym from "./bundled-skills/feature-gym.md" with { type: "text" };
 import frontendAccessibility from "./bundled-skills/frontend-accessibility.md" with { type: "text" };
 import frontendDesign from "./bundled-skills/frontend-design.md" with { type: "text" };
 import frontendUiCopy from "./bundled-skills/frontend-ui-copy.md" with { type: "text" };
@@ -93,6 +94,11 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		name: "feature-anatomy",
 		content: featureAnatomy,
 		filePath: `${import.meta.dir}/bundled-skills/feature-anatomy.md`,
+	},
+	{
+		name: "feature-gym",
+		content: featureGym,
+		filePath: `${import.meta.dir}/bundled-skills/feature-gym.md`,
 	},
 	{
 		name: "frontend-accessibility",

@@ -2,7 +2,7 @@ Execute a deterministic JavaScript workflow that orchestrates multiple subagents
 
 ## When to use
 
-When the user mentions "workflow" (or "orchestrate" / "fan out agents") together with a concrete task, **author a dynamic script for that task yourself and run it** — do not ask them to write the script; infer the phases, per-agent prompts, and fan-out. Also use it for any named/saved workflow they request. Skip it for trivial, single-step, or purely conversational requests (workflows spawn multiple agents and cost tokens).
+Use this tool when the user explicitly asks to run/orchestrate/fan out a concrete task and multiple independent slices or a real multi-stage chain make orchestration cheaper or more reliable than direct execution. A mention, complaint, negation ("don't use workflow"), quick lookup, or single edit is not a workflow request. Also use a named/saved workflow when explicitly requested.
 
 ## Parameters
 

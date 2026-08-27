@@ -145,7 +145,7 @@ const CODEX_GPT_5_4_PRIORITY_BY_VARIANT: Partial<Record<OpenAIVariant, number>> 
 	nano: 2,
 };
 
-const CODEX_GPT_5_6_1M_MODEL_IDS: Record<string, true> = {
+const CODEX_GPT_5_6_372K_MODEL_IDS: Record<string, true> = {
 	"gpt-5.6-luna": true,
 	"gpt-5.6-sol": true,
 	"gpt-5.6-terra": true,
@@ -562,12 +562,11 @@ function applyOpenAICatalogPolicy(model: ModelSpec<Api>, parsedModel: OpenAIMode
 			model.contextWindow = 272000;
 		}
 	}
-	// GPT-5.6 luna/sol/terra on the Codex transport: OpenAI enabled a 1M-token
-	// window for subscription Codex (2026-08-16), but the Codex model registry
-	// still reports the stale 272000 (openai/codex#38917), so floor the bundled
-	// window at 1,000,000. Daybreak aliases are excluded — the registry actively
-	// reports their true window.
-	if (model.api === "openai-codex-responses" && CODEX_GPT_5_6_1M_MODEL_IDS[model.id]) {
-		model.contextWindow = Math.max(model.contextWindow ?? 0, 1_000_000);
+	// GPT-5.6 luna/sol/terra on the Codex transport use the registry's 372K
+	// input window. Pin bundled first-party Codex SKUs exactly so discovery
+	// values cannot regress the generated catalog; API-key OpenAI models are
+	// intentionally left untouched.
+	if (model.api === "openai-codex-responses" && CODEX_GPT_5_6_372K_MODEL_IDS[model.id]) {
+		model.contextWindow = 372000;
 	}
 }

@@ -211703,7 +211703,7 @@
 				"api": "openai-codex-responses",
 				"v2StreamingEnabled": true
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 372000,
 			"maxTokens": 128000,
 			"preferWebsockets": true,
 			"useResponsesLite": true,
@@ -211798,7 +211798,7 @@
 				"api": "openai-codex-responses",
 				"v2StreamingEnabled": true
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 372000,
 			"maxTokens": 128000,
 			"preferWebsockets": true,
 			"useResponsesLite": true,
@@ -211901,7 +211901,7 @@
 				"api": "openai-codex-responses",
 				"v2StreamingEnabled": true
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 372000,
 			"maxTokens": 128000,
 			"preferWebsockets": true,
 			"useResponsesLite": true,
@@ -211996,7 +211996,7 @@
 				"api": "openai-codex-responses",
 				"v2StreamingEnabled": true
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 372000,
 			"maxTokens": 128000,
 			"preferWebsockets": true,
 			"useResponsesLite": true,
@@ -212099,7 +212099,7 @@
 				"api": "openai-codex-responses",
 				"v2StreamingEnabled": true
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 372000,
 			"maxTokens": 128000,
 			"preferWebsockets": true,
 			"useResponsesLite": true,
@@ -212194,7 +212194,7 @@
 				"api": "openai-codex-responses",
 				"v2StreamingEnabled": true
 			},
-			"contextWindow": 1000000,
+			"contextWindow": 372000,
 			"maxTokens": 128000,
 			"preferWebsockets": true,
 			"useResponsesLite": true,

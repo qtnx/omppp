@@ -714,6 +714,10 @@ migrate_heavy_task_fallback_chain() {
                 print key_indent "  - openai-codex/gpt-5.3-codex-spark"
                 print key_indent "  - anthropic/claude-haiku-4-5"
             }
+            if (seen_child && !have_sol) {
+                print key_indent "openai-codex/gpt-5.6-sol:"
+                print key_indent "  - anthropic/claude-opus-5"
+            }
         }
         BEGIN {
             in_retry = 0
@@ -724,6 +728,7 @@ migrate_heavy_task_fallback_chain() {
             seen_child = 0
             have_heavy_task = 0
             have_scout = 0
+            have_sol = 0
         }
         {
             if (in_chains) {
@@ -738,6 +743,8 @@ migrate_heavy_task_fallback_chain() {
                         have_heavy_task = 1
                     } else if ($0 ~ /^[[:space:]]*scout:[[:space:]]*($|#)/) {
                         have_scout = 1
+                    } else if ($0 ~ /^[[:space:]]*"?openai-codex\/gpt-5\.6-sol"?[[:space:]]*:/) {
+                        have_sol = 1
                     }
                     print
                     next
@@ -762,6 +769,7 @@ migrate_heavy_task_fallback_chain() {
                     seen_child = 0
                     have_heavy_task = 0
                     have_scout = 0
+                    have_sol = 0
                     print
                     next
                 } else {
@@ -784,8 +792,9 @@ migrate_heavy_task_fallback_chain() {
     ' "$config_file" > "$tmp_config"
     mv "$tmp_config" "$config_file"
     chmod 600 "$config_file" 2>/dev/null || true
-    echo "✓ Ensured heavy_task and scout fallback chains at ${config_file}"
+    echo "✓ Ensured heavy_task, scout, and GPT-5.6 Sol fallback chains at ${config_file}"
 }
+
 
 migrate_opus_model_config() {
     config_file="$1"
@@ -955,9 +964,11 @@ theme:
   dark: titanium
 display:
   syntaxHighlighting: basic
-setupVersion: 4
+setupVersion: 5
 retry:
   fallbackChains:
+    openai-codex/gpt-5.6-sol:
+      - anthropic/claude-opus-5
     task:
       - anthropic/claude-opus-5
       - openai-codex/gpt-5.5:low
@@ -1124,7 +1135,6 @@ install_via_bun() {
     install_superpowers_skill
     install_or_update_codegraph
     refresh_herdr_entrypoint
-    echo ""
     echo "✓ Installed OMPx via bun"
     echo "Run 'ompx' to get started!"
 }

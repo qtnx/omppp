@@ -164,12 +164,12 @@ import { stopLinearIntegration, unregisterKanbanSession } from "../kanban";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
-import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestrate";
+import { renderOrchestrateNotice, requestsOrchestrate } from "../modes/orchestrate";
 import { theme } from "../modes/theme/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
 import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
 import { computeNonMessageTokens } from "../modes/utils/context-usage";
-import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
+import { renderWorkflowNotice, requestsWorkflow } from "../modes/workflow";
 import type { OrchestratorModeState } from "../orchestrator-mode/state";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile } from "../plan-mode/plan-files";
@@ -6193,7 +6193,7 @@ export class AgentSession {
 	}
 
 	async #maybeAutoEnterOrchestratorMode(text: string): Promise<void> {
-		if (!this.#magicKeywordEnabled("orchestrate") || !containsOrchestrate(text)) return;
+		if (!this.#magicKeywordEnabled("orchestrate") || !requestsOrchestrate(text)) return;
 		if (this.getOrchestratorModeState()?.enabled || this.getPlanModeState()?.enabled) return;
 		const goalState = this.getGoalModeState();
 		const goalStatus = goalState?.goal.status;
@@ -6225,7 +6225,7 @@ export class AgentSession {
 		}
 		if (
 			this.#magicKeywordEnabled("orchestrate") &&
-			containsOrchestrate(text) &&
+			requestsOrchestrate(text) &&
 			!this.getOrchestratorModeState()?.enabled
 		) {
 			const enabledToolNames = this.getEnabledToolNames();
@@ -6242,7 +6242,7 @@ export class AgentSession {
 				});
 			}
 		}
-		if (this.#magicKeywordEnabled("workflow") && containsWorkflow(text)) {
+		if (this.#magicKeywordEnabled("workflow") && requestsWorkflow(text)) {
 			const enabledToolNames = this.getEnabledToolNames();
 			if (
 				enabledToolNames.includes("workflow") ||

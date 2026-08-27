@@ -1,10 +1,10 @@
 <system-notice>
-The user's message above contains the **workflow** keyword. For a concrete task that benefits from multi-step or parallel subagent work, call the `workflow` tool with a dynamic JavaScript workflow script.
+The user's message contains the **workflow** keyword and was classified as an explicit workflow directive. This permits workflow use; it does not make a workflow mandatory. When the eligibility gate below passes, call the `workflow` tool with a dynamic JavaScript workflow script; otherwise execute directly.
 
-Use this only when fan-out improves coverage, confidence, or scale. For trivial lookup, single edit, or a question only about workflows, answer directly.
+Fast path: a trivial lookup, one contained runnable slice, a direct command, or a question about workflows MUST be handled directly. Use `workflow` only when at least two independent subagent slices or a real multi-stage per-item chain materially improves wall-clock, coverage, confidence, or context isolation.
 
 <when>
-Worth it when the task benefits from decomposition + parallel coverage, independent/adversarial cross-checking, or scale one context cannot hold. For a quick lookup or single edit, just do it directly — don't spin up agents.{{#if scoutAvailable}} Scout inline FIRST{{else}} Explore inline FIRST{{/if}} (identify files, conflicts, failures, call sites, or review dimensions), then fan out over the discovered work-list.
+Worth it only when concrete work decomposes into independent parallel slices, a real multi-stage per-item chain, independent/adversarial cross-checking, or scale one context cannot hold. Otherwise execute directly.{{#if scoutAvailable}} Scout inline FIRST{{else}} Explore inline FIRST{{/if}} (identify files, conflicts, failures, call sites, or review dimensions), then fan out over the discovered work-list.
 
 Common shapes:
 - **Understand** — parallel readers over subsystems → structured map.

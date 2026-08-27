@@ -5734,7 +5734,7 @@ export const SETTINGS_SCHEMA = {
 	"task.eager": {
 		type: "enum",
 		values: ["default", "preferred", "always"] as const,
-		default: "always",
+		default: "preferred",
 		ui: {
 			tab: "tasks",
 			group: "Subagents",

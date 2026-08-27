@@ -4,6 +4,7 @@ import {
 	containsWorkflow,
 	highlightWorkflow,
 	renderWorkflowNotice,
+	requestsWorkflow,
 	WORKFLOW_NOTICE,
 } from "@oh-my-pi/pi-coding-agent/modes/workflow";
 
@@ -30,6 +31,32 @@ describe("workflow keyword detection", () => {
 		expect(containsWorkflow("packages/coding-agent/test/modes/workflow.test.ts")).toBe(false);
 		expect(containsWorkflow("do it. workflow.")).toBe(true);
 		expect(containsWorkflow("nothing to see here")).toBe(false);
+	});
+});
+
+describe("workflow request intent", () => {
+	it("accepts explicit workflow-tool directives", () => {
+		for (const text of [
+			"workflow",
+			"please workflow this rollout",
+			"run these workflows",
+			"hãy dùng workflow cho task này",
+		]) {
+			expect(requestsWorkflow(text)).toBe(true);
+		}
+	});
+
+	it("rejects mentions, complaints, negations, and generic workflow design", () => {
+		for (const text of [
+			"đừng spam workflow subagents",
+			"do not use workflow for this edit",
+			"check why workflow keeps spawning agents",
+			"workflow is overused here",
+			"design the workflows for our release process",
+			'say "workflow" now',
+		]) {
+			expect(requestsWorkflow(text)).toBe(false);
+		}
 	});
 });
 

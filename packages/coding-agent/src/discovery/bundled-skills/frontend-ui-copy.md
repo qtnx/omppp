@@ -9,6 +9,23 @@ description: Rules and formulas for production user-facing UI copy — labels, b
 
 Plain, specific, confident. Sentence case. Contractions are fine. No exclamation inflation, no "Oops!" cuteness, no blaming the user ("you input" -> "say what we'd like to know"), no schema jargon (`user_id`, `null`, exception names). An action keeps one name through its whole flow: a "Publish" button leads to a "Published" confirmation, not "Saved".
 
+## Register: product, not engineering
+
+Every string answers exactly two questions for the user: **what does this mean for me** and **what can I do next**. A detail earns its place only if it changes what the user does next; internals — mechanisms, layers, retries, counters, state names — never qualify.
+
+Write the outcome for the user, never the system's activity report:
+
+- x "Failed to fetch user data: timeout after 3 retries."
+- v "Couldn't load your info. Check your connection and try again."
+- x "Synced 3 of 12 entities; 1 failed validation."
+- v "Some items didn't save. Review 1 item."
+- x "Session expired. Re-authenticate to continue."
+- v "You've been signed out. Sign in again to continue."
+- x "Invalid input: value must match ^[a-z0-9]+$."
+- v "Use only lowercase letters and numbers."
+
+Translate engineering vocabulary before it renders: fetch → load, validate → check, authenticate → sign in, session → signed in/out, sync → save/update, query → search, entity/record/resource → the real thing's name (invoice, photo, teammate), timeout → took too long, retry → try again.
+
 ## Formulas, with examples
 
 **Errors = what happened + impact + next action.**

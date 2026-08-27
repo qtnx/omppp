@@ -485,7 +485,7 @@ describe("Code Mode session reconciliation", () => {
 
 	test("bridge-enabled task keeps eager delegation when orchestrate auto-enters", async () => {
 		const { session } = createSession(
-			Settings.isolated({ "providers.openai-codex.codeMode": "auto" }),
+			Settings.isolated({ "providers.openai-codex.codeMode": "auto", "task.eager": "always" }),
 			undefined,
 			undefined,
 			[tool("task")],
@@ -493,7 +493,7 @@ describe("Code Mode session reconciliation", () => {
 		await session.setActiveToolsByName(["eval", "task"]);
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 
-		await session.prompt("please orchestrate and workflowz this");
+		await session.prompt("please orchestrate this");
 
 		const messages = promptSpy.mock.calls[0]?.[0] as unknown as Array<{ customType?: string }>;
 		const customTypes = messages.map(message => message.customType).filter(Boolean);

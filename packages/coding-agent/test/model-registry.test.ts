@@ -1799,7 +1799,7 @@ describe("ModelRegistry", () => {
 			settings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
 			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
-			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(1_000_000);
+			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(372_000);
 		});
 	});
 	describe("bundled Anthropic catalog availability", () => {

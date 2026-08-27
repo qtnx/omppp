@@ -175,9 +175,9 @@ describe("generated model policies", () => {
 		expect(models[4]?.cost.longContext).toBeUndefined();
 	});
 
-	it("floors GPT-5.6 Codex-transport context windows at 1M (openai/codex#38917)", () => {
+	it("pins bundled GPT-5.6 Codex-transport context windows to exactly 372K", () => {
 		const models: ModelSpec<Api>[] = [
-			// Codex discovery/registry still reports the stale 272000 for these.
+			// Discovery may omit or report any positive context for these.
 			createSpec({
 				id: "gpt-5.6-luna",
 				api: "openai-codex-responses",
@@ -194,12 +194,12 @@ describe("generated model policies", () => {
 				id: "gpt-5.6-terra",
 				api: "openai-codex-responses",
 				provider: "openai-codex",
-				contextWindow: 272000,
+				contextWindow: 1_050_000,
 			}),
 			// The first-party API-key entry uses openai-responses and is untouched.
 			createSpec({ id: "gpt-5.6-sol", api: "openai-responses", provider: "openai", contextWindow: 1050000 }),
 			// The Codex registry actively reports 272K for this alias, so the
-			// luna/sol/terra correction must not overwrite it.
+			// luna/sol/terra correction must not overwrite unrelated aliases.
 			createSpec({
 				id: "gpt-daybreak-blue-latest",
 				api: "openai-codex-responses",
@@ -210,9 +210,9 @@ describe("generated model policies", () => {
 
 		applyGeneratedModelPolicies(models);
 
-		expect(models[0]?.contextWindow).toBe(1_000_000);
-		expect(models[1]?.contextWindow).toBe(1_000_000);
-		expect(models[2]?.contextWindow).toBe(1_000_000);
+		expect(models[0]?.contextWindow).toBe(372_000);
+		expect(models[1]?.contextWindow).toBe(372_000);
+		expect(models[2]?.contextWindow).toBe(372_000);
 		expect(models[3]?.contextWindow).toBe(1050000);
 		expect(models[4]?.contextWindow).toBe(272000);
 	});

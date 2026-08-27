@@ -238,7 +238,7 @@ export type ConfigMigrationApplyResult = {
 	changedPaths: string[];
 };
 
-const SETUP_CONFIG_VERSION = 4;
+const SETUP_CONFIG_VERSION = 5;
 
 const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 	{
@@ -275,6 +275,7 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 			task: ["openai-codex/gpt-5.5:low", "anthropic/claude-opus-4-8"],
 			smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
 			plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
+			"openai-codex/gpt-5.6-sol": ["anthropic/claude-opus-5"],
 		},
 	},
 ];
