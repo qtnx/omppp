@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored OpenAI Codex GPT-5.6 Luna, Sol, and Terra context windows to the supported 372K limit instead of advertising an unusable 1M window.
+
 ## [18.0.5] - 2026-08-25
 
 ### Added

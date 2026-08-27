@@ -104,7 +104,7 @@ describe("Codex model discovery", () => {
 		expect(legacy?.useResponsesLite).toBeUndefined();
 	});
 
-	it("floors GPT-5.6 luna/sol/terra at the 1M window when upstream omits context_window (#5705)", async () => {
+	it("uses the 372K fallback for GPT-5.6 luna/sol/terra when upstream omits context_window (#5705)", async () => {
 		const fetchFn: typeof fetch = Object.assign(
 			async () =>
 				new Response(
@@ -139,7 +139,7 @@ describe("Codex model discovery", () => {
 		});
 
 		const sol = result?.models.find(model => model.id === "gpt-5.6-sol");
-		expect(sol?.contextWindow).toBe(1_000_000);
+		expect(sol?.contextWindow).toBe(372_000);
 		const legacy = result?.models.find(model => model.id === "gpt-5.5");
 		expect(legacy?.contextWindow).toBe(272_000);
 	});
@@ -196,7 +196,7 @@ describe("Codex model discovery", () => {
 		expect(red.cost).toEqual({ input: 12.5, output: 75, cacheRead: 1.25, cacheWrite: 15.625 });
 	});
 
-	it("floors stale reported windows for GPT-5.6 luna/sol/terra and honors reports above the floor", async () => {
+	it("honors explicit positive context windows for GPT-5.6 luna/sol/terra", async () => {
 		const fetchFn: typeof fetch = Object.assign(
 			async () =>
 				new Response(
@@ -241,10 +241,9 @@ describe("Codex model discovery", () => {
 			fetchFn,
 		});
 
-		// Registry still reports the pre-1M 272000 for sol; the floor must win.
+		// Explicit provider reports are honored, even when below the 372K fallback.
 		const sol = result?.models.find(model => model.id === "gpt-5.6-sol");
-		expect(sol?.contextWindow).toBe(1_000_000);
-		// Reports above the floor are honored as-is.
+		expect(sol?.contextWindow).toBe(272_000);
 		const terra = result?.models.find(model => model.id === "gpt-5.6-terra");
 		expect(terra?.contextWindow).toBe(1_050_000);
 		// Non-floored SKUs keep the actively reported value.
@@ -575,9 +574,9 @@ describe("Codex model discovery", () => {
 		expect(plainModel).toBeDefined();
 		expect(plainModel?.provider).toBe("openai-codex");
 		// Both rows are the same model: the worker variant shares the plain
-		// SKU's base metadata, so the 1M window floor applies to both.
-		expect(workerModel?.contextWindow).toBe(1_000_000);
-		expect(plainModel?.contextWindow).toBe(1_000_000);
+		// SKU's explicit context metadata.
+		expect(workerModel?.contextWindow).toBe(272_000);
+		expect(plainModel?.contextWindow).toBe(272_000);
 	});
 
 	it("keeps the plain route through authoritative discovery that advertises only the `-wm` slug", async () => {
