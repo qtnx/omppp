@@ -727,8 +727,8 @@ export class CustomEditor extends Editor {
 	sttHoldEnabled?: () => boolean;
 
 	/** Custom key handlers from extensions and non-built-in app actions. */
-	#customKeyHandlers = new Map<KeyId, () => void>();
-	#customMatchKeys = new Map<string, () => void>();
+	#customKeyHandlers = new Map<KeyId, () => unknown>();
+	#customMatchKeys = new Map<string, () => unknown>();
 	/** Bracketed-paste assembler that runs ahead of the inherited handler so terminals which
 	 *  deliver `\x1b[200~` and `\x1b[201~` in separate stdin chunks still resolve to a single
 	 *  assembled payload here; the empty-paste / image-path branches must see the full content,
@@ -790,7 +790,7 @@ export class CustomEditor extends Editor {
 	/**
 	 * Register a custom key handler. Extensions use this for shortcuts.
 	 */
-	setCustomKeyHandler(key: KeyId, handler: () => void): void {
+	setCustomKeyHandler(key: KeyId, handler: () => unknown): void {
 		this.#customKeyHandlers.set(key, handler);
 		this.#rebuildCustomMatchKeys();
 	}
@@ -1116,20 +1116,14 @@ export class CustomEditor extends Editor {
 			// checked above for the same reason.
 			if (this.#matchesAction(canonical, "app.retry") && this.onRetry) {
 				const customHandler = this.#customMatchKeys.get(canonical);
-				if (customHandler) {
-					customHandler();
-					return;
-				}
+				if (customHandler && customHandler() !== false) return;
 				this.onRetry();
 				return;
 			}
 
 			// Check custom key handlers (extensions)
 			const handler = this.#customMatchKeys.get(canonical);
-			if (handler) {
-				handler();
-				return;
-			}
+			if (handler && handler() !== false) return;
 		}
 
 		// Pass to parent for normal handling

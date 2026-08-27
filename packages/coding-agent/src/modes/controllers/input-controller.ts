@@ -604,7 +604,11 @@ export class InputController {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showSessionSelector());
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.message.followUp")) {
-			this.ctx.editor.setCustomKeyHandler(key, () => void this.handleFollowUp());
+			this.ctx.editor.setCustomKeyHandler(key, () => {
+				if (key === "tab" && !this.ctx.session.isStreaming && !this.ctx.session.isCompacting) return false;
+				void this.handleFollowUp();
+				return true;
+			});
 		}
 		for (const key of this.ctx.keybindings.getKeys("app.stt.toggle")) {
 			this.ctx.editor.setCustomKeyHandler(key, () => void this.ctx.handleSTTToggle());
