@@ -125,7 +125,7 @@ describe("AgentSession skill prompt keyword steering", () => {
 		const observedTurn = observedTurns[0];
 		if (!observedTurn) throw new Error("Expected prompt context to be captured");
 		expect(observedTurn.texts).toContain(`Skill body\n\n---\n\nSkill: ${skillPath}\nUser: ${details.args}`);
-		expect(observedTurn.texts).toContain(WORKFLOW_NOTICE);
+		expect(observedTurn.texts.some(text => text.includes("workflow-tool"))).toBe(false);
 		expect(session.sessionManager.getTurnBudget()).toEqual({ total: 500_000, spent: 0, hard: true });
 	});
 });

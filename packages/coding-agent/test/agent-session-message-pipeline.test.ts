@@ -180,7 +180,7 @@ describe("AgentSession message pipeline", () => {
 		});
 		sessions.push(session);
 
-		await session.prompt("workflow resolve this?");
+		await session.prompt("please workflow this");
 
 		const workflowMessages = capturedAgentMessages.filter(
 			(message): message is AgentMessage & { role: "custom"; customType: string; content: string } =>
