@@ -53,7 +53,6 @@ describe("CustomEditor keybindings", () => {
 		expect(editor.getText()).toBe("x");
 	});
 
-
 	it("lets copy-prompt remaps keep precedence over the default retry chord", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		const onRetry = vi.fn();
