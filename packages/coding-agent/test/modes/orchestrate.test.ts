@@ -3,6 +3,7 @@ import {
 	containsOrchestrate,
 	highlightOrchestrate,
 	renderOrchestrateNotice,
+	requestsOrchestrate,
 } from "@oh-my-pi/pi-coding-agent/modes/orchestrate";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { containsUltrathink, highlightUltrathink } from "@oh-my-pi/pi-coding-agent/modes/ultrathink";
@@ -47,6 +48,26 @@ describe("orchestrate keyword detection", () => {
 		expect(containsOrchestrate("<note>orchestrate</note>")).toBe(false);
 		// A real prose request alongside code still triggers.
 		expect(containsOrchestrate("run `setup` then orchestrate the rollout")).toBe(true);
+	});
+});
+
+describe("orchestrate request intent", () => {
+	it("accepts explicit orchestration directives", () => {
+		for (const text of ["orchestrate", "please orchestrate this rollout", "hãy orchestrate the independent changes"]) {
+			expect(requestsOrchestrate(text)).toBe(true);
+		}
+	});
+
+	it("rejects mentions, complaints, and negations", () => {
+		for (const text of [
+			"do not orchestrate this small edit",
+			"đừng orchestrate task này",
+			"check why the agent likes to orchestrate",
+			"orchestrate is too expensive here",
+			'say "orchestrate" now',
+		]) {
+			expect(requestsOrchestrate(text)).toBe(false);
+		}
 	});
 });
 

@@ -124,6 +124,17 @@ describe("AgentSession magic keyword settings", () => {
 		expect(customTypesFromPrompt(promptSpy)).toEqual(["workflow-notice"]);
 	});
 
+	it("does not activate workflow or orchestrator mode for a process complaint", async () => {
+		const created = await createMagicKeywordSession(modelRegistry);
+		session = created.session;
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("đừng spam workflow subagents; do not orchestrate this small edit");
+
+		expect(customTypesFromPrompt(promptSpy)).toEqual([]);
+		expect(session.getOrchestratorModeState()?.enabled).toBeUndefined();
+	});
+
 	it("renders the workflow tool notice", async () => {
 		const created = await createMagicKeywordSession(modelRegistry);
 		session = created.session;

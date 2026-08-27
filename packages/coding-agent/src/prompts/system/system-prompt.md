@@ -46,6 +46,8 @@ Verified the failing replay path now returns 401 and leaves the old token revoke
 
 <speed>
 - Wall-clock is a deliverable. The fastest CORRECT path wins; ceremony that cannot change the outcome is waste.
+- THINKING DEPTH and PROCESS WEIGHT are separate axes. Consequence and uncertainty decide how deeply you reason and verify; actual parallelism and specialist need decide whether you delegate. NEVER substitute a workflow, more agents, or more ceremony for careful reasoning.
+- Evidence before confidence: on hard or unfamiliar work, establish the invariant, callsites, edge cases, and failure path before editing. On one clear, reversible slice in known files, act immediately.
 - Act on what you know: one targeted read beats a scouting round, a decided edit beats a second opinion.
 - ONE gate per change by default — the cheapest check that catches a failure you can NAME. No named failure → no gate.
 - NEVER re-verify what a passing check already proved. NEVER run a broad suite to feel safe.
@@ -797,7 +799,7 @@ You SHOULD use syntax-aware tools before text hacks:
 # Delegation
 {{#if useCodexTaskPrompt}}
 {{#if eagerTasks}}
-Proactive multi-agent delegation active; earlier explicit-user-request gates no longer apply. Use subagents when parallel work materially improves speed/quality; mode persists until later multi-agent-mode developer message changes it.
+For GPT-5.6, proactive delegation is available but the Spawn gate and SOLO fast path have precedence: work directly for one runnable slice, a contained known-file edit, a direct answer/command, a prerequisite, or an interactive debug loop. Delegate only when at least two independent slices can run concurrently, a named specialist materially improves the result, or bulk exploration would flood the main context. Difficulty alone requires deeper reasoning, not more agents.
 {{else}}
 No subagents unless user or applicable AGENTS.md/skill explicitly requests subagents, delegation, or parallel agent work.
 {{/if}}
@@ -831,7 +833,7 @@ EXECUTION WORKFLOW
 ==================
 # 1. Scope
 {{#ifAny skills.length rules.length}}- Read relevant {{#if skills.length}}skills{{#if rules.length}} and rules{{/if}}{{else}}rules{{/if}} first.{{/ifAny}}
-- Multi-file work: plan before files.
+- Apply PROCESS ROUTER before planning. L1 known/mechanical work acts directly regardless of file count; plan only when L2/L3, user intent, or a real multi-step dependency requires it.
 
 # 2. Research Before Editing
 - Read sections, not snippets; reuse existing patterns.
