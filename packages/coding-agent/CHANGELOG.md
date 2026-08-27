@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+## [1.7.5] - 2026-08-27
+
 ### Added
 
 - Added the `feature-gym` skill: before verifying a feature, the agent imagines how it will be driven and builds the missing exercise rig (sandbox page with controllable fake services for complex UI, booted service with scenario driver for backend/microservices).
+- Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
+- Added an encrypted secret vault with OS-keychain-backed keys, prompt auto-detection, masked `/secrets` management, a secrets tool, and opt-in bash environment injection.
+- Added an `ompx secrets` command (`list`, `get [--reveal]`, `copy`, `add [--stdin]`, `remove`) so the vault owner can read or copy a stored value from their own shell; the agent-facing tool and slash command stay mask-only.
 
 ### Changed
 
@@ -19,22 +24,6 @@
 - GPT-5.6 and other models now keep one-slice work direct, reserve workflows for explicit parallel requests, and ignore complaint or negated `workflow`/`orchestrate` mentions.
 - GPT-5.6 Sol retry fallback now switches directly to Anthropic Claude Opus 5, including existing configurations upgraded by the installer.
 - Running-agent input now steers with Enter and queues with Ctrl+Enter, Ctrl+Q, or Tab; Tab keeps its normal editor behavior while idle.
-
-## [1.7.4] - 2026-08-21
-
-### Added
-
-- Added native Linear MCP synchronization: `/linear on <status...>` imports issues assigned to the current user and their comments into the existing Kanban worker lifecycle, while `/linear add` and `ompx linear add` configure Linear's official MCP server. The installer remains opt-in through `--linear`.
-
-### Changed
-
-- Installer config migration now defaults the `scout` agent to `tnx/scout` and, when retry fallback chains already exist, adds the same `smol` fallback chain (`openai-codex/gpt-5.3-codex-spark` then `anthropic/claude-haiku-4-5`) unless a `scout` chain is already set. Custom scout models and existing scout fallbacks are left alone.
-- CodeGraph now runs only inside Git checkouts. Non-git directories skip background init/index, and `codegraph_*` execute refuses with a clear error.
-- Added a Message Delivery setting that switches ordinary in-flight input between the existing Steer and Queue/follow-up paths; Queue is the default so messages are handled after the current turn.
-
-### Fixed
-
-- Herdr pane status no longer gets stomped to `unknown` by headless children that inherit `HERDR_ENV` (tests, print/RPC, workers). The native reporter now waits for a UI session before publishing, never sends `pane.release_agent` (Herdr 0.8.0 ends ownership on process exit; official OMP v8 never released), and flips the pane to `working` as soon as a normal prompt is submitted instead of scheduling idle until `before_agent_start`.
 
 ## [18.0.6] - 2026-08-26
 
@@ -702,9 +691,6 @@
 
 ### Added
 
-- Added per-subagent launch, model, and tool timing breakdowns to completed task rows so slow runs reveal whether local orchestration or provider execution dominates.
-- Added an encrypted secret vault with OS-keychain-backed keys, prompt auto-detection, masked `/secrets` management, a secrets tool, and opt-in bash environment injection.
-- Added an `ompx secrets` command (`list`, `get [--reveal]`, `copy`, `add [--stdin]`, `remove`) so the vault owner can read or copy a stored value from their own shell; the agent-facing tool and slash command stay mask-only.
 - Added `--external-thinking` CLI flag to force external thinking tool activation.
 - Added `omp compress` command, which uses an isolated, two-tool agent loop to rewrite single or multiple text files (supporting glob patterns and concurrent processing) into dense prompt registers.
 - Expanded tool discovery in `omp cleanse` to support `staticcheck` and `golangci-lint` (Go); `mypy`, `pylint`, `flake8`, `ty`, and `basedpyright` (Python); `oxlint`, `deno lint`, `stylelint`, and `vue-tsc` (JS/TS); and `actionlint` (GitHub Workflows).
@@ -1624,5 +1610,21 @@
 ### Fixed
 
 - Fixed Portkey/gateway custom models whose ids start with `@` (e.g. `@modal/GLM-5-2-FP8`) being rewritten to unrelated bundled wire ids (e.g. `glm-5-2`), which caused `400` responses requiring `x-portkey-config` or `x-portkey-provider`.
+
+## [1.7.4] - 2026-08-21
+
+### Added
+
+- Added native Linear MCP synchronization: `/linear on <status...>` imports issues assigned to the current user and their comments into the existing Kanban worker lifecycle, while `/linear add` and `ompx linear add` configure Linear's official MCP server. The installer remains opt-in through `--linear`.
+
+### Changed
+
+- Installer config migration now defaults the `scout` agent to `tnx/scout` and, when retry fallback chains already exist, adds the same `smol` fallback chain (`openai-codex/gpt-5.3-codex-spark` then `anthropic/claude-haiku-4-5`) unless a `scout` chain is already set. Custom scout models and existing scout fallbacks are left alone.
+- CodeGraph now runs only inside Git checkouts. Non-git directories skip background init/index, and `codegraph_*` execute refuses with a clear error.
+- Added a Message Delivery setting that switches ordinary in-flight input between the existing Steer and Queue/follow-up paths; Queue is the default so messages are handled after the current turn.
+
+### Fixed
+
+- Herdr pane status no longer gets stomped to `unknown` by headless children that inherit `HERDR_ENV` (tests, print/RPC, workers). The native reporter now waits for a UI session before publishing, never sends `pane.release_agent` (Herdr 0.8.0 ends ownership on process exit; official OMP v8 never released), and flips the pane to `working` as soon as a normal prompt is submitted instead of scheduling idle until `before_agent_start`.
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@a48c88854e1a](https://github.com/can1357/oh-my-pi/blob/a48c88854e1ab2f8ecc4ad90a8bd7f721eeb8320/packages/coding-agent/CHANGELOG.md).
