@@ -62,6 +62,7 @@ const SDK_TOOL: Tool = {
 const ARCHIVE_PROMPT_SKILL_NAMES = [
 	"bug-hunting",
 	"feature-anatomy",
+	"feature-gym",
 	"refactoring-safely",
 	"migration-upgrade",
 	"database-craft",

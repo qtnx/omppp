@@ -40,6 +40,7 @@ const ARCHIVE_ENGINEERING_SKILL_NAMES = [
 	"database-craft",
 	"dependency-doctor",
 	"feature-anatomy",
+	"feature-gym",
 	"git-craft",
 	"incident-response",
 	"migration-upgrade",

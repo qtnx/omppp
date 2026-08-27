@@ -2,14 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `feature-gym` skill: before verifying a feature, the agent imagines how it will be driven and builds the missing exercise rig (sandbox page with controllable fake services for complex UI, booted service with scenario driver for backend/microservices).
+
 ### Changed
 
 - Synced upstream v18.0.6 improvements while preserving OMPx branding, 1.7.4 compatibility, delegation tiers, and fork runtimes.
+- Backend service changes now require a minimum completion bar — build, boot with observed readiness, and drive the changed flow — so missing imports or unregistered wiring can no longer pass on green tests alone.
+- Direct fixes are now the explicit fast path: agents fix one-slice work immediately instead of spawning subagents or workflows for it.
+- User-facing UI text now enforces a product register: strings state the user's outcome and next step in plain language instead of narrating internals (sync counters, validation, retries), with engineering vocabulary translated and raw error codes banned.
 
 ### Fixed
 
 - Workflow fan-out now disposes completed agents immediately and uses a host-aware automatic concurrency cap to prevent memory exhaustion and swap thrashing.
 - GPT-5.6 and other models now keep one-slice work direct, reserve workflows for explicit parallel requests, and ignore complaint or negated `workflow`/`orchestrate` mentions.
+- GPT-5.6 Sol retry fallback now switches directly to Anthropic Claude Opus 5, including existing configurations upgraded by the installer.
 
 ## [1.7.4] - 2026-08-21
 
