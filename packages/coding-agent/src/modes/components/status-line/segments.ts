@@ -323,17 +323,24 @@ function formatLoopLimit(limit: NonNullable<SegmentContext["loopMode"]>["limit"]
 	return limit ? describeLoopLimitRuntime(limit) : undefined;
 }
 
+const STATUS_MINUTE_MS = 60_000;
+
+function formatStatusMinutes(durationMs: number, rounding: "floor" | "ceil"): string {
+	const minutes = Math[rounding](Math.max(0, durationMs) / STATUS_MINUTE_MS);
+	return minutes === 0 ? "0m" : formatDuration(minutes * STATUS_MINUTE_MS);
+}
+
 function renderTimeBudgetSuffix(ctx: SegmentContext): string | undefined {
 	const snapshot = ctx.session.getTimeBudgetSnapshot?.();
 	if (!snapshot?.active) return undefined;
 
-	const elapsed = formatDuration(snapshot.activeMs);
-	const budget = formatDuration(snapshot.budgetMs);
+	const elapsed = formatStatusMinutes(snapshot.activeMs, "floor");
+	const budget = formatStatusMinutes(snapshot.budgetMs, "ceil");
 	if (snapshot.overtimeLogged || snapshot.overtimeMs > 0) {
-		return theme.fg("error", `⏱ ${elapsed}/${budget} · +${formatDuration(snapshot.overtimeMs)} over`);
+		return theme.fg("error", `⏱ ${elapsed}/${budget} · +${formatStatusMinutes(snapshot.overtimeMs, "floor")} over`);
 	}
 	const color: ThemeColor = snapshot.remainingMs / snapshot.budgetMs < 0.2 ? "warning" : "customMessageLabel";
-	return theme.fg(color, `⏱ ${elapsed}/${budget} · ${formatDuration(snapshot.remainingMs)} left`);
+	return theme.fg(color, `⏱ ${elapsed}/${budget} · ${formatStatusMinutes(snapshot.remainingMs, "ceil")} left`);
 }
 
 function renderPrimaryMode(ctx: SegmentContext): RenderedSegment {

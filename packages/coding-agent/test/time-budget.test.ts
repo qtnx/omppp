@@ -287,6 +287,30 @@ describe("time budget slash and status surfaces", () => {
 		expect(overtimeRendered.content).toContain(theme.fg("error", "⏱ 37m/30m · +7m over"));
 	});
 
+	it("renders time-budget status only at minute boundaries", () => {
+		const renderBudget = (activeMs: number, remainingMs: number, overtimeMs = 0): string =>
+			Bun.stripANSI(
+				renderSegment(
+					"mode",
+					createStatusContext({
+						active: true,
+						running: true,
+						budgetMs: 10 * 60_000,
+						activeMs,
+						remainingMs,
+						overtimeMs,
+						overtimeLogged: overtimeMs > 0,
+					}),
+				).content,
+			);
+
+		expect(renderBudget(15_000, 585_000)).toBe("⏱ 0m/10m · 10m left");
+		expect(renderBudget(45_000, 555_000)).toBe("⏱ 0m/10m · 10m left");
+		expect(renderBudget(60_000, 540_000)).toBe("⏱ 1m/10m · 9m left");
+		expect(renderBudget(10 * 60_000 + 15_000, 0, 15_000)).toBe("⏱ 10m/10m · +0m over");
+		expect(renderBudget(11 * 60_000, 0, 60_000)).toBe("⏱ 11m/10m · +1m over");
+	});
+
 	it("formats inactive elapsed time without claiming remaining budget", () => {
 		expect(
 			formatTimeBudgetSnapshot({
