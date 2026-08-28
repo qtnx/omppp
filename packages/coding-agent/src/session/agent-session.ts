@@ -56,6 +56,7 @@ import {
 import type {
 	AssistantMessage,
 	CodexCompactionContext,
+	Context,
 	ImageContent,
 	Message,
 	Model,
@@ -705,6 +706,7 @@ export class AgentSession {
 	#detachUsageBeforeModelCall: (() => void) | undefined;
 
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
+	#transformProviderContext: (context: Context, model: Model) => Context | Promise<Context>;
 	#onPayload: SimpleStreamOptions["onPayload"] | undefined;
 	#onResponse: SimpleStreamOptions["onResponse"] | undefined;
 	/**
@@ -1320,6 +1322,7 @@ export class AgentSession {
 		this.#titleSystemPrompt = config.titleSystemPrompt;
 		this.#pruneToolDescriptions = config.pruneToolDescriptions === true;
 		this.#transformContext = config.transformContext ?? (messages => messages);
+		this.#transformProviderContext = config.transformProviderContext ?? (context => context);
 		this.#sideStreamFn = config.sideStreamFn ?? streamSimple;
 		this.#preferWebsockets = config.preferWebsockets;
 		this.#onPayload = config.onPayload;
@@ -1823,6 +1826,15 @@ export class AgentSession {
 			promptGeneration: () => this.#promptGeneration,
 			sessionId: () => this.sessionId,
 			messages: () => this.messages,
+			buildCompactionLiveContext: async model =>
+				this.#transformProviderContext(
+					{
+						systemPrompt: this.agent.state.systemPrompt,
+						messages: this.#convertToLlmForSideRequest(this.messages),
+						tools: this.agent.state.tools,
+					},
+					model,
+				),
 			contextGcDbPath: () => this.#contextGcDbPath,
 			baseSystemPrompt: () => this.#tools.baseSystemPrompt,
 			goalModeState: () => this.#goalModeState,

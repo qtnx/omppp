@@ -345,6 +345,7 @@ export interface SessionMaintenanceHost {
 	drainStrandedQueuedMessages(): void;
 	buildDisplaySessionContext(): SessionContext;
 	convertToLlmForSideRequest(messages: AgentMessage[]): Message[];
+	buildCompactionLiveContext(model: Model): Promise<Context>;
 	obfuscateTextForProvider(text: string | undefined): string | undefined;
 	obfuscatePreparationForProvider(preparation: CompactionPreparation): CompactionPreparation;
 	closeCodexProviderSessionsForHistoryRewrite(): void;
@@ -2321,6 +2322,25 @@ export class SessionMaintenance {
 		);
 	}
 
+	/**
+	 * Rebuild the exact live Anthropic prefix for a compaction one-shot. A
+	 * fallback model cannot read this model's cache, so it intentionally gets no
+	 * context and uses serialized summarization instead.
+	 */
+	async #buildAnthropicCompactionLiveContext(candidate: Model): Promise<Context | undefined> {
+		const activeModel = this.#model;
+		if (!activeModel || candidate.provider !== "anthropic" || !modelsAreEqual(candidate, activeModel)) {
+			return undefined;
+		}
+		try {
+			return await this.#host.buildCompactionLiveContext(candidate);
+		} catch {
+			// Cache sharing is optional; a transform failure must retain legacy
+			// serialized compaction instead of preventing recovery.
+			return undefined;
+		}
+	}
+
 	async #compactWithFallbackModel(
 		preparation: CompactionPreparation,
 		customInstructions: string | undefined,
@@ -2362,6 +2382,7 @@ export class SessionMaintenance {
 						// (xai-oauth/grok-build) don't trip requireSupportedEffort.
 						thinkingLevel: this.#host.thinkingLevel(),
 						tools: this.#host.agent.state.tools,
+						liveContext: await this.#buildAnthropicCompactionLiveContext(candidate),
 						sessionId: this.#host.sessionId(),
 						promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
 						providerSessionState: this.#host.providerSessionState,
@@ -3642,6 +3663,7 @@ export class SessionMaintenance {
 									// resolveCompactionEffort.
 									thinkingLevel: this.#host.thinkingLevel(),
 									tools: this.#host.agent.state.tools,
+									liveContext: await this.#buildAnthropicCompactionLiveContext(candidate),
 									sessionId: this.#host.sessionId(),
 									promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
 									providerSessionState: this.#host.providerSessionState,

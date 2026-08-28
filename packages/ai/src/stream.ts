@@ -2024,6 +2024,7 @@ function mapOptionsForApi<TApi extends Api>(
 		fallbacks: options?.fallbacks,
 		acceptEmptyResponse: options?.acceptEmptyResponse,
 		anthropicCacheRefreshRequest: options?.anthropicCacheRefreshRequest,
+		anthropicCacheMessageBoundary: options?.anthropicCacheMessageBoundary,
 		...simpleProviderOptions,
 	};
 
