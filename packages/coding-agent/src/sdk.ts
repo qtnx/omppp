@@ -3730,7 +3730,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				: contextGcSystemPrompt;
 
 			if (options.systemPrompt === undefined) {
-				return { systemPrompt: defaultSystemPrompt };
+				return {
+					systemPrompt: defaultSystemPrompt,
+					systemPromptCache: defaultPrompt.systemPromptCache,
+				};
 			}
 			const customPrompt =
 				typeof options.systemPrompt === "function"
@@ -3740,12 +3743,23 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				systemPrompt: typeof customPrompt === "string" ? [customPrompt] : customPrompt,
 			};
 		};
+		let systemPromptCache: BuildSystemPromptResult["systemPromptCache"];
+		let globallyCacheableSystemPromptPrefix: readonly string[] = [];
+		const trackSystemPromptCache = (result: BuildSystemPromptResult): BuildSystemPromptResult => {
+			systemPromptCache = result.systemPromptCache;
+			globallyCacheableSystemPromptPrefix = systemPromptCache
+				? result.systemPrompt.slice(0, systemPromptCache.globalPrefixBlocks)
+				: [];
+			return result;
+		};
 		const rebuildSystemPrompt = (
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
 			context?: SystemPromptRebuildContext & { directToolNames?: readonly string[] },
 		): Promise<BuildSystemPromptResult> =>
-			promptActiveToolNames.run(new Set(toolNames), () => rebuildSystemPromptUnscoped(toolNames, tools, context));
+			promptActiveToolNames
+				.run(new Set(toolNames), () => rebuildSystemPromptUnscoped(toolNames, tools, context))
+				.then(trackSystemPromptCache);
 
 		const toolNamesFromRegistry = Array.from(toolRegistry.keys());
 		const explicitlyRequestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
@@ -4135,11 +4149,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// Keep per-request volatility out of the system prompt: the date/cwd
 			// reminder rides on the first user turn so open-weight providers keep
 			// their tool-schema prefix cache (#7404).
-			return withDateCwdReminder(
+			const withReminder = withDateCwdReminder(
 				transformed,
 				formatLocalCalendarDate(),
 				normalizePromptPath(sessionManager.getCwd()),
 			);
+			if (!systemPromptCache || !withReminder.systemPrompt) return withReminder;
+			for (let index = 0; index < globallyCacheableSystemPromptPrefix.length; index++) {
+				if (withReminder.systemPrompt[index] !== globallyCacheableSystemPromptPrefix[index]) return withReminder;
+			}
+			return { ...withReminder, systemPromptCache };
 		};
 		const onPayload = async (payload: unknown, model?: Model) => {
 			return await extensionRunner.emitBeforeProviderRequest(payload, model);

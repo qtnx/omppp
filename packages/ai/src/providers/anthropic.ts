@@ -2911,22 +2911,34 @@ type SystemBlockOptions = {
 	/** Text of the first user message — used as fingerprint seed for the billing header. */
 	firstUserMessageText?: string;
 	cacheControl?: AnthropicCacheControl;
+	systemPromptCache?: Context["systemPromptCache"];
 };
 /**
  * Place system-block cache breakpoints that survive volatile project context.
  *
- * The last three eligible system blocks cover the stable prefix plus its
- * project-footer variants. OAuth cloak blocks stay uncached because their
- * billing fingerprint and identity are request-specific.
+ * Explicit globally cacheable prefix blocks are placed first. Remaining
+ * breakpoints cover the trailing project-context variants. OAuth cloak blocks
+ * stay uncached because their billing fingerprint and identity are
+ * request-specific.
  */
 function cacheSystemPrefixBreakpoints(
 	blocks: AnthropicSystemBlock[],
 	cacheControl: AnthropicCacheControl | undefined,
 	maxBreakpoints: number,
 	firstCacheableIndex: number,
+	globalPrefixBlocks = 0,
 ): number {
 	if (!cacheControl || maxBreakpoints <= 0) return 0;
 	let placed = 0;
+	const globalPrefixEnd = Math.min(blocks.length, firstCacheableIndex + Math.max(0, Math.trunc(globalPrefixBlocks)));
+	for (let index = firstCacheableIndex; index < globalPrefixEnd && placed < maxBreakpoints; index++) {
+		if (blocks[index].cache_control != null) continue;
+		blocks[index] = {
+			...blocks[index],
+			cache_control: { ...cloneAnthropicCacheControl(cacheControl), scope: "global" },
+		};
+		placed++;
+	}
 	for (let index = blocks.length - 1; index >= firstCacheableIndex && placed < maxBreakpoints; index--) {
 		if (blocks[index].cache_control != null) continue;
 		blocks[index] = { ...blocks[index], cache_control: cloneAnthropicCacheControl(cacheControl) };
@@ -2947,7 +2959,13 @@ export function buildAnthropicSystemBlocks(
 	systemPrompt: readonly string[] | undefined,
 	options: SystemBlockOptions = {},
 ): AnthropicSystemBlock[] | undefined {
-	const { includeClaudeCodeInstruction = false, extraInstructions = [], firstUserMessageText, cacheControl } = options;
+	const {
+		includeClaudeCodeInstruction = false,
+		extraInstructions = [],
+		firstUserMessageText,
+		cacheControl,
+		systemPromptCache,
+	} = options;
 	const sanitizedPrompts = normalizeSystemPrompts(systemPrompt);
 	const trimmedInstructions = extraInstructions.map(instruction => instruction.trim()).filter(Boolean);
 	const hasBillingHeader = sanitizedPrompts.some(prompt => prompt.startsWith(CLAUDE_BILLING_HEADER_PREFIX));
@@ -2964,7 +2982,13 @@ export function buildAnthropicSystemBlocks(
 		for (const prompt of sanitizedPrompts) {
 			blocks.push({ type: "text", text: prompt });
 		}
-		cacheSystemPrefixBreakpoints(blocks, cacheControl, 3, firstCacheableSystemIndex(blocks));
+		cacheSystemPrefixBreakpoints(
+			blocks,
+			cacheControl,
+			3,
+			firstCacheableSystemIndex(blocks),
+			systemPromptCache?.globalPrefixBlocks,
+		);
 
 		return blocks;
 	}
@@ -2976,9 +3000,13 @@ export function buildAnthropicSystemBlocks(
 	for (const prompt of sanitizedPrompts) {
 		blocks.push({ type: "text", text: prompt });
 	}
-	const lastIndex = blocks.length - 1;
-	if (cacheControl && lastIndex >= 0 && blocks[lastIndex].cache_control == null) {
-		blocks[lastIndex] = { ...blocks[lastIndex], cache_control: cloneAnthropicCacheControl(cacheControl) };
+	if (systemPromptCache?.globalPrefixBlocks) {
+		cacheSystemPrefixBreakpoints(blocks, cacheControl, 3, 0, systemPromptCache.globalPrefixBlocks);
+	} else {
+		const lastIndex = blocks.length - 1;
+		if (cacheControl && lastIndex >= 0 && blocks[lastIndex].cache_control == null) {
+			blocks[lastIndex] = { ...blocks[lastIndex], cache_control: cloneAnthropicCacheControl(cacheControl) };
+		}
 	}
 	return blocks.length > 0 ? blocks : undefined;
 }
@@ -3268,7 +3296,14 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 	let isCCLayout = false;
 	if (params.system && Array.isArray(params.system) && params.system.length > 0) {
 		isCCLayout = params.system[0]?.text?.startsWith(CLAUDE_BILLING_HEADER_PREFIX) === true;
-		const maxSystemBreakpoints = Math.min(3, MAX_CACHE_BREAKPOINTS - cacheBreakpointsUsed);
+		let systemBreakpointsUsed = 0;
+		for (const block of params.system as AnthropicSystemBlock[]) {
+			if (block.cache_control) systemBreakpointsUsed++;
+		}
+		const maxSystemBreakpoints = Math.min(
+			Math.max(0, 3 - systemBreakpointsUsed),
+			MAX_CACHE_BREAKPOINTS - cacheBreakpointsUsed,
+		);
 		cacheBreakpointsUsed += cacheSystemPrefixBreakpoints(
 			params.system as AnthropicSystemBlock[],
 			cacheControl,
@@ -3552,6 +3587,10 @@ function buildParams(
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		firstUserMessageText,
 		cacheControl,
+		systemPromptCache:
+			isOAuthToken && model.provider === "anthropic" && isOfficialAnthropicApiUrl(baseUrl)
+				? context.systemPromptCache
+				: undefined,
 	});
 
 	// Pre-compute tools.

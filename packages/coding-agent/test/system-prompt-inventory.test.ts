@@ -225,6 +225,35 @@ describe("system prompt tool inventory", () => {
 		} as ToolSession;
 	}
 
+	it("marks the default system prompt's stable prefix as globally cacheable", async () => {
+		const result = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["read", "bash"],
+			tools: TOOLS,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+		});
+
+		expect(result.systemPromptCache).toEqual({ globalPrefixBlocks: 1 });
+	});
+
+	it("omits the global cache hint when a custom system prompt is explicit", async () => {
+		const result = await buildSystemPrompt({
+			cwd: tempDir,
+			customPrompt: "Follow the repository conventions.",
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["read", "bash"],
+			tools: TOOLS,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+		});
+
+		expect(result.systemPromptCache).toBeUndefined();
+	});
+
 	it("preserves the one-argument full metadata builder", () => {
 		const metadata = buildSystemPromptToolMetadata(new Map([[SDK_TOOL.name, SDK_TOOL]]));
 

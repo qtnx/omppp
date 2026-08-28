@@ -721,6 +721,8 @@ export interface BuildSystemPromptOptions {
 export interface BuildSystemPromptResult {
 	/** Ordered system prompt blocks. Providers should preserve entries as distinct messages/blocks. */
 	systemPrompt: string[];
+	/** Provider cache hint for stable leading blocks. Omitted for custom prompt templates. */
+	systemPromptCache?: { globalPrefixBlocks: number };
 	/**
 	 * Names of `xd://` devices whose catalog/protocol section this prompt renders.
 	 * Empty/undefined when no catalog was emitted (no mounted devices, or a custom
@@ -1117,5 +1119,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	// default template; a resolved custom prompt uses a template that omits it.
 	const xdevCatalogNames =
 		!resolvedCustomPrompt && xdevTools.length > 0 ? xdevTools.map(mounted => mounted.name) : undefined;
-	return { systemPrompt, xdevCatalogNames };
+	return {
+		systemPrompt,
+		xdevCatalogNames,
+		...(!resolvedCustomPrompt && { systemPromptCache: { globalPrefixBlocks: 1 } }),
+	};
 }

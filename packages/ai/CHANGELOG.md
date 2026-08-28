@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Anthropic OAuth requests can now globally reuse explicitly marked stable system-prompt prefixes while API-key and custom-endpoint requests retain their existing cache scope.
+
 ## [1.7.5] - 2026-08-27
 
 ### Fixed
