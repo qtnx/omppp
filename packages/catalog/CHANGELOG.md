@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.7.5] - 2026-08-27
-
-### Fixed
-
-- Restored OpenAI Codex GPT-5.6 Luna, Sol, and Terra context windows to the supported 372K limit instead of advertising an unusable 1M window.
-
 ## [18.0.5] - 2026-08-25
 
 ### Added
@@ -1227,6 +1221,12 @@
 ### Removed
 
 - Removed the runtime enrichment layer: `enrichModelThinking` (and its non-enumerable memo-slot cache), `refreshModelThinking`, `modelOmitsReasoningEffort`, and the `model-thinking` re-exports of generator-only policies. Thinking metadata is resolved exactly once inside `buildModel`; runtime helpers (`getSupportedEfforts`, `clampThinkingLevelForModel`, `requireSupportedEffort`, the effort mappers) are pure field reads.
+
+## [1.7.5] - 2026-08-27
+
+### Fixed
+
+- Restored OpenAI Codex GPT-5.6 Luna, Sol, and Terra context windows to the supported 372K limit instead of advertising an unusable 1M window.
 
 ## [1.7.3] - 2026-08-15
 

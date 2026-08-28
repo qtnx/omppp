@@ -2,16 +2,12 @@
 
 ## [Unreleased]
 
+## [1.7.6] - 2026-08-28
+
 ### Changed
 
 - Anthropic OAuth requests can now globally reuse explicitly marked stable system-prompt prefixes while API-key and custom-endpoint requests retain their existing cache scope.
 - Concurrent Anthropic OAuth requests now share one global-prefix warmup, and warm-to-cold cache transitions log hash-only component reasons without exposing prompt data.
-
-## [1.7.5] - 2026-08-27
-
-### Fixed
-
-- OpenRouter 402s that say the reserved `max_tokens` exceeds remaining credit (`can only afford N`) now retry the same request once with an explicit `maxTokens = N` instead of failing the turn or rotating credentials. Omitting the catalog default is still required so provider routing is not filtered.
 
 ## [18.0.6] - 2026-08-26
 
@@ -1998,5 +1994,11 @@
 ### Removed
 
 - Removed the dead `iterateUntilAbort` helper (superseded by `iterateWithIdleTimeout`); it leaked the upstream iterator when the consumer abandoned mid-yield and had no production call sites.
+
+## [1.7.5] - 2026-08-27
+
+### Fixed
+
+- OpenRouter 402s that say the reserved `max_tokens` exceeds remaining credit (`can only afford N`) now retry the same request once with an explicit `maxTokens = N` instead of failing the turn or rotating credentials. Omitting the catalog default is still required so provider routing is not filtered.
 
 Older entries are archived in [packages/ai/CHANGELOG.md@d77f10258731](https://github.com/can1357/oh-my-pi/blob/d77f10258731b6e6be62e3c5a16301ce9540890e/packages/ai/CHANGELOG.md).

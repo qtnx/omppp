@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.7.6] - 2026-08-28
+
 ### Added
 
 - Added time-budget outcomes and overtime reporting to the stats dashboard.
