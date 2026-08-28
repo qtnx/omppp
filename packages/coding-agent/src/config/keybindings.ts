@@ -138,8 +138,7 @@ export const KEYBINDINGS = {
 	"app.message.followUp": {
 		// Ctrl+Enter is preserved for terminals that deliver it (Kitty/iTerm2/WezTerm/Ghostty).
 		// Windows Terminal cannot distinguish Ctrl+Enter, so Ctrl+Q remains its fallback.
-		// Tab queues only while the agent is running; while idle it keeps normal editor behavior.
-		defaultKeys: ["ctrl+q", "ctrl+enter", "tab"],
+		defaultKeys: ["ctrl+q", "ctrl+enter"],
 		description: "Send follow-up message",
 	},
 	"app.retry": {

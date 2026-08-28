@@ -185,6 +185,26 @@ describe("Editor slash autocomplete acceptance", () => {
 		expect(editor.getText()).toBe("/skills:fix-bug ");
 	});
 
+	it("accepts a slash completion with right-arrow without submitting the draft", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		const submissions: string[] = [];
+		editor.onSubmit = text => {
+			submissions.push(text);
+		};
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([{ name: "skills:fix-bug", description: "Fix a bug" }], "/tmp"),
+		);
+
+		editor.handleInput("/");
+		await untilAutocompleteShown(editor);
+
+		editor.handleInput("\x1b[C");
+
+		expect(editor.getText()).toBe("/skills:fix-bug ");
+		expect(submissions).toEqual([]);
+		expect(editor.isShowingAutocomplete()).toBe(false);
+	});
+
 	it("accepts an absolute path completion with Tab when the line has leading whitespace", async () => {
 		const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "editor-absolute-tab-"));
 		try {
@@ -919,6 +939,21 @@ describe("Editor autocomplete invalidation on destructive edits (issue #4295)", 
 		editor.handleInput("\t");
 		// Tab must NOT insert the stale "start" suggestion; buffer stays as-is.
 		expect(editor.getText()).toBe("/todo ");
+	});
+
+	it("cancels a stale popup and moves the cursor right without applying its selection", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(new TodoSubcommandProvider());
+		await primeAutocomplete(editor);
+
+		editor.handleInput("\x01"); // Ctrl+A: stale popup prefix no longer matches text before cursor.
+		expect(editor.isShowingAutocomplete()).toBe(true);
+
+		editor.handleInput("\x1b[C");
+		editor.handleInput("X");
+
+		expect(editor.getText()).toBe("/Xtodo s");
+		expect(editor.isShowingAutocomplete()).toBe(false);
 	});
 
 	it("does not insert a stale suggestion when Tab follows Ctrl+U", async () => {

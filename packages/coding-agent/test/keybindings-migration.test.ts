@@ -305,15 +305,14 @@ describe("KeybindingsManager.create", () => {
 		expect(manager.getKeys("app.display.reset")).toEqual(["ctrl+l"]);
 	});
 
-	it("defaults the follow-up shortcut to Ctrl+Q, Ctrl+Enter, and Tab (#1903)", async () => {
+	it("defaults the follow-up shortcut to Ctrl+Q and Ctrl+Enter (#1903)", async () => {
 		const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-keybindings-"));
 
 		try {
 			const manager = KeybindingsManager.create(agentDir);
 
-			// All three keys are registered: Ctrl+Q covers Windows Terminal, Ctrl+Enter
-			// covers terminals that preserve the modifier, and Tab queues while running.
-			expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q", "ctrl+enter", "tab"]);
+			// Ctrl+Q covers Windows Terminal while Ctrl+Enter covers terminals that preserve the modifier.
+			expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q", "ctrl+enter"]);
 		} finally {
 			await removeWithRetries(agentDir);
 		}
@@ -326,9 +325,9 @@ describe("KeybindingsManager.create", () => {
 		setKeybindings(manager);
 
 		expect(manager.getKeys("app.plan.toggle")).toEqual(["ctrl+q"]);
-		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+enter", "tab"]);
-		expect(manager.getDisplayString("app.message.followUp")).toBe("Ctrl+Enter/Tab");
-		expect(manager.getEffectiveConfig()["app.message.followUp"]).toEqual(["ctrl+enter", "tab"]);
+		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+enter"]);
+		expect(manager.getDisplayString("app.message.followUp")).toBe("Ctrl+Enter");
+		expect(manager.getEffectiveConfig()["app.message.followUp"]).toBe("ctrl+enter");
 		expect(matchesAppFollowUp(ctrl("q"))).toBe(false);
 		expect(matchesAppFollowUp("\x1b[13;5u")).toBe(true);
 	});
@@ -338,7 +337,7 @@ describe("KeybindingsManager.create", () => {
 			"unknown.action": "ctrl+q",
 		});
 
-		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q", "ctrl+enter", "tab"]);
+		expect(manager.getKeys("app.message.followUp")).toEqual(["ctrl+q", "ctrl+enter"]);
 	});
 
 	it("keeps Ctrl+Q when the user explicitly assigns it to follow-up (#1903)", () => {

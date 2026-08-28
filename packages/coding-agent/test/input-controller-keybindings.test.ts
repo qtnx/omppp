@@ -97,7 +97,10 @@ async function createContext() {
 		refreshAppearance();
 		resetDisplay();
 	});
-	const prompt = vi.fn(async () => {});
+	const promptCalled = Promise.withResolvers<void>();
+	const prompt = vi.fn(async () => {
+		promptCalled.resolve();
+	});
 	const retry = vi.fn(async () => true);
 	const abort = vi.fn(async () => {});
 	const session = {
@@ -243,6 +246,7 @@ async function createContext() {
 		editor,
 		customHandlers,
 		session,
+		waitForPrompt: () => promptCalled.promise,
 		setFocused(target: unknown) {
 			focused = target;
 		},
@@ -277,31 +281,38 @@ async function createContext() {
 }
 
 describe("InputController keybinding setup", () => {
-	it("defaults running-agent submissions to Enter steer and Ctrl+Enter/Tab queue", async () => {
-		expect(KEYBINDINGS["app.message.followUp"].defaultKeys).toEqual(["ctrl+q", "ctrl+enter", "tab"]);
+	it("reserves Tab for editor autocomplete while Ctrl+Enter queues during a running agent", async () => {
+		expect(KEYBINDINGS["app.message.followUp"].defaultKeys).toEqual(["ctrl+q", "ctrl+enter"]);
 
-		const { InputController, ctx, editor, customHandlers, session, setKeybinding, spies } = await createContext();
-		setKeybinding("app.message.followUp", ["ctrl+enter", "tab"]);
+		const { InputController, ctx, editor, customHandlers, session, setKeybinding, spies, waitForPrompt } =
+			await createContext();
+		setKeybinding("app.message.followUp", KEYBINDINGS["app.message.followUp"].defaultKeys);
 		const controller = new InputController(ctx);
 		controller.setupKeyHandlers();
-		controller.setupEditorSubmitHandler();
 		session.isStreaming = true;
-
-		editor.setText("steer now");
-		await editor.onSubmit?.("steer now");
-		expect(spies.prompt).toHaveBeenLastCalledWith("steer now", { streamingBehavior: "steer", images: undefined });
 
 		editor.setText("queue with control");
 		customHandlers.get("ctrl+enter")?.();
-		await Bun.sleep(0);
+		await waitForPrompt();
 		expect(spies.prompt).toHaveBeenLastCalledWith("queue with control", {
 			streamingBehavior: "followUp",
 			images: undefined,
 		});
 
+		expect(customHandlers.has("tab")).toBe(false);
+	});
+
+	it("honors an explicit Tab follow-up binding", async () => {
+		const { InputController, ctx, editor, customHandlers, session, setKeybinding, spies, waitForPrompt } =
+			await createContext();
+		setKeybinding("app.message.followUp", ["tab"]);
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		session.isStreaming = true;
+
 		editor.setText("queue with tab");
 		expect(customHandlers.get("tab")?.()).toBe(true);
-		await Bun.sleep(0);
+		await waitForPrompt();
 		expect(spies.prompt).toHaveBeenLastCalledWith("queue with tab", {
 			streamingBehavior: "followUp",
 			images: undefined,

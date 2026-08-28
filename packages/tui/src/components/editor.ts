@@ -1397,7 +1397,9 @@ export class Editor implements Component, Focusable {
 				this.#applySpellingSuggestion();
 				return;
 			}
-			// Let the autocomplete list handle navigation and selection
+			// Let the autocomplete list handle navigation and selection.
+			// Right-arrow is a fast-select key for regular command/file completion,
+			// but keeps normal cursor movement for spelling assist and stale popups.
 			else if (
 				kb.matchesCanonical(canonical, "tui.select.up") ||
 				kb.matchesCanonical(canonical, "tui.select.down") ||
@@ -1405,9 +1407,10 @@ export class Editor implements Component, Focusable {
 				kb.matchesCanonical(canonical, "tui.select.pageDown") ||
 				kb.matchesCanonical(canonical, "tui.input.submit") ||
 				data === "\n" ||
-				kb.matchesCanonical(canonical, "tui.input.tab")
+				kb.matchesCanonical(canonical, "tui.input.tab") ||
+				(this.#autocompleteState !== "assist" && kb.matchesCanonical(canonical, "tui.editor.cursorRight"))
 			) {
-				// Only pass navigation keys to the list, not Enter/Tab (we handle those directly)
+				// Only pass navigation keys to the list, not Enter/Tab/Right (we handle those directly)
 				if (
 					kb.matchesCanonical(canonical, "tui.select.up") ||
 					kb.matchesCanonical(canonical, "tui.select.down") ||
@@ -1419,19 +1422,20 @@ export class Editor implements Component, Focusable {
 					return;
 				}
 
-				// If Tab was pressed, always apply the selection
-				if (kb.matchesCanonical(canonical, "tui.input.tab")) {
+				const isTab = kb.matchesCanonical(canonical, "tui.input.tab");
+				const isRightFastSelect =
+					this.#autocompleteState !== "assist" && kb.matchesCanonical(canonical, "tui.editor.cursorRight");
+				if (isTab || isRightFastSelect) {
 					const selected = this.#autocompleteList.getSelectedItem();
 					// Check for stale autocomplete state due to buffer edits since last refresh
 					// (destructive keys or paste can outrun the debounced update).
 					const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
 					const currentTextBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
 					if (!this.#autocompletePrefixMatchesCursorText(currentTextBeforeCursor, selected)) {
-						// Autocomplete is stale - silently cancel; Tab has no fallback action here.
 						this.#cancelAutocomplete();
-						return;
-					}
-					if (selected && this.#autocompleteProvider) {
+						// Tab has no fallback action. Right-arrow must retain normal cursor movement.
+						if (isTab) return;
+					} else if (selected && this.#autocompleteProvider) {
 						const shouldChainSlashCommandAutocomplete = this.#isSlashCommandNameAutocompleteSelection();
 						const result = this.#autocompleteProvider.applyCompletion(
 							this.#state.lines,
@@ -1457,8 +1461,10 @@ export class Editor implements Component, Focusable {
 						if (shouldChainSlashCommandAutocomplete && this.#isCompletedSlashCommandAtCursor()) {
 							void this.#tryTriggerAutocomplete();
 						}
+						return;
+					} else if (isTab) {
+						return;
 					}
-					return;
 				}
 
 				// If Enter was pressed on a submitted slash command (not an absolute-path
