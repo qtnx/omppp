@@ -20,12 +20,14 @@
     }
     target = mod != null ? __create(__getProtoOf(mod)) : {};
     const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
-    for (let key of __getOwnPropNames(mod))
-      if (!__hasOwnProp.call(to, key))
-        __defProp(to, key, {
-          get: __accessProp.bind(mod, key),
-          enumerable: true
-        });
+    if (mod && typeof mod === "object" || typeof mod === "function") {
+      for (let key of __getOwnPropNames(mod))
+        if (!__hasOwnProp.call(to, key))
+          __defProp(to, key, {
+            get: __accessProp.bind(mod, key),
+            enumerable: true
+          });
+    }
     if (canCache)
       cache.set(mod, to);
     return to;
@@ -57,7 +59,7 @@
   });
 
   // ../../node_modules/react/cjs/react.development.js
-  var require_react_development = __commonJS((exports, module) => {
+  var require_react_development = __commonJS(function(exports, module) {
     (function() {
       function defineDeprecationWarning(methodName, info) {
         Object.defineProperty(Component.prototype, methodName, {
@@ -880,14 +882,14 @@ See https://react.dev/link/invalid-hook-call for tips about how to debug and fix
   });
 
   // ../../node_modules/react/index.js
-  var require_react = __commonJS((exports, module) => {
+  var require_react = __commonJS(function(exports, module) {
     if (false) {} else {
       module.exports = require_react_development();
     }
   });
 
   // ../../node_modules/react/cjs/react-jsx-runtime.development.js
-  var require_react_jsx_runtime_development = __commonJS((exports) => {
+  var require_react_jsx_runtime_development = __commonJS(function(exports) {
     (function() {
       function getComponentNameFromType(type) {
         if (type == null)
@@ -1105,14 +1107,14 @@ React keys must be passed directly to JSX without using spread:
   });
 
   // ../../node_modules/react/jsx-runtime.js
-  var require_jsx_runtime = __commonJS((exports, module) => {
+  var require_jsx_runtime = __commonJS(function(exports, module) {
     if (false) {} else {
       module.exports = require_react_jsx_runtime_development();
     }
   });
 
   // ../../node_modules/use-sync-external-store/cjs/use-sync-external-store-shim.development.js
-  var require_use_sync_external_store_shim_development = __commonJS((exports) => {
+  var require_use_sync_external_store_shim_development = __commonJS(function(exports) {
     (function() {
       function is(x, y) {
         return x === y && (x !== 0 || 1 / x === 1 / y) || x !== x && y !== y;
@@ -1163,14 +1165,14 @@ React keys must be passed directly to JSX without using spread:
   });
 
   // ../../node_modules/use-sync-external-store/shim/index.js
-  var require_shim = __commonJS((exports, module) => {
+  var require_shim = __commonJS(function(exports, module) {
     if (false) {} else {
       module.exports = require_use_sync_external_store_shim_development();
     }
   });
 
   // ../../node_modules/use-sync-external-store/cjs/use-sync-external-store-shim/with-selector.development.js
-  var require_with_selector_development = __commonJS((exports) => {
+  var require_with_selector_development = __commonJS(function(exports) {
     (function() {
       function is(x, y) {
         return x === y && (x !== 0 || 1 / x === 1 / y) || x !== x && y !== y;
@@ -1229,14 +1231,14 @@ React keys must be passed directly to JSX without using spread:
   });
 
   // ../../node_modules/use-sync-external-store/shim/with-selector.js
-  var require_with_selector = __commonJS((exports, module) => {
+  var require_with_selector = __commonJS(function(exports, module) {
     if (false) {} else {
       module.exports = require_with_selector_development();
     }
   });
 
   // ../../node_modules/react-dom/cjs/react-dom.development.js
-  var require_react_dom_development = __commonJS((exports) => {
+  var require_react_dom_development = __commonJS(function(exports) {
     (function() {
       function noop2() {}
       function testStringCoercion(value) {
@@ -1418,14 +1420,14 @@ See https://react.dev/link/invalid-hook-call for tips about how to debug and fix
   });
 
   // ../../node_modules/react-dom/index.js
-  var require_react_dom = __commonJS((exports, module) => {
+  var require_react_dom = __commonJS(function(exports, module) {
     if (false) {} else {
       module.exports = require_react_dom_development();
     }
   });
 
   // ../../node_modules/scheduler/cjs/scheduler.development.js
-  var require_scheduler_development = __commonJS((exports) => {
+  var require_scheduler_development = __commonJS(function(exports) {
     (function() {
       function performWorkUntilDeadline() {
         needsPaint = false;
@@ -1680,14 +1682,14 @@ See https://react.dev/link/invalid-hook-call for tips about how to debug and fix
   });
 
   // ../../node_modules/scheduler/index.js
-  var require_scheduler = __commonJS((exports, module) => {
+  var require_scheduler = __commonJS(function(exports, module) {
     if (false) {} else {
       module.exports = require_scheduler_development();
     }
   });
 
   // ../../node_modules/react-dom/cjs/react-dom-client.development.js
-  var require_react_dom_client_development = __commonJS((exports) => {
+  var require_react_dom_client_development = __commonJS(function(exports) {
     (function() {
       function findHook(fiber, id2) {
         for (fiber = fiber.memoizedState;fiber !== null && 0 < id2; )
@@ -17252,14 +17254,14 @@ You might need to use a local HTTP server (instead of file://): https://react.de
   });
 
   // ../../node_modules/react-dom/client.js
-  var require_client = __commonJS((exports, module) => {
+  var require_client = __commonJS(function(exports, module) {
     if (false) {} else {
       module.exports = require_react_dom_client_development();
     }
   });
 
   // ../../node_modules/react/cjs/react-jsx-dev-runtime.development.js
-  var require_react_jsx_dev_runtime_development = __commonJS((exports) => {
+  var require_react_jsx_dev_runtime_development = __commonJS(function(exports) {
     (function() {
       function getComponentNameFromType(type) {
         if (type == null)
@@ -17473,7 +17475,7 @@ React keys must be passed directly to JSX without using spread:
   });
 
   // ../../node_modules/react/jsx-dev-runtime.js
-  var require_jsx_dev_runtime = __commonJS((exports, module) => {
+  var require_jsx_dev_runtime = __commonJS(function(exports, module) {
     if (false) {} else {
       module.exports = require_react_jsx_dev_runtime_development();
     }
