@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Anthropic compaction summaries now reuse the active cached conversation prefix while keeping the one-shot summary instruction outside the cache boundary.
+
 ## [18.0.5] - 2026-08-25
 
 ### Fixed

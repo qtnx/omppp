@@ -693,6 +693,13 @@ export interface SummaryOptions {
 	codexCompaction?: CodexCompactionContext;
 	/** Provider-visible tools for remote compaction transports that replay native tool history. */
 	tools?: Tool[];
+	/**
+	 * Exact provider-visible Anthropic prefix from the active turn. A single,
+	 * initial local summary may append its instruction to this context to read
+	 * the live prompt cache; callers omit it for fallback models and all other
+	 * compaction modes.
+	 */
+	liveContext?: Context;
 	/** Optional fetch implementation threaded into remote compaction calls. */
 	fetch?: FetchImpl;
 	/**
@@ -878,11 +885,13 @@ export async function generateSummary(
 	// retry can shrink — the state a cross-provider compaction boundary
 	// (see `prepareCompaction`) puts a long session into. One window is the
 	// common case and costs exactly the one call it always did.
-	const pending: SummaryWindow[] = tokenizer.checkTokenBudget(wholeConversation, budgetTokens).fits
+	const wholeConversationFits = tokenizer.checkTokenBudget(wholeConversation, budgetTokens).fits;
+	const pending: SummaryWindow[] = wholeConversationFits
 		? [{ messages: llmMessages, budgetTokens, text: wholeConversation }]
 		: planSummaryWindows(llmMessages, tokenizer, dialect, budgetTokens).map(messages => ({ messages, budgetTokens }));
 
 	let carriedSummary = previousSummary;
+	let initialSummaryWindow = true;
 	while (pending.length > 0) {
 		const window = pending[0];
 		const text = window.text ?? serializeConversationForSummary(window.messages, dialect);
@@ -890,6 +899,11 @@ export async function generateSummary(
 		// neither an exact count nor the clamp, and the bust path hands back the
 		// exact count the proportional clamp needs as its denominator.
 		const budget = tokenizer.checkTokenBudget(text, window.budgetTokens);
+		const liveContext =
+			initialSummaryWindow && wholeConversationFits && pending.length === 1 && carriedSummary === undefined
+				? options?.liveContext
+				: undefined;
+		initialSummaryWindow = false;
 		try {
 			carriedSummary = await summarizeConversationWindow(
 				budget.fits ? text : clampConversationToBudget(text, window.budgetTokens, budget.tokens),
@@ -900,6 +914,7 @@ export async function generateSummary(
 				signal,
 				customInstructions,
 				options,
+				liveContext,
 			);
 		} catch (error) {
 			// The catalog window can overstate what the provider actually accepts:
@@ -945,6 +960,7 @@ async function summarizeConversationWindow(
 	signal: AbortSignal | undefined,
 	customInstructions: string | undefined,
 	options: SummaryOptions | undefined,
+	liveContext: Context | undefined,
 ): Promise<string> {
 	// Use update prompt if we have a previous summary, otherwise initial prompt
 	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
@@ -955,21 +971,13 @@ async function summarizeConversationWindow(
 		basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
 	}
 
-	// Build the prompt with conversation wrapped in tags
+	// Build the prompt with conversation wrapped in tags.
 	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
 	if (previousSummary) {
 		promptText += `<previous-summary>\n${escapeSummaryBoundaryTags(previousSummary)}\n</previous-summary>\n\n`;
 	}
 	promptText += formatAdditionalContext(options?.extraContext);
 	promptText += basePrompt;
-
-	const summarizationMessages = [
-		{
-			role: "user" as const,
-			content: [{ type: "text" as const, text: promptText }],
-			timestamp: Date.now(),
-		},
-	];
 
 	if (options?.remoteEndpoint) {
 		const endpoint = options.remoteEndpoint;
@@ -987,40 +995,73 @@ async function summarizeConversationWindow(
 		return remote.summary;
 	}
 
-	const response = await instrumentedCompleteSimple(
-		model,
-		{ systemPrompt: [SUMMARIZATION_SYSTEM_PROMPT], messages: summarizationMessages },
-		{
-			maxTokens,
-			signal,
-			apiKey,
-			reasoning: resolveCompactionEffort(model, options?.thinkingLevel),
-			initiatorOverride: options?.initiatorOverride,
-			metadata: options?.metadata,
-			fetch: options?.fetch,
-			sessionId: options?.sessionId,
-			promptCacheKey: options?.promptCacheKey,
-			providerSessionState: options?.providerSessionState,
-			codexCompaction: localCodexCompaction(options),
-		},
-		{
+	const completeSummary = async (context: Context, streamOptions: SimpleStreamOptions): Promise<string> => {
+		const response = await instrumentedCompleteSimple(model, context, streamOptions, {
 			telemetry: options?.telemetry,
 			oneshotKind: "compaction_summary",
 			completeImpl: options?.completeImpl,
 			retry: summaryOneshotRetry(options),
-		},
-	);
+		});
+		if (response.stopReason === "error") {
+			throw createSummarizationError("Summarization failed", response);
+		}
+		return response.content
+			.filter((c): c is { type: "text"; text: string } => c.type === "text")
+			.map(c => c.text)
+			.join("\n");
+	};
 
-	if (response.stopReason === "error") {
-		throw createSummarizationError("Summarization failed", response);
+	const requestOptions: SimpleStreamOptions = {
+		maxTokens,
+		signal,
+		apiKey,
+		reasoning: resolveCompactionEffort(model, options?.thinkingLevel),
+		initiatorOverride: options?.initiatorOverride,
+		metadata: options?.metadata,
+		fetch: options?.fetch,
+		sessionId: options?.sessionId,
+		promptCacheKey: options?.promptCacheKey,
+		providerSessionState: options?.providerSessionState,
+		codexCompaction: localCodexCompaction(options),
+	};
+
+	// Only an initial, single-window Anthropic summary can read the live prefix.
+	// The appended instruction is deliberately transient: cache the preceding
+	// message boundary and retain tools only for prefix identity, never execution.
+	if (liveContext && model.provider === "anthropic" && previousSummary === undefined) {
+		const instruction = {
+			role: "user" as const,
+			content: [{ type: "text" as const, text: `${formatAdditionalContext(options?.extraContext)}${basePrompt}` }],
+			timestamp: Date.now(),
+		};
+		try {
+			return await completeSummary(
+				{ ...liveContext, messages: [...liveContext.messages, instruction] },
+				{ ...requestOptions, toolChoice: "none", anthropicCacheMessageBoundary: "before-final-message" },
+			);
+		} catch (error) {
+			// Only retry the legacy shape for a request-shape rejection. Auth,
+			// rate-limit, transport, and server failures belong to the existing
+			// compaction retry/fallback ladder; replaying them uncached doubles cost.
+			if (signal?.aborted || !(error instanceof AIError.ProviderHttpError) || error.status !== 400) {
+				throw error;
+			}
+		}
 	}
 
-	const textContent = response.content
-		.filter((c): c is { type: "text"; text: string } => c.type === "text")
-		.map(c => c.text)
-		.join("\n");
-
-	return textContent;
+	return completeSummary(
+		{
+			systemPrompt: [SUMMARIZATION_SYSTEM_PROMPT],
+			messages: [
+				{
+					role: "user",
+					content: [{ type: "text", text: promptText }],
+					timestamp: Date.now(),
+				},
+			],
+		},
+		requestOptions,
+	);
 }
 
 // ============================================================================
@@ -1571,6 +1612,7 @@ export async function compact(
 		preferWebsockets: options?.preferWebsockets,
 		codexCompaction: options?.codexCompaction,
 		tools: options?.tools,
+		liveContext: options?.liveContext,
 		fetch: options?.fetch,
 		// Preserve the caller's streaming progress callback through the summaryOptions rebuild.
 		onProgress: options?.onProgress,

@@ -87,6 +87,7 @@ type CaptureAnthropicOptions = {
 	toolChoice?: "auto" | "any" | "none" | { type: "tool"; name: string };
 	thinkingDisplay?: "summarized" | "omitted";
 	sessionId?: string;
+	anthropicCacheMessageBoundary?: "before-final-message";
 	headers?: Record<string, string>;
 };
 
@@ -126,6 +127,7 @@ function streamOptions(options?: CaptureAnthropicOptions) {
 		toolChoice: options?.toolChoice,
 		thinkingDisplay: options?.thinkingDisplay,
 		sessionId: options?.sessionId,
+		anthropicCacheMessageBoundary: options?.anthropicCacheMessageBoundary,
 		headers: options?.headers,
 	};
 }
@@ -770,6 +772,50 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 		const pad = payload.messages?.at(-1);
 		expect(pad?.content).toBe("Continue.");
+	});
+
+	it("keeps the default message breakpoint on the latest eligible message", async () => {
+		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
+			systemPrompt: ["Stable instructions.", "Middle instructions.", "Project footer.", "Repository context."],
+			systemPromptCache: { globalPrefixBlocks: 1 },
+			messages: [
+				{ role: "user", content: "older context", timestamp: 1 },
+				{ role: "assistant", content: [{ type: "text", text: "cached live history" }], timestamp: 2 },
+				{ role: "user", content: "transient summary instruction", timestamp: 3 },
+			],
+		} as Context & { systemPromptCache: { globalPrefixBlocks: number } })) as {
+			messages?: Array<{ content: string | Array<{ cache_control?: unknown }> }>;
+		};
+
+		const messages = payload.messages ?? [];
+		expect(Array.isArray(messages[1]?.content) ? messages[1]?.content[0]?.cache_control : undefined).toBeUndefined();
+		expect(Array.isArray(messages[2]?.content) ? messages[2]?.content[0]?.cache_control : undefined).toEqual({
+			type: "ephemeral",
+			ttl: "1h",
+		});
+	});
+
+	it("places the compaction cache breakpoint before its transient final instruction", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stable instructions.", "Middle instructions.", "Project footer.", "Repository context."],
+				systemPromptCache: { globalPrefixBlocks: 1 },
+				messages: [
+					{ role: "user", content: "older context", timestamp: 1 },
+					{ role: "assistant", content: [{ type: "text", text: "cached live history" }], timestamp: 2 },
+					{ role: "user", content: "transient summary instruction", timestamp: 3 },
+				],
+			} as Context & { systemPromptCache: { globalPrefixBlocks: number } },
+			{ anthropicCacheMessageBoundary: "before-final-message" },
+		)) as { messages?: Array<{ content: string | Array<{ cache_control?: unknown }> }> };
+
+		const messages = payload.messages ?? [];
+		expect(Array.isArray(messages[1]?.content) ? messages[1]?.content[0]?.cache_control : undefined).toEqual({
+			type: "ephemeral",
+			ttl: "1h",
+		});
+		expect(Array.isArray(messages[2]?.content) ? messages[2]?.content[0]?.cache_control : undefined).toBeUndefined();
 	});
 
 	it("adds effort and mid-conversation betas to API-key requests that use those features", async () => {

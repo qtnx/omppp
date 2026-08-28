@@ -603,6 +603,12 @@ export interface StreamOptions {
 	fetch?: FetchImpl;
 	/** Current session working directory for providers that need workspace-scoped discovery. */
 	cwd?: string;
+	/**
+	 * Anthropic-only message cache-boundary policy. `"before-final-message"`
+	 * leaves a transient final message outside prompt-cache writes while retaining
+	 * the latest eligible preceding message as the boundary.
+	 */
+	anthropicCacheMessageBoundary?: "before-final-message";
 
 	/** Cursor exec/MCP tool handlers (cursor-agent only). */
 	execHandlers?: CursorExecHandlers;

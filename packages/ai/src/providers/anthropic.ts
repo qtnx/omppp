@@ -69,12 +69,25 @@ import { createSdkStreamRequestOptions } from "../utils/sdk-stream-timeout";
 import { notifyRawSseEvent } from "../utils/sse-debug";
 import { isForcedToolChoice } from "../utils/tool-choice";
 import {
+	type AnthropicCacheDiagnosticState,
+	type AnthropicCacheDiagnosticTransition,
+	type AnthropicDiagnosticRequest,
+	fingerprintAnthropicRequest,
+	recordAnthropicCacheDiagnostics,
+	sanitizeAnthropicFeatureNames,
+} from "./anthropic-cache-diagnostics";
+import {
 	AnthropicConnectionTimeoutError,
 	type AnthropicFetchOptions,
 	AnthropicMessagesClient,
 	type AnthropicMessagesClientLike,
 	calculateAnthropicRetryDelayMs,
 } from "./anthropic-client";
+import {
+	anthropicPrefixWarmupCoordinator,
+	getAnthropicPrefixWarmupAccountIdentity,
+	getAnthropicPrefixWarmupKey,
+} from "./anthropic-prefix-warmup";
 import {
 	type ToolInputSchema as AnthropicToolInputSchema,
 	type Tool as AnthropicWireTool,
@@ -393,6 +406,7 @@ type AnthropicProviderSessionState = ProviderSessionState & {
 	 * close.
 	 */
 	replayUnsignedThinkingDisabled: boolean;
+	cacheDiagnostics?: AnthropicCacheDiagnosticState;
 };
 
 function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
@@ -404,9 +418,73 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 			state.strictToolsDisabled = false;
 			state.fastModeDisabled = false;
 			state.replayUnsignedThinkingDisabled = false;
+			state.cacheDiagnostics = undefined;
 		},
 	};
 	return state;
+}
+
+function hasVisibleAnthropicContent(message: AssistantMessage): boolean {
+	return message.content.some(
+		block => block.type === "image" || block.type === "toolCall" || (block.type === "text" && /\S/u.test(block.text)),
+	);
+}
+
+function diagnosticRequestFromParams(
+	params: MessageCreateParamsStreaming,
+	featureNames: readonly string[],
+): AnthropicDiagnosticRequest {
+	return {
+		model: params.model,
+		messages: params.messages,
+		system: params.system,
+		tools: params.tools,
+		thinking: params.thinking,
+		contextManagement: params.context_management,
+		outputConfig: params.output_config,
+		featureNames,
+	};
+}
+
+function updateAnthropicCacheDiagnostics(
+	state: AnthropicProviderSessionState | undefined,
+	baseUrl: string,
+	params: MessageCreateParamsStreaming,
+	featureNames: readonly string[],
+	output: AssistantMessage,
+): void {
+	if (!state || !hasVisibleAnthropicContent(output)) return;
+	const usage = {
+		cacheRead: output.usage.cacheRead,
+		cacheWrite: output.usage.cacheWrite,
+		input: output.usage.input,
+	};
+	const request = diagnosticRequestFromParams(params, featureNames);
+	let transition: AnthropicCacheDiagnosticTransition | undefined;
+	if (state.cacheDiagnostics) {
+		transition = recordAnthropicCacheDiagnostics(state.cacheDiagnostics, request, usage, true);
+	} else {
+		state.cacheDiagnostics = { fingerprint: fingerprintAnthropicRequest(request), usage };
+	}
+	if (!transition) return;
+	let endpointHost = "unknown";
+	try {
+		endpointHost = new URL(baseUrl).host;
+	} catch {
+		// Keep malformed custom endpoints out of telemetry rather than logging a
+		// full URL that could contain credentials or query metadata.
+	}
+	logger.debug("anthropic: prompt cache invalidation", {
+		endpointHost,
+		model: params.model,
+		reasonCodes: transition.reasonCodes,
+		...(transition.firstChangedMessageIndex === undefined
+			? {}
+			: { firstChangedMessageIndex: transition.firstChangedMessageIndex }),
+		previousCacheRead: transition.previousCacheRead,
+		currentCacheWrite: transition.currentCacheWrite,
+		currentInput: transition.currentInput,
+	});
 }
 
 /**
@@ -1893,9 +1971,13 @@ const streamAnthropicOnce = (
 			const requestedIsOAuth = options?.isOAuth ?? isAnthropicOAuthToken(apiKey);
 			let client: AnthropicMessagesClientLike;
 			let isOAuthToken = false;
+			let diagnosticFeatureNames: readonly string[] = [];
 
 			if (options?.client) {
 				client = options.client;
+				diagnosticFeatureNames = sanitizeAnthropicFeatureNames(
+					getHeaderCaseInsensitive(mergedCallerHeaders, "anthropic-beta")?.split(","),
+				);
 			} else {
 				const extraBetas = normalizeExtraBetas(options?.betas);
 				const wantsAnthropicPriority = model.provider === "anthropic" && options?.serviceTier === "priority";
@@ -2002,10 +2084,10 @@ const streamAnthropicOnce = (
 					fetch: options?.fetch,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					claudeCodeSessionId: options?.sessionId ?? extractClaudeMetadataSessionId(options?.metadata?.user_id),
-					disableStrictTools,
 				});
 				client = created.client;
 				isOAuthToken = created.isOAuthToken;
+				diagnosticFeatureNames = created.featureNames;
 			}
 			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
@@ -2205,13 +2287,25 @@ const streamAnthropicOnce = (
 					maxRetries: 0,
 					...(perRequestHeaders ? { headers: perRequestHeaders } : {}),
 				};
-				const anthropicRequest: unknown =
-					isOAuthToken && client.beta
-						? client.beta.messages.create({ ...params, stream: true }, requestOptions)
-						: client.messages.create({ ...params, stream: true }, requestOptions);
+				const prefixWarmupKey = isOAuthToken
+					? getAnthropicPrefixWarmupKey(
+							params,
+							baseUrl,
+							getAnthropicPrefixWarmupAccountIdentity(params),
+							diagnosticFeatureNames,
+						)
+					: undefined;
+				const prefixWarmupLease = prefixWarmupKey
+					? await anthropicPrefixWarmupCoordinator.acquire(prefixWarmupKey, requestSignal)
+					: undefined;
+				let prefixWarmupReady = false;
 				let streamedReplayUnsafeContent = false;
 
 				try {
+					const anthropicRequest: unknown =
+						isOAuthToken && client.beta
+							? client.beta.messages.create({ ...params, stream: true }, requestOptions)
+							: client.messages.create({ ...params, stream: true }, requestOptions);
 					let requestTimeout: NodeJS.Timeout | undefined;
 					if (requestTimeoutMs !== undefined) {
 						requestTimeout = setTimeout(
@@ -2230,6 +2324,8 @@ const streamAnthropicOnce = (
 							requestId,
 							recordsRawSseEvents,
 						} = await getAnthropicStreamResponse(anthropicRequest, requestSignal, rawSseObserver));
+						prefixWarmupLease?.markReady();
+						prefixWarmupReady = true;
 					} catch (error) {
 						if (error instanceof AnthropicConnectionTimeoutError && !activeAbortTracker.wasCallerAbort()) {
 							throw firstEventTimeoutAbortError;
@@ -2715,6 +2811,7 @@ const streamAnthropicOnce = (
 					}
 					break;
 				} catch (streamError) {
+					if (!prefixWarmupReady) prefixWarmupLease?.release();
 					const streamFailure = activeAbortTracker.getLocalAbortReason() ?? streamError;
 					if (
 						!disableStrictTools &&
@@ -2857,6 +2954,7 @@ const streamAnthropicOnce = (
 					firstTokenTime = undefined;
 				}
 			}
+			updateAnthropicCacheDiagnostics(providerSessionState, baseUrl, params, diagnosticFeatureNames, output);
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 			if (dropFastMode && model.provider === "anthropic" && options?.serviceTier === "priority") {
@@ -3201,10 +3299,13 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 function createClient(
 	model: Model<"anthropic-messages">,
 	args: AnthropicClientOptionsArgs,
-): { client: AnthropicMessagesClient; isOAuthToken: boolean } {
+): { client: AnthropicMessagesClient; isOAuthToken: boolean; featureNames: readonly string[] } {
 	const { isOAuthToken: oauthToken, ...clientOptions } = buildAnthropicClientOptions({ ...args, model });
 	const client = new AnthropicMessagesClient(clientOptions);
-	return { client, isOAuthToken: oauthToken };
+	const featureNames = sanitizeAnthropicFeatureNames(
+		getHeaderCaseInsensitive(clientOptions.defaultHeaders, "anthropic-beta")?.split(","),
+	);
+	return { client, isOAuthToken: oauthToken, featureNames };
 }
 
 function disableThinkingIfToolChoiceForced(
@@ -3288,7 +3389,11 @@ function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl:
 	return false;
 }
 
-function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?: AnthropicCacheControl): void {
+function applyPromptCaching(
+	params: MessageCreateParamsStreaming,
+	cacheControl?: AnthropicCacheControl,
+	messageBoundary?: "before-final-message",
+): void {
 	if (!cacheControl) return;
 
 	let cacheBreakpointsUsed = countCacheControlBreakpoints(params);
@@ -3324,9 +3429,11 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 		trailingMessage.content === "Continue." &&
 		params.messages[trailingIndex - 1]?.role === "assistant";
 	const messageEnd = hasTrailingAssistantPad ? trailingIndex - 1 : trailingIndex;
+	const latestEligibleMessageIndex = messageBoundary === "before-final-message" ? messageEnd - 1 : messageEnd;
+	if (latestEligibleMessageIndex < 0) return;
 	const messageWindowSize = isCCLayout ? 1 : 2;
-	const start = Math.max(0, messageEnd - messageWindowSize + 1);
-	for (let index = messageEnd; index >= start; index--) {
+	const start = Math.max(0, latestEligibleMessageIndex - messageWindowSize + 1);
+	for (let index = latestEligibleMessageIndex; index >= start; index--) {
 		if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) break;
 		const message = params.messages[index];
 		if (!message) continue;
@@ -3784,7 +3891,7 @@ function buildParams(
 
 	disableThinkingIfToolChoiceForced(params, model);
 	ensureMaxTokensForThinking(params, maxOutputTokens);
-	applyPromptCaching(params, cacheControl);
+	applyPromptCaching(params, cacheControl, options?.anthropicCacheMessageBoundary);
 	enforceCacheControlLimit(params, MAX_CACHE_BREAKPOINTS);
 	normalizeCacheControlTtlOrdering(params);
 

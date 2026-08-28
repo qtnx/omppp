@@ -5,6 +5,7 @@
 ### Changed
 
 - Anthropic OAuth requests can now globally reuse explicitly marked stable system-prompt prefixes while API-key and custom-endpoint requests retain their existing cache scope.
+- Concurrent Anthropic OAuth requests now share one global-prefix warmup, and warm-to-cold cache transitions log hash-only component reasons without exposing prompt data.
 
 ## [1.7.5] - 2026-08-27
 
