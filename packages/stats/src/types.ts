@@ -201,6 +201,34 @@ export interface SubagentRunStats {
 	toolMs: number;
 }
 
+export type TimeBudgetEvent = "activate" | "extend" | "checkpoint" | "overtime" | "deactivate";
+
+export interface TimeBudgetEntryData {
+	event: TimeBudgetEvent;
+	/** Total budget after this event. */
+	budgetMs: number;
+	/** Accumulated active main-session work at this event. */
+	activeMs: number;
+	/** Wall-clock epoch milliseconds when the entry was appended. */
+	at: number;
+}
+
+export interface TimeBudgetEntryStats extends TimeBudgetEntryData {
+	sessionFile: string;
+	entryId: string;
+}
+
+export interface TimeBudgetRunRecord {
+	sessionFile: string;
+	activationEntryId: string;
+	activatedAt: number;
+	budgetMs: number;
+	activeMs: number;
+	overtimeMs: number;
+	completed: boolean;
+	extensionCount: number;
+}
+
 /**
  * One tool call extracted from an assistant message's `toolCall` content
  * blocks. `callsInTurn` records how many calls that assistant turn contained

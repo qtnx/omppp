@@ -7,7 +7,7 @@ import { CHART_THEMES } from "../components/chart-shared";
 import { formatDurationMs, formatInteger, formatMessageCost, formatRelativeTime } from "../data/formatters";
 import { useResource } from "../data/useResource";
 import type { MessageStats, TimeRange } from "../types";
-import { AsyncBoundary, DataTable, MetricCluster, Panel, Skeleton, StatusPill } from "../ui";
+import { AsyncBoundary, DataTable, MetricCluster, Panel, Skeleton, StatusPill, TimeBudgetPanel } from "../ui";
 import { useSystemTheme } from "../useSystemTheme";
 
 export interface OverviewRouteProps {
@@ -233,6 +233,10 @@ export function OverviewRoute({ active, range, refreshTrigger, onRequestClick }:
 					{overview && <AgentTokenShare stats={overview.byAgentType} />}
 				</AsyncBoundary>
 			</Panel>
+
+			<AsyncBoundary loading={overviewLoading} error={overviewError} data={overview}>
+				{overview && <TimeBudgetPanel stats={overview.timeBudgets} />}
+			</AsyncBoundary>
 
 			<div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 				<div className="lg:col-span-2">

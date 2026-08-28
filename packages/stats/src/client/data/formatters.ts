@@ -1,4 +1,5 @@
 import { formatDistanceToNow } from "@oh-my-pi/pi-utils/dates";
+import { formatDuration } from "@oh-my-pi/pi-utils/format";
 import type { MessageStats } from "../types";
 
 export function formatInteger(value: number): string {
@@ -39,6 +40,16 @@ export function formatDurationMs(value: number | null, digits?: number): string 
 	const sec = value / 1000;
 	const d = digits !== undefined ? digits : sec < 1 ? 2 : 1;
 	return `${sec.toFixed(d)}s`;
+}
+
+/**
+ * Format a minutes-to-hours work duration (e.g. `"7m"`, `"1h30m"`). Unlike
+ * {@link formatDurationMs}, which renders request latency in seconds, this is
+ * for human work spans. Non-finite or non-positive input renders as `"0m"`.
+ */
+export function formatWorkDuration(value: number): string {
+	if (!Number.isFinite(value) || value <= 0) return "0m";
+	return formatDuration(value);
 }
 
 export function formatTokensPerSecond(value: number | null): string {

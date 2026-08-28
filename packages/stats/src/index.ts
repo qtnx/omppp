@@ -32,6 +32,7 @@ export type {
 	ModelPerformancePoint,
 	ModelStats,
 	ModelTimeSeriesPoint,
+	TimeBudgetDashboardStats,
 	TimeSeriesPoint,
 	ToolDashboardStats,
 	ToolModelStats,

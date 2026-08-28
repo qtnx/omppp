@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { formatDuration } from "@oh-my-pi/pi-utils";
 import {
 	expandRoleAlias,
 	formatModelString,
@@ -332,6 +333,25 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			// Surface any inline prompt so the dispatcher returns it and the normal
 			// submit flow runs the first loop iteration (recording it as the loop prompt).
 			if (prompt) return { prompt };
+		},
+	},
+	{
+		name: "time-budget",
+		description: "Set an active-work time budget for this session",
+		acpInputHint: "[duration | +duration | off]",
+		inlineHint: "[duration | +duration | off]",
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => {
+			const snapshot = runtime.ctx.session.getTimeBudgetSnapshot?.();
+			if (!snapshot?.active) return "Time budget: off";
+			if (snapshot.overtimeLogged || snapshot.overtimeMs > 0) {
+				return `Time budget: overtime (${formatDuration(snapshot.overtimeMs)} over)`;
+			}
+			return `Time budget: ${formatDuration(snapshot.remainingMs)} remaining`;
+		},
+		handle: async (command, runtime) => {
+			await runtime.output(await runtime.session.handleTimeBudgetCommand(command.args));
+			return commandConsumed();
 		},
 	},
 	{

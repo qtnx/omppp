@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/time-budget` for pausable active-work budgets, five-minute pacing reminders, and status display.
+
 ## [1.7.5] - 2026-08-27
 
 ### Added

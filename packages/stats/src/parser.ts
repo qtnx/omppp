@@ -25,6 +25,8 @@ import type {
 	SubagentRunPhase,
 	SubagentRunStats,
 	SubagentRunStatus,
+	TimeBudgetEntryStats,
+	TimeBudgetEvent,
 	ToolCallStats,
 	ToolResultLink,
 	UserMessageLink,
@@ -108,6 +110,40 @@ function isCustomEntry(entry: SessionEntry): entry is SessionCustomEntry {
 	if (entry.type !== "custom") return false;
 	const customEntry = entry as SessionCustomEntry;
 	return typeof customEntry.id === "string" && customEntry.id.length > 0;
+}
+
+const TIME_BUDGET_CUSTOM_TYPE = "time_budget";
+const TIME_BUDGET_EVENTS: Record<TimeBudgetEvent, true> = {
+	activate: true,
+	extend: true,
+	checkpoint: true,
+	overtime: true,
+	deactivate: true,
+};
+
+function extractTimeBudgetEntry(sessionFile: string, entry: SessionCustomEntry): TimeBudgetEntryStats | null {
+	if (entry.customType !== TIME_BUDGET_CUSTOM_TYPE || !isRecord(entry.data)) return null;
+	const event = entry.data.event;
+	const budgetMs = nonnegativeFinite(entry.data.budgetMs);
+	const activeMs = nonnegativeFinite(entry.data.activeMs);
+	const at = nonnegativeFinite(entry.data.at);
+	if (
+		typeof event !== "string" ||
+		!Object.hasOwn(TIME_BUDGET_EVENTS, event) ||
+		budgetMs === null ||
+		activeMs === null ||
+		at === null
+	) {
+		return null;
+	}
+	return {
+		sessionFile,
+		entryId: entry.id,
+		event: event as TimeBudgetEvent,
+		budgetMs,
+		activeMs,
+		at,
+	};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -584,6 +620,7 @@ export interface ParseSessionResult {
 	toolCalls: ToolCallStats[];
 	toolResults: ToolResultLink[];
 	subagentRuns: SubagentRunStats[];
+	timeBudgetEntries: TimeBudgetEntryStats[];
 	newOffset: number;
 }
 export async function parseSessionFile(sessionPath: string, fromOffset = 0): Promise<ParseSessionResult> {
@@ -601,6 +638,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 				toolCalls: [],
 				toolResults: [],
 				subagentRuns: [],
+				timeBudgetEntries: [],
 				newOffset: fromOffset,
 			};
 		}
@@ -617,6 +655,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 	const toolCalls: ToolCallStats[] = [];
 	const toolResults: ToolResultLink[] = [];
 	const subagentRuns: SubagentRunStats[] = [];
+	const timeBudgetEntries: TimeBudgetEntryStats[] = [];
 	const userByEntryId = new Map<string, UserMessageStats>();
 	const start = Math.max(0, Math.min(fromOffset, bytes.length));
 	const unprocessed = bytes.subarray(start);
@@ -650,6 +689,8 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 			continue;
 		}
 		if (isCustomEntry(entry)) {
+			const timeBudgetEntry = extractTimeBudgetEntry(sessionPath, entry);
+			if (timeBudgetEntry) timeBudgetEntries.push(timeBudgetEntry);
 			const subagentRun = extractSubagentRunStats(sessionPath, entry);
 			if (subagentRun) subagentRuns.push(subagentRun);
 			const delegationReminder = extractDelegationReminderStats(sessionPath, folder, entry, assistantByEntryId);
@@ -696,6 +737,7 @@ export async function parseSessionFile(sessionPath: string, fromOffset = 0): Pro
 		toolCalls,
 		toolResults,
 		subagentRuns,
+		timeBudgetEntries,
 		newOffset: start + read,
 	};
 }

@@ -22,6 +22,7 @@ import {
 	getStatsByModel,
 	getStatsByProvider,
 	getSubagentPerformance,
+	getTimeBudgetStats,
 	getTimeSeries,
 	getToolStats,
 	getToolStatsByModel,
@@ -31,9 +32,11 @@ import {
 	insertMessageStats,
 	insertReminderStats,
 	insertSubagentRuns,
+	insertTimeBudgetEntries,
 	insertToolCalls,
 	insertUserMessageStats,
 	markSessionBackfillsComplete,
+	resetSessionStats,
 	setFileOffset,
 	updateToolResults,
 	updateUserMessageLinks,
@@ -86,13 +89,15 @@ function applyParseResult(sessionFile: string, lastModified: number, result: Par
 	if (result.toolCalls.length > 0) insertToolCalls(result.toolCalls);
 	if (result.toolResults.length > 0) updateToolResults(result.toolResults);
 	if (result.subagentRuns.length > 0) insertSubagentRuns(result.subagentRuns);
+	if (result.timeBudgetEntries.length > 0) insertTimeBudgetEntries(result.timeBudgetEntries);
 	setFileOffset(sessionFile, result.newOffset, lastModified);
 	return (
 		result.stats.length +
 		result.userStats.length +
 		result.reminderStats.length +
 		result.delegationReminderStats.length +
-		result.subagentRuns.length
+		result.subagentRuns.length +
+		result.timeBudgetEntries.length
 	);
 }
 
@@ -292,12 +297,14 @@ async function syncAllSessionsLocked(opts?: SyncOptions): Promise<{ processed: n
 		}
 		const lastModified = fileStats.mtimeMs;
 		const stored = getFileOffset(sessionFile);
-		if (stored && stored.lastModified >= lastModified) {
+		const truncated = stored !== null && stored.offset > fileStats.size;
+		if (truncated) resetSessionStats(sessionFile);
+		if (!truncated && stored && stored.lastModified >= lastModified) {
 			report(sessionFile);
 			return;
 		}
 
-		const fromOffset = stored?.offset ?? 0;
+		const fromOffset = truncated ? 0 : (stored?.offset ?? 0);
 		const result = await parse(sessionFile, fromOffset);
 		const inserted = applyParseResult(sessionFile, lastModified, result);
 		if (inserted > 0) {
@@ -455,12 +462,13 @@ export async function getDashboardStats(range?: string | null): Promise<Dashboar
 		modelPerformanceSeries: getModelPerformanceSeries(modelPerformanceDays, cutoff, modelPerformanceBucketMs),
 		costSeries: getCostTimeSeries(costSeriesDays, cutoff),
 		subagentPerformance: getSubagentPerformance(cutoff ?? undefined),
+		timeBudgets: getTimeBudgetStats(cutoff ?? undefined),
 	};
 }
 
 export async function getOverviewStats(
 	range?: string | null,
-): Promise<Pick<DashboardStats, "overall" | "byAgentType" | "timeSeries">> {
+): Promise<Pick<DashboardStats, "overall" | "byAgentType" | "timeSeries" | "timeBudgets">> {
 	await initDb();
 	const { timeSeriesHours, timeSeriesBucketMs, cutoff } = getTimeRangeConfig(range);
 
@@ -468,6 +476,7 @@ export async function getOverviewStats(
 		overall: getOverallStats(cutoff ?? undefined),
 		byAgentType: getStatsByAgentType(cutoff ?? undefined),
 		timeSeries: getTimeSeries(timeSeriesHours, cutoff, timeSeriesBucketMs),
+		timeBudgets: getTimeBudgetStats(cutoff ?? undefined),
 	};
 }
 
