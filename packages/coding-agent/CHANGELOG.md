@@ -17,6 +17,7 @@
 - Backend service changes now require a minimum completion bar — build, boot with observed readiness, and drive the changed flow — so missing imports or unregistered wiring can no longer pass on green tests alone.
 - Direct fixes are now the explicit fast path: agents fix one-slice work immediately instead of spawning subagents or workflows for it.
 - User-facing UI text now enforces a product register: strings state the user's outcome and next step in plain language instead of narrating internals (sync counters, validation, retries), with engineering vocabulary translated and raw error codes banned.
+- Default OMPx prompts now share their stable prefix through Anthropic's global cache, reducing repeated Claude input charges without globally caching custom prompt replacements.
 
 ### Fixed
 

@@ -1297,8 +1297,14 @@ export interface Tool<TParameters extends TSchema = TSchema> {
 	examples?: readonly ToolExample[];
 }
 
+export interface SystemPromptCache {
+	/** Number of leading system prompt blocks safe to share through provider-wide exact-prefix caching. */
+	globalPrefixBlocks: number;
+}
+
 export interface Context {
 	systemPrompt?: string[];
+	systemPromptCache?: SystemPromptCache;
 	messages: Message[];
 	tools?: Tool[];
 }

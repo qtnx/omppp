@@ -376,6 +376,62 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 	});
 
+	it("uses global scope only on the stable OAuth system prefix", async () => {
+		const request = await captureAnthropicRequest(ANTHROPIC_MODEL, {
+			systemPrompt: ["Stable instructions.", "Middle instructions.", "Project footer.", "Repository context."],
+			systemPromptCache: { globalPrefixBlocks: 1 },
+			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+		} as Context & { systemPromptCache: { globalPrefixBlocks: number } });
+
+		expect(request.body.system?.[0]?.cache_control).toBeUndefined();
+		expect(request.body.system?.[1]?.cache_control).toBeUndefined();
+		expect(request.body.system?.[2]).toMatchObject({
+			text: "Stable instructions.",
+			cache_control: { type: "ephemeral", ttl: "1h", scope: "global" },
+		});
+		expect(request.body.system?.[3]?.cache_control).toBeUndefined();
+		expect(request.body.system?.[4]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+		expect(request.body.system?.[5]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+	});
+
+	it("does not emit global cache scope for API-key Anthropic requests", async () => {
+		const request = await captureAnthropicRequest(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stable instructions."],
+				systemPromptCache: { globalPrefixBlocks: 1 },
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			} as Context & { systemPromptCache: { globalPrefixBlocks: number } },
+			{ apiKey: "sk-ant-api-test", cacheRetention: "long" },
+		);
+
+		expect(cacheControls(request)).toEqual([
+			{ type: "ephemeral", ttl: "1h" },
+			{ type: "ephemeral", ttl: "1h" },
+		]);
+	});
+
+	it("uses the first stable and final two system cache breakpoints when globally scoped", () => {
+		const blocks = buildAnthropicSystemBlocks(
+			["Stable instructions.", "Middle instructions.", "Project footer.", "Repository context."],
+			{
+				includeClaudeCodeInstruction: true,
+				cacheControl: { type: "ephemeral", ttl: "1h" },
+				systemPromptCache: { globalPrefixBlocks: 1 },
+			} as Parameters<typeof buildAnthropicSystemBlocks>[1] & {
+				systemPromptCache: { globalPrefixBlocks: number };
+			},
+		);
+
+		expect(blocks).toHaveLength(6);
+		expect(blocks?.[0]?.cache_control).toBeUndefined();
+		expect(blocks?.[1]?.cache_control).toBeUndefined();
+		expect(blocks?.[2]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h", scope: "global" });
+		expect(blocks?.[3]?.cache_control).toBeUndefined();
+		expect(blocks?.[4]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+		expect(blocks?.[5]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+	});
+
 	it("uses 1h breakpoints for inferred OAuth on the official Anthropic API", async () => {
 		const request = await captureAnthropicRequest(ANTHROPIC_MODEL, {
 			systemPrompt: ["Stay concise."],
