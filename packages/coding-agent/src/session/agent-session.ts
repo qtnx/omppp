@@ -189,6 +189,8 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
 import sandboxRelaunchContinuePrompt from "../prompts/system/sandbox-relaunch-continue.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
+import timeBudgetActivationPrompt from "../prompts/system/time-budget-activation.md" with { type: "text" };
+import timeBudgetCheckpointTemplate from "../prompts/system/time-budget-checkpoint.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import { detectSecretsInText, kindToName } from "../secrets/detect";
 import {
@@ -394,6 +396,13 @@ import {
 } from "./session-tools";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { skillPromptTitleInput } from "./skill-title-input";
+import {
+	formatTimeBudgetSnapshot,
+	parseTimeBudgetCommand,
+	TIME_BUDGET_CUSTOM_TYPE,
+	TimeBudgetController,
+	type TimeBudgetSnapshot,
+} from "./time-budget";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
@@ -570,6 +579,9 @@ export class AgentSession {
 	#unsubscribeCodeMode?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
+	#timeBudget: TimeBudgetController | undefined;
+	#unsubscribeTimeBudgetRunState: (() => void) | undefined;
+	#unsubscribeTimeBudgetSessionChange: (() => void) | undefined;
 	#eventListeners: AgentSessionEventListener[] = [];
 	#runStateListeners = new Set<(state: "running" | "idle") => void>();
 	#commandMetadataChangedListeners: CommandMetadataChangedListener[] = [];
@@ -780,6 +792,41 @@ export class AgentSession {
 	#resetPromptMaintenanceState(): void {
 		this.#recovery.resetForNewPrompt();
 		this.#yieldTerminationPending = false;
+	}
+	async #sendTimeBudgetReminder(
+		kind: "activation" | "checkpoint" | "overtime",
+		snapshot: TimeBudgetSnapshot,
+	): Promise<void> {
+		const phase =
+			kind === "overtime"
+				? "overtime"
+				: snapshot.remainingMs <= snapshot.budgetMs * 0.2
+					? "wrap-up"
+					: snapshot.remainingMs <= snapshot.budgetMs * 0.5
+						? "accelerate"
+						: "steady";
+		const content =
+			kind === "activation"
+				? timeBudgetActivationPrompt
+				: prompt.render(timeBudgetCheckpointTemplate, {
+						elapsed: formatDuration(snapshot.activeMs),
+						remaining: formatDuration(snapshot.remainingMs),
+						overtime: formatDuration(snapshot.overtimeMs),
+						percentUsed: Math.floor((snapshot.activeMs / snapshot.budgetMs) * 100),
+						phase,
+					});
+		await this.sendCustomMessage(
+			{
+				customType: "time-budget-reminder",
+				content,
+				display: false,
+				attribution: "agent",
+			},
+			{
+				deliverAs: this.isStreaming ? "steer" : "nextTurn",
+				triggerTurn: false,
+			},
+		);
 	}
 
 	#acquirePowerAssertion(): void {
@@ -1542,6 +1589,19 @@ export class AgentSession {
 		this.#providerSessionId = config.providerSessionId;
 		this.#inheritedProviderPromptCacheKey =
 			config.providerPromptCacheKeySource === "fork" ? this.agent.promptCacheKey : undefined;
+		if (this.#agentKind === "main") {
+			this.#timeBudget = new TimeBudgetController({
+				appendEntry: data => this.sessionManager.appendCustomEntry(TIME_BUDGET_CUSTOM_TYPE, data),
+				sendReminder: (kind, snapshot) => this.#sendTimeBudgetReminder(kind, snapshot),
+			});
+			this.#timeBudget.restore(this.sessionManager.getEntries());
+			this.#unsubscribeTimeBudgetRunState = this.subscribeRunState(state => this.#timeBudget?.setRunState(state));
+			this.#unsubscribeTimeBudgetSessionChange = this.registerSessionChangeCallback(() => {
+				this.#timeBudget?.restore(this.sessionManager.getEntries());
+				this.#timeBudget?.setRunState(this.isStreaming ? "running" : "idle");
+			});
+			this.#timeBudget.setRunState(this.isStreaming ? "running" : "idle");
+		}
 		// Owner-routed async delivery: completions for jobs this agent owns are
 		// injected into THIS session's run as async-result follow-ups. Without a
 		// registered sink the manager dead-letters owned deliveries, so this
@@ -4302,6 +4362,34 @@ export class AgentSession {
 			}
 		};
 	}
+	getTimeBudgetSnapshot(): TimeBudgetSnapshot | null {
+		return this.#timeBudget?.snapshot() ?? null;
+	}
+
+	async handleTimeBudgetCommand(args: string): Promise<string> {
+		const parsed = parseTimeBudgetCommand(args);
+		if (typeof parsed === "string") return parsed;
+		const controller = this.#timeBudget;
+		if (!controller) return "Time budgets are available only in the main session.";
+		if (parsed.action === "status") {
+			const snapshot = controller.snapshot();
+			return snapshot ? formatTimeBudgetSnapshot(snapshot) : "No time budget is active.";
+		}
+		if (parsed.action === "off") {
+			const snapshot = controller.deactivate();
+			return snapshot ? formatTimeBudgetSnapshot(snapshot) : "No time budget is active.";
+		}
+		try {
+			const snapshot =
+				parsed.action === "activate"
+					? await controller.activate(parsed.durationMs)
+					: await controller.extend(parsed.durationMs);
+			controller.setRunState(this.isStreaming ? "running" : "idle");
+			return formatTimeBudgetSnapshot(snapshot);
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error);
+		}
+	}
 
 	/**
 	 * Observe authoritative run-state transitions before public `agent_end`
@@ -4701,6 +4789,12 @@ export class AgentSession {
 			this.#unsubscribeCodeMode();
 			this.#unsubscribeCodeMode = undefined;
 		}
+		this.#unsubscribeTimeBudgetRunState?.();
+		this.#unsubscribeTimeBudgetRunState = undefined;
+		this.#unsubscribeTimeBudgetSessionChange?.();
+		this.#unsubscribeTimeBudgetSessionChange = undefined;
+		this.#timeBudget?.dispose();
+		this.#timeBudget = undefined;
 		this.#eventListeners = [];
 		this.#runStateListeners.clear();
 		this.#sessionChangeCallbacks.clear();

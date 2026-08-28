@@ -31,6 +31,8 @@ import type {
 	SessionStatsAggregate,
 	SubagentPerformanceStats,
 	SubagentRunStats,
+	TimeBudgetDashboardStats,
+	TimeBudgetEntryStats,
 	TimeSeriesPoint,
 	ToolCallStats,
 	ToolModelStats,
@@ -317,6 +319,20 @@ export async function initDb(): Promise<Database> {
 		CREATE INDEX IF NOT EXISTS idx_subagent_runs_started_at ON subagent_runs(started_at);
 		CREATE INDEX IF NOT EXISTS idx_subagent_runs_agent_started_at ON subagent_runs(agent, started_at);
 
+		CREATE TABLE IF NOT EXISTS time_budget_runs (
+			session_file TEXT NOT NULL,
+			activation_entry_id TEXT NOT NULL,
+			activated_at INTEGER NOT NULL,
+			budget_ms INTEGER NOT NULL,
+			active_ms INTEGER NOT NULL,
+			overtime_ms INTEGER NOT NULL,
+			completed INTEGER NOT NULL,
+			extension_count INTEGER NOT NULL,
+			PRIMARY KEY(session_file, activation_entry_id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_time_budget_runs_activated_at ON time_budget_runs(activated_at);
+
 		CREATE TABLE IF NOT EXISTS meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -593,6 +609,120 @@ export function setFileOffset(sessionFile: string, offset: number, lastModified:
 	stmt.run(sessionFile, offset, lastModified);
 }
 
+/**
+ * Remove all derived rows for a session whose JSONL was truncated or replaced.
+ * The next sync starts at byte zero and rebuilds every metric from source.
+ */
+export function resetSessionStats(sessionFile: string): void {
+	if (!db) return;
+	const reset = db.transaction(() => {
+		for (const table of [
+			"messages",
+			"user_messages",
+			"system_context_reminders",
+			"delegation_reminders",
+			"tool_calls",
+			"subagent_runs",
+			"time_budget_runs",
+		]) {
+			db!.prepare(`DELETE FROM ${table} WHERE session_file = ?`).run(sessionFile);
+		}
+		db!.prepare("DELETE FROM file_offsets WHERE session_file = ?").run(sessionFile);
+	});
+	reset();
+}
+
+interface TimeBudgetRunRow {
+	session_file: string;
+	activation_entry_id: string;
+	activated_at: number;
+	budget_ms: number;
+	active_ms: number;
+	overtime_ms: number;
+	completed: number;
+	extension_count: number;
+}
+
+function timeBudgetOvertime(activeMs: number, budgetMs: number): number {
+	return Math.max(0, activeMs - budgetMs);
+}
+
+/**
+ * Fold ordered time-budget events into one row per activation span.
+ * Events are monotonic by active/budget time, making replay after an offset
+ * write failure idempotent even when the same tail is parsed twice.
+ */
+export function insertTimeBudgetEntries(entries: TimeBudgetEntryStats[]): number {
+	if (!db || entries.length === 0) return 0;
+	const selectExisting = db.prepare(`
+		SELECT session_file, activation_entry_id, activated_at, budget_ms, active_ms,
+			overtime_ms, completed, extension_count
+		FROM time_budget_runs
+		WHERE session_file = ? AND activation_entry_id = ?
+	`);
+	const selectOpen = db.prepare(`
+		SELECT session_file, activation_entry_id, activated_at, budget_ms, active_ms,
+			overtime_ms, completed, extension_count
+		FROM time_budget_runs
+		WHERE session_file = ? AND completed = 0
+		ORDER BY activated_at DESC, activation_entry_id DESC
+		LIMIT 1
+	`);
+	const closeOpen = db.prepare(`
+		UPDATE time_budget_runs
+		SET overtime_ms = MAX(0, active_ms - budget_ms), completed = 1
+		WHERE session_file = ? AND activation_entry_id = ? AND completed = 0
+	`);
+	const insert = db.prepare(`
+		INSERT INTO time_budget_runs (
+			session_file, activation_entry_id, activated_at, budget_ms, active_ms,
+			overtime_ms, completed, extension_count
+		) VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+	`);
+	const update = db.prepare(`
+		UPDATE time_budget_runs
+		SET budget_ms = ?, active_ms = ?, overtime_ms = ?, completed = ?, extension_count = ?
+		WHERE session_file = ? AND activation_entry_id = ? AND completed = 0
+	`);
+	let changed = 0;
+	const fold = db.transaction(() => {
+		for (const entry of entries) {
+			if (entry.event === "activate") {
+				if (selectExisting.get(entry.sessionFile, entry.entryId)) continue;
+				const open = selectOpen.get(entry.sessionFile) as TimeBudgetRunRow | undefined;
+				if (open) changed += closeOpen.run(entry.sessionFile, open.activation_entry_id).changes;
+				changed += insert.run(
+					entry.sessionFile,
+					entry.entryId,
+					entry.at,
+					entry.budgetMs,
+					entry.activeMs,
+					timeBudgetOvertime(entry.activeMs, entry.budgetMs),
+				).changes;
+				continue;
+			}
+
+			const open = selectOpen.get(entry.sessionFile) as TimeBudgetRunRow | undefined;
+			if (!open) continue;
+			const budgetMs = Math.max(open.budget_ms, entry.budgetMs);
+			const activeMs = Math.max(open.active_ms, entry.activeMs);
+			const extensionCount =
+				entry.event === "extend" && budgetMs > open.budget_ms ? open.extension_count + 1 : open.extension_count;
+			const completed = entry.event === "deactivate" ? 1 : 0;
+			changed += update.run(
+				budgetMs,
+				activeMs,
+				timeBudgetOvertime(activeMs, budgetMs),
+				completed,
+				extensionCount,
+				entry.sessionFile,
+				open.activation_entry_id,
+			).changes;
+		}
+	});
+	fold();
+	return changed;
+}
 /**
  * Insert message stats into the database.
  *
@@ -1416,6 +1546,48 @@ export function getMessageCount(): number {
 	const stmt = db.prepare("SELECT COUNT(*) as count FROM messages");
 	const row = stmt.get() as { count: number };
 	return row.count;
+}
+
+interface TimeBudgetStatsRow {
+	total_runs: number;
+	within_budget_runs: number | null;
+	overtime_runs: number | null;
+	open_runs: number | null;
+	average_overtime_ms: number | null;
+}
+
+/**
+ * Get time-budget run totals, excluding open runs from completion metrics.
+ */
+export function getTimeBudgetStats(cutoff?: number | null): TimeBudgetDashboardStats {
+	if (!db) {
+		return {
+			totalRuns: 0,
+			withinBudgetRuns: 0,
+			overtimeRuns: 0,
+			openRuns: 0,
+			averageOvertimeMs: 0,
+		};
+	}
+	const hasCutoff = cutoff !== undefined && cutoff !== null;
+	const stmt = db.prepare(`
+		SELECT
+			COUNT(*) AS total_runs,
+			SUM(CASE WHEN completed = 1 AND overtime_ms = 0 THEN 1 ELSE 0 END) AS within_budget_runs,
+			SUM(CASE WHEN completed = 1 AND overtime_ms > 0 THEN 1 ELSE 0 END) AS overtime_runs,
+			SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END) AS open_runs,
+			AVG(CASE WHEN completed = 1 THEN overtime_ms END) AS average_overtime_ms
+		FROM time_budget_runs
+		${hasCutoff ? "WHERE activated_at >= ?" : ""}
+	`);
+	const row = (hasCutoff ? stmt.get(cutoff) : stmt.get()) as TimeBudgetStatsRow;
+	return {
+		totalRuns: row.total_runs,
+		withinBudgetRuns: row.within_budget_runs ?? 0,
+		overtimeRuns: row.overtime_runs ?? 0,
+		openRuns: row.open_runs ?? 0,
+		averageOvertimeMs: row.average_overtime_ms ?? 0,
+	};
 }
 
 /**

@@ -158,6 +158,17 @@ export interface SubagentPerformanceStats {
 }
 
 /**
+ * Aggregate outcomes for active-work time-budget runs.
+ */
+export interface TimeBudgetDashboardStats {
+	totalRuns: number;
+	withinBudgetRuns: number;
+	overtimeRuns: number;
+	openRuns: number;
+	averageOvertimeMs: number;
+}
+
+/**
  * Overall dashboard stats.
  */
 export interface DashboardStats {
@@ -170,6 +181,7 @@ export interface DashboardStats {
 	modelPerformanceSeries: ModelPerformancePoint[];
 	costSeries: CostTimeSeriesPoint[];
 	subagentPerformance: SubagentPerformanceStats[];
+	timeBudgets: TimeBudgetDashboardStats;
 }
 
 /**

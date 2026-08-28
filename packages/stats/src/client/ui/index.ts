@@ -9,3 +9,4 @@ export * from "./RequestDrawer";
 export * from "./SegmentedControl";
 export * from "./Skeleton";
 export * from "./StatusPill";
+export * from "./TimeBudgetPanel";

@@ -323,53 +323,76 @@ function formatLoopLimit(limit: NonNullable<SegmentContext["loopMode"]>["limit"]
 	return limit ? describeLoopLimitRuntime(limit) : undefined;
 }
 
+function renderTimeBudgetSuffix(ctx: SegmentContext): string | undefined {
+	const snapshot = ctx.session.getTimeBudgetSnapshot?.();
+	if (!snapshot?.active) return undefined;
+
+	const elapsed = formatDuration(snapshot.activeMs);
+	const budget = formatDuration(snapshot.budgetMs);
+	if (snapshot.overtimeLogged || snapshot.overtimeMs > 0) {
+		return theme.fg("error", `⏱ ${elapsed}/${budget} · +${formatDuration(snapshot.overtimeMs)} over`);
+	}
+	const color: ThemeColor = snapshot.remainingMs / snapshot.budgetMs < 0.2 ? "warning" : "customMessageLabel";
+	return theme.fg(color, `⏱ ${elapsed}/${budget} · ${formatDuration(snapshot.remainingMs)} left`);
+}
+
+function renderPrimaryMode(ctx: SegmentContext): RenderedSegment {
+	const pauseSuffix = theme.icon.pause ? ` ${theme.icon.pause}` : " (paused)";
+
+	const plan = ctx.planMode;
+	if (plan && (plan.enabled || plan.paused)) {
+		const label = plan.paused ? `Plan${pauseSuffix}` : "Plan";
+		const content = withIcon(theme.icon.plan, label);
+		const color = plan.paused ? "warning" : "accent";
+		return { content: theme.fg(color, content), visible: true };
+	}
+
+	const prewalk = ctx.prewalk;
+	if (prewalk?.enabled) {
+		const content = withIcon(theme.icon.prewalk, "Prewalk");
+		return { content: theme.fg("accent", content), visible: true };
+	}
+
+	const goal = ctx.goalMode;
+	if (goal && (goal.enabled || goal.paused)) {
+		return renderGoalMode(ctx, goal);
+	}
+
+	const orchestrator = ctx.orchestratorMode;
+	if (orchestrator?.enabled) {
+		const content = withIcon("", "Orchestrator");
+		return { content: theme.fg("customMessageLabel", content), visible: true };
+	}
+
+	const vibe = ctx.vibeMode;
+	if (vibe?.enabled) {
+		const content = withIcon(theme.icon.agents, "Vibe");
+		return { content: theme.fg("accent", content), visible: true };
+	}
+
+	const loop = ctx.loopMode;
+	if (loop) {
+		const icon = loop.state === "paused" ? theme.icon.pause || theme.icon.loop : theme.icon.loop;
+		const color: ThemeColor = loop.state === "paused" ? "warning" : "customMessageLabel";
+		const parts = [withIcon(icon, `Loop ${loop.state}`)];
+		const limit = formatLoopLimit(loop.limit);
+		if (limit) parts.push(limit);
+		return { content: theme.fg(color, parts.join(" ")), visible: true };
+	}
+
+	return { content: "", visible: false };
+}
+
 const modeSegment: StatusLineSegment = {
 	id: "mode",
 	render(ctx) {
-		const pauseSuffix = theme.icon.pause ? ` ${theme.icon.pause}` : " (paused)";
-
-		const plan = ctx.planMode;
-		if (plan && (plan.enabled || plan.paused)) {
-			const label = plan.paused ? `Plan${pauseSuffix}` : "Plan";
-			const content = withIcon(theme.icon.plan, label);
-			const color = plan.paused ? "warning" : "accent";
-			return { content: theme.fg(color, content), visible: true };
-		}
-
-		const prewalk = ctx.prewalk;
-		if (prewalk?.enabled) {
-			const content = withIcon(theme.icon.prewalk, "Prewalk");
-			return { content: theme.fg("accent", content), visible: true };
-		}
-
-		const goal = ctx.goalMode;
-		if (goal && (goal.enabled || goal.paused)) {
-			return renderGoalMode(ctx, goal);
-		}
-
-		const orchestrator = ctx.orchestratorMode;
-		if (orchestrator?.enabled) {
-			const content = withIcon("", "Orchestrator");
-			return { content: theme.fg("customMessageLabel", content), visible: true };
-		}
-
-		const vibe = ctx.vibeMode;
-		if (vibe?.enabled) {
-			const content = withIcon(theme.icon.agents, "Vibe");
-			return { content: theme.fg("accent", content), visible: true };
-		}
-
-		const loop = ctx.loopMode;
-		if (loop) {
-			const icon = loop.state === "paused" ? theme.icon.pause || theme.icon.loop : theme.icon.loop;
-			const color: ThemeColor = loop.state === "paused" ? "warning" : "customMessageLabel";
-			const parts = [withIcon(icon, `Loop ${loop.state}`)];
-			const limit = formatLoopLimit(loop.limit);
-			if (limit) parts.push(limit);
-			return { content: theme.fg(color, parts.join(" ")), visible: true };
-		}
-
-		return { content: "", visible: false };
+		const base = renderPrimaryMode(ctx);
+		const budgetSuffix = renderTimeBudgetSuffix(ctx);
+		if (!budgetSuffix) return base;
+		return {
+			content: base.visible ? `${base.content} ${budgetSuffix}` : budgetSuffix,
+			visible: true,
+		};
 	},
 };
 

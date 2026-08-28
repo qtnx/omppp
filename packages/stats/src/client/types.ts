@@ -19,6 +19,7 @@ import type {
 	ModelPerformancePoint,
 	ModelStats,
 	ModelTimeSeriesPoint,
+	TimeBudgetDashboardStats,
 	TimeSeriesPoint,
 } from "../shared-types";
 
@@ -67,6 +68,7 @@ export interface OverviewStats {
 	overall: AggregatedStats;
 	byAgentType: AgentTypeStats[];
 	timeSeries: TimeSeriesPoint[];
+	timeBudgets: TimeBudgetDashboardStats;
 }
 
 export interface ModelDashboardStats {
