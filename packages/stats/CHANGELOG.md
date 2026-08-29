@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.7.6] - 2026-08-28
-
-### Added
-
-- Added time-budget outcomes and overtime reporting to the stats dashboard.
-
 ## [18.0.4] - 2026-08-24
 
 ### Fixed
@@ -316,6 +310,12 @@
 ### Fixed
 
 - Include subtask session files in usage stats ([#250](https://github.com/can1357/oh-my-pi/issues/250))
+
+## [1.7.6] - 2026-08-28
+
+### Added
+
+- Added time-budget outcomes and overtime reporting to the stats dashboard.
 
 ## [1.6.4] - 2026-07-19
 

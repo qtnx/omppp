@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.7.8] - 2026-08-29
+
 ### Fixed
 
 - Fixed large terminal restores falsely reporting a saturated stdout backlog and terminating interactive sessions.

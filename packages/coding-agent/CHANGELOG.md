@@ -2,9 +2,8 @@
 
 ## [Unreleased]
 
-### Changed
+## [1.7.8] - 2026-08-29
 
-- Long-running Anthropic sessions now keep recalled memory in conversation context instead of the system prompt, allowing later turns to reuse the growing prompt cache.
 ### Added
 
 - Bundled Archify, Hallmark, Humanizer, i-have-adhd, Ponytail, and Stop Slop with system-prompt routing for architecture, design, copywriting, ADHD-friendly output, and minimal implementation planning.
@@ -12,21 +11,14 @@
 - Bundled the MIT Caveman output-compression skill verbatim from upstream (intensity levels lite/full/ultra/wenyan) and autoload it with Ponytail and RTK for `quick_task`, `task`, and `heavy_task` subagents. `/caveman on|off|status` controls session-local Caveman autoload.
 - The bundled i-have-adhd skill now activates proactively on reader signals (ADHD mention, step-by-step requests, lost-track patterns) instead of waiting for an explicit `/i-have-adhd` invocation; it still never infers a diagnosis aloud.
 
+### Changed
+
+- Long-running Anthropic sessions now keep recalled memory in conversation context instead of the system prompt, allowing later turns to reuse the growing prompt cache.
+
 ### Fixed
 
 - Image generation is now available by default with every session model and prefers a connected OpenAI Codex subscription.
 - Advisor safeguard-refusal fallback now defaults to GPT-5.6 Sol, and installation upgrades the legacy GPT-5.5 fallback without replacing custom advisor models.
-
-## [1.7.6] - 2026-08-28
-
-### Added
-
-- Added `/time-budget` for pausable active-work budgets, five-minute pacing reminders, and status display.
-
-### Changed
-
-- Default OMPx prompts now share their stable prefix through Anthropic's global cache, reducing repeated Claude input charges without globally caching custom prompt replacements.
-- Anthropic compaction and parallel agent fan-out now reuse warm prompt prefixes instead of paying duplicate transient cache writes.
 
 ## [18.0.6] - 2026-08-26
 
@@ -1613,6 +1605,17 @@
 ### Fixed
 
 - Fixed Portkey/gateway custom models whose ids start with `@` (e.g. `@modal/GLM-5-2-FP8`) being rewritten to unrelated bundled wire ids (e.g. `glm-5-2`), which caused `400` responses requiring `x-portkey-config` or `x-portkey-provider`.
+
+## [1.7.6] - 2026-08-28
+
+### Added
+
+- Added `/time-budget` for pausable active-work budgets, five-minute pacing reminders, and status display.
+
+### Changed
+
+- Default OMPx prompts now share their stable prefix through Anthropic's global cache, reducing repeated Claude input charges without globally caching custom prompt replacements.
+- Anthropic compaction and parallel agent fan-out now reuse warm prompt prefixes instead of paying duplicate transient cache writes.
 
 ## [1.7.5] - 2026-08-27
 

@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.7.6] - 2026-08-28
-
-### Changed
-
-- Anthropic compaction summaries now reuse the active cached conversation prefix while keeping the one-shot summary instruction outside the cache boundary.
-
 ## [18.0.5] - 2026-08-25
 
 ### Fixed
@@ -1285,6 +1279,12 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.7.6] - 2026-08-28
+
+### Changed
+
+- Anthropic compaction summaries now reuse the active cached conversation prefix while keeping the one-shot summary instruction outside the cache boundary.
 
 ## [1.6.4] - 2026-07-19
 

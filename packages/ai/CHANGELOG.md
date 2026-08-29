@@ -2,16 +2,11 @@
 
 ## [Unreleased]
 
+## [1.7.8] - 2026-08-29
+
 ### Changed
 
 - Anthropic OAuth conversations now automatically advance their prompt cache while reserving the first system block for cross-turn reuse, reducing repeated input-token writes as context grows.
-
-## [1.7.6] - 2026-08-28
-
-### Changed
-
-- Anthropic OAuth requests can now globally reuse explicitly marked stable system-prompt prefixes while API-key and custom-endpoint requests retain their existing cache scope.
-- Concurrent Anthropic OAuth requests now share one global-prefix warmup, and warm-to-cold cache transitions log hash-only component reasons without exposing prompt data.
 
 ## [18.0.6] - 2026-08-26
 
@@ -1998,6 +1993,13 @@
 ### Removed
 
 - Removed the dead `iterateUntilAbort` helper (superseded by `iterateWithIdleTimeout`); it leaked the upstream iterator when the consumer abandoned mid-yield and had no production call sites.
+
+## [1.7.6] - 2026-08-28
+
+### Changed
+
+- Anthropic OAuth requests can now globally reuse explicitly marked stable system-prompt prefixes while API-key and custom-endpoint requests retain their existing cache scope.
+- Concurrent Anthropic OAuth requests now share one global-prefix warmup, and warm-to-cold cache transitions log hash-only component reasons without exposing prompt data.
 
 ## [1.7.5] - 2026-08-27
 
