@@ -251,6 +251,8 @@ export type MessageCreateParams = {
 	messages: MessageParam[];
 	max_tokens: number;
 	system?: string | TextBlockParam[];
+	/** Anthropic automatic prompt-caching breakpoint marker. */
+	cache_control?: CacheControlEphemeral;
 	temperature?: number;
 	top_p?: number;
 	top_k?: number;

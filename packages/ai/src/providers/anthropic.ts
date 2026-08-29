@@ -442,6 +442,7 @@ function diagnosticRequestFromParams(
 		thinking: params.thinking,
 		contextManagement: params.context_management,
 		outputConfig: params.output_config,
+		cacheControl: params.cache_control,
 		featureNames,
 	};
 }
@@ -3393,6 +3394,7 @@ function applyPromptCaching(
 	params: MessageCreateParamsStreaming,
 	cacheControl?: AnthropicCacheControl,
 	messageBoundary?: "before-final-message",
+	useAutomaticConversationCache = false,
 ): void {
 	if (!cacheControl) return;
 
@@ -3417,6 +3419,10 @@ function applyPromptCaching(
 		);
 	}
 	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
+	if (useAutomaticConversationCache && messageBoundary === undefined) {
+		params.cache_control = cloneAnthropicCacheControl(cacheControl);
+		return;
+	}
 
 	// `convertAnthropicMessages` appends this neutral pad after a trailing
 	// assistant because Anthropic rejects assistant-prefill endings. It is absent
@@ -3684,6 +3690,16 @@ function buildParams(
 			? { ...model, compat: { ...model.compat, replayUnsignedThinking: false } }
 			: model;
 	const { cacheControl } = getCacheControl(model, options?.cacheRetention, isOAuthToken, baseUrl);
+	const useAutomaticConversationCache =
+		model.provider === "anthropic" && isOAuthToken && isOfficialAnthropicApiUrl(baseUrl);
+	// Official OAuth requests should always reserve the first caller-supplied
+	// system block as the stable global prefix. Coding-agent normally supplies
+	// this metadata, but prompt overlays and per-turn memory promotion can omit it;
+	// falling back here prevents volatile project context from consuming all three
+	// explicit system breakpoints and invalidating the automatic conversation cache.
+	const systemPromptCache = useAutomaticConversationCache
+		? (context.systemPromptCache ?? { globalPrefixBlocks: 1 })
+		: undefined;
 
 	// Pre-compute system blocks so they occupy the right slot in the serialized body.
 	const shouldInjectClaudeCodeInstruction = isOAuthToken && !model.id.startsWith("claude-3-5-haiku");
@@ -3694,10 +3710,7 @@ function buildParams(
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		firstUserMessageText,
 		cacheControl,
-		systemPromptCache:
-			isOAuthToken && model.provider === "anthropic" && isOfficialAnthropicApiUrl(baseUrl)
-				? context.systemPromptCache
-				: undefined,
+		systemPromptCache,
 	});
 
 	// Pre-compute tools.
@@ -3891,7 +3904,7 @@ function buildParams(
 
 	disableThinkingIfToolChoiceForced(params, model);
 	ensureMaxTokensForThinking(params, maxOutputTokens);
-	applyPromptCaching(params, cacheControl, options?.anthropicCacheMessageBoundary);
+	applyPromptCaching(params, cacheControl, options?.anthropicCacheMessageBoundary, useAutomaticConversationCache);
 	enforceCacheControlLimit(params, MAX_CACHE_BREAKPOINTS);
 	normalizeCacheControlTtlOrdering(params);
 

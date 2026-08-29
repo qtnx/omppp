@@ -134,12 +134,13 @@ export const mnemopiBackend: MemoryBackend = {
 
 	async buildDeveloperInstructions(_agentDir, settings, session): Promise<string | undefined> {
 		const state = getMnemopiSessionState(session);
-		const primary = state?.aliasOf ?? state;
+		const primary = state?.aliasOf;
 		const parts = [STATIC_INSTRUCTIONS];
+		// Subagents cannot run root auto-recall, so inherit the parent's latest
+		// snapshot in their static prompt. Root sessions receive volatile recall as
+		// a hidden conversation message from beforeAgentStartPrompt instead.
 		if (primary?.lastRecallSnippet) parts.push(primary.lastRecallSnippet);
-		const rendered = parts.join("\n\n").trim();
-		if (!rendered) return undefined;
-		return truncateApproxTokens(rendered, settings.get("mnemopi.injectionTokenLimit"));
+		return truncateApproxTokens(parts.join("\n\n").trim(), settings.get("mnemopi.injectionTokenLimit"));
 	},
 
 	async beforeAgentStartPrompt(session, promptText): Promise<string | undefined> {

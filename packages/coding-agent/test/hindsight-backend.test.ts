@@ -404,7 +404,7 @@ describe("hindsightBackend first-turn injection", () => {
 		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(true);
 	});
 
-	it("keeps the <memories> wrapper in buildDeveloperInstructions", async () => {
+	it("keeps volatile recalled memory out of root developer instructions", async () => {
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
 			"hindsight.apiUrl": "http://localhost:8888",
@@ -422,21 +422,20 @@ describe("hindsightBackend first-turn injection", () => {
 		state!.lastRecallSnippet = "<memories>\nremembered fact\n</memories>";
 
 		const prompt = await hindsightBackend.buildDeveloperInstructions("/tmp", settings, session as never);
-		expect(prompt).toContain("<memories>");
-		expect(prompt).toContain("</memories>");
-		expect(prompt).toContain("remembered fact");
+		expect(prompt).toContain("# Memory");
+		expect(prompt).toContain("Use `recall` proactively");
+		expect(prompt).not.toContain("<memories>\n");
+		expect(prompt).not.toContain("remembered fact");
 	});
 
-	it("places the <mental_models> block above the <memories> recall block in developer instructions", async () => {
-		// Stable, curated semantic memory must come first so the LLM's prior is
-		// anchored on it; the volatile per-turn recall block follows. Ordering
-		// is part of the integration's behavioural contract.
+	it("returns mental models before volatile recall from beforeAgentStartPrompt", async () => {
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
 			"hindsight.apiUrl": "http://localhost:8888",
 			"hindsight.mentalModelsEnabled": true,
 		});
 		const session = makeFakeSession({ sessionId: "s-order" });
+		const listSpy = vi.spyOn(HindsightApi.prototype, "listMentalModels").mockResolvedValue({ items: [] } as never);
 		await hindsightBackend.start({
 			session: session as never,
 			settings,
@@ -444,19 +443,30 @@ describe("hindsightBackend first-turn injection", () => {
 			agentDir: "/tmp",
 			taskDepth: 0,
 		});
-		const state = session.getHindsightSessionState();
-		state!.mentalModelsSnippet = "<mental_models>\n# User Preferences\nprefers tabs\n</mental_models>";
-		state!.lastRecallSnippet = "<memories>\nrecalled fact\n</memories>";
+		await session.getHindsightSessionState()?.mentalModelsLoadPromise;
+		const state = session.getHindsightSessionState()!;
+		listSpy.mockResolvedValue({
+			items: [
+				{
+					id: "user-preferences",
+					bank_id: state.bankId,
+					name: "User Preferences",
+					tags: ["project:tmp"],
+					content: "prefers tabs",
+				},
+			],
+		} as never);
+		await reloadMentalModelsForSession(session as never);
+		vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [{ id: "1", text: "recalled fact" }],
+		} as never);
 
-		const prompt = await hindsightBackend.buildDeveloperInstructions("/tmp", settings, session as never);
-		// `<memories>` and `<mental_models>` are mentioned in STATIC_INSTRUCTIONS
-		// bullets too. Match the actual injected block opener (tag + newline)
-		// to disambiguate documentation prose from the injected payloads.
+		const prompt = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "What do I remember?");
 		const mmIdx = prompt!.indexOf("<mental_models>\n");
 		const memIdx = prompt!.indexOf("<memories>\n");
 		expect(mmIdx).toBeGreaterThanOrEqual(0);
-		expect(memIdx).toBeGreaterThanOrEqual(0);
-		expect(mmIdx).toBeLessThan(memIdx);
+		expect(memIdx).toBeGreaterThan(mmIdx);
+		expect(prompt).toContain("recalled fact");
 	});
 
 	it("reloadMentalModelsForSession refreshes the cached snippet and base prompt", async () => {

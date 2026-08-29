@@ -94,6 +94,7 @@ type CaptureAnthropicOptions = {
 type CapturedAnthropicRequest = {
 	body: {
 		system?: Array<{ text?: string; cache_control?: unknown }>;
+		cache_control?: unknown;
 		messages?: Array<{ content?: Array<{ cache_control?: unknown }> | string }>;
 	};
 	headers: Headers;
@@ -441,10 +442,8 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 
 		expect(request.url).toBe("https://api.anthropic.com");
-		expect(cacheControls(request)).toEqual([
-			{ type: "ephemeral", ttl: "1h" },
-			{ type: "ephemeral", ttl: "1h" },
-		]);
+		expect(cacheControls(request)).toEqual([{ type: "ephemeral", ttl: "1h", scope: "global" }]);
+		expect(request.body.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		expect(request.headers.get("anthropic-beta")).not.toContain("extended-cache-ttl-2025-04-11");
 	});
 
@@ -458,6 +457,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		model: Model<"anthropic-messages">;
 		options?: CaptureAnthropicOptions;
 		env?: Record<string, string | undefined>;
+		automaticCache?: { type: "ephemeral"; ttl?: "1h"; scope?: "global" };
 	}> = [
 		{
 			name: "uses short cache markers for inferred API-key authentication",
@@ -500,11 +500,13 @@ describe("Anthropic request fingerprint alignment", () => {
 			name: "honors an explicit short cache retention for official OAuth",
 			model: ANTHROPIC_MODEL,
 			options: { cacheRetention: "short" },
+			automaticCache: { type: "ephemeral", scope: "global" },
 		},
 		{
 			name: "honors PI_CACHE_RETENTION=short for official OAuth",
 			model: ANTHROPIC_MODEL,
 			env: { PI_CACHE_RETENTION: "short" },
+			automaticCache: { type: "ephemeral", scope: "global" },
 		},
 	];
 
@@ -520,7 +522,15 @@ describe("Anthropic request fingerprint alignment", () => {
 				},
 				async () => {
 					const request = await captureAnthropicRequest(testCase.model, cacheContext, testCase.options);
-					expect(cacheControls(request)).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
+					const expectedBlockControls = testCase.automaticCache
+						? [testCase.automaticCache]
+						: [{ type: "ephemeral" }, { type: "ephemeral" }];
+					const expectedTopLevelCache = testCase.automaticCache && {
+						type: testCase.automaticCache.type,
+						...(testCase.automaticCache.ttl === undefined ? {} : { ttl: testCase.automaticCache.ttl }),
+					};
+					expect(cacheControls(request)).toEqual(expectedBlockControls);
+					expect(request.body.cache_control).toEqual(expectedTopLevelCache);
 					expect(request.headers.get("anthropic-beta") ?? "").not.toContain("extended-cache-ttl-2025-04-11");
 				},
 			);
@@ -561,10 +571,8 @@ describe("Anthropic request fingerprint alignment", () => {
 	it("lets a request cacheRetention override PI_CACHE_RETENTION", async () => {
 		await withEnv({ PI_CACHE_RETENTION: "short" }, async () => {
 			const request = await captureAnthropicRequest(ANTHROPIC_MODEL, cacheContext, { cacheRetention: "long" });
-			expect(cacheControls(request)).toEqual([
-				{ type: "ephemeral", ttl: "1h" },
-				{ type: "ephemeral", ttl: "1h" },
-			]);
+			expect(cacheControls(request)).toEqual([{ type: "ephemeral", ttl: "1h", scope: "global" }]);
+			expect(request.body.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		});
 	});
 
@@ -579,15 +587,16 @@ describe("Anthropic request fingerprint alignment", () => {
 			compat: { supportsLongCacheRetention: false },
 		});
 		const request = await captureAnthropicRequest(unsupportedLongModel, cacheContext, { cacheRetention: "long" });
-		expect(cacheControls(request)).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
+		expect(cacheControls(request)).toEqual([{ type: "ephemeral", scope: "global" }]);
+		expect(request.body.cache_control).toEqual({ type: "ephemeral" });
 		expect(request.headers.get("anthropic-beta") ?? "").not.toContain("extended-cache-ttl-2025-04-11");
 	});
-
 	it("never caches OAuth cloak blocks when no caller system prompt exists", async () => {
 		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
 			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
 		})) as {
 			system?: Array<{ text?: string; cache_control?: unknown }>;
+			cache_control?: unknown;
 			messages?: Array<{ content?: Array<{ cache_control?: unknown }> | string }>;
 		};
 
@@ -596,14 +605,12 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.system?.[0]?.cache_control).toBeUndefined();
 		expect(payload.system?.[1]?.text).toBe(claudeCodeSystemInstruction);
 		expect(payload.system?.[1]?.cache_control).toBeUndefined();
+		expect(payload.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		const content = payload.messages?.[0]?.content;
-		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
-			type: "ephemeral",
-			ttl: "1h",
-		});
+		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toBeUndefined();
 	});
 
-	it("uses the remaining OAuth cache slot for the trailing tool result", async () => {
+	it("uses top-level automatic caching instead of a trailing tool-result marker for OAuth", async () => {
 		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
 			systemPrompt: ["Stay concise."],
 			messages: [
@@ -637,10 +644,12 @@ describe("Anthropic request fingerprint alignment", () => {
 			],
 		})) as {
 			system?: Array<{ cache_control?: unknown }>;
+			cache_control?: unknown;
 			messages?: Array<{ content?: Array<{ type?: string; cache_control?: unknown }> | string }>;
 		};
 
-		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h", scope: "global" });
+		expect(payload.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		const messages = payload.messages ?? [];
 		expect(messages[0]?.content).toBe("Use the tool");
 		const assistantContent = messages.at(-2)?.content;
@@ -648,10 +657,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(Array.isArray(assistantContent) ? assistantContent.at(-1)?.cache_control : undefined).toBeUndefined();
 		const lastContent = messages.at(-1)?.content;
 		expect(Array.isArray(lastContent) ? lastContent.at(-1)?.type : undefined).toBe("tool_result");
-		expect(Array.isArray(lastContent) ? lastContent.at(-1)?.cache_control : undefined).toEqual({
-			type: "ephemeral",
-			ttl: "1h",
-		});
+		expect(Array.isArray(lastContent) ? lastContent.at(-1)?.cache_control : undefined).toBeUndefined();
 	});
 
 	it("clamps requested max_tokens to Claude Code's 64k cap when the model ceiling is higher", async () => {
@@ -774,7 +780,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(pad?.content).toBe("Continue.");
 	});
 
-	it("keeps the default message breakpoint on the latest eligible message", async () => {
+	it("uses top-level automatic caching for the latest conversation prefix on OAuth", async () => {
 		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
 			systemPrompt: ["Stable instructions.", "Middle instructions.", "Project footer.", "Repository context."],
 			systemPromptCache: { globalPrefixBlocks: 1 },
@@ -784,14 +790,88 @@ describe("Anthropic request fingerprint alignment", () => {
 				{ role: "user", content: "transient summary instruction", timestamp: 3 },
 			],
 		} as Context & { systemPromptCache: { globalPrefixBlocks: number } })) as {
+			system?: Array<{ cache_control?: unknown }>;
+			cache_control?: unknown;
 			messages?: Array<{ content: string | Array<{ cache_control?: unknown }> }>;
 		};
 
+		expect(
+			payload.system?.flatMap(block => (block.cache_control === undefined ? [] : [block.cache_control])),
+		).toEqual([
+			{ type: "ephemeral", ttl: "1h", scope: "global" },
+			{ type: "ephemeral", ttl: "1h" },
+			{ type: "ephemeral", ttl: "1h" },
+		]);
+		expect(payload.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		const messages = payload.messages ?? [];
 		expect(Array.isArray(messages[1]?.content) ? messages[1]?.content[0]?.cache_control : undefined).toBeUndefined();
-		expect(Array.isArray(messages[2]?.content) ? messages[2]?.content[0]?.cache_control : undefined).toEqual({
+		expect(Array.isArray(messages[2]?.content) ? messages[2]?.content[0]?.cache_control : undefined).toBeUndefined();
+	});
+	it("reserves the first caller system block for automatic OAuth caching without cache metadata", async () => {
+		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
+			systemPrompt: ["Stable instructions.", "Middle instructions.", "Project footer.", "Repository context."],
+			messages: [
+				{ role: "user", content: "older context", timestamp: 1 },
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "cached live history" }],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: ANTHROPIC_MODEL.id,
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 2,
+				},
+				{ role: "user", content: "transient summary instruction", timestamp: 3 },
+			],
+		})) as {
+			system?: Array<{ text?: string; cache_control?: unknown }>;
+			cache_control?: unknown;
+			messages?: Array<{ content: string | Array<{ cache_control?: unknown }> }>;
+		};
+
+		expect(payload.system?.map(block => block.cache_control)).toEqual([
+			undefined,
+			undefined,
+			{ type: "ephemeral", ttl: "1h", scope: "global" },
+			undefined,
+			{ type: "ephemeral", ttl: "1h" },
+			{ type: "ephemeral", ttl: "1h" },
+		]);
+		expect(payload.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+		for (const message of payload.messages ?? []) {
+			const content = message.content;
+			expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toBeUndefined();
+		}
+	});
+
+	it("keeps API-key caching explicit without top-level automatic caching", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stable instructions."],
+				messages: [
+					{ role: "user", content: "older context", timestamp: 1 },
+					{ role: "user", content: "latest context", timestamp: 2 },
+				],
+			},
+			{ isOAuth: false },
+		)) as {
+			cache_control?: unknown;
+			messages?: Array<{ content: string | Array<{ cache_control?: unknown }> }>;
+		};
+
+		expect(payload.cache_control).toBeUndefined();
+		const latestContent = payload.messages?.at(-1)?.content;
+		expect(Array.isArray(latestContent) ? latestContent[0]?.cache_control : undefined).toEqual({
 			type: "ephemeral",
-			ttl: "1h",
 		});
 	});
 
@@ -808,9 +888,13 @@ describe("Anthropic request fingerprint alignment", () => {
 				],
 			} as Context & { systemPromptCache: { globalPrefixBlocks: number } },
 			{ anthropicCacheMessageBoundary: "before-final-message" },
-		)) as { messages?: Array<{ content: string | Array<{ cache_control?: unknown }> }> };
+		)) as {
+			cache_control?: unknown;
+			messages?: Array<{ content: string | Array<{ cache_control?: unknown }> }>;
+		};
 
 		const messages = payload.messages ?? [];
+		expect(payload.cache_control).toBeUndefined();
 		expect(Array.isArray(messages[1]?.content) ? messages[1]?.content[0]?.cache_control : undefined).toEqual({
 			type: "ephemeral",
 			ttl: "1h",
