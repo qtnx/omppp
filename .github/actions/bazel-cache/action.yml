@@ -4,13 +4,12 @@ description: >
    exposes the backend through step outputs before any action condition
    uses it.
 
-   omp-kata jobs use the cluster remote cache. GitHub-hosted jobs use an
-   actions/cache-backed disk cache seeded by the bazel-cache-warm workflow
-   on the same runner image — cross-host action keys never hit, so the disk
-   cache is hosted-only and its key carries a schema version (v1 was
-   poisoned by a kata-produced export that silently missed every action).
+   Cluster jobs use the remote cache. GitHub-hosted jobs use an
+   actions/cache-backed disk cache seeded by earlier builds on the same runner
+   image. The repository cache remains job-local: archiving it once per target
+   duplicates gigabytes until GitHub's 10 GiB quota evicts action caches.
 
-   The v3 key is <config hash>-<source hash>: config covers toolchain and
+   The v4 key is <config hash>-<source hash>: config covers toolchain and
    build settings, source covers crates/** + BUILD.bazel. Restores fall
    back to the config-scoped prefix, then to a bare scope+os+arch prefix:
    the config hash covers Cargo.toml/Cargo.lock, which every release
@@ -62,9 +61,9 @@ runs:
              fi
              remote=true
            fi
-           key="bazel-disk-v3-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-$SOURCE_HASH"
-           prefix="bazel-disk-v3-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-"
-           bare_prefix="bazel-disk-v3-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-"
+           key="bazel-disk-v4-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-$SOURCE_HASH"
+           prefix="bazel-disk-v4-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-"
+           bare_prefix="bazel-disk-v4-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-"
            {
              echo "remote=$remote"
              echo "cache-key=$key"
@@ -77,14 +76,11 @@ runs:
         if: steps.backend.outputs.remote != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-           # Both caches ride one archive: the action cache AND the repository
-           # cache (downloads + extracted repo contents at repo/contents, which
-           # reproducible repo rules reuse across output bases). Without the
-           # repo half, every hosted job re-downloaded and re-extracted the
-           # rust/LLVM/zig toolchains. Save sites must list the same paths.
-           path: |
-              ~/.cache/omp-bazel-disk
-              ~/.cache/omp-bazel-repo
+           # Persist only action outputs. The job-local repository cache still
+           # prevents duplicate downloads within one Bazel invocation, while
+           # excluding it from every target archive keeps all target action
+           # caches inside GitHub's repository-wide quota.
+           path: ~/.cache/omp-bazel-disk
            key: ${{ steps.backend.outputs.cache-key }}
            # Order matters: exact key, same-config prefix, then any archive for
            # this scope+os+arch. The bare fallback is what keeps release version

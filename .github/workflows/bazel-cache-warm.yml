@@ -20,7 +20,7 @@ name: Warm bazel disk cache
 #                             the 10 GB repo cache quota and evicted every
 #                             bazel archive).
 #
-# The v3 key embeds a crates/** source fingerprint, so a native change on
+# The v4 key embeds a crates/** source fingerprint, so a native change on
 # main means an exact miss: the build seeds from a previous generation via
 # the prefix/bare restore keys and the refreshed archive is saved. An exact
 # hit makes every invocation a cache replay and saves nothing.
