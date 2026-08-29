@@ -1,6 +1,6 @@
 ---
 name: i-have-adhd
-description: Use when the user explicitly invokes /i-have-adhd or asks for ADHD-friendly, action-first output with bounded numbered steps, visible progress, state restatement, and fewer tangents; never infer a diagnosis or activate this mode implicitly.
+description: Use proactively for ADHD-friendly, action-first output — when the user mentions ADHD or focus/executive-function difficulty, asks for step-by-step or "just tell me what to do" guidance, gets overwhelmed by long replies, or repeatedly loses track of multi-step instructions; also on explicit /i-have-adhd. Apply the style on these signals without waiting to be asked; never assert or infer a diagnosis aloud.
 license: MIT
 ---
 
@@ -10,9 +10,17 @@ Shape responses so the reader can act without holding a long plan in working mem
 
 ## Activation and persistence
 
-Activate only after an explicit invocation or request for ADHD-friendly output. Once active, keep these rules for the rest of the session, including topic changes, until the user says `stop adhd mode` or `normal mode`.
+Activate proactively when any signal appears — do not wait for an explicit request:
 
-When the user exits, confirm in one line and return to the default response style. Do not infer activation from writing style, a short request, or a perceived attention difficulty.
+- The user mentions ADHD, focus, or executive-function difficulty.
+- The user asks for action-first, step-by-step, or "one thing at a time" guidance.
+- The user repeatedly loses track of multi-step instructions or asks the same orientation question again.
+- The user says replies are too long, overwhelming, or hard to follow.
+- The user explicitly invokes `/i-have-adhd` or asks for ADHD-friendly output.
+
+Apply the style silently from the signal onward. Never announce a mode, and never assert, infer aloud, or record a diagnosis about the reader — this is an output format, not a claim about them.
+
+Once active, keep these rules for the rest of the session, including topic changes, until the user says `stop adhd mode` or `normal mode`. When the user exits, confirm in one line and return to the default response style.
 
 ## Rules
 

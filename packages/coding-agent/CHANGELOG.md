@@ -9,7 +9,8 @@
 
 - Bundled Archify, Hallmark, Humanizer, i-have-adhd, Ponytail, and Stop Slop with system-prompt routing for architecture, design, copywriting, ADHD-friendly output, and minimal implementation planning.
 - Bash commands are now rewritten through an installed [RTK](https://github.com/rtk-ai/rtk) binary when one is available, cutting tool-output tokens without changing the requested command. Controlled by `rtk.enabled` (default on); RTK stays optional and any failure runs the original command.
-- Bundled the MIT Caveman output-compression skill as a normal skill and autoload it with Ponytail and RTK for `quick_task`, `task`, and `heavy_task` subagents. `/caveman on|off|status` controls session-local Caveman autoload; plans stay explicit and detailed while reports stay concise.
+- Bundled the MIT Caveman output-compression skill verbatim from upstream (intensity levels lite/full/ultra/wenyan) and autoload it with Ponytail and RTK for `quick_task`, `task`, and `heavy_task` subagents. `/caveman on|off|status` controls session-local Caveman autoload.
+- The bundled i-have-adhd skill now activates proactively on reader signals (ADHD mention, step-by-step requests, lost-track patterns) instead of waiting for an explicit `/i-have-adhd` invocation; it still never infers a diagnosis aloud.
 
 ### Fixed
 
