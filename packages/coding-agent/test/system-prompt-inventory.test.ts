@@ -950,7 +950,7 @@ describe("system prompt tool inventory", () => {
 		});
 	});
 
-	it("routes bundled presentation and writing skills without inferring ADHD diagnoses", async () => {
+	it("routes bundled presentation and writing skills with proactive ADHD activation", async () => {
 		const { skills } = await loadSkills({ cwd: tempDir });
 		const { systemPrompt } = await buildSystemPrompt({
 			cwd: tempDir,
@@ -974,8 +974,9 @@ describe("system prompt tool inventory", () => {
 
 		expect(missingSkillEntries).toEqual([]);
 		expect(text).toMatch(
-			/(?=[^\n]*Explicit ADHD-friendly output)(?=[^\n]*skill:\/\/i-have-adhd)(?=[^\n]*NEVER infer a diagnosis)[^\n]*/i,
+			/(?=[^\n]*ADHD-friendly output)(?=[^\n]*skill:\/\/i-have-adhd)(?=[^\n]*proactively)(?=[^\n]*NEVER infer a diagnosis)[^\n]*/i,
 		);
+		expect(text).toMatch(/(?=[^\n]*Token-efficiency or brevity)(?=[^\n]*skill:\/\/caveman)[^\n]*/i);
 		expect(text).toMatch(/AI-tell prose cleanup[^\n]*skill:\/\/stop-slop/i);
 		expect(text).toMatch(/Architecture presentation[^\n]*skill:\/\/archify/i);
 		expect(text).toMatch(/Marketing or copywriting[^\n]*skill:\/\/humanizer/i);

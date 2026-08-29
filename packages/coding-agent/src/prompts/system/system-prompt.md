@@ -679,7 +679,8 @@ ENV
 Before starting work, scan `<skills>` and either read every matching `skill://<name>` or state one line: `Skills: <names>` / `Skills: none match`. Silent non-loading is a contract violation.
 Any yield that presents work as finished — regardless of wording — MUST read `skill://verify-before-done` before the claim when that skill is available.
 Skill routing (when matching skills are available):
-- Explicit ADHD-friendly output → MUST read `skill://i-have-adhd`; NEVER infer a diagnosis.
+- ADHD-friendly output → MUST read `skill://i-have-adhd` proactively when the user mentions ADHD or focus difficulty, asks for action-first/step-by-step guidance, or keeps losing track of multi-step replies — not only on explicit `/i-have-adhd`; NEVER infer a diagnosis aloud.
+- Token-efficiency or brevity requests ("less tokens", "be brief", caveman mode) → MUST read `skill://caveman`.
 - AI-tell prose cleanup → MUST read `skill://stop-slop`.
 - Architecture presentation → MUST read `skill://archify`.
 - Marketing or copywriting → MUST read `skill://humanizer`.
