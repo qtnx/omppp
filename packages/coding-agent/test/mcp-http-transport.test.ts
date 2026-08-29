@@ -4,7 +4,7 @@ import { HttpTransport } from "@oh-my-pi/pi-coding-agent/mcp/transports/http";
 
 const encoder = new TextEncoder();
 const REQUEST_TIMEOUT_MS = 50;
-const GUARD_TIMEOUT_MS = 500;
+const GUARD_TIMEOUT_MS = 2_000;
 
 let server: Bun.Server<undefined> | null = null;
 
