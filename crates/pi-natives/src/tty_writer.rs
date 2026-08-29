@@ -35,6 +35,23 @@ use parking_lot::{Condvar, Mutex};
 
 use crate::js;
 
+#[cfg(test)]
+struct AppendPublicationHook {
+	writer:            usize,
+	producer_parked:   std::sync::Barrier,
+	producer_notifies: std::sync::Barrier,
+	pump_parked:       std::sync::Barrier,
+	pump_permitted:    std::sync::Barrier,
+	resume_producer:   std::sync::Barrier,
+}
+
+#[cfg(test)]
+fn append_publication_hook() -> &'static Mutex<Option<Arc<AppendPublicationHook>>> {
+	static HOOK: std::sync::LazyLock<Mutex<Option<Arc<AppendPublicationHook>>>> =
+		std::sync::LazyLock::new(|| Mutex::new(None));
+	&HOOK
+}
+
 struct Inner {
 	/// Bytes accepted from JS but not yet claimed by the pump thread. The
 	/// pump swaps this out wholesale, so enqueue cost is an in-place append
@@ -78,6 +95,15 @@ fn pump_loop(fd: i32, inner: &Inner) {
 					return;
 				}
 				inner.cv.wait(&mut back);
+			}
+			#[cfg(test)]
+			let hook = { append_publication_hook().lock().clone() };
+			#[cfg(test)]
+			if let Some(hook) = hook
+				&& hook.writer == inner as *const Inner as usize
+			{
+				hook.pump_parked.wait();
+				hook.pump_permitted.wait();
 			}
 			std::mem::swap(&mut *back, &mut front);
 		}
@@ -186,11 +212,22 @@ impl TtyWriter {
 	/// Append into the back buffer under its lock, account the added bytes,
 	/// and wake the pump. `fill` returns the byte count it appended.
 	fn append(&self, fill: impl FnOnce(&mut Vec<u8>) -> usize) -> u32 {
-		let added = {
+		{
 			let mut back = self.inner.back.lock();
-			fill(&mut back)
-		};
-		self.inner.pending.fetch_add(added, Ordering::AcqRel);
+			let added = fill(&mut back);
+			self.inner.pending.fetch_add(added, Ordering::AcqRel);
+		}
+		#[cfg(test)]
+		let hook = { append_publication_hook().lock().clone() };
+		#[cfg(test)]
+		if let Some(hook) = hook
+			&& hook.writer == Arc::as_ptr(&self.inner) as usize
+		{
+			hook.producer_parked.wait();
+			hook.producer_notifies.wait();
+			self.inner.cv.notify_all();
+			hook.resume_producer.wait();
+		}
 		self.inner.cv.notify_all();
 		self.pending()
 	}
@@ -359,5 +396,99 @@ mod tests {
 		writer.stop(100);
 		// SAFETY: closing test-owned fd.
 		unsafe { libc::close(write_fd) };
+	}
+
+	#[test]
+	fn pending_accounting_stays_bounded_when_pump_claims_at_publication_boundary() {
+		const INITIAL: &[u8] = b"publication-boundary";
+		const PRODUCERS: usize = 4;
+		const WRITES_PER_PRODUCER: usize = 128;
+		const CHUNK: &[u8] = b"high-frequency-output";
+
+		let (read_fd, write_fd) = pipe_pair();
+		let mut writer = TtyWriter::new(write_fd).unwrap();
+		let hook = Arc::new(AppendPublicationHook {
+			writer:            Arc::as_ptr(&writer.inner) as usize,
+			producer_parked:   std::sync::Barrier::new(2),
+			producer_notifies: std::sync::Barrier::new(2),
+			pump_parked:       std::sync::Barrier::new(2),
+			pump_permitted:    std::sync::Barrier::new(2),
+			resume_producer:   std::sync::Barrier::new(2),
+		});
+		*append_publication_hook().lock() = Some(Arc::clone(&hook));
+
+		let (progressed, observed_pending) = std::thread::scope(|scope| {
+			let producer = scope.spawn(|| push(&writer, INITIAL));
+			hook.producer_parked.wait();
+			let pending_before_pump = writer.inner.pending.load(Ordering::Acquire);
+			hook.producer_notifies.wait();
+			hook.pump_parked.wait();
+			hook.pump_permitted.wait();
+			let deadline = Instant::now() + Duration::from_secs(2);
+			let mut back = writer.inner.back.lock();
+			while writer.inner.pending.load(Ordering::Acquire) == pending_before_pump
+				&& Instant::now() < deadline
+			{
+				writer
+					.inner
+					.cv
+					.wait_for(&mut back, deadline.saturating_duration_since(Instant::now()));
+			}
+			let observed_pending = writer.pending();
+			let progressed = writer.inner.pending.load(Ordering::Acquire) != pending_before_pump;
+			drop(back);
+
+			hook.resume_producer.wait();
+			producer.join().unwrap();
+			(progressed, observed_pending)
+		});
+		*append_publication_hook().lock() = None;
+
+		assert!(progressed, "pump did not complete the forced drain");
+		assert!(
+			observed_pending <= INITIAL.len() as u32,
+			"pending wrapped after a claimed unaccounted append: {observed_pending}"
+		);
+		let pending_before_empty_append = writer.pending();
+		push(&writer, b"");
+		assert_eq!(writer.pending(), pending_before_empty_append);
+
+		let expected = INITIAL.len() + PRODUCERS * WRITES_PER_PRODUCER * CHUNK.len();
+		let reader = std::thread::spawn(move || {
+			let mut buf = [0u8; 4096];
+			let mut total = 0usize;
+			while total < expected {
+				// SAFETY: buf is a valid out-buffer for read(2).
+				let n = unsafe { libc::read(read_fd, buf.as_mut_ptr().cast(), buf.len()) };
+				assert!(n > 0, "pipe closed before all accepted bytes drained");
+				total += n as usize;
+			}
+			total
+		});
+		let submitted = Arc::new(AtomicUsize::new(INITIAL.len()));
+		std::thread::scope(|scope| {
+			let writer_ref = &writer;
+			for _ in 0..PRODUCERS {
+				let submitted = Arc::clone(&submitted);
+				scope.spawn(move || {
+					for _ in 0..WRITES_PER_PRODUCER {
+						submitted.fetch_add(CHUNK.len(), Ordering::AcqRel);
+						push(writer_ref, CHUNK);
+						assert!(
+							writer_ref.pending() <= submitted.load(Ordering::Acquire) as u32,
+							"pending exceeded total accepted bytes"
+						);
+					}
+				});
+			}
+		});
+		assert!(writer.flush_sync(5_000));
+		assert_eq!(writer.pending(), 0);
+		writer.stop(1_000);
+		// SAFETY: closing test-owned write fd after the pump has stopped.
+		unsafe { libc::close(write_fd) };
+		assert_eq!(reader.join().unwrap(), expected);
+		// SAFETY: closing test-owned fd.
+		unsafe { libc::close(read_fd) };
 	}
 }
