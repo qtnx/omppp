@@ -59,22 +59,29 @@ const SDK_TOOL: Tool = {
 	},
 };
 
-const ARCHIVE_PROMPT_SKILL_NAMES = [
+const BUNDLED_PROMPT_SKILL_NAMES = [
+	"archify",
 	"bug-hunting",
+	"code-review-lens",
+	"concurrency-correctness",
+	"caveman",
+	"database-craft",
+	"dependency-doctor",
 	"feature-anatomy",
 	"feature-gym",
-	"refactoring-safely",
-	"migration-upgrade",
-	"database-craft",
-	"security-review",
-	"concurrency-correctness",
-	"dependency-doctor",
-	"writing-tests-that-matter",
-	"verify-before-done",
-	"subagents-development",
-	"code-review-lens",
 	"git-craft",
+	"hallmark",
+	"humanizer",
+	"i-have-adhd",
 	"incident-response",
+	"migration-upgrade",
+	"ponytail",
+	"refactoring-safely",
+	"rtk",
+	"stop-slop",
+	"subagents-development",
+	"verify-before-done",
+	"writing-tests-that-matter",
 ] as const;
 interface MetadataGetterCounts {
 	label: number;
@@ -917,7 +924,7 @@ describe("system prompt tool inventory", () => {
 			skillsBlockStart >= 0
 				? text.slice(skillsBlockStart, skillsBlockEnd >= 0 ? skillsBlockEnd + "</skills>".length : text.length)
 				: "";
-		const missingInSkillsSection = ARCHIVE_PROMPT_SKILL_NAMES.filter(name => !skillsSection.includes(`- ${name}:`));
+		const missingInSkillsSection = BUNDLED_PROMPT_SKILL_NAMES.filter(name => !skillsSection.includes(`- ${name}:`));
 		const activationContracts = {
 			requiresReadingBeforeActing:
 				/(?:MUST|REQUIRED|must|required)[\s\S]{0,260}(?:read|load|invoke|use)[\s\S]{0,180}(?:matching|relevant|listed|applicable)[\s\S]{0,140}skills?[\s\S]{0,260}(?:before|prior to)[\s\S]{0,180}(?:act|acting|work|respond|answer|implement)|(?:before|prior to)[\s\S]{0,180}(?:act|acting|work|respond|answer|implement)[\s\S]{0,260}(?:MUST|REQUIRED|must|required)[\s\S]{0,260}(?:read|load|invoke|use)[\s\S]{0,180}(?:matching|relevant|listed|applicable)[\s\S]{0,140}skills?/i.test(
@@ -941,6 +948,41 @@ describe("system prompt tool inventory", () => {
 				requiresApplyingMatchingSkills: true,
 			},
 		});
+	});
+
+	it("routes bundled presentation and writing skills without inferring ADHD diagnoses", async () => {
+		const { skills } = await loadSkills({ cwd: tempDir });
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills,
+			rules: [],
+			toolNames: ["read"],
+			tools: TOOLS,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+		});
+		const text = systemPrompt.join("\n\n");
+		const skillsBlockStart = text.indexOf("<skills>");
+		const skillsBlockEnd = skillsBlockStart >= 0 ? text.indexOf("</skills>", skillsBlockStart) : -1;
+		const skillsSection =
+			skillsBlockStart >= 0
+				? text.slice(skillsBlockStart, skillsBlockEnd >= 0 ? skillsBlockEnd + "</skills>".length : text.length)
+				: "";
+		const missingSkillEntries = ["archify", "hallmark", "humanizer", "i-have-adhd", "ponytail", "stop-slop"].filter(
+			name => !skillsSection.includes(`- ${name}:`),
+		);
+
+		expect(missingSkillEntries).toEqual([]);
+		expect(text).toMatch(
+			/(?=[^\n]*Explicit ADHD-friendly output)(?=[^\n]*skill:\/\/i-have-adhd)(?=[^\n]*NEVER infer a diagnosis)[^\n]*/i,
+		);
+		expect(text).toMatch(/AI-tell prose cleanup[^\n]*skill:\/\/stop-slop/i);
+		expect(text).toMatch(/Architecture presentation[^\n]*skill:\/\/archify/i);
+		expect(text).toMatch(/Marketing or copywriting[^\n]*skill:\/\/humanizer/i);
+		expect(text).toMatch(/Design\/UI[^\n]*skill:\/\/hallmark/i);
+		expect(text).toMatch(
+			/(?=[^\n]*implementation-plan design)(?=[^\n]*code-writing by the main agent or a subagent)(?=[^\n]*skill:\/\/ponytail)[^\n]*/i,
+		);
 	});
 
 	it("requires verify-before-done in independent QA gates when bundled skills and QA tooling are available", async () => {

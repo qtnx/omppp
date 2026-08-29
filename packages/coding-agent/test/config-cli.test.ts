@@ -67,6 +67,42 @@ afterEach(async () => {
 });
 
 describe("config CLI schema coverage", () => {
+	const executionCompressionSettings: string[] = ["rtk.enabled", "caveman.enabled"];
+
+	it.each(executionCompressionSettings)(
+		"reports %s as a default-on boolean and persists an explicit false override",
+		async (key: string) => {
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			await runConfigCommand({ action: "get", key, flags: { json: true } });
+			const defaultPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0])) as {
+				key: string;
+				value: unknown;
+				type: string;
+			};
+			// `get --json` also echoes the schema description; only key/value/type
+			// are the contract this test defends.
+			expect({ key: defaultPayload.key, value: defaultPayload.value, type: defaultPayload.type }).toEqual({
+				key,
+				value: true,
+				type: "boolean",
+			});
+
+			await runConfigCommand({ action: "set", key, value: "false", flags: { json: true } });
+			await runConfigCommand({ action: "get", key, flags: { json: true } });
+			const overridePayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0])) as {
+				key: string;
+				value: unknown;
+				type: string;
+			};
+			expect({ key: overridePayload.key, value: overridePayload.value, type: overridePayload.type }).toEqual({
+				key,
+				value: false,
+				type: "boolean",
+			});
+		},
+	);
+
 	it("renders record settings as JSON and with record type in text output", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 

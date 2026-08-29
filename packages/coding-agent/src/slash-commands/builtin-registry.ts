@@ -297,6 +297,44 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "caveman",
+		description: "Control Caveman autoload for implementer subagents",
+		acpInputHint: "[on|off|status]",
+		subcommands: [
+			{ name: "on", description: "Enable Caveman autoload for implementer subagents" },
+			{ name: "off", description: "Disable Caveman autoload for implementer subagents" },
+			{ name: "status", description: "Show Caveman autoload status" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime =>
+			`Caveman autoload: ${runtime.ctx.session.settings.get("caveman.enabled") ? "on" : "off"}`,
+		handle: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (!arg || arg === "status") {
+				const enabled = runtime.settings.get("caveman.enabled");
+				const status = `Caveman autoload is ${enabled ? "on" : "off"} for implementer subagents.`;
+				await runtime.output(enabled ? status : [status, "Explicit /skill:caveman remains available."].join("\n"));
+				return commandConsumed();
+			}
+			if (arg === "on") {
+				runtime.settings.override("caveman.enabled", true);
+				await runtime.output("Caveman autoload is on for implementer subagents.");
+				return commandConsumed();
+			}
+			if (arg === "off") {
+				runtime.settings.override("caveman.enabled", false);
+				await runtime.output(
+					[
+						"Caveman autoload is off for implementer subagents.",
+						"Explicit /skill:caveman remains available.",
+					].join("\n"),
+				);
+				return commandConsumed();
+			}
+			return usage("Usage: /caveman [on|off|status]", runtime);
+		},
+	},
+	{
 		name: "herdr-notify",
 		description: "Receive notifications when other Herdr agents finish (off by default)",
 		acpInputHint: "[on|off|status]",

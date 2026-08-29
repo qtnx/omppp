@@ -52,6 +52,16 @@ describe("bundled task agents", () => {
 		expect(quick?.reviewGate).toEqual({ enabled: false });
 	});
 
+	test("autoloads Caveman, Ponytail, and RTK for implementers only", () => {
+		const implementerNames = ["quick_task", "task", "heavy_task"] as const;
+
+		for (const name of implementerNames) {
+			expect(getBundledAgent(name)?.autoloadSkills).toEqual(["caveman", "ponytail", "rtk"]);
+		}
+
+		expect(getBundledAgent("explore")?.autoloadSkills).toBeUndefined();
+	});
+
 	test("keeps the explore scout narrow, fast, and read-only", () => {
 		const explore = getBundledAgent("explore");
 

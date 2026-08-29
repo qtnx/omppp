@@ -459,6 +459,31 @@ describe("ACP builtin slash commands", () => {
 		]);
 	});
 
+	it("toggles Caveman autoload for this runtime without persisting the setting", async () => {
+		const { output, runtime } = createRuntime();
+		const statusOn = "Caveman autoload is on for implementer subagents.";
+		const statusOff = "Caveman autoload is off for implementer subagents.";
+		const explicitSkill = "Explicit /skill:caveman remains available.";
+
+		expect(await executeAcpBuiltinSlashCommand("/caveman", runtime)).toEqual({ consumed: true });
+		expect(output).toEqual([statusOn]);
+
+		expect(await executeAcpBuiltinSlashCommand("/caveman off", runtime)).toEqual({ consumed: true });
+		expect(runtime.settings.get("caveman.enabled")).toBe(false);
+		expect(output.at(-1)).toBe([statusOff, explicitSkill].join("\n"));
+
+		expect(await executeAcpBuiltinSlashCommand("/caveman status", runtime)).toEqual({ consumed: true });
+		expect(output.at(-1)).toBe([statusOff, explicitSkill].join("\n"));
+
+		expect(await executeAcpBuiltinSlashCommand("/caveman on", runtime)).toEqual({ consumed: true });
+		expect(runtime.settings.get("caveman.enabled")).toBe(true);
+		expect(output.at(-1)).toBe(statusOn);
+
+		expect(await executeAcpBuiltinSlashCommand("/caveman nope", runtime)).toEqual({ consumed: true });
+		expect(output.at(-1)).toBe("Usage: /caveman [on|off|status]");
+		expect(Settings.isolated().get("caveman.enabled")).toBe(true);
+	});
+
 	it("forces a tool and returns remaining prompt text", async () => {
 		const { output, runtime } = createRuntime();
 

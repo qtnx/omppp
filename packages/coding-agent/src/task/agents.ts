@@ -40,6 +40,7 @@ interface AgentFrontmatter {
 	thinkingLevel?: string;
 	blocking?: boolean;
 	resourceProfile?: "minimal";
+	autoloadSkills?: string[];
 	reviewGate?: AgentReviewGatePolicy;
 	prewalk?: boolean | string;
 	advisor?: boolean | string;
@@ -83,6 +84,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			// Rate-limit-aware routing prefers Fable, falls back to GPT-5.5, then session roles.
 			model: ["anthropic/claude-fable-5:low", "openai-codex/gpt-5.5:high", "pi/task", "pi/slow"],
 			thinkingLevel: Effort.High,
+			autoloadSkills: ["caveman", "ponytail", "rtk"],
 			reviewGate: {
 				enabled: true,
 				reviewerAgent: "reviewer",
@@ -104,6 +106,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			spawns: "*",
 			model: "@task",
 			thinkingLevel: AUTO_THINKING,
+			autoloadSkills: ["caveman", "ponytail", "rtk"],
 			reviewGate: {
 				enabled: true,
 				reviewerAgent: "reviewer",
@@ -125,6 +128,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 				"Fast implementer for light mechanical work; optimized for speed and parallel execution; review opt-in via self_review",
 			model: "pi/smol",
 			thinkingLevel: Effort.Minimal,
+			autoloadSkills: ["caveman", "ponytail", "rtk"],
 			reviewGate: {
 				enabled: false,
 			},

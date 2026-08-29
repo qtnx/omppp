@@ -57,6 +57,7 @@ import {
 	previewWindowRows,
 	replaceTabs,
 } from "./render-utils";
+import { rewriteCommandWithRtk } from "./rtk-rewrite";
 import { extractLeadingCdTarget, tokenizeShellSegments } from "./shell-tokenize";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -988,6 +989,13 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			},
 		};
 		command = await expandInternalUrls(command, { ...internalUrlOptions, ensureLocalParentDirs: true });
+		// RTK compression runs on the fully expanded command, after interception
+		// and internal-URL resolution, so it rewrites exactly what the shell will
+		// run. It is transparent: the recorded tool args stay as the model wrote
+		// them, and any RTK failure returns the original command.
+		if (this.session.settings.get("rtk.enabled")) {
+			command = await rewriteCommandWithRtk(command, { signal });
+		}
 		const resolvedEnv = env
 			? Object.fromEntries(
 					await Promise.all(

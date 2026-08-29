@@ -3335,6 +3335,16 @@ export const SETTINGS_SCHEMA = {
 
 	"branchSummary.reserveTokens": { type: "number", default: 16384 },
 
+	"caveman.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Agent",
+			label: "Caveman Execution Compression",
+			description: "Automatically load the bundled Caveman skill for implementer subagents",
+		},
+	},
 	// Live learning (separate from memory backends): learns only from explicit
 	// user complain/reminder/guideline messages after each completed turn.
 	"learning.enabled": {
@@ -4465,6 +4475,16 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"rtk.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "shell",
+			group: "Bash",
+			label: "RTK Command Compression",
+			description: "Rewrite supported Bash commands through an installed RTK binary to reduce tool-output tokens",
+		},
+	},
 	// Bash interceptor
 	"bashInterceptor.enabled": {
 		type: "boolean",
