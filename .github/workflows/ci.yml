@@ -171,9 +171,13 @@ jobs:
            id: compute
            shell: bash
            run: |
-              source_hash=$(find crates Cargo.toml Cargo.lock rust-toolchain.toml \
+              source_hash=$(find crates bazel \
+                      Cargo.toml Cargo.lock rust-toolchain.toml \
+                      BUILD.bazel MODULE.bazel MODULE.bazel.lock \
+                      .bazelrc .bazelignore .bazelversion \
                       packages/natives/scripts packages/natives/package.json \
-                      scripts/bazel-natives.ts scripts/host-detect.ts \
+                      .github/actions/bazel-cache .github/actions/build-native \
+                      scripts/bazel-natives.ts scripts/ci-build-native.ts scripts/host-detect.ts \
                       -type f -print0 \
                     | sort -z \
                     | xargs -0 sha256sum \

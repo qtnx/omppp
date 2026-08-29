@@ -50,8 +50,8 @@ inputs:
       default: "false"
    save_cache:
       description: >
-         Whether to write build caches: Swatinem/rust-cache on GitHub-hosted
-         runners, the RustFS target/ snapshot on omp-kata.
+         Whether this trusted main build may write reusable Bazel disk and Rust
+         target caches. Release/tag builds restore caches but remain read-only.
       required: false
       default: "false"
 
@@ -391,12 +391,10 @@ runs:
            if [ "$(ulimit -Sn)" != unlimited ] && [ "$(ulimit -Sn)" -lt 65536 ]; then ulimit -Sn 65536 || true; fi
            bun run ci:build:native
       - name: Save bazel disk cache
-        if: steps.bazel-cache.outputs.save-needed == 'true'
+        if: inputs.save_cache == 'true' && steps.bazel-cache.outputs.save-needed == 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-           path: |
-              ~/.cache/omp-bazel-disk
-              ~/.cache/omp-bazel-repo
+           path: ~/.cache/omp-bazel-disk
            key: ${{ steps.bazel-cache.outputs.cache-key }}
       - name: sccache stats
         if: steps.cargo.outputs.needed == 'true'
