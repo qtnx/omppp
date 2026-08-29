@@ -7,7 +7,7 @@
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/image-gen.md`
 - Session injection: `packages/coding-agent/src/sdk.ts` (`getImageGenTools()`)
 
-The custom tool is registered only when `generate_image.enabled=true` (default `false`) and the session's explicit tool filter, if any, requests `generate_image`.
+The custom tool is enabled by default for every session model, including Anthropic Opus. It uses a connected OpenAI Codex subscription first unless `providers.imageOrder` or the per-request `provider` selects another backend. Setting `generate_image.enabled=false` disables it, and an explicit session tool filter must include `generate_image`.
 
 ## Inputs
 
@@ -34,8 +34,8 @@ The custom tool is registered only when `generate_image.enabled=true` (default `
 - Provider responses with no image data return `imageCount: 0`, empty `imagePaths` / `images`, and any provider text/feedback available.
 
 ## Flow
-1. The SDK injects `generate_image` as a custom tool via `getImageGenTools()` only when the feature gate and tool filter allow it.
-2. Provider order is: concrete per-request `provider`, entries in `providers.imageOrder`, the active session model's corresponding image provider, then the built-in order `openai`, `openai-codex`, `antigravity`, `xai`, `openrouter`, `gemini`; duplicates are removed. `provider: "auto"` does not add a provider.
+1. The SDK injects `generate_image` as a custom tool via `getImageGenTools()` when the feature gate and tool filter allow it.
+2. Provider order is: concrete per-request `provider`; entries in `providers.imageOrder`; a connected OpenAI Codex subscription; the active session model's corresponding image provider; then the built-in fallback order. Duplicates are removed. `provider: "auto"` does not add a provider.
 3. The tool skips providers without usable credentials. Credentialed provider HTTP failures are collected and the next provider is tried; validation, parsing, local I/O, cancellation, and timeout failures are not fallback conditions.
 4. Input images are resolved once, after the first usable provider is found. A `path` is resolved relative to session cwd and content-sniffed. Inline `data` may be raw base64 (requiring `mime_type`) or a `data:<mime>;base64,...` URL.
 5. Provider-specific aspect-ratio support is checked after provider selection.
