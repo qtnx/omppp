@@ -7,7 +7,9 @@ import { registerProvider } from "../capability";
 import { type Skill, type SkillFrontmatter, skillCapability } from "../capability/skill";
 import type { LoadResult, SourceMeta } from "../capability/types";
 import apiDesign from "./bundled-skills/api-design.md" with { type: "text" };
+import archify from "./bundled-skills/archify.md" with { type: "text" };
 import bugHunting from "./bundled-skills/bug-hunting.md" with { type: "text" };
+import caveman from "./bundled-skills/caveman.md" with { type: "text" };
 import codeReviewLens from "./bundled-skills/code-review-lens.md" with { type: "text" };
 import codebaseRecon from "./bundled-skills/codebase-recon.md" with { type: "text" };
 import competitiveRecon from "./bundled-skills/competitive-recon.md" with { type: "text" };
@@ -20,10 +22,14 @@ import frontendAccessibility from "./bundled-skills/frontend-accessibility.md" w
 import frontendDesign from "./bundled-skills/frontend-design.md" with { type: "text" };
 import frontendUiCopy from "./bundled-skills/frontend-ui-copy.md" with { type: "text" };
 import gitCraft from "./bundled-skills/git-craft.md" with { type: "text" };
+import hallmark from "./bundled-skills/hallmark.md" with { type: "text" };
+import humanizer from "./bundled-skills/humanizer.md" with { type: "text" };
+import iHaveAdhd from "./bundled-skills/i-have-adhd.md" with { type: "text" };
 import incidentResponse from "./bundled-skills/incident-response.md" with { type: "text" };
 import migrationUpgrade from "./bundled-skills/migration-upgrade.md" with { type: "text" };
 import observabilityInstrumentation from "./bundled-skills/observability-instrumentation.md" with { type: "text" };
 import parallelFanout from "./bundled-skills/parallel-fanout.md" with { type: "text" };
+import ponytail from "./bundled-skills/ponytail.md" with { type: "text" };
 import previewTemplates from "./bundled-skills/preview-templates.md" with { type: "text" };
 import productArchitecture from "./bundled-skills/product-architecture.md" with { type: "text" };
 import productDesign from "./bundled-skills/product-design.md" with { type: "text" };
@@ -32,7 +38,9 @@ import productIdeation from "./bundled-skills/product-ideation.md" with { type: 
 import productSpec from "./bundled-skills/product-spec.md" with { type: "text" };
 import refactoringSafely from "./bundled-skills/refactoring-safely.md" with { type: "text" };
 import repoRunbook from "./bundled-skills/repo-runbook.md" with { type: "text" };
+import rtk from "./bundled-skills/rtk.md" with { type: "text" };
 import securityReview from "./bundled-skills/security-review.md" with { type: "text" };
+import stopSlop from "./bundled-skills/stop-slop.md" with { type: "text" };
 import subagentsDevelopment from "./bundled-skills/subagents-development.md" with { type: "text" };
 import verifyBeforeDone from "./bundled-skills/verify-before-done.md" with { type: "text" };
 import workPlaybooks from "./bundled-skills/work-playbooks.md" with { type: "text" };
@@ -56,9 +64,19 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		filePath: `${import.meta.dir}/bundled-skills/api-design.md`,
 	},
 	{
+		name: "archify",
+		content: archify,
+		filePath: `${import.meta.dir}/bundled-skills/archify.md`,
+	},
+	{
 		name: "bug-hunting",
 		content: bugHunting,
 		filePath: `${import.meta.dir}/bundled-skills/bug-hunting.md`,
+	},
+	{
+		name: "caveman",
+		content: caveman,
+		filePath: `${import.meta.dir}/bundled-skills/caveman.md`,
 	},
 	{
 		name: "code-review-lens",
@@ -121,6 +139,21 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		filePath: `${import.meta.dir}/bundled-skills/git-craft.md`,
 	},
 	{
+		name: "hallmark",
+		content: hallmark,
+		filePath: `${import.meta.dir}/bundled-skills/hallmark.md`,
+	},
+	{
+		name: "humanizer",
+		content: humanizer,
+		filePath: `${import.meta.dir}/bundled-skills/humanizer.md`,
+	},
+	{
+		name: "i-have-adhd",
+		content: iHaveAdhd,
+		filePath: `${import.meta.dir}/bundled-skills/i-have-adhd.md`,
+	},
+	{
 		name: "incident-response",
 		content: incidentResponse,
 		filePath: `${import.meta.dir}/bundled-skills/incident-response.md`,
@@ -139,6 +172,11 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		name: "parallel-fanout",
 		content: parallelFanout,
 		filePath: `${import.meta.dir}/bundled-skills/parallel-fanout.md`,
+	},
+	{
+		name: "ponytail",
+		content: ponytail,
+		filePath: `${import.meta.dir}/bundled-skills/ponytail.md`,
 	},
 	{
 		name: "preview-templates",
@@ -181,9 +219,19 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		filePath: `${import.meta.dir}/bundled-skills/repo-runbook.md`,
 	},
 	{
+		name: "rtk",
+		content: rtk,
+		filePath: `${import.meta.dir}/bundled-skills/rtk.md`,
+	},
+	{
 		name: "security-review",
 		content: securityReview,
 		filePath: `${import.meta.dir}/bundled-skills/security-review.md`,
+	},
+	{
+		name: "stop-slop",
+		content: stopSlop,
+		filePath: `${import.meta.dir}/bundled-skills/stop-slop.md`,
 	},
 	{
 		name: "subagents-development",

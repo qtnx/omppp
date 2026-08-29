@@ -164,16 +164,21 @@ function createResult(options: ExecutorOptions): SingleResult {
 	};
 }
 
-function createToolSession(skills: Skill[], sessionFile: string | null = null, mcpManager?: MCPManager): ToolSession {
+function createToolSession(
+	skills: Skill[],
+	sessionFile: string | null = null,
+	mcpManager?: MCPManager,
+	settings = Settings.isolated({
+		"async.enabled": false,
+		"task.isolation.mode": "none",
+	}),
+): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
 		enableLsp: false,
 		skills,
-		settings: Settings.isolated({
-			"async.enabled": false,
-			"task.isolation.mode": "none",
-		}),
+		settings,
 		modelRegistry: createModelRegistry(),
 		getSessionFile: () => sessionFile,
 		mcpManager,
@@ -550,6 +555,91 @@ describe("subagent resource profile", () => {
 		const options = runSpy.mock.calls[0]?.[0];
 		expect(options?.skills?.map(skill => skill.name)).toEqual([runtimeSkill.name]);
 		expect(options?.autoloadSkills?.map(skill => skill.name)).toEqual([runtimeSkill.name]);
+	});
+	it("omits Caveman but retains Ponytail and RTK when Caveman autoload is disabled", async () => {
+		const caveman = createSkill("caveman");
+		const ponytail = createSkill("ponytail");
+		const rtk = createSkill("rtk");
+		const agent: AgentDefinition = {
+			name: "task",
+			description: "Implement a contained change",
+			systemPrompt: "Implement the assignment.",
+			tools: ["read"],
+			autoloadSkills: [caveman.name, ponytail.name, rtk.name],
+			resourceProfile: "minimal",
+			source: "bundled",
+		};
+		const settings = Settings.isolated({
+			"async.enabled": false,
+			"task.isolation.mode": "none",
+			"caveman.enabled": false,
+			"rtk.enabled": true,
+		});
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
+		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => createResult(options));
+
+		const tool = await TaskTool.create(createToolSession([caveman, ponytail, rtk], null, undefined, settings));
+		await tool.execute("task-call", {
+			agent: agent.name,
+			tasks: [{ id: "CavemanDisabled", description: "Implement", assignment: "Implement the assignment." }],
+		});
+
+		expect(runSpy.mock.calls[0]?.[0].autoloadSkills?.map(skill => skill.name)).toEqual(["ponytail", "rtk"]);
+	});
+
+	it("omits RTK but retains Caveman and Ponytail when RTK autoload is disabled", async () => {
+		const caveman = createSkill("caveman");
+		const ponytail = createSkill("ponytail");
+		const rtk = createSkill("rtk");
+		const agent: AgentDefinition = {
+			name: "task",
+			description: "Implement a contained change",
+			systemPrompt: "Implement the assignment.",
+			tools: ["read"],
+			autoloadSkills: [caveman.name, ponytail.name, rtk.name],
+			resourceProfile: "minimal",
+			source: "bundled",
+		};
+		const settings = Settings.isolated({
+			"async.enabled": false,
+			"task.isolation.mode": "none",
+			"caveman.enabled": true,
+			"rtk.enabled": false,
+		});
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
+		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => createResult(options));
+
+		const tool = await TaskTool.create(createToolSession([caveman, ponytail, rtk], null, undefined, settings));
+		await tool.execute("task-call", {
+			agent: agent.name,
+			tasks: [{ id: "RtkDisabled", description: "Implement", assignment: "Implement the assignment." }],
+		});
+
+		expect(runSpy.mock.calls[0]?.[0].autoloadSkills?.map(skill => skill.name)).toEqual(["caveman", "ponytail"]);
+	});
+
+	it("silently skips an unavailable implementer autoload skill", async () => {
+		const caveman = createSkill("caveman");
+		const ponytail = createSkill("ponytail");
+		const agent: AgentDefinition = {
+			name: "task",
+			description: "Implement a contained change",
+			systemPrompt: "Implement the assignment.",
+			tools: ["read"],
+			autoloadSkills: [caveman.name, ponytail.name, "rtk"],
+			resourceProfile: "minimal",
+			source: "bundled",
+		};
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
+		const runSpy = vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => createResult(options));
+
+		const tool = await TaskTool.create(createToolSession([caveman, ponytail]));
+		await tool.execute("task-call", {
+			agent: agent.name,
+			tasks: [{ id: "MissingRtk", description: "Implement", assignment: "Implement the assignment." }],
+		});
+
+		expect(runSpy.mock.calls[0]?.[0].autoloadSkills?.map(skill => skill.name)).toEqual(["caveman", "ponytail"]);
 	});
 
 	it("preserves skills and extension runtime for explicit-tool agents without a minimal profile", async () => {

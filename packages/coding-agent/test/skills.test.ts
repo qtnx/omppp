@@ -30,11 +30,13 @@ const expectedFixtureSkillOrder: string[] = [
 	"valid-skill",
 ];
 
-const ARCHIVE_ENGINEERING_SKILL_NAMES = [
+const BUNDLED_SKILL_NAMES = [
 	"api-design",
+	"archify",
 	"bug-hunting",
 	"code-review-lens",
 	"codebase-recon",
+	"caveman",
 	"competitive-recon",
 	"concurrency-correctness",
 	"database-craft",
@@ -42,10 +44,14 @@ const ARCHIVE_ENGINEERING_SKILL_NAMES = [
 	"feature-anatomy",
 	"feature-gym",
 	"git-craft",
+	"hallmark",
+	"humanizer",
+	"i-have-adhd",
 	"incident-response",
 	"migration-upgrade",
 	"observability-instrumentation",
 	"parallel-fanout",
+	"ponytail",
 	"preview-templates",
 	"product-architecture",
 	"product-design",
@@ -54,7 +60,8 @@ const ARCHIVE_ENGINEERING_SKILL_NAMES = [
 	"product-spec",
 	"refactoring-safely",
 	"repo-runbook",
-	"security-review",
+	"rtk",
+	"stop-slop",
 	"subagents-development",
 	"verify-before-done",
 	"work-playbooks",
@@ -569,18 +576,18 @@ description: Skill loaded from a tilde-expanded custom directory.
 			expect(message).not.toContain("# REVIEW");
 		};
 
-		it("loads archive engineering skills as bundled native skills with renderable guidance", async () => {
+		it("loads bundled skills as native skills with renderable guidance", async () => {
 			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-engineering-skills-home-");
 
 			try {
 				const { skills, warnings } = await loadSkills({ cwd: fixture.tempCwd });
 				const byName = new Map(skills.map(skill => [skill.name, skill]));
-				const missingSkills = ARCHIVE_ENGINEERING_SKILL_NAMES.filter(name => !byName.has(name));
-				const wrongSources = ARCHIVE_ENGINEERING_SKILL_NAMES.flatMap(name => {
+				const missingSkills = BUNDLED_SKILL_NAMES.filter(name => !byName.has(name));
+				const wrongSources = BUNDLED_SKILL_NAMES.flatMap(name => {
 					const skill = byName.get(name);
 					return skill && skill.source !== "bundled:native" ? [`${name}: ${skill.source}`] : [];
 				});
-				const emptyDescriptions = ARCHIVE_ENGINEERING_SKILL_NAMES.filter(name => {
+				const emptyDescriptions = BUNDLED_SKILL_NAMES.filter(name => {
 					const description = byName.get(name)?.description;
 					return description !== undefined && description.trim() === "";
 				});
@@ -592,7 +599,7 @@ description: Skill loaded from a tilde-expanded custom directory.
 					emptyDescriptions: [],
 				});
 
-				for (const name of ARCHIVE_ENGINEERING_SKILL_NAMES) {
+				for (const name of BUNDLED_SKILL_NAMES) {
 					const skill = byName.get(name);
 					if (!skill) throw new Error(`Missing bundled skill ${name}`);
 
@@ -733,6 +740,27 @@ description: Skill loaded from a tilde-expanded custom directory.
 				expect(guidance).toContain("i18n");
 				expect(guidance).toContain("grep");
 				expect(guidance).toContain("did not");
+				expectNoReviewerComments(message);
+			} finally {
+				await fixture.cleanup();
+			}
+		});
+
+		it("loads RTK guidance for transparent, fail-open Bash rewriting", async () => {
+			const fixture = await setupIsolatedFrontendSkillHome("omp-bundled-rtk-skill-home-");
+
+			try {
+				const { skills } = await loadSkills({ cwd: fixture.tempCwd });
+				const rtk = skills.find(skill => skill.name === "rtk");
+				if (!rtk) throw new Error("rtk bundled skill did not load");
+
+				const { message, details } = await buildSkillPromptMessage(rtk, "", "autoload");
+
+				expect(details.name).toBe("rtk");
+				expect(rtk.source).toBe("bundled:native");
+				expect(message).toMatch(/(?:write|use)[\s\S]{0,100}(?:ordinary|normal)[\s\S]{0,80}Bash commands/i);
+				expect(message).toMatch(/(?:never|do not)[\s\S]{0,120}(?:manually )?prefix[\s\S]{0,80}`?rtk`?/i);
+				expect(message).toMatch(/(?:failure|fails?)[\s\S]{0,160}(?:original|ordinary)[\s\S]{0,80}command/i);
 				expectNoReviewerComments(message);
 			} finally {
 				await fixture.cleanup();

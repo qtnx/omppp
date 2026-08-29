@@ -5,6 +5,11 @@
 ### Changed
 
 - Long-running Anthropic sessions now keep recalled memory in conversation context instead of the system prompt, allowing later turns to reuse the growing prompt cache.
+### Added
+
+- Bundled Archify, Hallmark, Humanizer, i-have-adhd, Ponytail, and Stop Slop with system-prompt routing for architecture, design, copywriting, ADHD-friendly output, and minimal implementation planning.
+- Bash commands are now rewritten through an installed [RTK](https://github.com/rtk-ai/rtk) binary when one is available, cutting tool-output tokens without changing the requested command. Controlled by `rtk.enabled` (default on); RTK stays optional and any failure runs the original command.
+- Bundled the MIT Caveman output-compression skill as a normal skill and autoload it with Ponytail and RTK for `quick_task`, `task`, and `heavy_task` subagents. `/caveman on|off|status` controls session-local Caveman autoload; plans stay explicit and detailed while reports stay concise.
 
 ### Fixed
 
