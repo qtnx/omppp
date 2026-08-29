@@ -134,18 +134,17 @@ describe("generate_image tool gating", () => {
 		expect(names).toContain("generate_image");
 	});
 
-	it("exposes generate_image as an xd:// device (not top-level) in a default session", async () => {
-		// Default session (no explicit --tools) with tools.xdev on: image-gen is a
-		// discoverable custom tool, so it mounts as an xd:// device instead of
-		// shipping its schema top-level.
+	it("exposes generate_image by default for an Anthropic Opus session", async () => {
+		// Image generation is provider-independent: Opus receives the same
+		// discoverable xd:// device, backed by the connected Codex subscription.
 		const { session } = await createAgentSession({
 			...startupShortcuts(),
 			cwd: registryDir,
 			agentDir: registryDir,
 			modelRegistry,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "generate_image.enabled": true }),
-			model: getBundledModel("openai", "gpt-4o-mini"),
+			settings: Settings.isolated({}),
+			model: getBundledModel("anthropic", "claude-opus-4-8"),
 			disableExtensionDiscovery: true,
 		});
 		sessions.push(session);

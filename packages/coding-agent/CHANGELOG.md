@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Image generation is now available by default with every session model and prefers a connected OpenAI Codex subscription.
+
 ## [1.7.6] - 2026-08-28
 
 ### Added

@@ -4946,7 +4946,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"generate_image.enabled": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "tools",
 			group: "Available Tools",
