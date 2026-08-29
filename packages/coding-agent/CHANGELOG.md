@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Long-running Anthropic sessions now keep recalled memory in conversation context instead of the system prompt, allowing later turns to reuse the growing prompt cache.
+
 ### Fixed
 
 - Image generation is now available by default with every session model and prefers a connected OpenAI Codex subscription.

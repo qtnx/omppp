@@ -139,13 +139,12 @@ export interface MemoryBackend {
 	/** Render backend-specific memory diagnostics as markdown (`/memory diagnose`). */
 	diagnose?(agentDir: string, cwd: string, session?: AgentSession): Promise<string | undefined>;
 	/**
-	 * Optional hook to inject a backend-specific block into the current turn's
-	 * system prompt before the agent starts generating.
+	 * Optional hook to inject backend-specific memory context before the current
+	 * user message.
 	 *
-	 * This is the only place a backend can affect the very first answer of a
-	 * fresh session. The returned text is appended to the already-built base
-	 * system prompt for this turn only; callers may separately cache it and
-	 * surface it through `buildDeveloperInstructions()` on later rebuilds.
+	 * The caller persists the returned text as a hidden user-attributed context
+	 * message. Keeping volatile recall out of the system prompt preserves provider
+	 * prefix caches while retaining the memory in subsequent conversation turns.
 	 */
 	beforeAgentStartPrompt?(session: AgentSession, promptText: string): Promise<string | undefined>;
 

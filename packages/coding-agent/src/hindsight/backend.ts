@@ -88,16 +88,13 @@ export const hindsightBackend: MemoryBackend = {
 		if (!isHindsightConfigured(config)) return undefined;
 
 		const state = session?.getHindsightSessionState();
-		const primary = state?.aliasOf ?? state;
-		const recallSnippet = primary?.lastRecallSnippet;
-		const mentalModelsSnippet = primary?.mentalModelsSnippet;
-
-		// Order: static instructions → mental models (stable, curated) → recall
-		// (volatile per turn). Stable context first so the LLM's prior is
-		// anchored on curated knowledge.
+		const primary = state?.aliasOf;
 		const parts = [STATIC_INSTRUCTIONS];
-		if (mentalModelsSnippet) parts.push(mentalModelsSnippet);
-		if (recallSnippet) parts.push(recallSnippet);
+		// Subagents inherit the parent's current snapshot because aliases skip
+		// auto-recall. Root sessions inject volatile memory as hidden conversation
+		// context so provider caches can reuse the stable system prompt.
+		if (primary?.mentalModelsSnippet) parts.push(primary.mentalModelsSnippet);
+		if (primary?.lastRecallSnippet) parts.push(primary.lastRecallSnippet);
 		return parts.join("\n\n");
 	},
 
@@ -105,7 +102,11 @@ export const hindsightBackend: MemoryBackend = {
 		const state = session.getHindsightSessionState();
 		if (!state) return undefined;
 
-		return await state.beforeAgentStartPrompt(promptText);
+		const recallSnippet = await state.beforeAgentStartPrompt(promptText);
+		const primary = state.aliasOf ?? state;
+		return (
+			[primary.mentalModelsSnippet, recallSnippet].filter((part): part is string => !!part).join("\n\n") || undefined
+		);
 	},
 
 	async clear(_agentDir, _cwd, session): Promise<void> {

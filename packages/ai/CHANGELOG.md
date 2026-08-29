@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Anthropic OAuth conversations now automatically advance their prompt cache while reserving the first system block for cross-turn reuse, reducing repeated input-token writes as context grows.
+
 ## [1.7.6] - 2026-08-28
 
 ### Changed

@@ -37,6 +37,7 @@ import { formatOutputNotice } from "../tools/output-meta";
 import { titleTextFromSkillPrompt } from "./skill-title-input";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
+export const MEMORY_CONTEXT_MESSAGE_TYPE = "memory-context";
 export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
 export const BROWSER_ANNOTATION_MESSAGE_TYPE = "browser-annotation";
 export const MAX_BACKGROUND_BROWSER_ANNOTATIONS = 20;
@@ -1445,7 +1446,11 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 				const converted = convertMessageToLlm(wrapSteeringUserMessage(m));
 				return converted ? [converted] : [];
 			}
-			if (isUserInvokedSkillPrompt(m) || isUserAttributedKanbanEvent(m)) {
+			if (
+				isUserInvokedSkillPrompt(m) ||
+				isUserAttributedKanbanEvent(m) ||
+				(m.customType === MEMORY_CONTEXT_MESSAGE_TYPE && m.attribution === "user")
+			) {
 				return [
 					{
 						role: "user",
