@@ -548,7 +548,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"advisor.fallbackModel": {
 		type: "string",
-		default: "gpt-5.5",
+		default: "gpt-5.6-sol",
 		ui: {
 			tab: "model",
 			group: "Advisor",

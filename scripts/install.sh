@@ -565,12 +565,14 @@ migrate_gpt_5_6_model_config() {
             }
         }
         BEGIN {
+            in_advisor = 0
             in_model_roles = 0
             in_task = 0
             in_overrides = 0
             model_roles_indent = 0
             task_indent = 0
             overrides_indent = 0
+            advisor_indent = 0
             override_indent = ""
             have_heavy_task = 0
             have_qa = 0
@@ -578,6 +580,23 @@ migrate_gpt_5_6_model_config() {
             have_tester = 0
         }
         {
+            if (in_advisor) {
+                if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+                    print
+                    next
+                }
+                current_indent = indent_length($0)
+                if (current_indent <= advisor_indent) {
+                    in_advisor = 0
+                } else {
+                    if ($0 ~ /^[[:space:]]*fallbackModel:[[:space:]]*gpt-5\.5[[:space:]]*(#.*)?$/) {
+                        sub(/gpt-5\.5/, "gpt-5.6-sol")
+                    }
+                    print
+                    next
+                }
+            }
+
             if (in_model_roles) {
                 if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
                     print
@@ -671,7 +690,10 @@ migrate_gpt_5_6_model_config() {
                 }
             }
 
-            if ($0 ~ /^modelRoles:[[:space:]]*($|#)/) {
+            if ($0 ~ /^advisor:[[:space:]]*($|#)/) {
+                in_advisor = 1
+                advisor_indent = 0
+            } else if ($0 ~ /^modelRoles:[[:space:]]*($|#)/) {
                 in_model_roles = 1
                 model_roles_indent = 0
             } else if ($0 ~ /^task:[[:space:]]*($|#)/) {

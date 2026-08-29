@@ -88,6 +88,10 @@ describe("duo advisor thinking", () => {
 		expect(resolved?.advisorEscalationThinking).toBe(ThinkingLevel.XHigh);
 	});
 
+	test("advisor refusal fallback defaults to GPT-5.6 Sol", () => {
+		expect(Settings.isolated().get("advisor.fallbackModel")).toBe("gpt-5.6-sol");
+	});
+
 	test("advisor is enabled by default for fresh settings", () => {
 		expect(getDefault("advisor.enabled")).toBe(true);
 		expect(Settings.isolated({}).get("advisor.enabled")).toBe(true);
