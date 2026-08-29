@@ -1414,7 +1414,7 @@ describe("AgentSession message pipeline", () => {
 		await Bun.sleep(0);
 	});
 
-	it("keeps first-turn memory in the stable prompt on the next turn", async () => {
+	it("keeps recalled memory as one hidden message before the first user turn", async () => {
 		const api = "test-injected-memory-append-only-cache";
 		const contexts: Context[] = [];
 		let remembered = false;
@@ -1423,7 +1423,7 @@ describe("AgentSession message pipeline", () => {
 			id: "mnemopi",
 			async start() {},
 			async buildDeveloperInstructions() {
-				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
+				return "static memory instructions";
 			},
 			async clear() {},
 			async enqueue() {},
@@ -1463,17 +1463,20 @@ describe("AgentSession message pipeline", () => {
 				messages: [],
 				tools: [],
 			},
+			convertToLlm,
 		});
 		agent.setAppendOnlyContext(new AppendOnlyContextManager());
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false, "provider.appendOnlyContext": "on" }),
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				"memory.backend": "mnemopi",
+				"provider.appendOnlyContext": "on",
+			}),
 			modelRegistry: createModelRegistryStub() as never,
 			rebuildSystemPrompt: async () => ({
-				systemPrompt: remembered
-					? ["base", `static memory instructions\n\n${injected}`]
-					: ["base", "static memory instructions"],
+				systemPrompt: ["base", "static memory instructions"],
 			}),
 		});
 		sessions.push(session);
@@ -1482,10 +1485,40 @@ describe("AgentSession message pipeline", () => {
 		await session.sendUserMessage("second");
 
 		expect(contexts).toHaveLength(2);
-		const firstSystemPrompt = contexts[0]!.systemPrompt;
-		expect(firstSystemPrompt).toBeDefined();
-		expect(firstSystemPrompt!.join("\n")).toContain(injected);
-		expect(contexts[1]!.systemPrompt).toEqual(firstSystemPrompt);
+		const firstProviderMessages = contexts[0]!.messages;
+		const providerMemoryIndex = firstProviderMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === injected,
+		);
+		const providerUserIndex = firstProviderMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === "first",
+		);
+		const sessionMessages = session.messages;
+		const memoryIndex = sessionMessages.findIndex(
+			message =>
+				message.role === "custom" &&
+				message.customType === "memory-context" &&
+				message.content === injected &&
+				message.display === false &&
+				message.attribution === "user",
+		);
+		const firstUserIndex = sessionMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === "first",
+		);
+		expect(providerMemoryIndex).toBeGreaterThanOrEqual(0);
+		expect(providerUserIndex).toBe(providerMemoryIndex + 1);
+		expect(memoryIndex).toBeGreaterThanOrEqual(0);
+		expect(firstUserIndex).toBe(memoryIndex + 1);
+		expect(contexts[0]!.systemPrompt).toEqual(["base", "static memory instructions"]);
+		expect(contexts[1]!.systemPrompt).toEqual(["base", "static memory instructions"]);
+		expect(
+			contexts[1]!.messages.filter(message => message.role === "user" && getConvertedUserText(message) === injected),
+		).toHaveLength(1);
+		expect(
+			sessionMessages.filter(
+				message =>
+					message.role === "custom" && message.customType === "memory-context" && message.content === injected,
+			),
+		).toHaveLength(1);
 	});
 
 	it("preserves append-only prefixes in subagent sessions when context handlers rewrite prior turns", async () => {
@@ -1788,7 +1821,7 @@ describe("AgentSession message pipeline", () => {
 		}
 	});
 
-	it("clears promoted memory from the base prompt when switching sessions", async () => {
+	it("does not leak hidden recalled memory into a switched session without recall", async () => {
 		using tempDir = TempDir.createSync("@pi-injected-memory-switch-");
 		const sessionManager = SessionManager.create(tempDir.path(), tempDir.join("sessions"));
 		const firstSessionFile = sessionManager.getSessionFile();
@@ -1808,7 +1841,7 @@ describe("AgentSession message pipeline", () => {
 			id: "mnemopi",
 			async start() {},
 			async buildDeveloperInstructions() {
-				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
+				return "static memory instructions";
 			},
 			async clear() {},
 			async enqueue() {},
@@ -1848,6 +1881,7 @@ describe("AgentSession message pipeline", () => {
 				messages: [],
 				tools: [],
 			},
+			convertToLlm,
 		});
 		agent.setAppendOnlyContext(new AppendOnlyContextManager());
 		const session = new AgentSession({
@@ -1860,9 +1894,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 			modelRegistry: createModelRegistryStub() as never,
 			rebuildSystemPrompt: async () => ({
-				systemPrompt: remembered
-					? ["base", `static memory instructions\n\n${injected}`]
-					: ["base", "static memory instructions"],
+				systemPrompt: ["base", "static memory instructions"],
 			}),
 		});
 		sessions.push(session);
@@ -1876,18 +1908,42 @@ describe("AgentSession message pipeline", () => {
 		} as unknown as MnemopiSessionState);
 
 		await session.sendUserMessage("first");
-		expect(session.systemPrompt.join("\n")).toContain(injected);
+		const firstSessionMessages = [...session.messages];
 		recallAvailable = false;
 
 		await session.switchSession(nextSessionFile!);
 		await session.sendUserMessage("second");
 
-		expect(session.systemPrompt.join("\n")).not.toContain(injected);
 		expect(contexts).toHaveLength(2);
-		expect(contexts[1]!.systemPrompt?.join("\n")).not.toContain(injected);
+		expect(contexts[0]!.systemPrompt).toEqual(["base", "static memory instructions"]);
+		expect(contexts[1]!.systemPrompt).toEqual(["base", "static memory instructions"]);
+		const firstProviderMessages = contexts[0]!.messages;
+		const providerMemoryIndex = firstProviderMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === injected,
+		);
+		const firstUserIndex = firstProviderMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === "first",
+		);
+		expect(providerMemoryIndex).toBeGreaterThanOrEqual(0);
+		expect(firstUserIndex).toBe(providerMemoryIndex + 1);
+		expect(
+			firstSessionMessages.filter(
+				message =>
+					message.role === "custom" && message.customType === "memory-context" && message.content === injected,
+			),
+		).toHaveLength(1);
+		expect(
+			contexts[1]!.messages.some(message => message.role === "user" && getConvertedUserText(message) === injected),
+		).toBe(false);
+		expect(
+			session.messages.some(
+				message =>
+					message.role === "custom" && message.customType === "memory-context" && message.content === injected,
+			),
+		).toBe(false);
 	});
 
-	it("clears promoted memory from the base prompt when starting a new session", async () => {
+	it("does not leak hidden recalled memory into a new session without recall", async () => {
 		const api = "test-injected-memory-new-session-cache";
 		const contexts: Context[] = [];
 		let remembered = false;
@@ -1897,7 +1953,7 @@ describe("AgentSession message pipeline", () => {
 			id: "mnemopi",
 			async start() {},
 			async buildDeveloperInstructions() {
-				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
+				return "static memory instructions";
 			},
 			async clear() {},
 			async enqueue() {},
@@ -1937,6 +1993,7 @@ describe("AgentSession message pipeline", () => {
 				messages: [],
 				tools: [],
 			},
+			convertToLlm,
 		});
 		agent.setAppendOnlyContext(new AppendOnlyContextManager());
 		const session = new AgentSession({
@@ -1949,9 +2006,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 			modelRegistry: createModelRegistryStub() as never,
 			rebuildSystemPrompt: async () => ({
-				systemPrompt: remembered
-					? ["base", `static memory instructions\n\n${injected}`]
-					: ["base", "static memory instructions"],
+				systemPrompt: ["base", "static memory instructions"],
 			}),
 		});
 		sessions.push(session);
@@ -1965,18 +2020,42 @@ describe("AgentSession message pipeline", () => {
 		} as unknown as MnemopiSessionState);
 
 		await session.sendUserMessage("first");
-		expect(session.systemPrompt.join("\n")).toContain(injected);
+		const firstSessionMessages = [...session.messages];
 		recallAvailable = false;
 
 		await session.newSession();
 		await session.sendUserMessage("second");
 
-		expect(session.systemPrompt.join("\n")).not.toContain(injected);
 		expect(contexts).toHaveLength(2);
-		expect(contexts[1]!.systemPrompt?.join("\n")).not.toContain(injected);
+		expect(contexts[0]!.systemPrompt).toEqual(["base", "static memory instructions"]);
+		expect(contexts[1]!.systemPrompt).toEqual(["base", "static memory instructions"]);
+		const firstProviderMessages = contexts[0]!.messages;
+		const providerMemoryIndex = firstProviderMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === injected,
+		);
+		const firstUserIndex = firstProviderMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === "first",
+		);
+		expect(providerMemoryIndex).toBeGreaterThanOrEqual(0);
+		expect(firstUserIndex).toBe(providerMemoryIndex + 1);
+		expect(
+			firstSessionMessages.filter(
+				message =>
+					message.role === "custom" && message.customType === "memory-context" && message.content === injected,
+			),
+		).toHaveLength(1);
+		expect(
+			contexts[1]!.messages.some(message => message.role === "user" && getConvertedUserText(message) === injected),
+		).toBe(false);
+		expect(
+			session.messages.some(
+				message =>
+					message.role === "custom" && message.customType === "memory-context" && message.content === injected,
+			),
+		).toBe(false);
 	});
 
-	it("does not duplicate promoted memory in the base prompt when forking", async () => {
+	it("keeps parent memory once and places fresh fork recall before the new user turn", async () => {
 		using tempDir = TempDir.createSync("@pi-injected-memory-fork-");
 		const sessionManager = SessionManager.create(tempDir.path(), tempDir.join("sessions"));
 		expect(sessionManager.getSessionFile()).toBeString();
@@ -1985,19 +2064,20 @@ describe("AgentSession message pipeline", () => {
 		const api = "test-injected-memory-fork-cache";
 		const contexts: Context[] = [];
 		let remembered = false;
-		const injected = "<memories>forked recall</memories>";
+		const parentMemory = "<memories>parent recall</memories>";
+		const forkMemory = "<memories>fork recall</memories>";
 		const fakeBackend: MemoryBackend = {
 			id: "mnemopi",
 			async start() {},
 			async buildDeveloperInstructions() {
-				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
+				return "static memory instructions";
 			},
 			async clear() {},
 			async enqueue() {},
 			async beforeAgentStartPrompt() {
 				if (remembered) return undefined;
 				remembered = true;
-				return injected;
+				return contexts.length === 0 ? parentMemory : forkMemory;
 			},
 		};
 		vi.spyOn(memoryBackend, "resolveMemoryBackend").mockResolvedValue(fakeBackend);
@@ -2030,6 +2110,7 @@ describe("AgentSession message pipeline", () => {
 				messages: [],
 				tools: [],
 			},
+			convertToLlm,
 		});
 		agent.setAppendOnlyContext(new AppendOnlyContextManager());
 		const session = new AgentSession({
@@ -2042,9 +2123,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 			modelRegistry: createModelRegistryStub() as never,
 			rebuildSystemPrompt: async () => ({
-				systemPrompt: remembered
-					? ["base", `static memory instructions\n\n${injected}`]
-					: ["base", "static memory instructions"],
+				systemPrompt: ["base", "static memory instructions"],
 			}),
 		});
 		sessions.push(session);
@@ -2058,14 +2137,50 @@ describe("AgentSession message pipeline", () => {
 		} as unknown as MnemopiSessionState);
 
 		await session.sendUserMessage("first");
-		expect(session.systemPrompt.join("\n")).toContain(injected);
-
 		await session.fork();
 		await session.sendUserMessage("second");
 
-		const forkedPrompt = contexts[1]!.systemPrompt?.join("\n") ?? "";
-		const occurrences = forkedPrompt.split(injected).length - 1;
-		expect(occurrences).toBe(1);
+		expect(contexts).toHaveLength(2);
+		expect(contexts[1]!.systemPrompt).toEqual(["base", "static memory instructions"]);
+		const forkProviderMessages = contexts[1]!.messages;
+		const parentProviderMemoryIndex = forkProviderMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === parentMemory,
+		);
+		const forkProviderMemoryIndex = forkProviderMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === forkMemory,
+		);
+		const secondProviderUserIndex = forkProviderMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === "second",
+		);
+		const forkMessages = session.messages;
+		const parentMemoryIndex = forkMessages.findIndex(
+			message =>
+				message.role === "custom" && message.customType === "memory-context" && message.content === parentMemory,
+		);
+		const forkMemoryIndex = forkMessages.findIndex(
+			message =>
+				message.role === "custom" && message.customType === "memory-context" && message.content === forkMemory,
+		);
+		const secondUserIndex = forkMessages.findIndex(
+			message => message.role === "user" && getConvertedUserText(message) === "second",
+		);
+		expect(
+			forkProviderMessages.filter(
+				message => message.role === "user" && getConvertedUserText(message) === parentMemory,
+			),
+		).toHaveLength(1);
+		expect(parentProviderMemoryIndex).toBeGreaterThanOrEqual(0);
+		expect(forkProviderMemoryIndex).toBeGreaterThan(parentProviderMemoryIndex);
+		expect(secondProviderUserIndex).toBe(forkProviderMemoryIndex + 1);
+		expect(parentMemoryIndex).toBeGreaterThanOrEqual(0);
+		expect(
+			forkMessages.filter(
+				message =>
+					message.role === "custom" && message.customType === "memory-context" && message.content === parentMemory,
+			),
+		).toHaveLength(1);
+		expect(forkMemoryIndex).toBeGreaterThan(parentMemoryIndex);
+		expect(secondUserIndex).toBe(forkMemoryIndex + 1);
 	});
 
 	it("ephemeral side-channel forwards native tools, injects developer reminder, leaves toolChoice auto", async () => {

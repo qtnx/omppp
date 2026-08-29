@@ -8,6 +8,7 @@ export interface AnthropicDiagnosticRequest {
 	contextManagement?: unknown;
 	outputConfig?: unknown;
 	cacheControls?: unknown;
+	cacheControl?: unknown;
 	featureNames?: readonly string[];
 }
 
@@ -151,7 +152,7 @@ export function fingerprintAnthropicRequest(input: AnthropicDiagnosticRequest): 
 	);
 	const cacheControls =
 		input.cacheControls === undefined
-			? collectCacheControls([input.messages, input.system, input.tools])
+			? [input.cacheControl, ...collectCacheControls([input.messages, input.system, input.tools])]
 			: input.cacheControls;
 	const cacheControlsHash = digestSerialized(cacheControls);
 	const messageHashes = input.messages.map(message => digestSerialized(message, true));

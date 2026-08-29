@@ -20,7 +20,6 @@ export interface SessionMemoryHost {
 	setHindsightSessionState(state: HindsightSessionState | undefined): void;
 	getMnemopiSessionState(): MnemopiSessionState | undefined;
 	takeMnemopiSessionState(): MnemopiSessionState | undefined;
-	setBaseSystemPrompt(prompt: string[]): void;
 	refreshBaseSystemPrompt(): Promise<void>;
 	replaceMemoryTools(tools: AgentTool[]): Promise<void>;
 }
@@ -33,7 +32,6 @@ export class SessionMemory {
 	readonly #createMemoryTools: (() => Promise<AgentTool[]>) | undefined;
 	#memoryBackendTransition: Promise<void> = Promise.resolve();
 	#localMemoryStartupAbort: AbortController | undefined;
-	#baseSystemPromptBeforeMemoryPromotion: string[] | undefined;
 
 	constructor(
 		host: SessionMemoryHost,
@@ -54,25 +52,6 @@ export class SessionMemory {
 		return this.#memoryBackendTransition;
 	}
 
-	/** Base prompt captured before a per-turn memory promotion. */
-	get promotionSnapshot(): string[] | undefined {
-		return this.#baseSystemPromptBeforeMemoryPromotion;
-	}
-
-	/** Clears the per-turn memory promotion after a canonical prompt rebuild. */
-	clearPromotionSnapshot(): void {
-		this.#baseSystemPromptBeforeMemoryPromotion = undefined;
-	}
-
-	/** Captures the canonical prompt before the first per-turn memory promotion. */
-	capturePromotionSnapshot(prompt: string[]): void {
-		this.#baseSystemPromptBeforeMemoryPromotion ??= prompt;
-	}
-
-	/** Restores a promotion snapshot while rolling back a failed session switch. */
-	restorePromotionSnapshot(prompt: string[] | undefined): void {
-		this.#baseSystemPromptBeforeMemoryPromotion = prompt;
-	}
 	/** Rekeys every active memory backend to the current provider session. */
 	rekeyForCurrentSessionId(): void {
 		this.#rekeyHindsightMemoryForCurrentSessionId();
@@ -110,16 +89,11 @@ export class SessionMemory {
 		return true;
 	}
 
-	/** Resets transcript-scoped memory counters and removes a promoted prompt. */
+	/** Resets transcript-scoped memory counters for a new conversation. */
 	async resetContextForNewTranscript(): Promise<void> {
-		const hadPromotedMemoryPrompt = this.#baseSystemPromptBeforeMemoryPromotion !== undefined;
 		const resetHindsight = this.#resetHindsightConversationTrackingIfHindsight();
 		const resetMnemopi = this.#resetMnemopiConversationTrackingIfMnemopi();
-		if (hadPromotedMemoryPrompt) {
-			this.#host.setBaseSystemPrompt(this.#baseSystemPromptBeforeMemoryPromotion!);
-			this.#baseSystemPromptBeforeMemoryPromotion = undefined;
-		}
-		if (resetHindsight || resetMnemopi || hadPromotedMemoryPrompt) {
+		if (resetHindsight || resetMnemopi) {
 			await this.#host.refreshBaseSystemPrompt();
 		}
 	}

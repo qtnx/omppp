@@ -112,6 +112,59 @@ describe("Anthropic cache diagnostics", () => {
 		}
 	});
 
+	it("classifies top-level automatic cache marker changes without retaining prompt or cache values", () => {
+		const baselineRequest = request({
+			cacheControls: undefined,
+			cacheControl: { type: "ephemeral", ttl: "5m" },
+		});
+		const unchangedRequest = request({
+			cacheControls: undefined,
+			cacheControl: { type: "ephemeral", ttl: "5m" },
+		});
+		const changedRequest = request({
+			cacheControls: undefined,
+			cacheControl: { type: "ephemeral", ttl: "1h" },
+		});
+		const baseline = fingerprintAnthropicRequest(baselineRequest);
+		const unchanged = fingerprintAnthropicRequest(unchangedRequest);
+		const changed = fingerprintAnthropicRequest(changedRequest);
+
+		expect(unchanged.cacheControlsHash).toBe(baseline.cacheControlsHash);
+		expect(changed.cacheControlsHash).not.toBe(baseline.cacheControlsHash);
+
+		const transition = diagnoseAnthropicCacheTransition(
+			{ fingerprint: baseline, usage: usage(5000, 0) },
+			{ fingerprint: changed, usage: usage(0, 5000, 6000) },
+		);
+		expect(transition?.reasonCodes).toEqual(["cache_controls_changed"]);
+		expect(JSON.stringify(transition)).not.toContain("private");
+		expect(JSON.stringify(transition)).not.toContain("secret");
+		expect(JSON.stringify(transition)).not.toContain("5m");
+		expect(JSON.stringify(transition)).not.toContain("1h");
+	});
+
+	it("uses explicit cache-control overrides instead of the top-level marker", () => {
+		const baseline = fingerprintAnthropicRequest(
+			request({
+				cacheControls: [{ type: "ephemeral", ttl: "5m" }],
+				cacheControl: { type: "ephemeral", ttl: "5m" },
+			}),
+		);
+		const changedTopLevelOnly = fingerprintAnthropicRequest(
+			request({
+				cacheControls: [{ type: "ephemeral", ttl: "5m" }],
+				cacheControl: { type: "ephemeral", ttl: "1h" },
+			}),
+		);
+
+		expect(changedTopLevelOnly.cacheControlsHash).toBe(baseline.cacheControlsHash);
+		const transition = diagnoseAnthropicCacheTransition(
+			{ fingerprint: baseline, usage: usage(5000, 0) },
+			{ fingerprint: changedTopLevelOnly, usage: usage(0, 5000, 6000) },
+		);
+		expect(transition?.reasonCodes).toEqual(["ttl_or_provider_eviction"]);
+	});
+
 	it("reports the first changed message and classifies unchanged shape as eviction", () => {
 		const changed = diagnoseAnthropicCacheTransition(warmState(), {
 			fingerprint: fingerprintAnthropicRequest(
