@@ -799,7 +799,7 @@ providers:
 		}
 	});
 
-	it("migrates existing legacy GPT-5.5 heavy, QA, and tester overrides", async () => {
+	it("migrates the legacy advisor fallback and GPT-5.5 agent overrides while preserving custom advisor models", async () => {
 		const binaryContent = RUNNABLE_RELEASE_BINARY;
 		const checksum = new Bun.CryptoHasher("sha256").update(binaryContent).digest("hex");
 		const { root, installDir } = await createFakeInstallerTools(binaryContent, checksum);
@@ -807,7 +807,10 @@ providers:
 		try {
 			await Bun.write(
 				configPath,
-				`task:
+				`advisor:
+  enabled: false
+  fallbackModel: gpt-5.5
+task:
   agentModelOverrides:
     heavy_task: openai-codex/gpt-5.5:high
     qa: openai-codex/gpt-5.5:high
@@ -815,17 +818,31 @@ providers:
 `,
 			);
 
-			const result = await runShellInstaller(root, installDir);
-			expect(result.exitCode).toBe(0);
-			const config = YAML.parse(await Bun.file(configPath).text()) as {
+			const firstResult = await runShellInstaller(root, installDir);
+			expect(firstResult.exitCode).toBe(0);
+			const firstConfig = YAML.parse(await Bun.file(configPath).text()) as {
+				advisor: { enabled: boolean; fallbackModel: string };
 				task: { agentModelOverrides: Record<string, string> };
 			};
 
-			expect(config.task.agentModelOverrides).toMatchObject({
+			expect(firstConfig.advisor).toEqual({
+				enabled: false,
+				fallbackModel: "gpt-5.6-sol",
+			});
+			expect(firstConfig.task.agentModelOverrides).toMatchObject({
 				heavy_task: "openai-codex/gpt-5.6-terra:high",
 				qa: "openai-codex/gpt-5.6-sol:high",
 				tester: "openai-codex/gpt-5.6-sol:medium",
 			});
+
+			firstConfig.advisor.fallbackModel = "custom/advisor";
+			await Bun.write(configPath, YAML.stringify(firstConfig, null, 2));
+			const secondResult = await runShellInstaller(root, installDir);
+			expect(secondResult.exitCode).toBe(0);
+			const secondConfig = YAML.parse(await Bun.file(configPath).text()) as {
+				advisor: { fallbackModel: string };
+			};
+			expect(secondConfig.advisor.fallbackModel).toBe("custom/advisor");
 		} finally {
 			await fs.promises.rm(root, { recursive: true, force: true });
 		}

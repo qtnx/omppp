@@ -9,6 +9,7 @@
 ### Fixed
 
 - Image generation is now available by default with every session model and prefers a connected OpenAI Codex subscription.
+- Advisor safeguard-refusal fallback now defaults to GPT-5.6 Sol, and installation upgrades the legacy GPT-5.5 fallback without replacing custom advisor models.
 
 ## [1.7.6] - 2026-08-28
 
