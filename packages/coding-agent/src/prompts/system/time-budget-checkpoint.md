@@ -1,20 +1,20 @@
-## Active-work budget checkpoint
+## Time budget checkpoint — {{elapsed}} elapsed · {{remaining}} remaining · {{percentUsed}}% used
 
-Elapsed: {{elapsed}}. Remaining: {{remaining}}. Overtime: {{overtime}}. Used: {{percentUsed}}%. Phase: {{phase}}.
+Progress audit: name the deliverable slice completed and VERIFIED since the last checkpoint. None? The current approach is stalling — change it THIS turn: narrow to the requested deliverable, cancel stalled or nonessential subagents, do the blocking work directly.
 
-Rebalance the critical path now: name the next executable deliverable, stop work that cannot affect it, parallelize only genuinely independent ready production slices, finish the current slice, and run its cheapest named-failure verification. Bound every subagent's `max_runtime_seconds` by the remaining budget, monitor blockers, and cancel nonessential work.
+Rebalance now: state the next externally observable deliverable, drop work that cannot affect it, keep only its cheapest named-failure gate. New subagents get runtime caps within the remaining budget and yield on Acceptance.
 
 {{#when phase "===" "steady"}}
-Continue the current critical path without adding ceremony.
+On pace. Hold the critical path; add NOTHING — no new scope, gates, or ceremony.
 {{/when}}
 {{#when phase "===" "accelerate"}}
-Stop optional exploration and finish the smallest complete executable path.
+Over half the budget is gone. Stop exploration and optional work NOW; drive the smallest complete path to done. Prefer direct edits over new delegation round-trips.
 {{/when}}
 {{#when phase "===" "wrap-up"}}
-Stop new optional work; finish and verify the current requested slice before starting anything else.
+Final stretch — {{remaining}} left. Start NOTHING new. Finish the slice in flight, run its single decisive check, prepare the honest completion report.
 {{/when}}
 {{#when phase "===" "overtime"}}
-Finish the current executable slice, stop new optional work, and report reality. Do not abandon the requested task or pretend it passed.
+OVERTIME by {{overtime}} and climbing — this notice repeats every checkpoint until you yield. Shortest honest path to done, nothing else: finish the current slice, cancel everything nonessential, report reality. NEVER abandon the requested task, pad scope, or claim unverified success.
 {{/when}}
 
-Never fabricate commands, outputs, tests, or completion. Preserve correctness, requested behavior, and RISK-list gates.
+NEVER fabricate commands, outputs, tests, or completion. Correctness, requested behavior, and RISK-list gates are exempt from time pressure.
