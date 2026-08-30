@@ -404,6 +404,7 @@ import {
 	TIME_BUDGET_CUSTOM_TYPE,
 	TimeBudgetController,
 	type TimeBudgetSnapshot,
+	timeBudgetPhase,
 } from "./time-budget";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
@@ -800,23 +801,15 @@ export class AgentSession {
 		kind: "activation" | "checkpoint" | "overtime",
 		snapshot: TimeBudgetSnapshot,
 	): Promise<void> {
-		const phase =
-			kind === "overtime"
-				? "overtime"
-				: snapshot.remainingMs <= snapshot.budgetMs * 0.2
-					? "wrap-up"
-					: snapshot.remainingMs <= snapshot.budgetMs * 0.5
-						? "accelerate"
-						: "steady";
 		const content =
 			kind === "activation"
-				? timeBudgetActivationPrompt
+				? prompt.render(timeBudgetActivationPrompt, { budget: formatDuration(snapshot.budgetMs) })
 				: prompt.render(timeBudgetCheckpointTemplate, {
 						elapsed: formatDuration(snapshot.activeMs),
 						remaining: formatDuration(snapshot.remainingMs),
 						overtime: formatDuration(snapshot.overtimeMs),
 						percentUsed: Math.floor((snapshot.activeMs / snapshot.budgetMs) * 100),
-						phase,
+						phase: timeBudgetPhase(kind, snapshot),
 					});
 		await this.sendCustomMessage(
 			{

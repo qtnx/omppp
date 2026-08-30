@@ -25,6 +25,7 @@ import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "tex
 import taskAsyncContractTemplate from "../prompts/tools/task-async-contract.md" with { type: "text" };
 import taskRateLimitNoticeTemplate from "../prompts/tools/task-rate-limit-notice.md" with { type: "text" };
 import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: "text" };
+import { clampRuntimeToBudget } from "../session/time-budget";
 import { TASK_EFFORTS, type TaskEffort } from "../thinking";
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/hub";
@@ -893,8 +894,23 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			blockedAgent: this.#blockedAgent,
 			enableLsp: (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp"),
 			enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
-			maxRuntimeMs: toMaxRuntimeMs(params.max_runtime_seconds),
+			maxRuntimeMs: this.#effectiveMaxRuntimeMs(params),
 		});
+	}
+
+	/**
+	 * Spawn wall-clock cap with the session's active time budget enforced:
+	 * unset/unlimited caps become the remaining budget and larger explicit caps
+	 * are clamped down, so budget pressure reaches subagents mechanically (the
+	 * executor's 80% early-yield notice and hard abort) instead of relying on
+	 * the model to bound them.
+	 */
+	#effectiveMaxRuntimeMs(params: TaskParams): number | undefined {
+		const requested = toMaxRuntimeMs(params.max_runtime_seconds);
+		const snapshot = this.session.getTimeBudgetSnapshot?.();
+		if (!snapshot?.active) return requested;
+		const settingsMs = Math.max(0, Math.trunc(Number(this.session.settings.get("task.maxRuntimeMs") ?? 0) || 0));
+		return clampRuntimeToBudget(requested ?? settingsMs, snapshot);
 	}
 
 	/**
@@ -1733,7 +1749,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				blockedAgent: this.#blockedAgent,
 				enableLsp: (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp"),
 				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
-				maxRuntimeMs: toMaxRuntimeMs(params.max_runtime_seconds),
+				maxRuntimeMs: this.#effectiveMaxRuntimeMs(params),
 				signal,
 				onProgress: progress => {
 					latestProgress = { ...progress, recentTools: progress.recentTools.slice() };

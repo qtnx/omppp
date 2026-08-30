@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `/time-budget` now applies real pressure: activation and checkpoint reminders demand a newly verified slice per 5-minute interval, every post-deadline checkpoint escalates in the overtime register instead of decaying to wrap-up copy, and subagent runtime caps are automatically clamped to the remaining budget so the executor's early-yield notice and hard stop engage.
+
 ## [1.7.8] - 2026-08-29
 
 ### Added

@@ -351,3 +351,41 @@ export class TimeBudgetController {
 		return this.#snapshotAt(this.#now());
 	}
 }
+
+/** Floor for a budget-clamped subagent runtime cap: one checkpoint interval. */
+export const TIME_BUDGET_MIN_SUBAGENT_RUNTIME_MS = TIME_BUDGET_CHECKPOINT_MS;
+
+/**
+ * Clamp a subagent wall-clock cap to the remaining time budget. Inactive
+ * budget passes the configured value through. An unset or unlimited (`<= 0`)
+ * cap becomes the remaining budget; a smaller explicit cap wins. The floor
+ * keeps overtime spawns workable instead of collapsing to an instant abort —
+ * and never returns `0`, which the executor reads as unlimited.
+ */
+export function clampRuntimeToBudget(
+	configuredMs: number | undefined,
+	snapshot: TimeBudgetSnapshot | null | undefined,
+): number | undefined {
+	if (!snapshot?.active) return configuredMs;
+	const cap = Math.max(snapshot.remainingMs, TIME_BUDGET_MIN_SUBAGENT_RUNTIME_MS);
+	if (configuredMs === undefined || configuredMs <= 0) return cap;
+	return Math.min(configuredMs, cap);
+}
+
+export type TimeBudgetPhase = "steady" | "accelerate" | "wrap-up" | "overtime";
+
+/**
+ * Phase for reminder rendering. Any overtime signal — the one-shot overtime
+ * event, accrued overtime, or the logged flag at the exact boundary — keeps
+ * every subsequent checkpoint in the overtime register so the nag escalates
+ * instead of decaying back to wrap-up copy.
+ */
+export function timeBudgetPhase(
+	kind: "activation" | "checkpoint" | "overtime",
+	snapshot: TimeBudgetSnapshot,
+): TimeBudgetPhase {
+	if (kind === "overtime" || snapshot.overtimeMs > 0 || snapshot.overtimeLogged) return "overtime";
+	if (snapshot.remainingMs <= snapshot.budgetMs * 0.2) return "wrap-up";
+	if (snapshot.remainingMs <= snapshot.budgetMs * 0.5) return "accelerate";
+	return "steady";
+}

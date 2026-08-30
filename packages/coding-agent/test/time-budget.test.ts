@@ -10,12 +10,15 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
+	clampRuntimeToBudget,
 	formatTimeBudgetSnapshot,
 	parseTimeBudgetCommand,
 	TIME_BUDGET_CHECKPOINT_MS,
+	TIME_BUDGET_MIN_SUBAGENT_RUNTIME_MS,
 	TimeBudgetController,
 	type TimeBudgetEntryData,
 	type TimeBudgetSnapshot,
+	timeBudgetPhase,
 } from "@oh-my-pi/pi-coding-agent/session/time-budget";
 import { BUILTIN_MODE_SLASH_COMMANDS } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-modes";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -114,6 +117,73 @@ describe("time budget command parsing", () => {
 		for (const input of ["9m", "1m1m", "30", "-10m", "10x", "+", "+1h1h"]) {
 			expect(parseTimeBudgetCommand(input)).toBeTypeOf("string");
 		}
+	});
+});
+
+function snapshotWith(overrides: Partial<TimeBudgetSnapshot>): TimeBudgetSnapshot {
+	return {
+		active: true,
+		running: true,
+		budgetMs: 60 * 60_000,
+		activeMs: 0,
+		remainingMs: 60 * 60_000,
+		overtimeMs: 0,
+		overtimeLogged: false,
+		...overrides,
+	};
+}
+
+describe("time budget reminder phase", () => {
+	it("maps remaining budget to steady, accelerate, and wrap-up checkpoint registers", () => {
+		const budgetMs = 60 * 60_000;
+		expect(timeBudgetPhase("checkpoint", snapshotWith({ budgetMs, remainingMs: budgetMs * 0.6 }))).toBe("steady");
+		expect(timeBudgetPhase("checkpoint", snapshotWith({ budgetMs, remainingMs: budgetMs * 0.5 }))).toBe("accelerate");
+		expect(timeBudgetPhase("checkpoint", snapshotWith({ budgetMs, remainingMs: budgetMs * 0.2 }))).toBe("wrap-up");
+	});
+
+	it("keeps every post-deadline checkpoint in the overtime register instead of decaying to wrap-up", () => {
+		expect(timeBudgetPhase("overtime", snapshotWith({ remainingMs: 0 }))).toBe("overtime");
+		expect(
+			timeBudgetPhase("checkpoint", snapshotWith({ remainingMs: 0, overtimeMs: 60_000, overtimeLogged: true })),
+		).toBe("overtime");
+		expect(timeBudgetPhase("checkpoint", snapshotWith({ remainingMs: 0, overtimeMs: 0, overtimeLogged: true }))).toBe(
+			"overtime",
+		);
+	});
+
+	it("returns to remaining-based registers after an extension re-arms the budget", () => {
+		const budgetMs = 60 * 60_000;
+		expect(
+			timeBudgetPhase(
+				"checkpoint",
+				snapshotWith({ budgetMs, remainingMs: budgetMs * 0.6, overtimeMs: 0, overtimeLogged: false }),
+			),
+		).toBe("steady");
+	});
+});
+
+describe("clampRuntimeToBudget", () => {
+	it("passes the configured cap through when no budget is active", () => {
+		expect(clampRuntimeToBudget(undefined, null)).toBeUndefined();
+		expect(clampRuntimeToBudget(5_000, snapshotWith({ active: false }))).toBe(5_000);
+	});
+
+	it("turns unset and unlimited caps into the remaining budget", () => {
+		const snapshot = snapshotWith({ remainingMs: 20 * 60_000 });
+		expect(clampRuntimeToBudget(undefined, snapshot)).toBe(20 * 60_000);
+		expect(clampRuntimeToBudget(0, snapshot)).toBe(20 * 60_000);
+	});
+
+	it("clamps larger caps to the remaining budget and keeps smaller explicit caps", () => {
+		const snapshot = snapshotWith({ remainingMs: 20 * 60_000 });
+		expect(clampRuntimeToBudget(60 * 60_000, snapshot)).toBe(20 * 60_000);
+		expect(clampRuntimeToBudget(5 * 60_000, snapshot)).toBe(5 * 60_000);
+	});
+
+	it("never returns an unlimited or instant-abort cap in overtime", () => {
+		const snapshot = snapshotWith({ remainingMs: 0, overtimeMs: 60_000, overtimeLogged: true });
+		expect(clampRuntimeToBudget(undefined, snapshot)).toBe(TIME_BUDGET_MIN_SUBAGENT_RUNTIME_MS);
+		expect(clampRuntimeToBudget(60 * 60_000, snapshot)).toBe(TIME_BUDGET_MIN_SUBAGENT_RUNTIME_MS);
 	});
 });
 
