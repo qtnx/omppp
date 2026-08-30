@@ -5261,6 +5261,30 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"browser.annotateDelivery": {
+		type: "enum",
+		values: ["queue", "steer"] as const,
+		default: "queue",
+		ui: {
+			tab: "tools",
+			group: "Grep & Browser",
+			label: "Annotate Delivery",
+			description: "How browser annotation submissions reach the agent",
+			options: [
+				{
+					value: "queue",
+					label: "Queue",
+					description: "Visible follow-up message processed after the current turn (queued chip in the UI)",
+				},
+				{
+					value: "steer",
+					label: "Steer",
+					description: "Inject mid-turn between model requests (legacy)",
+				},
+			],
+		},
+	},
+
 	"browser.gpu": {
 		type: "boolean",
 		default: true,

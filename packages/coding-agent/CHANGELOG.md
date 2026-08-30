@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Browser annotate submissions now arrive as visible queued follow-up messages by default (queue chip in the UI, processed after the current turn); set `browser.annotateDelivery` to `steer` to restore mid-turn injection. The untrusted-content notice wrapper around annotation text was removed.
+
 ## [1.7.8] - 2026-08-29
 
 ### Added
