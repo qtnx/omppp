@@ -26,7 +26,6 @@ import {
 	type Context,
 	type CredentialDisabledEvent,
 	Effort,
-	type ImageContent,
 	type Message,
 	type Model,
 	type ModelUsageHealth,
@@ -34,7 +33,6 @@ import {
 	resolveModelServiceTier,
 	type ServiceTier,
 	type SimpleStreamOptions,
-	type TextContent,
 } from "@oh-my-pi/pi-ai";
 import { resolveApiKeyOnce } from "@oh-my-pi/pi-ai/auth-retry";
 import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
@@ -165,7 +163,6 @@ import type { MnemopiSessionState } from "./mnemopi/state";
 import { formatPreviewFeedback } from "./product-preview/feedback";
 import type { PreviewFeedback } from "./product-preview/types";
 import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
-import browserAnnotationTemplate from "./prompts/tools/browser-annotation.md" with { type: "text" };
 import codegraphReadyTemplate from "./prompts/tools/codegraph-ready.md" with { type: "text" };
 import lateDiagnosticTemplate from "./prompts/tools/lsp-late-diagnostic.md" with { type: "text" };
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
@@ -192,6 +189,7 @@ import {
 	discoverAuthStorage as discoverAuthStorageFromConfig,
 } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
+import { buildBrowserAnnotationBatchMessage, deliverBrowserAnnotation } from "./session/browser-annotation";
 import { getCodexSnapcompactProviderContextMaxBytes } from "./session/codex-payload-limits";
 import { withDateCwdReminder } from "./session/date-cwd-reminder";
 import { createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
@@ -200,7 +198,6 @@ import {
 	type CustomMessage,
 	convertToLlm,
 	LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE,
-	MAX_BACKGROUND_BROWSER_ANNOTATIONS,
 	PREVIEW_FEEDBACK_MESSAGE_TYPE,
 	replaceLlmImagesWithText,
 	stripOversizedCompactionSummaryImagesForCodex,
@@ -335,68 +332,6 @@ type McpNotificationEntry = {
 	serverName: string;
 	uri: string;
 };
-
-type BrowserAnnotationDetails = {
-	annotations: Array<{ tab: string; url: string; title?: string; timestamp: number }>;
-};
-function escapeBrowserAnnotationText(value: string): string {
-	return value.replace(/[&<>]/g, char => {
-		switch (char) {
-			case "&":
-				return "&amp;";
-			case "<":
-				return "&lt;";
-			case ">":
-				return "&gt;";
-			default:
-				return char;
-		}
-	});
-}
-
-function buildBrowserAnnotationBatchMessage(
-	entries: BrowserAnnotationEntry[],
-): CustomMessage<BrowserAnnotationDetails> | null {
-	if (entries.length === 0) return null;
-	const multiple = entries.length > 1;
-	const count = entries.length;
-	const annotations: BrowserAnnotationDetails["annotations"] = [];
-	for (const entry of entries) {
-		const annotation: BrowserAnnotationDetails["annotations"][number] = {
-			tab: entry.tab,
-			url: entry.url,
-			timestamp: entry.timestamp,
-		};
-		if (entry.title !== undefined) annotation.title = entry.title;
-		annotations.push(annotation);
-	}
-	const content: (TextContent | ImageContent)[] = [];
-	for (const [index, entry] of entries.entries()) {
-		const annotation = {
-			tab: escapeBrowserAnnotationText(entry.tab),
-			text: escapeBrowserAnnotationText(entry.text),
-		};
-		content.push({
-			type: "text",
-			text: prompt.render(browserAnnotationTemplate, {
-				annotation,
-				multiple,
-				index: index + 1,
-				count,
-			}),
-		});
-		content.push({ type: "image", data: entry.screenshot.data, mimeType: entry.screenshot.mimeType });
-	}
-	return {
-		role: "custom",
-		customType: BROWSER_ANNOTATION_MESSAGE_TYPE,
-		content,
-		display: true,
-		attribution: "user",
-		details: { annotations },
-		timestamp: Date.now(),
-	};
-}
 
 /** Build a visible custom steering message for product-preview feedback. */
 function buildPreviewFeedbackBatchMessage(
@@ -2171,12 +2106,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			recordEvalSubagentUsage: output => sessionManager.recordEvalSubagentOutput(output),
 			getClientBridge: () => session?.clientBridge,
 			queueDeferredDiagnostics: entry => session?.yieldQueue.enqueue(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, entry),
-			queueBrowserAnnotation: entry =>
-				session?.yieldQueue.enqueue(BROWSER_ANNOTATION_MESSAGE_TYPE, entry, {
-					maxEntries: MAX_BACKGROUND_BROWSER_ANNOTATIONS,
-				}),
-			// Mirror browser-annotation: enqueue into yieldQueue so idle agents wake
-			// and streaming turns pick it up as steering (not followUp).
+			queueBrowserAnnotation: entry => {
+				if (session) deliverBrowserAnnotation(session, entry);
+			},
+			// Preview feedback enqueues into yieldQueue so idle agents wake and
+			// streaming turns pick it up as steering (not followUp).
 			queuePreviewFeedback: feedback => session?.yieldQueue.enqueue(PREVIEW_FEEDBACK_MESSAGE_TYPE, feedback),
 			requestCompaction: (reason, options) =>
 				session?.requestCompactionFromAgent(reason, options) ?? {

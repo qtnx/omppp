@@ -22,7 +22,7 @@ import { resolveRepoKey } from "../learnings/repo-key";
 import * as learningStorage from "../learnings/storage";
 import { makeShareController, startPreviewServer } from "../product-preview";
 import type { AgentSession } from "../session/agent-session";
-import { BROWSER_ANNOTATION_MESSAGE_TYPE, MAX_BACKGROUND_BROWSER_ANNOTATIONS } from "../session/messages";
+import { deliverBrowserAnnotation } from "../session/browser-annotation";
 import type { BrowserAnnotationEntry } from "../tools";
 import { createBrowserAnnotationListener } from "../tools/browser";
 import {
@@ -602,9 +602,7 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const listener = createBrowserAnnotationListener(
 				{
 					queueBrowserAnnotation: (entry: BrowserAnnotationEntry) => {
-						runtime.session.yieldQueue.enqueue<BrowserAnnotationEntry>(BROWSER_ANNOTATION_MESSAGE_TYPE, entry, {
-							maxEntries: MAX_BACKGROUND_BROWSER_ANNOTATIONS,
-						});
+						deliverBrowserAnnotation(runtime.session, entry);
 					},
 				},
 				"chrome-extension",
