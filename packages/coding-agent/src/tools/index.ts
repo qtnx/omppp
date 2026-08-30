@@ -38,6 +38,7 @@ import type { CustomMessage } from "../session/messages";
 import type { UsageStatistics } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
+import type { TimeBudgetSnapshot } from "../session/time-budget";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
 import type { MacOSSandboxRelaunchResult } from "../task/omp-command";
@@ -344,6 +345,8 @@ export interface ToolSession {
 	restrictToolNames?: boolean;
 	/** Task recursion depth (0 = top-level, 1 = first child, etc.) */
 	taskDepth?: number;
+	/** Active-work time budget snapshot; only the main session returns one. */
+	getTimeBudgetSnapshot?: () => TimeBudgetSnapshot | null;
 	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python/Ruby/Julia state. */
 	getEvalSessionId?: () => string | null;
 	/** Get session file */
