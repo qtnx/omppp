@@ -4030,13 +4030,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// redacted from text before snapcompact rasterizes it into PNG frames. Clamp
 		// to the provider budget before normalizing decoder-incompatible images so
 		// dropped historical images never pay a transcode cost.
-		// URL-mirrored images: providers that fetch image URLs get a broker URL
-		// instead of inline base64. Decoration runs LAST among image transforms so
-		// the served bytes are exactly the bytes that would have shipped inline.
-		const blobBroker = createImageUrlServiceFromSettings(settings, sessionManager.getCwd(), model =>
-			modelRegistry.getApiKey(model, providerSessionId),
-		);
-		blobBroker?.prewarm();
 		const dateCwdReminder = new DateCwdReminderInjector();
 		const snapcompactSystemPromptMode = settings.get("snapcompact.systemPrompt");
 		const snapcompactInline =
@@ -4933,8 +4926,6 @@ const withReminder = dateCwdReminder.transform(
 						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
 						transformed = clampProviderContextImages(transformed, transformModel);
 						transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
-						transformed = await dropUnreadableContextImages(transformed, transformModel);
-						if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
 						return captureDateCwdReminder.transform(
 							transformed,
 							formatLocalCalendarDate(),
