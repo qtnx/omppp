@@ -106,6 +106,7 @@ import {
 } from "./anthropic-wire";
 import {
 	CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+	claudeCodeSdkVersion,
 	claudeCodeSystemInstruction,
 	claudeCodeVersion,
 	claudeToolPrefix,
@@ -189,6 +190,7 @@ const claudeCodeUtilityBetaDefaults = [
 ] as const;
 const claudeCodeAgentBetaDefaults = [
 	"claude-code-20250219",
+	oauthAuthBeta,
 	"interleaved-thinking-2025-05-14",
 	thinkingTokenCountBeta,
 	contextManagementBeta,
@@ -3171,6 +3173,7 @@ type SystemBlockOptions = {
 	cacheControl?: AnthropicCacheControl;
 	systemPromptCache?: Context["systemPromptCache"];
 };
+
 /**
  * Place system-block cache breakpoints that survive volatile project context.
  *
@@ -3234,7 +3237,12 @@ export function buildAnthropicSystemBlocks(
 			{
 				type: "text",
 				text: claudeCodeSystemInstruction,
-				cache_control: cacheControl ? cloneAnthropicCacheControl(cacheControl) : { type: "ephemeral" },
+				cache_control:
+					cacheControl && (sanitizedPrompts.length === 0 || firstUserMessageText !== undefined)
+						? cloneAnthropicCacheControl(cacheControl)
+						: cacheControl
+							? undefined
+							: { type: "ephemeral" },
 			},
 		];
 
@@ -3256,6 +3264,7 @@ export function buildAnthropicSystemBlocks(
 	}
 
 	const blocks: AnthropicSystemBlock[] = [];
+
 	for (const instruction of trimmedInstructions) {
 		blocks.push({ type: "text", text: instruction });
 	}
@@ -3402,10 +3411,6 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 					redactThinking: shouldUseCoworkRedactThinkingBeta(model, thinkingEnabled, thinkingDisplay),
 					supportsContextManagement: model.compat.supportsContextManagement,
 				})
-			: [],
-					disableStrictTools,
-					shouldUseCoworkRedactThinkingBeta(model, thinkingEnabled, thinkingDisplay),
-				)
 			: [],
 	});
 
@@ -3590,7 +3595,7 @@ function applyPromptCaching(
 			params.system as AnthropicSystemBlock[],
 			cacheControl,
 			maxSystemBreakpoints,
-			isCCLayout ? firstCacheableSystemIndex(params.system as AnthropicSystemBlock[]) : 0,
+			0,
 		);
 	}
 	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;

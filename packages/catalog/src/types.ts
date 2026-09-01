@@ -432,6 +432,13 @@ export interface OpenAICompat {
  * that proxy gateways (Vertex AI, AWS Bedrock-style fronts, etc.) reject.
  */
 export interface AnthropicCompat {
+	/** Whether thinking requests may include `context_management` and its beta header. Default: true. */
+	supportsContextManagement?: boolean;
+	/**
+	 * Whether requests may carry `output_config.effort` (and its effort beta
+	 * header). Vertex AI rejects the field/header. Default: true.
+	 */
+	supportsOutputEffort?: boolean;
 	/**
 	 * Stream-watchdog idle-timeout fallback in ms for slow reasoning hosts.
 	 * Set to 0 to disable the inter-event idle watchdog entirely, matching

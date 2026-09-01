@@ -62,6 +62,9 @@ const SIGNER_OWNED_HEADERS = new Set(["host", "x-amz-date", "x-amz-content-sha25
 const BEDROCK_RESERVED_HEADERS = new Set(["content-type", "accept", "authorization", "content-length"]);
 
 export type BedrockThinkingDisplay = "summarized" | "omitted";
+/** Bedrock guardrail trace verbosity, mirrors the Converse `guardrailConfig.trace` values. */
+export type BedrockGuardrailTrace = "enabled" | "disabled" | "enabled_full";
+
 
 /** Bedrock guardrail trace verbosity, mirrors the Converse `guardrailConfig.trace` values. */
 export type BedrockGuardrailTrace = "enabled" | "disabled" | "enabled_full";

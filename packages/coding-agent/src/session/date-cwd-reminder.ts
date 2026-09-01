@@ -84,7 +84,6 @@ export class DateCwdReminderInjector {
 					message: {
 						role: "developer",
 						content: reminder,
-						synthetic: true,
 						timestamp: Date.now(),
 					},
 				});

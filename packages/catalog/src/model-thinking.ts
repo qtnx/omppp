@@ -209,11 +209,19 @@ function fillThinkingWireDefaults<TApi extends Api>(
 		(impliesMandatoryReasoning(parsed, spec) ||
 			isQwenTemplateReasoningEffortCompat(compat) ||
 			isOpenCodeGatewayOxAlphaModel(spec));
+	const needsPrefixBinding = thinking.prefixBinding === undefined && isAnthropicPrefixBindingModel(spec, parsed);
 	const inferredDefaultLevel = inferDefaultEffort(spec);
 	const needsDefaultLevel =
 		thinking.defaultLevel === undefined &&
 		(inferredDefaultLevel !== undefined || isGlm53ReasoningEffortModelId(spec.id));
-	if (!effortsChanged && !shouldReplaceEffortMap && !needsDisplay && !needsRequiresEffort && !needsDefaultLevel) {
+	if (
+		!effortsChanged &&
+		!shouldReplaceEffortMap &&
+		!needsDisplay &&
+		!needsRequiresEffort &&
+		!needsPrefixBinding &&
+		!needsDefaultLevel
+	) {
 		return thinking;
 	}
 	const filled: ThinkingConfig = { ...thinking };
@@ -236,10 +244,11 @@ function fillThinkingWireDefaults<TApi extends Api>(
 	if (needsRequiresEffort) {
 		filled.requiresEffort = true;
 	}
+	if (needsPrefixBinding) {
+		filled.prefixBinding = true;
+	}
 	return filled;
 }
-
-/** Derive thinking from identity + resolved compat, ignoring any baked value. Generator-side entry. */
 export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: CompatOf<TApi>): ThinkingConfig {
 	const parsed = parseKnownModel(spec.id);
 	const efforts = inferSupportedEfforts(parsed, spec, compat);
@@ -271,6 +280,9 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
 	) {
 		config.requiresEffort = true;
 	}
+	if (isAnthropicPrefixBindingModel(spec, parsed)) {
+		config.prefixBinding = true;
+	}
 	return config;
 }
 
@@ -283,6 +295,18 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
  * without effort support — binary thinking formats (zai/qwen) drive reasoning
  * through other request fields.
  */
+function isAnthropicPrefixBindingModel<TApi extends Api>(
+	spec: ModelSpec<TApi>,
+	parsed: ParsedModel,
+): boolean {
+	return (
+		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
+		parsed.family === "anthropic" &&
+		(parsed.kind === "fable" || parsed.kind === "mythos") &&
+		semverGte(parsed.version, "5.1")
+	);
+}
+
 function omitsWireReasoningEffort(api: Api, compat: CompatOf<Api>): boolean {
 	if (api !== "openai-responses" && api !== "openai-codex-responses" && api !== "azure-openai-responses") {
 		return false;
@@ -851,6 +875,7 @@ function inferThinkingControlMode<TApi extends Api>(
 			return "budget";
 
 		case "bedrock-converse-stream":
+			if (parsedModel.family === "openai") return "effort";
 			if (parsedModel.family === "anthropic") {
 				if (isAnthropicAdaptiveGenAtLeast(parsedModel, "4.6")) {
 					return "anthropic-adaptive";

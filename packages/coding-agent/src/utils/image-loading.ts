@@ -5,7 +5,7 @@ import type {
 	ImageContent,
 	Message,
 	Model,
-	OpenAIResponsesHistoryPayload,
+	ProviderPayload,
 	TextContent,
 } from "@oh-my-pi/pi-ai";
 import { rasterizeSvg } from "@oh-my-pi/pi-natives";
