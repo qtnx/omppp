@@ -516,7 +516,12 @@ function getAnthropicProviderSessionState(
 	if (!providerSessionState) return undefined;
 	const key = anthropicProviderSessionStateKey(baseUrl, modelId);
 	const existing = providerSessionState.get(key) as AnthropicProviderSessionState | undefined;
-	if (existing) return existing;
+	if (existing) {
+		existing.prefixDroppedThinkingBlocks ??= new Set();
+		existing.activeToolNames ??= new Set();
+		existing.controlTransitions ??= [];
+		return existing;
+	}
 	const created = createAnthropicProviderSessionState();
 	providerSessionState.set(key, created);
 	return created;
@@ -3408,10 +3413,17 @@ const MAX_CACHE_BREAKPOINTS = 4;
 function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl: AnthropicCacheControl): boolean {
 	for (let index = blocks.length - 1; index >= 0; index--) {
 		const block = blocks[index];
-		// Anthropic rejects cache_control on generated reasoning and fallback
-		// boundary blocks. Preserve the requested trailing boundary on every
-		// ordinary content block, including tool use and tool results.
-		if (block.type === "thinking" || block.type === "redacted_thinking" || block.type === "fallback") {
+		// Anthropic rejects cache_control on generated reasoning, fallback
+		// boundaries, and mid-conversation tool-control blocks. Preserve the
+		// requested trailing boundary on ordinary content, including tool use
+		// and tool results.
+		if (
+			block.type === "thinking" ||
+			block.type === "redacted_thinking" ||
+			block.type === "fallback" ||
+			block.type === "tool_addition" ||
+			block.type === "tool_removal"
+		) {
 			continue;
 		}
 		if ("cache_control" in block && block.cache_control != null) return false;

@@ -129,8 +129,8 @@ async function normalizeNativeResponsesItem(item: Record<string, unknown>): Prom
 }
 
 async function normalizeNativeResponsesHistoryPayload(
-	payload: OpenAIResponsesHistoryPayload | undefined,
-): Promise<OpenAIResponsesHistoryPayload | undefined> {
+	payload: ProviderPayload | undefined,
+): Promise<ProviderPayload | undefined> {
 	if (payload?.type !== "openaiResponsesHistory" || !Array.isArray(payload.items)) return payload;
 	let items: Array<Record<string, unknown>> | undefined;
 	for (let index = 0; index < payload.items.length; index++) {

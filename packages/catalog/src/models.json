@@ -27874,6 +27874,7 @@
 				],
 				"supportsDisplay": true
 			},
+
 			"requiresGlyphTokenization": true,
 			"tokenizer": "claude-v5-sonnet",
 			"supportsComputerUse": false,
@@ -28424,6 +28425,7 @@
 				],
 				"supportsDisplay": true
 			},
+
 			"requiresGlyphTokenization": true,
 			"tokenizer": "claude-v5-sonnet",
 			"supportsComputerUse": false,
@@ -30366,6 +30368,7 @@
 				],
 				"supportsDisplay": true
 			},
+
 			"requiresGlyphTokenization": true,
 			"tokenizer": "claude-v5-sonnet",
 			"supportsComputerUse": false,
@@ -30950,6 +30953,7 @@
 				],
 				"supportsDisplay": true
 			},
+
 			"requiresGlyphTokenization": true,
 			"tokenizer": "claude-v5-sonnet",
 			"supportsComputerUse": false,
@@ -32211,6 +32215,7 @@
 				],
 				"supportsDisplay": true
 			},
+
 			"requiresGlyphTokenization": true,
 			"tokenizer": "claude-v5-sonnet",
 			"supportsComputerUse": false,
@@ -45096,6 +45101,7 @@
 			},
 			"cursorMaxMode": false,
 			"tokenizer": "claude-v3",
+
 			"requiresGlyphTokenization": true,
 			"supportsComputerUse": false,
 			"supportsComputerUseConfig": false
@@ -66199,6 +66205,7 @@
 		}
 	},
 	"google-vertex": {
+
 		"claude-fable-5@default": {
 			"id": "claude-fable-5@default",
 			"name": "Claude Fable 5",
@@ -76895,6 +76902,7 @@
 				"dropThinkingWhenReasoningEffort": false
 			}
 		},
+
 		"anthropic/claude-haiku-4.5": {
 			"id": "anthropic/claude-haiku-4.5",
 			"name": "Claude Haiku 4.5",
@@ -216474,6 +216482,7 @@
 				],
 				"supportsDisplay": true
 			},
+
 			"requiresGlyphTokenization": true,
 			"tokenizer": "claude-v5-sonnet",
 			"supportsComputerUse": false,
@@ -226389,6 +226398,7 @@
 			},
 			"supportsComputerUseConfig": false
 		},
+
 		"anthropic/claude-haiku-4.5": {
 			"id": "anthropic/claude-haiku-4.5",
 			"name": "Claude Haiku 4.5",
@@ -267413,6 +267423,7 @@
 				"requiresThinkingAsText": false,
 				"requiresMistralToolIds": false,
 				"thinkingFormat": "openai",
+
 				"reasoningDisableMode": "venice-disable-thinking",
 				"omitReasoningEffort": false,
 				"includeEncryptedReasoning": true,
@@ -279534,6 +279545,7 @@
 				"supportsEagerToolInputStreaming": false,
 				"supportsLongCacheRetention": false,
 				"supportsMidConversationSystem": false,
+
 				"supportsForcedToolChoice": false,
 				"supportsSamplingParams": false,
 				"requiresToolResultId": false,

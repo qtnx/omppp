@@ -326,6 +326,63 @@ describe("Anthropic prior-turn thinking preservation (#2257, #2265)", () => {
 		}
 	});
 
+	it("strips retained-tail thinking produced before a client-side compaction", () => {
+		const target = makeAnthropicModel({
+			provider: "anthropic",
+			id: "claude-fable-5-1",
+			baseUrl: "https://api.anthropic.com",
+		});
+		const messages: Message[] = [
+			{
+				role: "user",
+				content: "Compacted session summary",
+				historyRewriteAt: 100,
+				timestamp: 100,
+			},
+			makeAssistant(
+				[
+					{ type: "thinking", thinking: "reasoning from the old prefix", thinkingSignature: "sig_old" },
+					{ type: "text", text: "Retained visible answer." },
+				],
+				{
+					provider: "anthropic",
+					model: target.id,
+					stopReason: "stop",
+					timestamp: 50,
+				},
+			),
+			makeUser("Continue after compaction."),
+			makeAssistant(
+				[
+					{ type: "thinking", thinking: "reasoning from the new prefix", thinkingSignature: "sig_new" },
+					{ type: "text", text: "New answer." },
+				],
+				{
+					provider: "anthropic",
+					model: target.id,
+					stopReason: "stop",
+					timestamp: 200,
+				},
+			),
+			makeUser("One more step."),
+		];
+
+		const params = convertAnthropicMessages(messages, target, false);
+		const assistants = params.filter(param => param.role === "assistant");
+		const retainedBlocks = assistants[0]?.content;
+		const newBlocks = assistants[1]?.content;
+		if (!Array.isArray(retainedBlocks) || !Array.isArray(newBlocks)) {
+			throw new Error("expected assistant content blocks");
+		}
+		expect(retainedBlocks.find(block => block.type === "thinking")).toBeUndefined();
+		expect(retainedBlocks).toContainEqual({ type: "text", text: "Retained visible answer." });
+		expect(newBlocks.find(block => block.type === "thinking")).toEqual({
+			type: "thinking",
+			thinking: "reasoning from the new prefix",
+			signature: "sig_new",
+		});
+	});
+
 	it("does not demote same-model official Anthropic unsigned thinking to text", () => {
 		// Same-model Anthropic replay is not a dialect transition. If a committed
 		// tool-use turn lacks a usable thinking signature, the native thinking block

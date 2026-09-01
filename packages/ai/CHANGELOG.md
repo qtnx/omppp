@@ -33,6 +33,11 @@
 
 ### Added
 
+- Add support for thinking-binding controls on Amazon Bedrock
+- Enable dynamic mid-conversation updates for system prompts, toolsets, and reasoning effort on Anthropic models
+- Add support for deferred tool loading on Anthropic models
+- Add support for automatic recovery from "preserved-thinking" signature errors and clean up stale thinking blocks during conversation history rewrites
+- Add `anthropicPrefixMismatchBehavior` option to control handling of invalid thinking blocks
 - Enable prompt caching for system instructions to improve performance
 
 ### Fixed
