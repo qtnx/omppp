@@ -32,6 +32,7 @@ import type {
 	ImageContent,
 	Message,
 	Model,
+	ProviderInputTransformation,
 	ProviderSessionState,
 	RawSseEvent,
 	RedactedThinkingContent,
@@ -98,7 +99,9 @@ import {
 	type MessageCreateParams,
 	type MessageCreateParamsStreaming,
 	type MessageParam,
+	parseAnthropicInputTransformations,
 	type RawMessageStreamEvent,
+	THINKING_BINDING_CONTROLS_BETA,
 	type TextBlockParam,
 } from "./anthropic-wire";
 import {
@@ -1900,10 +1903,92 @@ function calculateFallbackTurnCost(
  * replayed as `signature: ""`. Exported for the compat tests.
  */
 const INVALID_THINKING_SIGNATURE_PATTERN = /invalid\s+`?signature`?\s+in\s+`?thinking`?(?:\s+block)?/i;
+const THINKING_PREFIX_BINDING_PATTERN =
+	/(?:bound to a different conversation|block_binding\.prefix_mismatch_behavior|prefix_mismatch_behavior)/i;
+
+/** Detects the preserved-thinking error caused by rewriting a signed block's conversation prefix. */
+export function isThinkingPrefixBindingError(message: string): boolean {
+	return INVALID_THINKING_SIGNATURE_PATTERN.test(message) && THINKING_PREFIX_BINDING_PATTERN.test(message);
+}
+
 export function isInvalidThinkingSignatureError(message: string): boolean {
 	return INVALID_THINKING_SIGNATURE_PATTERN.test(message);
 }
 
+const INPUT_TRANSFORMATION_PATH_PATTERN = /^messages\.(\d+)\.content\.(\d+)$/;
+
+function thinkingReplayKey(block: ContentBlockParam): string | undefined {
+	if (block.type === "thinking") return block.signature ? `thinking:${block.signature}` : undefined;
+	if (block.type === "redacted_thinking") return block.data ? `redacted:${block.data}` : undefined;
+	return undefined;
+}
+
+function rememberPrefixDroppedThinking(
+	params: MessageCreateParamsStreaming,
+	transformations: readonly ProviderInputTransformation[],
+	state: AnthropicProviderSessionState | undefined,
+): void {
+	if (!state) return;
+	let firstMessageIndex: number | undefined;
+	let firstBlockIndex: number | undefined;
+	for (const transformation of transformations) {
+		if (transformation.reason !== "prefix_binding_mismatch" || typeof transformation.path !== "string") continue;
+		const match = INPUT_TRANSFORMATION_PATH_PATTERN.exec(transformation.path);
+		if (!match) continue;
+		const messageIndex = Number(match[1]);
+		const blockIndex = Number(match[2]);
+		if (
+			firstMessageIndex === undefined ||
+			messageIndex < firstMessageIndex ||
+			(messageIndex === firstMessageIndex && blockIndex < (firstBlockIndex ?? Number.POSITIVE_INFINITY))
+		) {
+			firstMessageIndex = messageIndex;
+			firstBlockIndex = blockIndex;
+		}
+	}
+	if (firstMessageIndex === undefined || firstBlockIndex === undefined) return;
+	for (let messageIndex = firstMessageIndex; messageIndex < params.messages.length; messageIndex++) {
+		const message = params.messages[messageIndex];
+		if (!message || !Array.isArray(message.content)) continue;
+		const blockStart = messageIndex === firstMessageIndex ? firstBlockIndex : 0;
+		for (let blockIndex = blockStart; blockIndex < message.content.length; blockIndex++) {
+			const key = thinkingReplayKey(message.content[blockIndex]!);
+			if (key) state.prefixDroppedThinkingBlocks.add(key);
+		}
+	}
+}
+
+function applyReportedInputTransformations(
+	output: AssistantMessage,
+	params: MessageCreateParamsStreaming,
+	state: AnthropicProviderSessionState | undefined,
+	value: unknown,
+	seen: Set<string>,
+	replace = false,
+): void {
+	if (value === undefined || value === null) return;
+	if (replace) {
+		seen.clear();
+		output.inputTransformations = [];
+	}
+	const fresh: ProviderInputTransformation[] = [];
+	for (const transformation of parseAnthropicInputTransformations(value)) {
+		const key = JSON.stringify(transformation);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		fresh.push(transformation);
+	}
+	if (fresh.length === 0) return;
+	output.inputTransformations = [...(output.inputTransformations ?? []), ...fresh];
+	rememberPrefixDroppedThinking(params, fresh, state);
+	for (const transformation of fresh) {
+		if (transformation.reason !== "prefix_binding_mismatch") continue;
+		logger.warn("anthropic: dropped thinking block after conversation prefix changed", {
+			model: output.model,
+			path: transformation.path,
+		});
+	}
+}
 /**
  * Prepend a pointed remediation to Anthropic's `Invalid signature in thinking
  * block` 400 when the model looks like an unmarked custom signing proxy
@@ -1913,7 +1998,7 @@ export function isInvalidThinkingSignatureError(message: string): boolean {
  * case into a one-line fix instead of a silent retry loop (#4297).
  */
 export function maybeAddReplayUnsignedThinkingHint(model: Model<"anthropic-messages">, message: string): string {
-	if (!isInvalidThinkingSignatureError(message)) return message;
+	if (!isInvalidThinkingSignatureError(message) || isThinkingPrefixBindingError(message)) return message;
 	if (model.compat.officialEndpoint) return message;
 	if (model.compatConfig?.replayUnsignedThinking !== undefined) return message;
 	const hint = `Provider "${model.provider}" looks like an Anthropic-compatible signing proxy: it rejected a replayed unsigned thinking block. Set \`compat.replayUnsignedThinking: false\` under \`providers.${model.provider}\` in your models.yml and retry. See https://github.com/can1357/oh-my-pi/issues/4297.`;
@@ -2043,12 +2128,12 @@ const streamAnthropicOnce = (
 				) {
 					extraBetas.push(effortBeta);
 				}
-				if (model.compat.supportsMidConversationSystem && !extraBetas.includes(midConversationSystemBeta)) {
-					// convertAnthropicMessages may upgrade developer turns to the
-					// mid-conversation `system` role on these models; API-key requests
-					// need the beta alongside the role (OAuth agent requests already
-					// carry it in the Claude Code list).
-					extraBetas.push(midConversationSystemBeta);
+				if (
+					prefixMismatchBehavior &&
+					!isVertexRawPredictUrl(baseUrl) &&
+					!extraBetas.includes(THINKING_BINDING_CONTROLS_BETA)
+				) {
+					extraBetas.push(THINKING_BINDING_CONTROLS_BETA);
 				}
 				// `context_management.clear_thinking_20251015` requires this beta. OAuth
 				// requests carry it in `claudeCodeAgentBetaDefaults`; API-key requests
@@ -2153,6 +2238,7 @@ const streamAnthropicOnce = (
 				return nextParams;
 			};
 			let params = await prepareParams();
+			const seenInputTransformations = new Set<string>();
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(model.compat.streamIdleTimeoutMs);
 			const firstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
 			const requestTimeoutMs =
@@ -2193,6 +2279,13 @@ const streamAnthropicOnce = (
 					throw new AIError.AnthropicStreamEnvelopeError("Anthropic cache refresh response omitted usage");
 				}
 				if (typeof body.id === "string") output.responseId = body.id;
+				applyReportedInputTransformations(
+					output,
+					params,
+					providerSessionState,
+					body.input_transformations,
+					seenInputTransformations,
+				);
 				output.usage.input = wireUsage.input_tokens ?? 0;
 				output.usage.output = wireUsage.output_tokens ?? 0;
 				output.usage.cacheRead = wireUsage.cache_read_input_tokens ?? 0;
@@ -2311,8 +2404,8 @@ const streamAnthropicOnce = (
 						? mergeAnthropicBetaHeader(mergedCallerHeaders, effortBeta)
 						: undefined;
 				const perRequestHeaders =
-					umansGatewayWebSearchHeader || injectedClientEffortHeaders
-						? { ...umansGatewayWebSearchHeader, ...injectedClientEffortHeaders }
+					umansGatewayWebSearchHeader || injectedClientBetaHeaders
+						? { ...umansGatewayWebSearchHeader, ...injectedClientBetaHeaders }
 						: undefined;
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
@@ -2444,6 +2537,13 @@ const streamAnthropicOnce = (
 							sawMessageStart = true;
 							const startMessage = event.message;
 							if (startMessage?.id) output.responseId = startMessage.id;
+							applyReportedInputTransformations(
+								output,
+								params,
+								providerSessionState,
+								startMessage?.input_transformations,
+								seenInputTransformations,
+							);
 							const startUsage = startMessage?.usage;
 							if (startUsage) {
 								applyAnthropicUsageExtras(output.usage, startUsage);
@@ -2873,13 +2973,40 @@ const streamAnthropicOnce = (
 						firstTokenTime = undefined;
 						continue;
 					}
+					const streamFailureMessage =
+						streamFailure instanceof Error ? streamFailure.message : String(streamFailure);
+					if (
+						!dropAllThinking &&
+						firstTokenTime === undefined &&
+						!streamedReplayUnsafeContent &&
+						isThinkingPrefixBindingError(streamFailureMessage)
+					) {
+						logger.warn("anthropic: thinking prefix changed, stripping bound thinking and retrying", {
+							provider: model.provider,
+							model: model.id,
+							baseUrl,
+						});
+						prefixMismatchBehavior = undefined;
+						dropAllThinking = true;
+						params = await prepareParams();
+						providerRetryAttempt = 0;
+						output.content.length = 0;
+						output.model = model.id;
+						output.responseId = undefined;
+						output.errorMessage = undefined;
+						output.inputTransformations = undefined;
+						output.providerPayload = undefined;
+						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+						output.stopReason = "stop";
+						firstTokenTime = undefined;
+						continue;
+					}
 					if (
 						!forceDemoteUnsignedThinking &&
 						firstTokenTime === undefined &&
 						!streamedReplayUnsafeContent &&
-						isInvalidThinkingSignatureError(
-							streamFailure instanceof Error ? streamFailure.message : String(streamFailure),
-						)
+						!isThinkingPrefixBindingError(streamFailureMessage) &&
+						isInvalidThinkingSignatureError(streamFailureMessage)
 					) {
 						logger.warn(
 							"anthropic: signing proxy detected (Invalid signature in thinking block), demoting unsigned thinking and retrying",
@@ -2887,7 +3014,7 @@ const streamAnthropicOnce = (
 								provider: model.provider,
 								model: model.id,
 								baseUrl,
-								error: streamFailure instanceof Error ? streamFailure.message : String(streamFailure),
+								error: streamFailureMessage,
 							},
 						);
 						if (providerSessionState) {
@@ -3040,6 +3167,7 @@ type SystemBlockOptions = {
 	extraInstructions?: string[];
 	/** Text of the first user message — used as fingerprint seed for the billing header. */
 	firstUserMessageText?: string;
+
 	cacheControl?: AnthropicCacheControl;
 	systemPromptCache?: Context["systemPromptCache"];
 };
@@ -3103,7 +3231,11 @@ export function buildAnthropicSystemBlocks(
 	if (includeClaudeCodeInstruction && !hasBillingHeader) {
 		const blocks: AnthropicSystemBlock[] = [
 			{ type: "text", text: createClaudeBillingHeader(firstUserMessageText ?? "") },
-			{ type: "text", text: claudeCodeSystemInstruction, cache_control: { type: "ephemeral" } },
+			{
+				type: "text",
+				text: claudeCodeSystemInstruction,
+				cache_control: cacheControl ? cloneAnthropicCacheControl(cacheControl) : { type: "ephemeral" },
+			},
 		];
 
 		for (const instruction of trimmedInstructions) {
@@ -3831,6 +3963,15 @@ function buildParams(
 		}
 	}
 
+	if (prefixMismatchBehavior) {
+		if (!thinking && model.thinking?.mode === "anthropic-adaptive") {
+			thinking = { type: "adaptive" };
+		}
+		if (thinking?.type === "adaptive" || thinking?.type === "enabled") {
+			thinking.block_binding = { prefix_mismatch_behavior: prefixMismatchBehavior };
+		}
+	}
+
 	// Pre-compute context_management. Send keep: "all" for every enabled or
 	// adaptive thinking request (OAuth + API-key) — not just OAuth. Without
 	// this directive Anthropic-compatible backends (Z.AI, Kimi, DeepSeek, …)
@@ -4060,7 +4201,11 @@ export function convertAnthropicMessages(
 	messages: Message[],
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
-	opts?: { serverSideFallbackEnabled?: boolean },
+	opts?: {
+		serverSideFallbackEnabled?: boolean;
+		dropAllThinking?: boolean;
+		droppedThinkingBlocks?: ReadonlySet<string>;
+	},
 ): AnthropicMessageParam[] {
 	// Indices of params emitted from `developer` messages. After the main pass,
 	// the ones whose placement satisfies Anthropic's mid-conversation rules are
@@ -4145,6 +4290,7 @@ export function convertAnthropicMessages(
 						});
 					}
 				} else if (block.type === "redactedThinking") {
+					if (opts?.dropAllThinking || opts?.droppedThinkingBlocks?.has(`redacted:${block.data}`)) continue;
 					if (block.data.trim().length === 0) continue;
 					blocks.push({
 						type: "redacted_thinking",

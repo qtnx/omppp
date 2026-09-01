@@ -2025,6 +2025,7 @@ function mapOptionsForApi<TApi extends Api>(
 		acceptEmptyResponse: options?.acceptEmptyResponse,
 		anthropicCacheRefreshRequest: options?.anthropicCacheRefreshRequest,
 		anthropicCacheMessageBoundary: options?.anthropicCacheMessageBoundary,
+		anthropicPrefixMismatchBehavior: options?.anthropicPrefixMismatchBehavior,
 		...simpleProviderOptions,
 	};
 
