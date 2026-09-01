@@ -206,6 +206,7 @@ const taskBudgetBeta = "task-budgets-2026-03-13";
 const effortBeta = "effort-2025-11-24";
 const serverSideFallbackBeta = "server-side-fallback-2026-06-01";
 
+
 function buildClaudeCodeBetas({
 	agentRequest,
 	thinkingRequest,
@@ -407,6 +408,20 @@ let warnedStopSequencesTrim = false;
 
 const ANTHROPIC_PROVIDER_SESSION_STATE_KEY = "anthropic-messages";
 
+/**
+ * A mid-conversation `role: "system"` message omp inserts at a fixed slot in
+ * the wire history so top-level `tools` and `output_config.effort` can stay
+ * byte-stable for preserved thinking and the prompt cache. `messageCount` is
+ * the number of wire messages preceding the control; `anchor` fingerprints the
+ * message right before it so a rewritten history (compaction, branch switch)
+ * discards the transition instead of splicing it into the wrong turn.
+ */
+type AnthropicControlTransition = {
+	messageCount: number;
+	anchor: string;
+	content: ContentBlockParam[];
+	effort?: AnthropicOutputEffort;
+};
 type AnthropicProviderSessionState = ProviderSessionState & {
 	/**
 	 * Whether this session has learned that the endpoint rejects the fast-mode
@@ -417,6 +432,17 @@ type AnthropicProviderSessionState = ProviderSessionState & {
 	fastModeDisabled: boolean;
 	cacheDiagnostics?: AnthropicCacheDiagnosticState;
 	prefixDroppedThinkingBlocks: Set<string>;
+	/** Model the control baseline below was captured for; a switch re-baselines. */
+	controlModelId: string | undefined;
+	/** `tools` declared at baseline plus later `defer_loading` additions, in wire order. */
+	declaredTools: AnthropicWireTool[] | undefined;
+	activeToolNames: Set<string>;
+	stableSystemBlocks: AnthropicSystemBlock[] | undefined;
+	systemFingerprint: string | undefined;
+	controlTransitions: AnthropicControlTransition[];
+	baseEffort: AnthropicOutputEffort | undefined;
+	baseEffortWire: AnthropicOutputEffort | undefined;
+	currentEffort: AnthropicOutputEffort | undefined;
 };
 
 function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
@@ -425,11 +451,23 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 		fastModeDisabled: false,
 		replayUnsignedThinkingDisabled: false,
 		prefixDroppedThinkingBlocks: new Set(),
+		controlModelId: undefined,
+		declaredTools: undefined,
+		activeToolNames: new Set(),
+		stableSystemBlocks: undefined,
+		systemFingerprint: undefined,
+		controlTransitions: [],
+		baseEffort: undefined,
+		baseEffortWire: undefined,
+		currentEffort: undefined,
 		close: () => {
 			state.strictToolsDisabled = false;
 			state.fastModeDisabled = false;
 			state.replayUnsignedThinkingDisabled = false;
 			state.cacheDiagnostics = undefined;
+			state.prefixDroppedThinkingBlocks.clear();
+			state.controlModelId = undefined;
+			resetAnthropicControlState(state);
 		},
 	};
 	return state;
@@ -2842,6 +2880,14 @@ const streamAnthropicOnce = (
 								continue;
 							}
 							const delta = event.delta;
+							applyReportedInputTransformations(
+								output,
+								params,
+								providerSessionState,
+								event.input_transformations,
+								seenInputTransformations,
+								true,
+							);
 							const rawStopReason = delta?.stop_reason;
 							if (rawStopReason) {
 								output.stopReason = mapStopReason(rawStopReason);
@@ -3841,6 +3887,224 @@ function extractClaudeCodeFirstUserMessageText(messages: readonly Message[]): st
 	return "";
 }
 
+function resetAnthropicControlState(state: AnthropicProviderSessionState): void {
+	state.declaredTools = undefined;
+	state.activeToolNames.clear();
+	state.stableSystemBlocks = undefined;
+	state.systemFingerprint = undefined;
+	state.controlTransitions = [];
+	state.baseEffort = undefined;
+	state.baseEffortWire = undefined;
+	state.currentEffort = undefined;
+}
+
+/** Fingerprint of the wire message a control transition is attached after. */
+function anthropicControlAnchor(messages: readonly MessageParam[], messageCount: number): string {
+	if (messageCount === 0) return "";
+	return String(Bun.hash(JSON.stringify(messages[messageCount - 1])));
+}
+
+/**
+ * Discard the control baseline when the request no longer continues the
+ * conversation it was captured for: a different model, or a wire history that
+ * shrank or was rewritten under a recorded transition (compaction, branch
+ * switch, `/clear`). The next request re-baselines from its own payload.
+ */
+function syncAnthropicControlState(
+	state: AnthropicProviderSessionState,
+	model: Model<"anthropic-messages">,
+	messages: readonly MessageParam[],
+): void {
+	if (state.controlModelId !== model.id) {
+		state.controlModelId = model.id;
+		resetAnthropicControlState(state);
+		return;
+	}
+	for (const transition of state.controlTransitions) {
+		if (
+			transition.messageCount > messages.length ||
+			transition.anchor !== anthropicControlAnchor(messages, transition.messageCount)
+		) {
+			resetAnthropicControlState(state);
+			return;
+		}
+	}
+}
+
+/**
+ * Keep the top-level `system` array byte-stable across a session. The blocks
+ * captured on the first request are replayed verbatim (with the current
+ * request's cache breakpoints) while their text is unchanged. A text change
+ * re-baselines instead of duplicating the prompt as a mid-conversation
+ * system message: omp's system prompt is one rendered segment that embeds
+ * the tool roster, so replaying a second copy on every later request would
+ * cost the full prompt again per change. The prefix rewrite is absorbed by
+ * `prefix_mismatch_behavior: "drop_block"` and one cache miss.
+ */
+function planStableAnthropicSystem(
+	current: AnthropicSystemBlock[] | undefined,
+	state: AnthropicProviderSessionState | undefined,
+	enabled: boolean,
+): AnthropicSystemBlock[] | undefined {
+	if (!state || !enabled) return current;
+	const fingerprint = JSON.stringify(current?.map(block => block.text) ?? null);
+	if (state.systemFingerprint !== fingerprint) {
+		resetAnthropicControlState(state);
+		state.systemFingerprint = fingerprint;
+		state.stableSystemBlocks = current?.map(block => ({ type: block.type, text: block.text }));
+	}
+	return state.stableSystemBlocks?.map((block, index) => {
+		const cacheControl = current?.[index]?.cache_control;
+		return cacheControl ? { ...block, cache_control: cloneAnthropicCacheControl(cacheControl) } : { ...block };
+	});
+}
+
+function anthropicToolDefinitionKey(tool: AnthropicWireTool): string {
+	const stable = { ...tool };
+	delete stable.defer_loading;
+	return JSON.stringify(stable);
+}
+
+function recordAnthropicControlTransition(
+	state: AnthropicProviderSessionState,
+	messages: readonly MessageParam[],
+	messageCount: number,
+	content: ContentBlockParam[],
+	effort?: AnthropicOutputEffort,
+): void {
+	const existing = state.controlTransitions.findLast(transition => transition.messageCount === messageCount);
+	if (existing) {
+		existing.content.push(...content);
+		if (effort !== undefined) existing.effort = effort;
+		return;
+	}
+	state.controlTransitions.push({
+		messageCount,
+		anchor: anthropicControlAnchor(messages, messageCount),
+		content,
+		effort,
+	});
+}
+
+/**
+ * Keep the top-level `tools` array byte-stable across a session. Tools that
+ * leave the active set are withdrawn with `tool_removal`; tools that join are
+ * appended with `defer_loading: true` (not part of the checked prefix until
+ * referenced) and offered with `tool_addition`. A changed definition for an
+ * already-declared name cannot be expressed as a control and re-baselines.
+ */
+function planStableAnthropicTools(
+	current: AnthropicWireTool[] | undefined,
+	messages: readonly MessageParam[],
+	state: AnthropicProviderSessionState | undefined,
+	enabled: boolean,
+): AnthropicWireTool[] | undefined {
+	if (!state || !enabled || !current) return current;
+	if (!state.declaredTools) {
+		state.declaredTools = current.map(tool => ({ ...tool }));
+		state.activeToolNames = new Set(current.map(tool => tool.name));
+		return state.declaredTools;
+	}
+
+	const declaredByName = new Map(state.declaredTools.map(tool => [tool.name, tool]));
+	for (const tool of current) {
+		const declared = declaredByName.get(tool.name);
+		if (declared && anthropicToolDefinitionKey(declared) !== anthropicToolDefinitionKey(tool)) {
+			resetAnthropicControlState(state);
+			state.declaredTools = current.map(candidate => ({ ...candidate }));
+			state.activeToolNames = new Set(current.map(candidate => candidate.name));
+			return state.declaredTools;
+		}
+	}
+
+	const nextActive = new Set(current.map(tool => tool.name));
+	const changes: ContentBlockParam[] = [];
+	for (const activeName of state.activeToolNames) {
+		if (nextActive.has(activeName)) continue;
+		changes.push({
+			type: "tool_removal",
+			tool: { type: "tool_reference", name: activeName },
+		});
+	}
+	for (const tool of current) {
+		if (state.activeToolNames.has(tool.name)) continue;
+		if (!declaredByName.has(tool.name)) {
+			const deferred = { ...tool, defer_loading: true };
+			state.declaredTools.push(deferred);
+			declaredByName.set(tool.name, deferred);
+		}
+		changes.push({
+			type: "tool_addition",
+			tool: { type: "tool_reference", name: tool.name },
+		});
+	}
+	if (changes.length > 0) recordAnthropicControlTransition(state, messages, messages.length, changes);
+	state.activeToolNames = nextActive;
+	return state.declaredTools;
+}
+
+/**
+ * Keep top-level `output_config.effort` byte-stable across a session and carry
+ * later changes as per-message effort. Anthropic applies a system message's
+ * `output_config.effort` from the next `user` turn on, so the control is
+ * anchored before the latest user message to take effect on this response.
+ */
+function planStableAnthropicEffort(
+	current: AnthropicOutputEffort | undefined,
+	messages: readonly MessageParam[],
+	state: AnthropicProviderSessionState | undefined,
+	enabled: boolean,
+): AnthropicOutputEffort | undefined {
+	if (!state || !enabled) return current;
+	const effective = current ?? "high";
+	if (state.baseEffort === undefined) {
+		state.baseEffort = effective;
+		state.baseEffortWire = current;
+		state.currentEffort = effective;
+		return current;
+	}
+	if (state.currentEffort !== effective) {
+		const lastUserIndex = messages.findLastIndex(message => message.role === "user");
+		const messageCount = lastUserIndex >= 0 ? lastUserIndex : messages.length;
+		recordAnthropicControlTransition(state, messages, messageCount, [], effective);
+		state.currentEffort = effective;
+	}
+	return state.baseEffortWire;
+}
+
+function materializeAnthropicControlTransitions(
+	messages: MessageParam[],
+	state: AnthropicProviderSessionState | undefined,
+): MessageParam[] {
+	if (!state || state.controlTransitions.length === 0) return messages;
+	const result = messages.slice();
+	// Insert in slot order so each splice offsets only the transitions after it.
+	const ordered = state.controlTransitions.toSorted((a, b) => a.messageCount - b.messageCount);
+	let offset = 0;
+	for (const transition of ordered) {
+		const index = Math.min(transition.messageCount + offset, result.length);
+		const previous = result[index - 1];
+		if (previous?.role === "system" && previous.clear_at === undefined) {
+			const content: ContentBlockParam[] =
+				typeof previous.content === "string"
+					? [{ type: "text", text: previous.content }, ...transition.content]
+					: [...previous.content, ...transition.content];
+			result[index - 1] = {
+				...previous,
+				content,
+				...(transition.effort === undefined ? {} : { output_config: { effort: transition.effort } }),
+			};
+			continue;
+		}
+		result.splice(index, 0, {
+			role: "system",
+			content: transition.content,
+			...(transition.effort === undefined ? {} : { output_config: { effort: transition.effort } }),
+		});
+		offset++;
+	}
+	return result;
+}
 type AnthropicParamBuildOptions = {
 	disableStrictTools: boolean;
 	useUmansGatewayWebSearch: boolean;
@@ -4021,6 +4285,30 @@ function buildParams(
 	// the `effort-2025-11-24` beta, which that adapter can only accept in the body
 	// (`anthropic_beta`), never as the `anthropic-beta` HTTP header this path sets
 	// — so the field is dropped alongside the beta to avoid a 400 (#5614).
+	let wireMessages = convertAnthropicMessages(context.messages, effectiveModel, isOAuthToken, {
+		serverSideFallbackEnabled: !!fallbacks?.length,
+		dropAllThinking,
+		droppedThinkingBlocks,
+	});
+	if (providerSessionState) syncAnthropicControlState(providerSessionState, model, wireMessages);
+	systemBlocks = planStableAnthropicSystem(
+		systemBlocks,
+		providerSessionState,
+		model.compat.supportsMidConversationSystem,
+	);
+	tools = planStableAnthropicTools(
+		tools,
+		wireMessages,
+		providerSessionState,
+		model.compat.supportsMidConversationToolChanges,
+	);
+	const topLevelEffort = planStableAnthropicEffort(
+		outputConfigEffort,
+		wireMessages,
+		providerSessionState,
+		model.compat.supportsPerMessageEffort,
+	);
+	wireMessages = materializeAnthropicControlTransitions(wireMessages, providerSessionState);
 	const outputConfigEntries: AnthropicOutputConfig = {};
 	if (outputConfigEffort && model.provider !== "google-vertex") outputConfigEntries.effort = outputConfigEffort;
 	if (options?.taskBudget) outputConfigEntries.task_budget = options.taskBudget;

@@ -748,7 +748,13 @@ export function encodeStream(
 									type: "message_delta",
 									// TODO: surface matched stop sequence once pi-ai
 									// propagates it on the `done` event.
-									delta: { stop_reason: mapStopReasonOut(ev.reason), stop_sequence: null },
+									delta: {
+										stop_reason: mapStopReasonOut(ev.reason),
+										stop_sequence: null,
+									},
+									...(bindingControlsRequested
+										? { input_transformations: ev.message.inputTransformations ?? [] }
+										: {}),
 									usage: encodeUsage(ev.message),
 								}),
 							);

@@ -169,7 +169,43 @@ describe("Anthropic preserved-thinking request shaping", () => {
 		});
 	});
 
-	it("changes effort through an appended system message", async () => {
+	it("re-baselines tools when the history under a control is rewritten", async () => {
+		const model = makeAnthropicModel("claude-fable-5-1");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const readTool = { name: "read", description: "Read a file.", parameters: { type: "object", properties: {} } };
+		await capturePayload(
+			model,
+			{ thinkingEnabled: true, reasoning: Effort.High, providerSessionState },
+			{ ...CONTEXT, tools: [readTool] },
+		);
+		await capturePayload(
+			model,
+			{ thinkingEnabled: true, reasoning: Effort.High, providerSessionState },
+			{
+				...CONTEXT,
+				messages: [...CONTEXT.messages, { role: "user", content: "continue", timestamp: Date.now() }],
+				tools: [],
+			},
+		);
+		// Same length, different first turn: a compaction-style rewrite under the recorded control.
+		const payload = await capturePayload(
+			model,
+			{ thinkingEnabled: true, reasoning: Effort.High, providerSessionState },
+			{
+				...CONTEXT,
+				messages: [
+					{ role: "user", content: "summary of the session so far", timestamp: Date.now() },
+					{ role: "user", content: "continue", timestamp: Date.now() },
+				],
+				tools: [],
+			},
+		);
+
+		expect(payload.tools ?? []).toHaveLength(0);
+		expect(payload.messages?.some(message => message.role === "system")).toBe(false);
+	});
+
+	it("changes effort through a system message placed before the latest user turn", async () => {
 		const model = makeAnthropicModel("claude-fable-5-1");
 		const providerSessionState = new Map<string, ProviderSessionState>();
 		await capturePayload(model, {
@@ -187,7 +223,11 @@ describe("Anthropic preserved-thinking request shaping", () => {
 		);
 
 		expect(payload.output_config?.effort).toBe("high");
-		expect(payload.messages?.at(-1)?.output_config?.effort).toBe("low");
+		// Per-message effort applies from the next user turn, so the control must
+		// precede the turn being answered rather than trail it.
+		expect(payload.messages?.at(-2)?.role).toBe("system");
+		expect(payload.messages?.at(-2)?.output_config?.effort).toBe("low");
+		expect(payload.messages?.at(-1)?.role).toBe("user");
 	});
 });
 

@@ -51,6 +51,21 @@
 - Advisor safeguard-refusal fallback now defaults to GPT-5.6 Sol, and installation upgrades the legacy GPT-5.5 fallback without replacing custom advisor models.
 
 ## [18.0.6] - 2026-08-26
+- Recover stray <SM:EDIT> payloads emitted as plain text into real edit tool calls, with support for disabling this behavior through the edit.recoverInlineEdits setting.
+- Advisors now receive context from the active memory backend, including project decisions and recalled instructions; advisors also gain the recall tool when supported by the backend.
+
+### Changed
+
+- Replaced the sloppy edit format's symbolic markers with a clearer XML-based format using <SM:EDIT>, <SM:FIND>, and <SM:PUT> tags. Edit errors now include copy-ready XML payloads.
+- Increased the default input delay for the trace CLI to 3 seconds.
+
+### Fixed
+
+- Improved chat history stability in long-running sessions by avoiding unnecessary updates when date or directory context changes.
+- Fixed the trace CLI hanging during proxy connections and added support for forward HTTP proxies.
+- Fixed newly started sessions using stale model context-window limits after background model discovery completes; the active model now refreshes automatically so context usage and compaction thresholds match the model catalog.
+
+## [1.7.1] - 2026-08-13
 
 ### Added
 
