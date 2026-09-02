@@ -46,7 +46,8 @@ describe.skipIf(process.platform === "win32")("fatal stderr terminal handoff", (
 		const composerRow = lines.findIndex(line => line?.startsWith("╰─") === true);
 		const errorRow = lines.findIndex(line => line?.includes("error: fatal PTY fixture") === true);
 
-		expect(composerRow).toBeGreaterThanOrEqual(0);
+		const screenDump = `screen:\n${lines.filter(line => line !== undefined && line !== "").join("\n")}\nraw:\n${decoded.slice(0, 4000)}`;
+		expect(composerRow, screenDump).toBeGreaterThanOrEqual(0);
 		expect(errorRow).toBeGreaterThan(composerRow);
 	}, 15_000);
 });
