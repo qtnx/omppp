@@ -2,35 +2,13 @@
 
 ## [Unreleased]
 
+## [1.7.10] - 2026-09-02
+
 ### Changed
 
 - Browser annotate submissions now arrive as visible queued follow-up messages by default (queue chip in the UI, processed after the current turn); set `browser.annotateDelivery` to `steer` to restore mid-turn injection. The untrusted-content notice wrapper around annotation text was removed.
 - `/time-budget` now applies real pressure: activation and checkpoint reminders demand a newly verified slice per 5-minute interval, every post-deadline checkpoint escalates in the overtime register instead of decaying to wrap-up copy, and subagent runtime caps are automatically clamped to the remaining budget so the executor's early-yield notice and hard stop engage.
 - Caveman mode now applies to the main agent, not only implementer subagents: the bundled skill is injected into the session system prompt from the first turn (on by default), and `/caveman off` removes it from context immediately; `/caveman on` restores it.
-
-## [1.7.8] - 2026-08-29
-
-### Added
-
-- Bundled Archify, Hallmark, Humanizer, i-have-adhd, Ponytail, and Stop Slop with system-prompt routing for architecture, design, copywriting, ADHD-friendly output, and minimal implementation planning.
-- Bash commands are now rewritten through an installed [RTK](https://github.com/rtk-ai/rtk) binary when one is available, cutting tool-output tokens without changing the requested command. Controlled by `rtk.enabled` (default on); RTK stays optional and any failure runs the original command.
-- Bundled the MIT Caveman output-compression skill verbatim from upstream (intensity levels lite/full/ultra/wenyan) and autoload it with Ponytail and RTK for `quick_task`, `task`, and `heavy_task` subagents. `/caveman on|off|status` controls session-local Caveman autoload.
-- The bundled i-have-adhd skill now activates proactively on reader signals (ADHD mention, step-by-step requests, lost-track patterns) instead of waiting for an explicit `/i-have-adhd` invocation; it still never infers a diagnosis aloud.
-
-### Changed
-
-- Long-running Anthropic sessions now keep recalled memory in conversation context instead of the system prompt, allowing later turns to reuse the growing prompt cache.
-- Synced with upstream oh-my-pi v17.3.4. The OMPx divergences are preserved: fork version line, `ompx` branding and `qtnx/omppp` self-update source, the `quick_task`/`task`/`heavy_task` implementer tiers (upstream's `sonic` rename is not adopted), fork-only packages and features, and the fork-shaped CI. Upstream's native `pdfToMarkdown` pipeline replaces the mupdf-wasm PDF path, so the `mupdf` dependency and the `gen:mupdf` scripts are gone.
-- The orchestrate contract stays tool-agnostic instead of adopting upstream's Handlebars per-tool gating: it defers to "the active toolset" rather than naming `edit`/`write`, so it can never advertise a tool the session lacks.
-- Footer and status-line context usage no longer reopen the Context GC database on every render: effective-token estimates are memoized until the branch, message list, or base token count changes.
-- Increased default input delay in trace CLI to 3s
-- Reworked the sloppy edit format's payload surface from `§`/`«`/`»`/`⟪│⟫` markers to XML tags: `<SM:EDIT path="…">` (with optional `all`), `<SM:FIND>` current text, `<SM:PUT>` final text; content between tags is raw file bytes with no entity escaping, and edit errors now return copy-ready XML payloads.
-
-### Fixed
-
-- Improved chat history stability during long-running sessions by preventing unnecessary message modification when date or directory context changes
-- Fixed `bun claude:trace` hanging due to a TLS ClientHello race condition in the proxy MITM bridge and added forward HTTP proxy support.
-- Fixed an invalid Lark grammar error in sloppy edit constrained decoding caused by unsupported regex lookahead.
 
 ## [18.1.1] - 2026-09-01
 
@@ -38,23 +16,8 @@
 
 - Fixed a native crash (and multi-gigabyte committed-memory growth held until exit) when git status ran over worktrees with tens of thousands of untracked files: whole-worktree porcelain status now runs through the git CLI with bounded output capture, falling back to the in-process gitoxide walk only when git is not installed, and any panic escaping a native VCS operation now surfaces as a structured `VcsError` instead of a process-level failure.
 
-## [18.1.0] - 2026-09-01
-
-## [1.7.2] - 2026-08-14
-### Added
-
-- Added `/loop list`, `/loop stop <id>`, `/loop cancel <id>`, and all-loop cancellation so loops scheduled by the agent can be inspected and stopped without leaving interactive loop mode.
-- Integrated CodeGraph as a managed built-in: OMPx now installs or upgrades the CodeGraph executable, initializes or syncs each top-level workspace in the background, exposes `codegraph_init`, `codegraph_index`, and default-active `codegraph_explore` tools, and guides the model to use indexed source and call paths before falling back to file-by-file exploration.
-- Delegated task, workflow, and Vibe subagents now receive bounded parent conversation context separately from repository rules, reducing redundant discovery while preserving project-specific guidance.
-- The main agent takes a direct path on small tasks: it pins the user's request, edits after a few targeted reads, and runs one named gate, without loading planning/verification skills, writing plan documents, or building reproduction harnesses unless the lane or evidence requires them. It also treats the working tree as shared with other agents and never resets, stashes, or cleans it.
-- Startup context is smaller: the system prompt keeps short formulas and routes detail to bundled skills (`execution-harness`, `work-playbooks`, `subagents-development`), skill index lines are truncated to one sentence, and tool descriptions are compressed.
-
-### Fixed
-
-- Image generation is now available by default with every session model and prefers a connected OpenAI Codex subscription.
-- Advisor safeguard-refusal fallback now defaults to GPT-5.6 Sol, and installation upgrades the legacy GPT-5.5 fallback without replacing custom advisor models.
-
 ## [18.0.6] - 2026-08-26
+
 - Recover stray <SM:EDIT> payloads emitted as plain text into real edit tool calls, with support for disabling this behavior through the edit.recoverInlineEdits setting.
 - Advisors now receive context from the active memory backend, including project decisions and recalled instructions; advisors also gain the recall tool when supported by the backend.
 
@@ -68,26 +31,6 @@
 - Improved chat history stability in long-running sessions by avoiding unnecessary updates when date or directory context changes.
 - Fixed the trace CLI hanging during proxy connections and added support for forward HTTP proxies.
 - Fixed newly started sessions using stale model context-window limits after background model discovery completes; the active model now refreshes automatically so context usage and compaction thresholds match the model catalog.
-
-## [1.7.1] - 2026-08-13
-
-### Added
-
-- Added fast, cached conventional commit message generation to the git TUI and `omp commit --legacy`, including automatic handling of whitespace-only changes, clearer commit scopes, and improved grammar and tense in generated summaries.
-- The git TUI sidebar now supports collapsing and expanding the Unstaged and Staged sections, with keyboard shortcuts to stage or unstage an entire section.
-- Long streaming thinking and reasoning output now continues into terminal scrollback during a turn instead of remaining clipped to the viewport.
-
-### Changed
-
-- `omp commit --legacy` now uses the same conventional commit message generation as the git TUI.
-- The git TUI sidebar now groups new files separately from tracked changes in the Unstaged section, while Staged and commit file lists use a unified status-based view.
-- Improved resilience when streaming output changes during rendering, preventing incomplete blocks from causing further display updates to fail.
-
-### Fixed
-
-- Commit-message generation errors in the git TUI now remain visible in the status bar instead of disappearing and returning to an idle state.
-- Fixed `omp update` leaving standalone Windows binaries on the old version when stale Bun launcher metadata was present, and preserved launchers installed by a newer concurrent update during binary repair ([#9806](https://github.com/can1357/oh-my-pi/issues/9806)).
-- Quitting `omp git` during commit-message generation now exits cleanly without leaving the process running.
 
 ## [18.0.5] - 2026-08-25
 
@@ -1655,6 +1598,30 @@
 
 - Fixed Portkey/gateway custom models whose ids start with `@` (e.g. `@modal/GLM-5-2-FP8`) being rewritten to unrelated bundled wire ids (e.g. `glm-5-2`), which caused `400` responses requiring `x-portkey-config` or `x-portkey-provider`.
 
+## [1.7.8] - 2026-08-29
+
+### Added
+
+- Bundled Archify, Hallmark, Humanizer, i-have-adhd, Ponytail, and Stop Slop with system-prompt routing for architecture, design, copywriting, ADHD-friendly output, and minimal implementation planning.
+- Bash commands are now rewritten through an installed [RTK](https://github.com/rtk-ai/rtk) binary when one is available, cutting tool-output tokens without changing the requested command. Controlled by `rtk.enabled` (default on); RTK stays optional and any failure runs the original command.
+- Bundled the MIT Caveman output-compression skill verbatim from upstream (intensity levels lite/full/ultra/wenyan) and autoload it with Ponytail and RTK for `quick_task`, `task`, and `heavy_task` subagents. `/caveman on|off|status` controls session-local Caveman autoload.
+- The bundled i-have-adhd skill now activates proactively on reader signals (ADHD mention, step-by-step requests, lost-track patterns) instead of waiting for an explicit `/i-have-adhd` invocation; it still never infers a diagnosis aloud.
+
+### Changed
+
+- Long-running Anthropic sessions now keep recalled memory in conversation context instead of the system prompt, allowing later turns to reuse the growing prompt cache.
+- Synced with upstream oh-my-pi v17.3.4. The OMPx divergences are preserved: fork version line, `ompx` branding and `qtnx/omppp` self-update source, the `quick_task`/`task`/`heavy_task` implementer tiers (upstream's `sonic` rename is not adopted), fork-only packages and features, and the fork-shaped CI. Upstream's native `pdfToMarkdown` pipeline replaces the mupdf-wasm PDF path, so the `mupdf` dependency and the `gen:mupdf` scripts are gone.
+- The orchestrate contract stays tool-agnostic instead of adopting upstream's Handlebars per-tool gating: it defers to "the active toolset" rather than naming `edit`/`write`, so it can never advertise a tool the session lacks.
+- Footer and status-line context usage no longer reopen the Context GC database on every render: effective-token estimates are memoized until the branch, message list, or base token count changes.
+- Increased default input delay in trace CLI to 3s
+- Reworked the sloppy edit format's payload surface from `§`/`«`/`»`/`⟪│⟫` markers to XML tags: `<SM:EDIT path="…">` (with optional `all`), `<SM:FIND>` current text, `<SM:PUT>` final text; content between tags is raw file bytes with no entity escaping, and edit errors now return copy-ready XML payloads.
+
+### Fixed
+
+- Improved chat history stability during long-running sessions by preventing unnecessary message modification when date or directory context changes
+- Fixed `bun claude:trace` hanging due to a TLS ClientHello race condition in the proxy MITM bridge and added forward HTTP proxy support.
+- Fixed an invalid Lark grammar error in sloppy edit constrained decoding caused by unsupported regex lookahead.
+
 ## [1.7.6] - 2026-08-28
 
 ### Added
@@ -1704,5 +1671,40 @@
 ### Fixed
 
 - Herdr pane status no longer gets stomped to `unknown` by headless children that inherit `HERDR_ENV` (tests, print/RPC, workers). The native reporter now waits for a UI session before publishing, never sends `pane.release_agent` (Herdr 0.8.0 ends ownership on process exit; official OMP v8 never released), and flips the pane to `working` as soon as a normal prompt is submitted instead of scheduling idle until `before_agent_start`.
+
+## [1.7.2] - 2026-08-14
+
+### Added
+
+- Added `/loop list`, `/loop stop <id>`, `/loop cancel <id>`, and all-loop cancellation so loops scheduled by the agent can be inspected and stopped without leaving interactive loop mode.
+- Integrated CodeGraph as a managed built-in: OMPx now installs or upgrades the CodeGraph executable, initializes or syncs each top-level workspace in the background, exposes `codegraph_init`, `codegraph_index`, and default-active `codegraph_explore` tools, and guides the model to use indexed source and call paths before falling back to file-by-file exploration.
+- Delegated task, workflow, and Vibe subagents now receive bounded parent conversation context separately from repository rules, reducing redundant discovery while preserving project-specific guidance.
+- The main agent takes a direct path on small tasks: it pins the user's request, edits after a few targeted reads, and runs one named gate, without loading planning/verification skills, writing plan documents, or building reproduction harnesses unless the lane or evidence requires them. It also treats the working tree as shared with other agents and never resets, stashes, or cleans it.
+- Startup context is smaller: the system prompt keeps short formulas and routes detail to bundled skills (`execution-harness`, `work-playbooks`, `subagents-development`), skill index lines are truncated to one sentence, and tool descriptions are compressed.
+
+### Fixed
+
+- Image generation is now available by default with every session model and prefers a connected OpenAI Codex subscription.
+- Advisor safeguard-refusal fallback now defaults to GPT-5.6 Sol, and installation upgrades the legacy GPT-5.5 fallback without replacing custom advisor models.
+
+## [1.7.1] - 2026-08-13
+
+### Added
+
+- Added fast, cached conventional commit message generation to the git TUI and `omp commit --legacy`, including automatic handling of whitespace-only changes, clearer commit scopes, and improved grammar and tense in generated summaries.
+- The git TUI sidebar now supports collapsing and expanding the Unstaged and Staged sections, with keyboard shortcuts to stage or unstage an entire section.
+- Long streaming thinking and reasoning output now continues into terminal scrollback during a turn instead of remaining clipped to the viewport.
+
+### Changed
+
+- `omp commit --legacy` now uses the same conventional commit message generation as the git TUI.
+- The git TUI sidebar now groups new files separately from tracked changes in the Unstaged section, while Staged and commit file lists use a unified status-based view.
+- Improved resilience when streaming output changes during rendering, preventing incomplete blocks from causing further display updates to fail.
+
+### Fixed
+
+- Commit-message generation errors in the git TUI now remain visible in the status bar instead of disappearing and returning to an idle state.
+- Fixed `omp update` leaving standalone Windows binaries on the old version when stale Bun launcher metadata was present, and preserved launchers installed by a newer concurrent update during binary repair ([#9806](https://github.com/can1357/oh-my-pi/issues/9806)).
+- Quitting `omp git` during commit-message generation now exits cleanly without leaving the process running.
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@a48c88854e1a](https://github.com/can1357/oh-my-pi/blob/a48c88854e1ab2f8ecc4ad90a8bd7f721eeb8320/packages/coding-agent/CHANGELOG.md).

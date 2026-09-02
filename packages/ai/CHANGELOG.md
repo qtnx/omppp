@@ -2,67 +2,6 @@
 
 ## [Unreleased]
 
-## [1.7.8] - 2026-08-29
-
-### Changed
-
-- Anthropic OAuth conversations now automatically advance their prompt cache while reserving the first system block for cross-turn reuse, reducing repeated input-token writes as context grows.
-
-## [18.0.6] - 2026-08-26
-
-### Added
-
-- Added the `backgroundIdleMs` option to customize how long background auth-broker activity remains active before automatically parking.
-
-### Fixed
-
-- Fixed auth-broker background activity keeping processes alive unnecessarily, so unused broker-backed auth storage now parks automatically and no longer prevents CLI exit.
-
-## [18.0.5] - 2026-08-25
-
-### Breaking Changes
-
-- Renamed the exported stream-retry helper from `withEmptyCompletionRetry` to `withReplaySafeStreamRetry` and added retry policy options for empty completions and provider errors. Consumers using the old helper must migrate.
-
-### Added
-
-- Added browser-based Sign in with OpenRouter using OAuth PKCE, while retaining support for pasted OpenRouter API keys and redirect URLs for remote sessions.
-- Added `/login` API-key authentication for DeepInfra and Yolo-Auto, including validation against each provider before the credentials are accepted.
-
-### Fixed
-
-### Added
-
-- Add support for thinking-binding controls on Amazon Bedrock
-- Enable dynamic mid-conversation updates for system prompts, toolsets, and reasoning effort on Anthropic models
-- Add support for deferred tool loading on Anthropic models
-- Add support for automatic recovery from "preserved-thinking" signature errors and clean up stale thinking blocks during conversation history rewrites
-- Fixed compatibility issues with Anthropic thinking and prompt-cache breakpoints across deployments, preserving valid reasoning context while preventing invalid-signature errors.
-- Fixed incorrect operating-system information reported in request headers on non-Linux systems.
-- Fixed Google Antigravity quota handling so requests rotate to another account with available usage instead of unnecessarily switching models.
-- Fixed Anthropic authentication for newer models by updating the Claude Code request fingerprint.
-- Add support for automatic recovery from "preserved-thinking" signature errors during conversation history rewrites
-- Add `anthropicPrefixMismatchBehavior` option to control handling of invalid thinking blocks
-- Enable prompt caching for system instructions to improve performance
-
-### Fixed
-
-- Resolve 400 "Invalid signature" errors by automatically dropping mismatched thinking blocks after history rewrites
-- Fix incorrect OS reporting in request headers for non-Linux systems
-- Fixed Google Antigravity model-quota errors switching models instead of rotating to another account with available usage.
-- Fixed the Claude Code fingerprint being rejected by Anthropic for newer models by aligning with the `2.1.257` CLI request signature.
-- Added thinking controls for Amazon Bedrock models.
-- Added dynamic mid-conversation updates for Anthropic system prompts, tools, and reasoning effort.
-- Added deferred tool loading and prompt caching for Anthropic models.
-- Added configurable handling for invalid Anthropic thinking blocks through `anthropicPrefixMismatchBehavior`.
-
-### Fixed
-
-- Fixed compatibility issues with Anthropic thinking and prompt-cache breakpoints across deployments, preserving valid reasoning context while preventing invalid-signature errors.
-- Fixed incorrect operating-system information reported in request headers on non-Linux systems.
-- Fixed Google Antigravity quota handling so requests rotate to another account with available usage instead of unnecessarily switching models.
-- Fixed Anthropic authentication for newer models by updating the Claude Code request fingerprint.
-
 ## [18.1.0] - 2026-09-01
 
 ### Added
@@ -138,6 +77,53 @@
 ### Fixed
 
 - Fixed auth-broker background activity keeping processes alive unnecessarily, so unused broker-backed auth storage now parks automatically and no longer prevents CLI exit.
+
+## [18.0.6] - 2026-08-26
+
+### Added
+
+- Added the `backgroundIdleMs` option to customize how long background auth-broker activity remains active before automatically parking.
+
+### Fixed
+
+- Fixed auth-broker background activity keeping processes alive unnecessarily, so unused broker-backed auth storage now parks automatically and no longer prevents CLI exit.
+
+## [18.0.5] - 2026-08-25
+
+### Breaking Changes
+
+- Renamed the exported stream-retry helper from `withEmptyCompletionRetry` to `withReplaySafeStreamRetry` and added retry policy options for empty completions and provider errors. Consumers using the old helper must migrate.
+
+### Added
+
+- Added browser-based Sign in with OpenRouter using OAuth PKCE, while retaining support for pasted OpenRouter API keys and redirect URLs for remote sessions.
+- Added `/login` API-key authentication for DeepInfra and Yolo-Auto, including validation against each provider before the credentials are accepted.
+- Add support for thinking-binding controls on Amazon Bedrock
+- Enable dynamic mid-conversation updates for system prompts, toolsets, and reasoning effort on Anthropic models
+- Add support for deferred tool loading on Anthropic models
+- Add support for automatic recovery from "preserved-thinking" signature errors and clean up stale thinking blocks during conversation history rewrites
+- Fixed compatibility issues with Anthropic thinking and prompt-cache breakpoints across deployments, preserving valid reasoning context while preventing invalid-signature errors.
+- Fixed incorrect operating-system information reported in request headers on non-Linux systems.
+- Fixed Google Antigravity quota handling so requests rotate to another account with available usage instead of unnecessarily switching models.
+- Fixed Anthropic authentication for newer models by updating the Claude Code request fingerprint.
+- Add support for automatic recovery from "preserved-thinking" signature errors during conversation history rewrites
+- Add `anthropicPrefixMismatchBehavior` option to control handling of invalid thinking blocks
+- Enable prompt caching for system instructions to improve performance
+
+### Fixed
+
+- Resolve 400 "Invalid signature" errors by automatically dropping mismatched thinking blocks after history rewrites
+- Fix incorrect OS reporting in request headers for non-Linux systems
+- Fixed Google Antigravity model-quota errors switching models instead of rotating to another account with available usage.
+- Fixed the Claude Code fingerprint being rejected by Anthropic for newer models by aligning with the `2.1.257` CLI request signature.
+- Added thinking controls for Amazon Bedrock models.
+- Added dynamic mid-conversation updates for Anthropic system prompts, tools, and reasoning effort.
+- Added deferred tool loading and prompt caching for Anthropic models.
+- Added configurable handling for invalid Anthropic thinking blocks through `anthropicPrefixMismatchBehavior`.
+- Fixed compatibility issues with Anthropic thinking and prompt-cache breakpoints across deployments, preserving valid reasoning context while preventing invalid-signature errors.
+- Fixed incorrect operating-system information reported in request headers on non-Linux systems.
+- Fixed Google Antigravity quota handling so requests rotate to another account with available usage instead of unnecessarily switching models.
+- Fixed Anthropic authentication for newer models by updating the Claude Code request fingerprint.
 
 ## [18.0.5] - 2026-08-25
 
@@ -2115,6 +2101,12 @@
 
 - Removed the dead `iterateUntilAbort` helper (superseded by `iterateWithIdleTimeout`); it leaked the upstream iterator when the consumer abandoned mid-yield and had no production call sites.
 
+## [1.7.8] - 2026-08-29
+
+### Changed
+
+- Anthropic OAuth conversations now automatically advance their prompt cache while reserving the first system block for cross-turn reuse, reducing repeated input-token writes as context grows.
+
 ## [1.7.6] - 2026-08-28
 
 ### Changed
@@ -2129,4 +2121,5 @@
 - OpenRouter 402s that say the reserved `max_tokens` exceeds remaining credit (`can only afford N`) now retry the same request once with an explicit `maxTokens = N` instead of failing the turn or rotating credentials. Omitting the catalog default is still required so provider routing is not filtered.
 
 Older entries are archived in [packages/ai/CHANGELOG.md@d77f10258731](https://github.com/can1357/oh-my-pi/blob/d77f10258731b6e6be62e3c5a16301ce9540890e/packages/ai/CHANGELOG.md).
+
 Older entries are archived in [packages/ai/CHANGELOG.md@c821261d1018](https://github.com/can1357/oh-my-pi/blob/c821261d10180d60bd96c1b7334227691c9e14f6/packages/ai/CHANGELOG.md).

@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.7.8] - 2026-08-29
-
-### Fixed
-
-- Fixed large terminal restores falsely reporting a saturated stdout backlog and terminating interactive sessions.
-
 ## [18.0.6] - 2026-08-26
 
 ### Fixed
@@ -1308,6 +1302,12 @@
 ### Fixed
 
 - Fixed potential crashes when updating native binaries by using safe copy strategy that avoids overwriting in-memory binaries
+
+## [1.7.8] - 2026-08-29
+
+### Fixed
+
+- Fixed large terminal restores falsely reporting a saturated stdout backlog and terminating interactive sessions.
 
 ## [1.7.2] - 2026-08-14
 
