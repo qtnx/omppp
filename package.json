@@ -75,6 +75,7 @@
       "ghostty-web": "^0.4.0",
       "handlebars": "^4.7.9",
       "header-generator": "^2.1.82",
+      "katex": "^0.18.4",
       "kitty-vt-wasm": "^0.2.0",
       "linkedom": "^0.18.13",
       "lint-staged": "^17.0.8",

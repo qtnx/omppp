@@ -23,6 +23,7 @@ import {
 	getCodexAttestationHeader,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import {
+	encodeResponsesToolResultOutput,
 	hoistInterleavedResponsesToolBatchMessages,
 	parseAzureDeploymentNameMap,
 	parseTextSignature,
@@ -34,7 +35,6 @@ import type {
 	AssistantMessage,
 	CodexCompactionContext,
 	FetchImpl,
-	ImageContent,
 	Message,
 	Model,
 	ProviderSessionState,
@@ -506,6 +506,7 @@ export function buildOpenAiNativeHistory(
 	messages: Message[],
 	model: Model,
 	previousReplacementHistory?: Array<Record<string, unknown>>,
+	supportsImageDetailOriginal = false,
 ): Array<Record<string, unknown>> {
 	const input: Array<Record<string, unknown>> = previousReplacementHistory
 		? adaptComputerHistoryForCompaction(
@@ -703,14 +704,7 @@ export function buildOpenAiNativeHistory(
 
 		if (message.role === "toolResult") {
 			const normalized = normalizeResponsesToolCallId(message.toolCallId);
-			const textOutput = message.content
-				.filter(block => block.type === "text")
-				.map(block => block.text)
-				.join("\n");
-			const imageContent = message.content.filter((block): block is ImageContent => block.type === "image");
-			const availableImageContent = imageContent.filter(isImageContentAvailable);
-			const hasImages = availableImageContent.length > 0;
-			const outputText = textOutput.length > 0 ? textOutput : hasImages ? "(see attached image)" : "";
+			const { output, outputText } = encodeResponsesToolResultOutput(message, model, supportsImageDetailOriginal);
 			if (demotedComputerCallIds.has(normalized.callId)) {
 				const resultItem =
 					message.providerMetadata?.type === "computer"
@@ -760,22 +754,8 @@ export function buildOpenAiNativeHistory(
 			input.push({
 				type: customCallIds.has(normalized.callId) ? "custom_tool_call_output" : "function_call_output",
 				call_id: normalized.callId,
-				output: outputText.toWellFormed(),
+				output,
 			});
-
-			if (hasImages && model.input.includes("image")) {
-				const contentBlocks: Array<Record<string, unknown>> = [
-					{ type: "input_text", text: TOOL_RESULT_IMAGE_ATTACHMENT_TEXT },
-				];
-				for (const block of availableImageContent) {
-					contentBlocks.push({
-						type: "input_image",
-						detail: "auto",
-						image_url: `data:${block.mimeType};base64,${block.data}`,
-					});
-				}
-				input.push({ type: "message", role: "user", content: contentBlocks });
-			}
 		}
 
 		msgIndex++;

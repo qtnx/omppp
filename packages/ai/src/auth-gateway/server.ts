@@ -40,6 +40,7 @@ import type {
 	SimpleStreamOptions,
 	Usage,
 } from "../types";
+import type { ClientUsageIdentity } from "../usage";
 import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { parseBind } from "../utils/parse-bind";
@@ -49,6 +50,7 @@ import {
 	gatewayResponseHeaders,
 	isAuthorized,
 	json,
+	resolveClientIdentity,
 	resolvePeer,
 	withCors,
 } from "./http";
@@ -495,6 +497,31 @@ function auditReadableStream(
 	});
 }
 
+/**
+ * Attribute one settled upstream request to the originating client via the
+ * broker's observed-usage channel (`AuthStorage.recordObservedUsage`, batched
+ * by the remote store). Error/aborted turns still record — the provider
+ * billed whatever tokens the partial turn consumed; zero-usage messages
+ * (pre-flight failures) are skipped.
+ */
+function recordGatewayUsage(
+	storage: AuthStorage,
+	model: Model<Api>,
+	client: ClientUsageIdentity,
+	message: AssistantMessage,
+): void {
+	const usage = message.usage;
+	if (usage.input + usage.output + usage.cacheRead + usage.cacheWrite === 0) return;
+	storage.recordObservedUsage({
+		provider: model.provider,
+		model: model.id,
+		at: message.timestamp || Date.now(),
+		usage: { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite },
+		costUsd: usage.cost.total,
+		client,
+	});
+}
+
 function mirrorRequestAbort(req: Request): AbortController {
 	const controller = new AbortController();
 	if (req.signal.aborted) {
@@ -542,6 +569,7 @@ async function handleFormatEndpoint(
 	if (!model) {
 		return route.module.formatError(404, "invalid_request_error", `Unknown model: ${modelId}`);
 	}
+	const client = resolveClientIdentity(req.headers);
 
 	// Parse the wire-format request BEFORE resolving the credential so we
 	// have a stable per-conversation `sessionId` to thread into AuthStorage.
@@ -566,6 +594,28 @@ async function handleFormatEndpoint(
 		parsed.options.headers = { ...captured, ...(parsed.options.headers ?? {}) };
 	}
 	if (controller.signal.aborted) return clientClosedResponse(route);
+
+	const supportsOpenAIImageFileReferences =
+		model.api === "openai-responses" ||
+		model.api === "azure-openai-responses" ||
+		model.api === "openai-codex-responses";
+	if (
+		route.label === "openai-responses" &&
+		!supportsOpenAIImageFileReferences &&
+		parsed.context.messages.some(
+			message =>
+				message.role === "toolResult" &&
+				message.content.some(
+					block => block.type === "image" && block.providerFile?.provider === "openai" && block.providerFile.id,
+				),
+		)
+	) {
+		return route.module.formatError(
+			400,
+			"invalid_request_error",
+			"OpenAI image file IDs in tool outputs require a Responses-compatible upstream model",
+		);
+	}
 
 	// Sticky credential id: honour the client's `prompt_cache_key` when
 	// supplied (so external session ids align), otherwise derive from
@@ -636,6 +686,7 @@ async function handleFormatEndpoint(
 			const message = await completeSimple(model, parsed.context, streamOpts);
 			const completion = auditCompletionFromMessage(message);
 			logCompletionAudit(audit, completion);
+			recordGatewayUsage(bootOpts.storage, model, client, message);
 			if (message.stopReason === "aborted" || message.stopReason === "error") {
 				const errorMessage =
 					message.errorMessage ??
@@ -690,6 +741,10 @@ async function handleFormatEndpoint(
 		logCompletionAudit(audit, { status: 499, reason: "aborted" });
 		return clientClosedResponse(route);
 	}
+	void events
+		.result()
+		.then(message => recordGatewayUsage(bootOpts.storage, model, client, message))
+		.catch(() => {});
 
 	const capture: StreamingAuditCapture = {};
 	const sseStream = route.module.encodeStream(
@@ -764,6 +819,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 	if (!model) {
 		return piNative.formatError(404, "invalid_request_error", `Unknown model: ${parsed.modelId}`);
 	}
+	const client = resolveClientIdentity(req.headers);
 	// Pi-native already parsed `streamOpts.sessionId` (when set by the
 	// client); fall back to the derived key so credential-stickiness lines
 	// up with cache-prefix stickiness — same identity used for both means
@@ -850,6 +906,7 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 			const message = await completeSimple(model, parsed.context, streamOpts);
 			const completion = auditCompletionFromMessage(message);
 			logCompletionAudit(audit, completion);
+			recordGatewayUsage(bootOpts.storage, model, client, message);
 			if (message.stopReason === "aborted" || message.stopReason === "error") {
 				const errorMessage =
 					message.errorMessage ??
@@ -896,6 +953,10 @@ async function handlePiNative(bootOpts: AuthGatewayBootOptions, req: Request, pe
 		logCompletionAudit(audit, { status: 499, reason: "aborted" });
 		return aborted();
 	}
+	void events
+		.result()
+		.then(message => recordGatewayUsage(bootOpts.storage, model, client, message))
+		.catch(() => {});
 
 	const capture: StreamingAuditCapture = {};
 	const sseStream = piNative.encodeStream(captureStreamingTerminal(events, capture), parsed.modelId, parsed.options, {

@@ -15,7 +15,8 @@
  * route every LLM call through a credential-holding sidecar so the slot
  * itself stays credential-free.
  */
-import { readSseJson } from "@oh-my-pi/pi-utils";
+import * as os from "node:os";
+import { getAppName, getInstallId, readSseJson } from "@oh-my-pi/pi-utils";
 import { withAuth } from "../auth-retry";
 import * as AIError from "../error";
 import type {
@@ -127,6 +128,13 @@ function buildHeaders(model: Model<Api>, apiKey: string | undefined, accept: str
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		Accept: accept,
+		// Usage-attribution identity: the gateway reports this request's token
+		// burn to the broker under the ORIGINATING client, not the gateway host.
+		// Attribution-only — the gateway never forwards x-omp-* upstream. Header
+		// values must stay ISO-8859-1-safe, hence the hostname scrub.
+		"x-omp-install-id": getInstallId(),
+		"x-omp-hostname": os.hostname().replace(/[^\x20-\x7e]/g, "?"),
+		"x-omp-app": getAppName(),
 		...(model.headers ?? {}),
 	};
 	if (apiKey && !headers.Authorization) {

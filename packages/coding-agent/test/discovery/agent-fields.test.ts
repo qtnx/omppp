@@ -86,6 +86,11 @@ describe("parseAgentFields", () => {
 
 		expect(fields?.tools).toEqual(["read", "grep", "yield"]);
 	});
+	test("keeps an explicitly empty tools list distinct from an absent one", () => {
+		// Fork contract: `tools: []` is preserved at parse time; the runtime adds yield.
+		expect(parseAgentFields({ name: "quiet", description: "desc", tools: [] })?.tools).toEqual([]);
+		expect(parseAgentFields({ name: "quiet", description: "desc" })?.tools).toBeUndefined();
+	});
 
 	test("maps legacy search and find tool names", () => {
 		const fields = parseAgentFields({

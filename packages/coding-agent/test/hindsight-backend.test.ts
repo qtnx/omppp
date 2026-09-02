@@ -14,7 +14,8 @@ import { hindsightBackend, reloadMentalModelsForSession } from "@oh-my-pi/pi-cod
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
 import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
+import type { VcsRepo } from "@oh-my-pi/pi-natives";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
 interface FakeSessionDeps {
 	sessionId: string | null;
@@ -138,7 +139,7 @@ describe("hindsightBackend.start", () => {
 			"hindsight.apiUrl": "http://localhost:8888",
 			"hindsight.mentalModelsEnabled": false,
 		});
-		vi.spyOn(git.repo, "primaryRoot").mockResolvedValue("/repos/oh-my-pi");
+		vi.spyOn(vcs, "repo").mockReturnValue({ primaryRoot: () => "/repos/oh-my-pi" } as VcsRepo);
 		const session = makeFakeSession({ sessionId: "s-worktree", cwd: "/tmp/worktrees/oh-my-pi-feature" });
 
 		await hindsightBackend.start({

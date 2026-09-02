@@ -247,6 +247,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(headers["X-Claude-Code-Session-Id"]).toBe(sessionId);
 		expect(headers["X-Stainless-Arch"]).toBe(mapStainlessArch(process.arch));
 		expect(headers["X-Stainless-OS"]).toBe(mapStainlessOs(process.platform));
+		expect(headers["X-Stainless-Package-Version"]).toBe("0.112.1");
 		expect(headers["X-Stainless-Runtime-Version"]).toBe("v26.3.0");
 		expect(headers["X-Stainless-Timeout"]).toBe("600");
 		expect(headers["anthropic-client-platform"]).toBeUndefined();
@@ -300,6 +301,11 @@ describe("Anthropic request fingerprint alignment", () => {
 			thinkingDisplay: "omitted",
 		});
 		expect(hiddenUtility.defaultHeaders["anthropic-beta"]).not.toContain("redact-thinking-2026-02-12");
+		// Drift guard: the no-tools/no-thinking utility branch is a distinct code path
+		// (buildCoworkBetas utility defaults) from the agent branch asserted above. Its
+		// OAuth beta must be present verbatim — dropping `oauth-2025-04-20` there silently
+		// reintroduces the upstream 403 with no other test failing.
+		expect(hiddenUtility.defaultHeaders["anthropic-beta"]).toContain("oauth-2025-04-20");
 	});
 
 	it("never advertises context-1m on OAuth requests for million-token models (#7238)", () => {

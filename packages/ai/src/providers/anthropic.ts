@@ -174,13 +174,12 @@ function mergeAnthropicBetaHeader(callerHeaders: Record<string, string>, beta: s
 	}
 	return { "anthropic-beta": beta };
 }
-
+const oauthAuthBeta = "oauth-2025-04-20";
 const midConversationSystemBeta = "mid-conversation-system-2026-04-07";
 const contextManagementBeta = "context-management-2025-06-27";
 const structuredOutputsBeta = "structured-outputs-2025-12-15";
 const thinkingTokenCountBeta = "thinking-token-count-2026-05-13";
 const fallbackCreditBeta = "fallback-credit-2026-06-01";
-const oauthAuthBeta = "oauth-2025-04-20";
 const claudeCodeUtilityBetaDefaults = [
 	oauthAuthBeta,
 	"interleaved-thinking-2025-05-14",

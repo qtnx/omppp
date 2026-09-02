@@ -420,7 +420,11 @@ describe("issue #967 vision guard", () => {
 		expect(countStringValuesContaining(payload, "blob:")).toBe(0);
 		expect(payload[0]).toMatchObject({
 			type: "function_call_output",
-			output: `(see attached image)\n${UNAVAILABLE_IMAGE_PLACEHOLDER}`,
+			output: [
+				{ type: "input_image", detail: "auto", image_url: validImageUrl },
+				{ type: "input_text", text: UNAVAILABLE_IMAGE_PLACEHOLDER },
+				{ type: "input_text", text: UNAVAILABLE_IMAGE_PLACEHOLDER },
+			],
 		});
 
 		const codexModel = makeModel("openai-codex-responses", "openai-codex", ["text", "image"]);

@@ -4,6 +4,7 @@ import { classify, Flag, is, isUsageLimit, retriable } from "@oh-my-pi/pi-ai/err
 import {
 	calculateRateLimitBackoffMs,
 	extractRotationRetryAfterMs,
+	is402BillingCapBody,
 	isConcurrencyCapExclusion,
 	isOpaqueStatusBody,
 	isUsageLimitOutcome,
@@ -60,6 +61,20 @@ describe("parseRateLimitReason", () => {
 	it("classifies Google Quota exceeded as QUOTA_EXHAUSTED", () => {
 		expect(
 			parseRateLimitReason("Cloud Code Assist API error (429): Quota exceeded for aiplatform.googleapis.com"),
+		).toBe("QUOTA_EXHAUSTED");
+	});
+
+	// ClinePass subscription windows and free-tier caps are account-local quota
+	// exhaustion (markers from Cline's own error classifier), not rate limiting.
+	it("classifies ClinePass subscription-window limits as QUOTA_EXHAUSTED", () => {
+		expect(parseRateLimitReason("clinepass limit reached for this window. please try again later.")).toBe(
+			"QUOTA_EXHAUSTED",
+		);
+	});
+
+	it("classifies Cline free-tier model caps as QUOTA_EXHAUSTED", () => {
+		expect(
+			parseRateLimitReason("free limit reached on model deepseek/deepseek-v4-flash. try again in 42 minutes"),
 		).toBe("QUOTA_EXHAUSTED");
 	});
 
@@ -417,6 +432,16 @@ describe("isUsageLimit", () => {
 		expect(isUsageLimit(new ProviderHttpError("Generic provider failure", 429, { code: "rate_limit_error" }))).toBe(
 			false,
 		);
+		expect(isUsageLimit(new ProviderHttpError("Payment Required", 402))).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError("A subscription is required for this endpoint", 402))).toBe(false);
+	});
+	it("detects 402 Payment Required and Payment is required as credential-rotatable usage limit", () => {
+		expect(isUsageLimit(Object.assign(new Error("Payment Required"), { status: 402 }))).toBe(true);
+		expect(isUsageLimit(Object.assign(new Error("Payment is required"), { status: 402 }))).toBe(true);
+		expect(
+			isUsageLimit(Object.assign(new Error('{"detail":{"code":"deactivated_workspace"}}'), { status: 402 })),
+		).toBe(true);
+		expect(isUsageLimit({ status: 402 })).toBe(true);
 	});
 });
 
@@ -427,6 +452,7 @@ describe("isUsageLimitOutcome", () => {
 		expect(isUsageLimitOutcome(429, "429")).toBe(true);
 		expect(isUsageLimitOutcome(429, "HTTP 429")).toBe(true);
 		expect(isUsageLimitOutcome(429, "Error 429")).toBe(true);
+		expect(isUsageLimitOutcome(429, "429 status code (no body)")).toBe(true);
 		expect(isUsageLimitOutcome(429, "{}")).toBe(true);
 	});
 
@@ -438,6 +464,14 @@ describe("isUsageLimitOutcome", () => {
 
 	it("rotates a status-400 Anthropic low-credit billing failure", () => {
 		expect(isUsageLimitOutcome(400, ANTHROPIC_LOW_CREDIT_MESSAGE)).toBe(true);
+	});
+
+	it("rotates on ClinePass limit markers regardless of status", () => {
+		expect(isUsageLimitOutcome(429, "clinepass limit reached for this window. please try again later.")).toBe(true);
+		expect(isUsageLimitOutcome(undefined, "clinepass limit reached for this window. please try again later.")).toBe(
+			true,
+		);
+		expect(isUsageLimitOutcome(undefined, "free limit reached on model x/y. try again in 5 minutes")).toBe(true);
 	});
 
 	it("keeps informative transient 429s in the upstream-backoff lane", () => {
@@ -631,12 +665,36 @@ describe("isUsageLimitOutcome", () => {
 		expect(isUsageLimit(message)).toBe(true);
 	});
 
-	it("treats 402 as a usage-limit status (opaque body rotates, informative non-quota body does not)", () => {
+	it("treats 402 quota and opaque bodies as credential-rotatable billing caps while preserving non-quota contract", () => {
 		expect(isUsageLimitStatus(402)).toBe(true);
 		expect(isUsageLimitOutcome(402, undefined)).toBe(true);
 		expect(isUsageLimitOutcome(402, "HTTP 402")).toBe(true);
+		expect(isUsageLimitOutcome(402, "402 status code (no body)")).toBe(true);
+		expect(isUsageLimitOutcome(402, "Payment Required")).toBe(true);
+		expect(isUsageLimitOutcome(402, "Payment is required")).toBe(true);
+		expect(isUsageLimitOutcome(402, '{"detail":{"code":"deactivated_workspace"}}')).toBe(true);
 		expect(isUsageLimitOutcome(402, "A subscription is required for this endpoint")).toBe(false);
+		expect(isUsageLimitOutcome(500, "Payment Required")).toBe(false);
+		expect(isUsageLimitOutcome(403, "Payment Required")).toBe(false);
+		expect(isUsageLimitOutcome(400, "Payment Required")).toBe(false);
+		for (const body of [
+			"usage_limit_reached",
+			"resource_exhausted",
+			"usage_not_included",
+			"limit_reached",
+			"personal-team-blocked",
+		]) {
+			expect(isUsageLimitOutcome(402, body)).toBe(true);
+			expect(isUsageLimit(new ProviderHttpError(body, 402))).toBe(true);
+		}
 		expect(isUsageLimit(new ProviderHttpError("HTTP 402", 402))).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError("402 status code (no body)", 402))).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError("", 402))).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError("Payment Required", 402))).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError("Payment is required", 402))).toBe(true);
+		expect(isUsageLimit({ status: 402 })).toBe(true);
+		expect(isUsageLimitOutcome(402, "A subscription is required for this endpoint")).toBe(false);
+		expect(isUsageLimit(new ProviderHttpError("A subscription is required for this endpoint", 402))).toBe(false);
 	});
 
 	it("does not rotate on OpenRouter 402s that only ask for fewer max_tokens", () => {
@@ -685,7 +743,7 @@ describe("isUsageLimitOutcome", () => {
 		expect(retriable(id)).toBe(true);
 	});
 
-	// HTTP 402 is categorically an account-billing cap, so a 402 whose body is
+	// HTTP 402 represents an account-billing cap, so a 402 whose body is
 	// worded as a concurrency cap still rotates — the billing-cap status wins
 	// over the concurrency exclusion. The identical concurrency wording on a
 	// quota-worded 429 stays non-rotatable (5s backoff). This pins the
@@ -715,5 +773,31 @@ describe("calculateRateLimitBackoffMs", () => {
 
 	it("returns a short backoff for CONCURRENT_LIMIT", () => {
 		expect(calculateRateLimitBackoffMs("CONCURRENT_LIMIT")).toBe(5_000);
+	});
+});
+
+describe("is402BillingCapBody", () => {
+	it("returns true for undefined or opaque bodies", () => {
+		expect(is402BillingCapBody(undefined)).toBe(true);
+		expect(is402BillingCapBody("")).toBe(true);
+		expect(is402BillingCapBody("HTTP 402")).toBe(true);
+		expect(is402BillingCapBody("402 status code (no body)")).toBe(true);
+	});
+
+	it("returns true for payment, deactivation, and balance wording", () => {
+		expect(is402BillingCapBody("Payment Required")).toBe(true);
+		expect(is402BillingCapBody('{"detail":{"code":"deactivated_workspace"}}')).toBe(true);
+		expect(is402BillingCapBody("Insufficient balance in account")).toBe(true);
+	});
+
+	it("returns true for quota exhaustion and concurrent limit reasons", () => {
+		expect(is402BillingCapBody("quota exceeded")).toBe(true);
+		expect(is402BillingCapBody("insufficient_quota")).toBe(true);
+		expect(is402BillingCapBody("concurrent requests limit reached")).toBe(true);
+	});
+
+	it("returns false for non-quota informative bodies", () => {
+		expect(is402BillingCapBody("A subscription is required for this endpoint")).toBe(false);
+		expect(is402BillingCapBody("Rate limit exceeded, too many requests")).toBe(false);
 	});
 });

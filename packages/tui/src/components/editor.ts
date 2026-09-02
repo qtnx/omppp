@@ -32,6 +32,7 @@ import {
 	type EditorBorderStyle,
 	type EditorTopBorder,
 	getComposerStyle,
+	isFilledComposerStyle,
 } from "./composer";
 
 export type { EditorBorderStyle, EditorTopBorder };
@@ -414,6 +415,8 @@ export interface EditorTheme {
 	accentColor?: (str: string) => string;
 	/** Background fill used by filled composer styles. */
 	surfaceColor?: (str: string) => string;
+	/** Foreground used when the composer shape leaves its text surface transparent. */
+	textColor?: (str: string) => string;
 	selectList: SelectListTheme;
 	symbols: SymbolTheme;
 	editorPaddingX?: number;
@@ -607,6 +610,34 @@ export class Editor implements Component, Focusable {
 	constructor(theme: EditorTheme) {
 		this.#theme = theme;
 		this.borderColor = theme.borderColor;
+	}
+	/** Return bounded editor content, cursor, and transient child state for debug inspection. */
+	debugState(): Record<string, unknown> {
+		const lines = this.#state.lines;
+		let textLength = Math.max(0, lines.length - 1);
+		let textPreview = "";
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i] ?? "";
+			textLength += line.length;
+			if (textPreview.length >= 120) continue;
+			if (i > 0) textPreview += "\n";
+			textPreview += line.slice(0, 120 - textPreview.length);
+		}
+		return {
+			textPreview,
+			textLength,
+			previewTruncated: textLength > 120,
+			cursorLine: this.#state.cursorLine,
+			cursorCol: this.#state.cursorCol,
+			lineCount: lines.length,
+			selection: null,
+			placeholderActive: false,
+		};
+	}
+
+	/** Expose the active autocomplete list to the debug tree walker. */
+	get debugChildren(): readonly Component[] {
+		return this.#autocompleteList ? [this.#autocompleteList] : [];
 	}
 
 	setTheme(theme: EditorTheme): void {
@@ -1256,13 +1287,16 @@ export class Editor implements Component, Focusable {
 					displayWidth = visibleWidth(displayText);
 				}
 			}
+			const renderedText = isFilledComposerStyle(style)
+				? displayText
+				: (this.#theme.textColor ?? PASSTHROUGH_COLOR)(displayText);
 
 			const linePad = padding(Math.max(0, lineContentWidth - displayWidth));
 
 			result.push(
 				...style.renderRow({
 					...chromeCtx,
-					text: displayText,
+					text: renderedText,
 					pad: linePad,
 					gutter: gutterText,
 					isLastRow: visibleIndex === visibleLayoutLines.length - 1,
@@ -1388,11 +1422,17 @@ export class Editor implements Component, Focusable {
 				this.#cancelAutocomplete(true);
 				return;
 			}
+			// Right arrow at end of line accepts the selection like Tab (fish-style).
+			// Mid-line, right arrow keeps its cursor-movement role and falls through.
+			const rightArrowAccepts =
+				kb.matchesCanonical(canonical, "tui.editor.cursorRight") &&
+				this.#state.cursorCol >= (this.#state.lines[this.#state.cursorLine] ?? "").length;
 			if (
 				this.#autocompleteState === "assist" &&
 				(kb.matchesCanonical(canonical, "tui.input.submit") ||
 					data === "\n" ||
-					kb.matchesCanonical(canonical, "tui.input.tab"))
+					kb.matchesCanonical(canonical, "tui.input.tab") ||
+					rightArrowAccepts)
 			) {
 				this.#applySpellingSuggestion();
 				return;
@@ -1408,7 +1448,7 @@ export class Editor implements Component, Focusable {
 				kb.matchesCanonical(canonical, "tui.input.submit") ||
 				data === "\n" ||
 				kb.matchesCanonical(canonical, "tui.input.tab") ||
-				(this.#autocompleteState !== "assist" && kb.matchesCanonical(canonical, "tui.editor.cursorRight"))
+				rightArrowAccepts
 			) {
 				// Only pass navigation keys to the list, not Enter/Tab/Right (we handle those directly)
 				if (
@@ -1423,8 +1463,7 @@ export class Editor implements Component, Focusable {
 				}
 
 				const isTab = kb.matchesCanonical(canonical, "tui.input.tab");
-				const isRightFastSelect =
-					this.#autocompleteState !== "assist" && kb.matchesCanonical(canonical, "tui.editor.cursorRight");
+				const isRightFastSelect = this.#autocompleteState !== "assist" && rightArrowAccepts;
 				if (isTab || isRightFastSelect) {
 					const selected = this.#autocompleteList.getSelectedItem();
 					// Check for stale autocomplete state due to buffer edits since last refresh
@@ -1722,6 +1761,13 @@ export class Editor implements Component, Focusable {
 			}
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorRight")) {
 			// Right
+			// At end of line, accept the inline ghost word completion (IME-style) like Tab.
+			if (
+				this.#state.cursorCol >= (this.#state.lines[this.#state.cursorLine] ?? "").length &&
+				this.#acceptWordCompletion()
+			) {
+				return;
+			}
 			this.#moveCursor(0, 1);
 		} else if (kb.matchesCanonical(canonical, "tui.editor.cursorLeft")) {
 			// Left
@@ -3462,13 +3508,7 @@ export class Editor implements Component, Focusable {
 	}
 
 	async #handleTabCompletion(): Promise<void> {
-		const wordCompletion = this.#getWordCompletion();
-		if (wordCompletion) {
-			const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
-			const after = currentLine.slice(this.#state.cursorCol);
-			this.#insertTextAtCursor(wordCompletion + (/^[\s.,;:!?"\])}]/.test(after) ? "" : " "));
-			return;
-		}
+		if (this.#acceptWordCompletion()) return;
 		if (!this.#autocompleteProvider) return;
 
 		const currentLine = this.#state.lines[this.#state.cursorLine] || "";
@@ -3485,6 +3525,16 @@ export class Editor implements Component, Focusable {
 			await this.#forceFileAutocomplete();
 		}
 	}
+	/** Insert the inline ghost word completion at the cursor, if any. Shared by Tab and right-arrow accept. */
+	#acceptWordCompletion(): boolean {
+		const wordCompletion = this.#getWordCompletion();
+		if (!wordCompletion) return false;
+		const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
+		const after = currentLine.slice(this.#state.cursorCol);
+		this.#insertTextAtCursor(wordCompletion + (/^[\s.,;:!?"\])}]/.test(after) ? "" : " "));
+		return true;
+	}
+
 	async #showSpellingSuggestions(): Promise<void> {
 		const cursorLine = this.#state.cursorLine;
 		const cursorCol = this.#state.cursorCol;

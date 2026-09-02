@@ -1,16 +1,10 @@
 import { Marked, type Token, type Tokens } from "@oh-my-pi/pi-utils/marked";
 import type { ReactNode } from "react";
 import { memo, useMemo } from "react";
+import { escapeHtml } from "../../lib/format";
 import { MermaidDiagram } from "./Mermaid";
+import { mathExtension } from "./math";
 
-function escapeHtml(s: string): string {
-	return s
-		.replaceAll("&", "&amp;")
-		.replaceAll("<", "&lt;")
-		.replaceAll(">", "&gt;")
-		.replaceAll('"', "&quot;")
-		.replaceAll("'", "&#39;");
-}
 function unescapeHtml(raw: string): string {
 	const parseCodePoint = (value: number): string => {
 		if (Number.isFinite(value) && value >= 0 && value <= 0x10ffff) {
@@ -74,6 +68,7 @@ const md = new Marked({
 	},
 	breaks: true,
 });
+md.use(mathExtension);
 
 /** One rendered piece of a message: pre-parsed markdown html, or a mermaid diagram. */
 type MarkdownSegment = { kind: "html"; html: string } | { kind: "mermaid"; code: string };

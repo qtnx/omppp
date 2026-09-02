@@ -14,11 +14,11 @@
  * things that force a re-resolve.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { StatusLineComponent } from "../src/modes/components/status-line";
 import { initTheme } from "../src/modes/theme/theme";
 import type { AgentSession } from "../src/session/agent-session";
-import * as git from "../src/utils/git";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -44,11 +44,9 @@ function makeSession(): AgentSession {
 	} as unknown as AgentSession;
 }
 
-/** Spy the sync HEAD resolver (returning null avoids the PR/default-branch
- * async paths) and stub the async git-status fetch so no real subprocess runs. */
+/** Spy sync repository-info resolver, returning null to force cheap HEAD reads. */
 function stubGit() {
-	const resolveSync = vi.spyOn(git.head, "resolveSync").mockReturnValue(null);
-	vi.spyOn(git.status, "summary").mockResolvedValue(null);
+	const resolveSync = vi.spyOn(vcs, "gitInfo").mockReturnValue(null);
 	return resolveSync;
 }
 

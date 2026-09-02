@@ -1,8 +1,8 @@
 import * as path from "node:path";
 import { type ReviewFindingRecordItem, recordReviewFindings } from "@oh-my-pi/omp-stats/review-findings";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ReportFindingDetails } from "../tools/review";
-import * as git from "../utils/git";
 import type { SingleResult } from "./types";
 
 const REVIEW_FINDING_AGENTS: Record<string, true> = { reviewer: true, "code-reviewer": true };
@@ -34,7 +34,7 @@ export async function persistTaskReviewFindings(options: PersistTaskReviewFindin
 	if (!findingsByResult.some(entry => entry.findings.length > 0)) return;
 
 	try {
-		const repoRoot = (await git.repo.root(options.cwd)) ?? options.cwd;
+		const repoRoot = vcs.repo(options.cwd)?.root() ?? options.cwd;
 		const repoName = path.basename(repoRoot) || path.basename(options.cwd) || repoRoot;
 		const nowSec = Math.floor(Date.now() / 1000);
 		for (const entry of findingsByResult) {

@@ -73,6 +73,7 @@ import { createAutoresearchExtension } from "./autoresearch";
 import { loadCapability } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
+import type { EffectiveExtensionRoots } from "./capability/types";
 import { CodeGraphManager } from "./codegraph/manager";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
@@ -100,7 +101,7 @@ import { createImageUrlServiceFromSettings } from "./blob-broker/service";
 import { wrapStreamFnWithBlobUrlFallback } from "./blob-broker/stream-fallback";
 import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { initializeWithSettings } from "./discovery";
-import { withOmpExtensionRootScope } from "./discovery/omp-extension-roots";
+import { setInvocationConfiguredExtensions, withOmpExtensionRootScope } from "./discovery/omp-extension-roots";
 import { disposeAllJuliaKernelSessions, disposeJuliaKernelSessionsByOwner } from "./eval/jl/executor";
 import { disposeVmContextsByOwner } from "./eval/js/context-manager";
 import { disposeAllKernelSessions, disposeKernelSessionsByOwner } from "./eval/py/executor";
@@ -114,6 +115,7 @@ import {
 import { discoverCustomToolPaths, loadCustomTools, type ToolPathWithSource } from "./extensibility/custom-tools";
 import type { CustomTool, CustomToolContext, CustomToolSessionEvent } from "./extensibility/custom-tools/types";
 import {
+	bindPreparedExtensions,
 	discoverAndLoadExtensions,
 	discoverExtensionPaths,
 	EXTENSION_HANDLER_TIMEOUT_MS,
@@ -125,6 +127,7 @@ import {
 	type LoadExtensionsResult,
 	loadExtensionFromFactory,
 	loadExtensions,
+	type PreparedExtension,
 	type RegisteredTool,
 	type ToolDefinition,
 	wrapRegisteredTools,
@@ -204,7 +207,7 @@ import {
 	USER_INTERRUPT_LABEL,
 	wrapSteeringForModel,
 } from "./session/messages";
-import { clampProviderContextImages } from "./session/provider-image-budget";
+import { clampProviderContextImages, dropUnreadableContextImages } from "./session/provider-image-budget";
 import {
 	expandDefaultRetryFallbackChains,
 	findRetryFallbackCandidates,
@@ -618,6 +621,14 @@ export interface CreateAgentSessionOptions {
 	/** Disable extension discovery (explicit paths still load). */
 	disableExtensionDiscovery?: boolean;
 	/**
+	 * Live extension-root policy inherited by a child session. Keeps recursive
+	 * sub-discovery aligned with the parent while `preloadedExtensionPaths` only
+	 * optimizes extension-module loading.
+	 *
+	 * @internal
+	 */
+	extensionRoots?: () => EffectiveExtensionRoots;
+	/**
 	 * Pre-loaded extensions (skips file discovery and the per-session factory
 	 * call). Used by the CLI when extensions are loaded early to parse custom
 	 * flags — the same process owns the returned instances, so reusing them is
@@ -627,7 +638,7 @@ export interface CreateAgentSessionOptions {
 	 * `Extension` instances close over a parent-bound `ExtensionAPI` (cwd,
 	 * eventBus, runtime), and reusing them would route tools/handlers/commands
 	 * back through the parent. For subagents, forward
-	 * {@link preloadedExtensionPaths} instead.
+	 * {@link preloadedPreparedExtensions} instead.
 	 *
 	 * @internal
 	 */
@@ -638,9 +649,15 @@ export interface CreateAgentSessionOptions {
 	 * `loadExtensions()` itself so each `Extension` is bound to THIS session's
 	 * `ExtensionAPI` (cwd, eventBus, runtime).
 	 *
-	 * This is the safe pass-through for parent → subagent forwarding.
+	 * Compatibility pass-through for callers that do not have prepared factories.
 	 */
 	preloadedExtensionPaths?: string[];
+	/**
+	 * Session-independent imported extension factories. Child sessions rebind
+	 * these to their own ExtensionAPI without re-evaluating the module graph.
+	 * @internal
+	 */
+	preloadedPreparedExtensions?: readonly PreparedExtension[];
 	/**
 	 * Pre-discovered custom-tool source paths from `.omp/tools/`, `.claude/tools/`,
 	 * plugins, etc. When provided, the filesystem-scan inside
@@ -656,6 +673,13 @@ export interface CreateAgentSessionOptions {
 
 	/** Shared event bus for tool/extension communication. Default: creates new bus. */
 	eventBus?: EventBus;
+
+	/**
+	 * Root-scoped bus carrying `task:subagent:*` observability frames for this
+	 * session and every subagent it spawns. Default: creates a new bus per
+	 * root session; `buildSubagentSessionOptions` inherits the spawner's.
+	 */
+	subagentEventBus?: EventBus;
 
 	/** Skills. Default: discovered from multiple locations */
 	skills?: Skill[];
@@ -813,6 +837,8 @@ export interface CreateAgentSessionResult {
 	startBackgroundModelDiscovery?: () => Promise<void>;
 	/** Shared event bus for tool/extension communication */
 	eventBus: EventBus;
+	/** Root-scoped bus carrying this session tree's `task:subagent:*` frames. */
+	subagentEventBus?: EventBus;
 }
 
 export type DialectFormat = "auto" | "native" | Dialect;
@@ -1509,10 +1535,10 @@ export function createAutoLearnCaptureRunner(
  * ```
  */
 export async function createAgentSession(options: CreateAgentSessionOptions = {}): Promise<CreateAgentSessionResult> {
-	const rootMode = options.disableExtensionDiscovery ? "explicit-only" : "merge";
-	return await withOmpExtensionRootScope(options.additionalExtensionPaths ?? [], rootMode, () =>
-		createAgentSessionScoped(options),
-	);
+	const extensionRoots = options.extensionRoots?.();
+	const explicit = extensionRoots?.explicit ?? options.additionalExtensionPaths ?? [];
+	const mode = extensionRoots?.mode ?? (options.disableExtensionDiscovery ? "explicit-only" : "merge");
+	return await withOmpExtensionRootScope(explicit, mode, () => createAgentSessionScoped(options));
 }
 
 async function createAgentSessionScoped(options: CreateAgentSessionOptions): Promise<CreateAgentSessionResult> {
@@ -1520,6 +1546,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const agentDir = options.agentDir ?? getAgentDir();
 	await ensureAgentDirLayout(agentDir);
 	const eventBus = options.eventBus ?? new EventBus();
+	const subagentEventBus = options.subagentEventBus ?? new EventBus();
 
 	registerSshCleanup();
 	registerEvalCleanup();
@@ -1528,6 +1555,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		options.settingsManager ??
 		logger.time("settings", Settings.init, { cwd, agentDir }));
 	logger.time("initializeWithSettings", initializeWithSettings, settings);
+	// Snapshot this session's effective configured lane onto its invocation scope
+	// so startup sub-discovery sees the same complete policy that post-startup
+	// reloads and recursively spawned children consume.
+	const extensionRoots = options.extensionRoots?.();
+	setInvocationConfiguredExtensions(
+		extensionRoots?.configured ?? settings.get("extensions") ?? [],
+		extensionRoots?.configuredLevel ?? settings.extensionsSourceLevel(),
+	);
 
 	// Pin authStorage to modelRegistry.authStorage: ModelRegistry.getApiKey() routes refresh
 	// failures through that instance, so any divergent storage handed to the bridge / mcpManager
@@ -2041,6 +2076,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			refreshSkills: () => session.refreshSkills(),
 			rules: allRules,
 			eventBus,
+			subagentEventBus,
 			outputSchema: options.outputSchema,
 			outputSchemaMode: options.outputSchemaMode,
 			requireYieldTool: options.requireYieldTool,
@@ -2257,6 +2293,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (event.type === "connecting" && event.serverNames.length === 0) return;
 			eventBus.emit(MCP_CONNECTION_STATUS_EVENT_CHANNEL, event);
 		};
+		// Provider, never a stored value: inherited child policy remains linked to
+		// the owning session, while top-level sessions materialize their own live
+		// settings on every discovery call.
+		const buildSessionExtensionRoots =
+			options.extensionRoots ??
+			((): EffectiveExtensionRoots => ({
+				explicit: options.additionalExtensionPaths ?? [],
+				mode: options.disableExtensionDiscovery ? "explicit-only" : "merge",
+				configured: settings.get("extensions") ?? [],
+				configuredLevel: settings.extensionsSourceLevel(),
+			}));
 		const mcpDiscoverOptions = {
 			onStatus: onMCPStatus,
 			enableProjectConfig: settings.get("mcp.enableProjectConfig") ?? true,
@@ -2264,6 +2311,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			filterExa: true,
 			// Filter browser MCP servers when builtin browser tool is active
 			filterBrowser: settings.get("browser.enabled") ?? false,
+			extensionRoots: buildSessionExtensionRoots(),
 		};
 		// UI sessions defer MCP connections until the live session can reconcile
 		// discovery mode, explicit tool requests, and persisted selections together.
@@ -2439,10 +2487,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		//      Extension instances. Shallow-clone `extensions` so the inline
 		//      push below cannot mutate the caller's array. `runtime` is shared
 		//      so flag values set pre-creation flow into the live session.
+		//   2. `preloadedPreparedExtensions` (subagent): caller imported modules;
+		//      re-bind their factories to THIS session's ExtensionAPI without
+		//      evaluating the same module graph again.
 		//   3. `preloadedExtensionPaths` (subagent): caller resolved paths;
 		//      skip the FS scan but always re-call `loadExtensions` here so
 		//      each `Extension` binds to THIS session's `ExtensionAPI`
-		//      (cwd, eventBus, runtime).
+		//      (cwd, eventBus, runtime). Compatibility fallback for callers that
+		//      only have paths; imports and binds them for this session.
 		//   4. No preload: run the full session discovery.
 		// `disableExtensionDiscovery` is honored implicitly: a caller that set
 		// the flag and pre-resolved the result already reflects that choice.
@@ -2470,6 +2522,20 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					extensionsResult.extensions.map(ext => ext.resolvedPath).filter(p => !p.startsWith("<inline")),
 					true,
 				);
+			} else if (options.preloadedPreparedExtensions) {
+				const preparedExtensions = isHerdrSubagentSession
+					? options.preloadedPreparedExtensions.filter(prepared => !isHerdrAgentStateExtensionPath(prepared.path))
+					: options.preloadedPreparedExtensions;
+				extensionPaths = filterSubagentExtensionPaths(
+					preparedExtensions.map(prepared => prepared.path),
+					true,
+				);
+				extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
+					logger.time("bindPreparedExtensions", bindPreparedExtensions, preparedExtensions, cwd, eventBus),
+				);
+				for (const { path, error } of extensionsResult.errors) {
+					logger.error("Failed to bind extension", { path, error });
+				}
 			} else if (options.preloadedExtensionPaths) {
 				extensionPaths = filterSubagentExtensionPaths(options.preloadedExtensionPaths, isHerdrSubagentSession);
 				extensionsResult = await withContextGcDbPath(contextGcDbPath, async () =>
@@ -2501,6 +2567,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Forward the source-path list (NOT the loaded instances) so subagents
 		// rebuild their own session-scoped extensions.
 		toolSession.extensionPaths = extensionPaths;
+		toolSession.effectiveExtensionRoots = buildSessionExtensionRoots;
+		toolSession.preparedExtensions = extensionsResult.preparedExtensions;
 
 		let shouldAppendNativeSystemContextReminderPrompt = false;
 		try {
@@ -3046,7 +3114,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 			if (!model) {
 				const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
-				let pick = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
+				let pick = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth), provider =>
+					modelRegistry.hasConcreteAuth(provider),
+				);
 
 				// Cold-cache discovery race (issues #6114, #6162): a discovery
 				// provider (models.yml `openai-models-list`, LM Studio/Ollama/
@@ -3074,7 +3144,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							settings,
 							modelMatchPreferences,
 						);
-						pick = pickDefaultAvailableModel(refreshedCandidates.filter(hasModelAuth));
+						pick = pickDefaultAvailableModel(refreshedCandidates.filter(hasModelAuth), provider =>
+							modelRegistry.hasConcreteAuth(provider),
+						);
 					}
 				}
 
@@ -3302,12 +3374,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			cursorBridgeEditTool ??= createBridgeEditTool(toolSession, extensionRunner);
 			return cursorBridgeEditTool;
 		};
-		// Whether this session granted a file-writing tool. Same capture-early
-		// reasoning, plus `write` may be auto-registered further down as an xdev
-		// transport. The exec bridge answers native `delete` and
-		// resource-download frames that mutate files without running a registry
-		// tool, so it needs the grant as the session actually made it.
-		const cursorCanMutateFiles = editWasGranted || toolRegistry.has("write");
 
 		let writeRegistration: Promise<boolean> | undefined;
 		const ensureWriteRegistered = (): Promise<boolean> => {
@@ -3353,8 +3419,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		// Existing staged/device paths need write registered before active-set assembly.
 		// Deferred MCP also registers it now, but refresh activates it only after a server connects.
-		// xd:// mounts never register write: xdev state only exists when the session
-		// already granted a write tool (see createTools), so mounting rides that grant.
+		// xd:// mounts ride the session's write grant: createTools either saw a
+		// granted write tool or registered a device-only transport one for an
+		// explicit-list session that omitted it, so xdev state always implies one.
 		const hasDeferrableTools = Array.from(toolRegistry.values()).some(tool => tool.deferrable === true);
 		const planModeAvailable = settings.get("plan.enabled");
 		if (!restrictToolNames && (hasDeferrableTools || planModeAvailable || deferMCPDiscoveryForUI)) {
@@ -3446,10 +3513,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// it over the registry, so installing it unconditionally would let a
 			// session without `grep` search anyway.
 			createGrepTool: toolRegistry.has("grep") ? createBridgeGrepFactory(toolSession, extensionRunner) : undefined,
-			// The native `delete` and resource-download frames mutate files
-			// without running a registry tool, so this grant is the only thing
-			// standing between a restricted session and a workspace write.
-			allowDirectFileMutation: cursorCanMutateFiles,
+			// Native delete and resource-download frames mutate files without a
+			// registry tool. Resolve both the transactional active predicate and
+			// live access mode: Agent.state.tools commits only after prompt rebuilding,
+			// while this predicate revokes before the await and rolls back on failure.
+			allowDirectFileMutation: () =>
+				(editWasGranted && toolSession.isToolActive?.("edit") === true) ||
+				(toolSession.isToolActive?.("write") === true &&
+					toolRegistry.has("write") &&
+					toolSession.deviceOnlyWrite !== true),
 		});
 
 		// Resolve the inline-descriptors setting against the session-start model.
@@ -3644,6 +3716,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				),
 				taskIrcEnabled: !restrictToolNames && isIrcEnabled(settings, options.taskDepth ?? 0),
 				autoQaEnabled: !restrictToolNames && isAutoQaEnabled(settings),
+				writeTransportOnly:
+					toolSession.deviceOnlyWrite === true && toolSession.pendingFullWriteDescription !== true,
 				secretsEnabled,
 				workspaceTree: promptWorkspaceTreePromise,
 				includeWorkspaceTree,
@@ -3765,7 +3839,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			(explicitlyRequestedToolNameSet === undefined || explicitlyRequestedToolNameSet.has("read"));
 		const xdevWriteAvailable =
 			builtInRegistryToolNames.has("write") &&
-			(explicitlyRequestedToolNameSet === undefined || explicitlyRequestedToolNameSet.has("write"));
+			(explicitlyRequestedToolNameSet === undefined ||
+				explicitlyRequestedToolNameSet.has("write") ||
+				toolSession.deviceOnlyWrite === true);
 		const xdevTransportAvailable = xdevReadAvailable && xdevWriteAvailable;
 		const initialRequestedActiveToolNames = options.toolNames
 			? requestedActiveToolNames
@@ -3816,7 +3892,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			: [...sdkCustomTools.map(tool => tool.name), ...registeredTools.map(tool => tool.definition.name)].filter(
 					name =>
 						!defaultInactiveToolNames.has(name) &&
-						(!mcpDiscoveryEnabled || !isMCPToolName(name) || retainAmbientMcpToolsTopLevel) &&
+						(!mcpDiscoveryEnabled ||
+							!isMCPToolName(name) ||
+							retainAmbientMcpToolsTopLevel ||
+							toolSession.deviceOnlyWrite === true) &&
 						shouldAutoIncludeCustomTool(name.toLowerCase()),
 				);
 		for (const name of alwaysInclude) {
@@ -3946,8 +4025,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Partition the initial enabled set for the xd:// transport. Tool instances
 		// remain in the canonical map; only presentation names move between layers.
 		// Mounting requires both transport halves in the granted set (`read xd://`
-		// discovers, `write xd://<tool>` executes); a session without either keeps
-		// every tool top-level instead of auto-granting the missing transport.
+		// discovers, `write xd://<tool>` executes); explicit-list sessions granted
+		// `read` without `write` can use the device-only transport registered by
+		// createTools without surfacing it when no device needs it.
 		if (toolSession.xdev) {
 			const topLevelToolNames: string[] = [];
 			// `createTools` has already mounted the default discoverable built-ins.
@@ -3976,6 +4056,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			toolSession.xdev.mountedNames.clear();
 			for (const name of mountedNames) toolSession.xdev.mountedNames.add(name);
 			initialToolNames = topLevelToolNames;
+			const deviceTransportNeeded =
+				mountedNames.size > 0 ||
+				initialToolNames.some(name => toolRegistry.get(name)?.deferrable === true) ||
+				toolSession.getPlanModeState?.()?.enabled === true;
+			if (deviceTransportNeeded && xdevWriteAvailable && !initialToolNames.includes("write")) {
+				initialToolNames.push("write");
+			}
 		}
 
 		setSessionActiveToolNames(initialToolNames);
@@ -4083,6 +4170,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 			transformed = clampProviderContextImages(transformed, transformModel);
 			transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+			// After the model-specific normalizers: they carry better wording for the
+			// cases they own (STB WebP), so this stays the backstop for everything
+			// else, and it runs before the blob broker uploads any of these bytes.
+			transformed = await dropUnreadableContextImages(transformed, transformModel);
 			if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
 			// Keep per-request volatility out of the system prompt: the date/cwd
 			// reminder rides on the first user turn so open-weight providers keep
@@ -4349,6 +4440,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// (defaulting to read/grep/glob).
 		const advisorToolSession: ToolSession = {
 			...toolSession,
+			// The primary may carry a dormant xd:// write transport. Advisors use
+			// their own configured tool slate, so a selected write is always full.
+			deviceOnlyWrite: undefined,
+			pendingFullWriteDescription: undefined,
 			get cwd() {
 				return sessionManager.getCwd();
 			},
@@ -4420,6 +4515,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			sessionManager,
 			settings,
 			secretVault,
+			additionalExtensionPaths: options.additionalExtensionPaths,
+			extensionRoots: buildSessionExtensionRoots,
+			disableExtensionDiscovery: options.disableExtensionDiscovery,
 			autoApprove: options.autoApprove,
 			scoutAllowedBySpawnPolicy: isScoutSpawnable(undefined, options.spawns ?? "*"),
 			evalKernelOwnerId,
@@ -4483,6 +4581,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			presentationPinnedToolNames: explicitlyRequestedToolNameSet,
 			setActiveToolNames: setSessionActiveToolNames,
 			ensureWriteRegistered,
+			isDeviceOnlyWrite: () => toolSession.deviceOnlyWrite === true,
+			setDeviceOnlyWrite: enabled => {
+				toolSession.deviceOnlyWrite = enabled ? true : undefined;
+			},
+			setPendingFullWriteDescription: enabled => {
+				toolSession.pendingFullWriteDescription = enabled ? true : undefined;
+			},
 			ensureGoalRegistered,
 			getMcpServerInstructions: mcpManager
 				? () => {
@@ -4666,7 +4771,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						builtInRegistryToolNames.has("read") &&
 						builtInRegistryToolNames.has("write") &&
 						enabled.includes("read") &&
-						enabled.includes("write") &&
+						(enabled.includes("write") || toolSession.deviceOnlyWrite === true) &&
 						isMountableUnderXdev(liveTool);
 					const nextMounted = shouldMount
 						? mounted.includes(name)
@@ -4936,6 +5041,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
 						transformed = clampProviderContextImages(transformed, transformModel);
 						transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+						transformed = await dropUnreadableContextImages(transformed, transformModel);
+						if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
 						return captureDateCwdReminder.transform(
 							transformed,
 							formatLocalCalendarDate(),
@@ -5108,6 +5215,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			lspServers,
 			startBackgroundModelDiscovery: startRuntimeDiscovery,
 			eventBus,
+			subagentEventBus,
 		};
 	} catch (error) {
 		// Release the subscription if the throw happened after install but before the

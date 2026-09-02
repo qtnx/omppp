@@ -4,7 +4,7 @@ telemetry = false
 minimumReleaseAge = 259200 # 3 days in seconds
 # `brace-expansion` is pinned by a security override (GHSA-mh99-v99m-4gvg); its
 # fix landed inside the 3-day window, so it is exempt from the age gate.
-minimumReleaseAgeExcludes = ["@types/bun", "bun-types", "brace-expansion", "kitty-vt-wasm"]
+minimumReleaseAgeExcludes = ["@types/bun", "bun-types", "brace-expansion", "kitty-vt-wasm", "@stencil-hq/vibemon"]
 linker = "hoisted"
 exact = true
 saveTextLockfile = true

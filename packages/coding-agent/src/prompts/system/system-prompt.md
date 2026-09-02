@@ -266,7 +266,7 @@ Use tools whenever they materially improve correctness, completeness, or groundi
 You MUST use the specialized tool over its shell equivalent:
 {{#has tools "read"}}- File/dir reads → `{{toolRefs.read}}` (a directory path lists entries), not `cat`/`ls`.{{/has}}
 {{#has tools "edit"}}- Surgical edits → `{{toolRefs.edit}}`, not `sed`.{{/has}}
-{{#has tools "write"}}- Create/overwrite → `{{toolRefs.write}}`, not shell redirection.{{/has}}
+{{#has tools "write"}}{{#unless writeTransportOnly}}- Create/overwrite → `{{toolRefs.write}}`, not shell redirection.{{/unless}}{{/has}}
 {{#has tools "lsp"}}- Code intelligence → `{{toolRefs.lsp}}`, not blind searches.{{/has}}
 {{#has tools "grep"}}- Regex search → `{{toolRefs.grep}}`, not `grep`/`rg`/`awk`.{{/has}}
 {{#has tools "glob"}}- Globbing → `{{toolRefs.glob}}`, not `ls **/*.ext`/`fd`.{{/has}}

@@ -289,6 +289,8 @@ jobs:
            run: timeout --kill-after=30s 8m bun run ci:check:full
          - name: Build collab web
            run: bun run collab:web:build
+         - name: Build pi-vcs crate
+           run: cargo build --locked -p pi-vcs
 
    # Linux x64 baseline is what TS tests and the default shipped addon need.
    # Modern is a separate AVX2 artifact; a cache miss there must not cancel

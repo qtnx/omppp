@@ -1,11 +1,12 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { getBlobsDir, isEnoent, parseJsonlLenient } from "@oh-my-pi/pi-utils";
+import * as snapcompact from "@oh-my-pi/snapcompact";
 import { BlobStore, isBlobRef, resolveImageData, resolveImageDataUrl } from "./blob-store";
 import { rehydrateEntries } from "./entry-archival";
 import { buildSessionContext } from "./session-context";
 import type { CompactionEntry, FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./session-entries";
 import { migrateToCurrentVersion } from "./session-migrations";
-import { isImageBlock, isImageDataPayload } from "./session-persistence";
+import { isExternalizableImagePosition, isPersistenceTruncatedString } from "./session-persistence";
 import { FileSessionStorage, type SessionStorage } from "./session-storage";
 import {
 	parseTitleSlotFromContent,
@@ -38,6 +39,8 @@ export interface SessionLoadResult {
 	entries: FileEntry[];
 	titleSlot: SessionTitleUpdate | undefined;
 	malformedRecords: number;
+	/** Whether non-empty session data was found without a valid leading session header. */
+	invalidHeader: boolean;
 }
 
 function splitTitleSlot(content: string): { body: string; slot: SessionTitleUpdate | undefined } {
@@ -75,7 +78,12 @@ export function parseSessionContent(content: string): SessionLoadResult {
 		},
 	}) as FileEntry[];
 	applyTitleSlot(entries[0], slot);
-	return { entries, titleSlot: slot, malformedRecords };
+	return {
+		entries,
+		titleSlot: slot,
+		malformedRecords,
+		invalidHeader: entries.length > 0 ? !isValidSessionHeader(entries[0]) : malformedRecords > 0,
+	};
 }
 
 function getActiveBranchPath(entries: FileEntry[]): SessionEntry[] {
@@ -261,7 +269,12 @@ export async function loadEntriesFromFileStream(filePath: string): Promise<Sessi
 			},
 		},
 	);
-	return { entries, titleSlot, malformedRecords };
+	return {
+		entries,
+		titleSlot,
+		malformedRecords,
+		invalidHeader: entries.length > 0 ? !isValidSessionHeader(entries[0]) : malformedRecords > 0,
+	};
 }
 
 /** Exported for compaction.test.ts */
@@ -277,7 +290,7 @@ async function loadWithKnownSize(filePath: string, storage: SessionStorage, size
 	const loaded = shouldStreamEntries(storage, size)
 		? await loadEntriesFromFileStream(filePath)
 		: parseSessionContent(await storage.readText(filePath));
-	return isValidSessionHeader(loaded.entries[0]) ? loaded : { ...loaded, entries: [] };
+	return loaded.invalidHeader ? { ...loaded, entries: [] } : loaded;
 }
 
 /** Load and validate a session while retaining malformed-record diagnostics. */
@@ -288,7 +301,7 @@ export async function loadSessionFile(
 	try {
 		return await loadWithKnownSize(filePath, storage, storage.statSync(filePath).size);
 	} catch (err) {
-		if (isEnoent(err)) return { entries: [], titleSlot: undefined, malformedRecords: 0 };
+		if (isEnoent(err)) return { entries: [], titleSlot: undefined, malformedRecords: 0, invalidHeader: false };
 		throw err;
 	}
 }
@@ -337,11 +350,6 @@ function hasImageUrl(value: unknown): value is { image_url: string } {
 	return typeof value === "object" && value !== null && "image_url" in value && typeof value.image_url === "string";
 }
 
-function shouldResolveImagePayload(value: unknown, key: string | undefined): value is { data: string } {
-	if (!isImageDataPayload(value) || !isBlobRef(value.data)) return false;
-	return (key === "content" && isImageBlock(value)) || key === "images";
-}
-
 function isPersistedSnapcompactFrame(
 	value: unknown,
 ): value is { data: string; cols: number; rows: number; chars: number } {
@@ -354,9 +362,8 @@ function isPersistedSnapcompactFrame(
 		typeof frame.chars === "number"
 	);
 }
-
 async function resolvePersistedBlobRefs(value: unknown, blobStore: BlobStore, key?: string): Promise<void> {
-	if (shouldResolveImagePayload(value, key)) {
+	if (isExternalizableImagePosition(value, key) && isBlobRef(value.data)) {
 		value.data = await resolveImageData(blobStore, value.data);
 		return;
 	}
@@ -427,9 +434,34 @@ function containsBlobRef(value: unknown): boolean {
 	return false;
 }
 
+/**
+ * Older persistence versions truncated oversized frame base64 in place. Recover
+ * those archives from their retained source text so an already-wedged session
+ * resumes as text instead of sending malformed image data to the provider.
+ */
+function repairTruncatedSnapcompactFrames(entry: FileEntry): void {
+	if (entry.type !== "compaction") return;
+	const archive = snapcompact.getPreservedArchive(entry.preserveData);
+	if (!archive?.frames.some(frame => isPersistenceTruncatedString(frame.data))) return;
+	const slot = entry.preserveData?.[snapcompact.PRESERVE_KEY];
+	if (typeof slot !== "object" || slot === null) return;
+
+	if (archive.text) {
+		Object.assign(slot, { frames: [], textHead: archive.text, textTail: "" });
+		return;
+	}
+	Object.assign(slot, {
+		frames: archive.frames.filter(frame => !isPersistenceTruncatedString(frame.data)),
+	});
+}
+
 export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
 	const liveEntries = entriesRequiringResolution(entries);
 	const pending: Promise<void>[] = [];
+	// Repair snapcompact frames in cold entries without resolving their blob refs.
+	for (const entry of entries) {
+		if (entry.type !== "session") repairTruncatedSnapcompactFrames(entry);
+	}
 	for (const entry of liveEntries) {
 		if (!containsBlobRef(entry)) continue;
 		pending.push(resolvePersistedBlobRefs(entry, blobStore));

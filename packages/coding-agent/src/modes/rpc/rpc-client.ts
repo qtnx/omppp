@@ -49,9 +49,32 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : n
 /** RpcCommand without the id field (for internal send) */
 type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 
+/** Process transport consumed by {@link RpcClient}. */
+export interface RpcAgentProcess {
+	stdin: {
+		write(data: string | Uint8Array): unknown;
+	};
+	stdout: ReadableStream<Uint8Array>;
+	peekStderr(): string;
+	kill(signal?: Parameters<ptree.ChildProcess["kill"]>[0], graceMs?: number): void;
+	exited: Promise<number>;
+}
+
 export interface RpcClientOptions {
-	/** Path to the CLI entry point (default: searches for dist/cli.js) */
+	/** Path to the CLI entry point (default: `dist/cli.js`). */
 	cliPath?: string;
+	/**
+	 * Agent launcher override. An argv prefix receives the normal RPC/model args
+	 * appended; a builder receives those args and returns the complete argv.
+	 * Builders support transports such as SSH that must quote the final argv.
+	 * Ignored when {@link spawn} is provided.
+	 */
+	command?: string[] | ((agentArgs: string[]) => string[]);
+	/**
+	 * Spawn the RPC agent over a custom transport instead of a local child process.
+	 * Takes precedence over {@link command}.
+	 */
+	spawn?: (agentArgs: string[]) => RpcAgentProcess | Promise<RpcAgentProcess>;
 	/** Working directory for the agent */
 	cwd?: string;
 	/** Environment variables */
@@ -250,7 +273,7 @@ function isPageFallbackError(error: unknown): boolean {
 // ============================================================================
 
 export class RpcClient {
-	#process: ptree.ChildProcess | null = null;
+	#process: RpcAgentProcess | null = null;
 	#reaping: Promise<void> | null = null;
 	#eventListeners: RpcEventListener[] = [];
 	#sessionEventListeners: RpcSessionEventListener[] = [];
@@ -305,7 +328,6 @@ export class RpcClient {
 		if (this.options.args) {
 			args.push(...this.options.args);
 		}
-
 		const env = { ...Bun.env, ...this.options.env };
 		if (this.options.env?.PI_CONFIG_DIR?.trim()) {
 			env.PI_OMPX_TRUSTED_CONFIG_DIR = this.options.env.PI_CONFIG_DIR;
@@ -316,15 +338,31 @@ export class RpcClient {
 		if (this.options.env && "SSH_AUTH_SOCK" in this.options.env && !this.options.env.PI_OMPX_TRUSTED_SSH_AUTH_SOCK) {
 			env.PI_OMPX_TRUSTED_SSH_AUTH_SOCK = "default";
 		}
-		const command = sandboxOmpxCommand(
-			{ cmd: "bun", args: [cliPath, ...args], shell: false },
-			{ cwd: this.options.cwd, env },
-		);
-		const child = ptree.spawn([command.cmd, ...command.args], {
-			cwd: this.options.cwd,
-			env: command.env ?? env,
-			stdin: "pipe",
-		});
+		let child: RpcAgentProcess;
+		if (this.options.spawn) {
+			child = await this.options.spawn(args);
+		} else {
+			let command: string[];
+			let childEnv = env;
+			if (this.options.command) {
+				command =
+					typeof this.options.command === "function"
+						? this.options.command(args)
+						: [...this.options.command, ...args];
+			} else {
+				const sandboxed = sandboxOmpxCommand(
+					{ cmd: "bun", args: [cliPath, ...args], shell: false },
+					{ cwd: this.options.cwd, env },
+				);
+				command = [sandboxed.cmd, ...sandboxed.args];
+				childEnv = sandboxed.env ?? env;
+			}
+			child = ptree.spawn(command, {
+				cwd: this.options.cwd,
+				env: childEnv,
+				stdin: "pipe",
+			});
+		}
 		this.#process = child;
 
 		// Wait for the "ready" signal or process exit
@@ -487,7 +525,7 @@ export class RpcClient {
 		void this.stop();
 	}
 
-	#waitForExit(child: ptree.ChildProcess): Promise<void> {
+	#waitForExit(child: RpcAgentProcess): Promise<void> {
 		const reaping = child.exited.then(
 			() => {},
 			() => {},
@@ -1218,9 +1256,10 @@ export class RpcClient {
 		if (!this.#process?.stdin) {
 			throw new Error("Client not started");
 		}
-		const stdin = this.#process.stdin as FileSink;
+		const stdin = this.#process.stdin;
 		stdin.write(`${JSON.stringify(frame)}\n`);
-		const flushResult = stdin.flush();
+		if (!("flush" in stdin)) return;
+		const flushResult = (stdin as FileSink).flush();
 		if (isPromise(flushResult)) {
 			flushResult.catch((err: Error) => {
 				onError?.(err);
