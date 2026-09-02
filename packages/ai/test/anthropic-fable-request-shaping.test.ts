@@ -66,6 +66,7 @@ type CapturedPayload = {
 	};
 	tool_choice?: { type: string };
 	output_config?: { effort?: string };
+	cache_control?: { type: "ephemeral"; ttl?: "1h" | "5m" };
 	system?: Array<{ cache_control?: { type: "ephemeral"; ttl?: "1h" | "5m" } }>;
 	messages?: Array<{
 		role: string;
@@ -125,10 +126,8 @@ describe("Anthropic preserved-thinking request shaping", () => {
 			cacheRetention: "long",
 		});
 
-		expect(payload.system?.[1]?.cache_control?.ttl).toBe("1h");
-		const messageContent = payload.messages?.[0]?.content;
-		if (!Array.isArray(messageContent)) throw new Error("expected block message content");
-		expect(messageContent.at(-1)?.cache_control?.ttl).toBe("1h");
+		expect(payload.system?.[2]?.cache_control?.ttl).toBe("1h");
+		expect(payload.cache_control?.ttl).toBe("1h");
 	});
 
 	it("keeps declared tools stable and appends a removal control", async () => {

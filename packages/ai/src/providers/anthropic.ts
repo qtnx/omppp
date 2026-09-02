@@ -205,6 +205,22 @@ const fastModeBeta = "fast-mode-2026-02-01";
 const taskBudgetBeta = "task-budgets-2026-03-13";
 const effortBeta = "effort-2025-11-24";
 const serverSideFallbackBeta = "server-side-fallback-2026-06-01";
+const midConversationSystemClearAtBeta = "mid-conversation-system-clear-at-2026-08-21";
+const midConversationToolChangesBeta = "mid-conversation-tool-changes-2026-07-01";
+const midConversationOutputConfigBeta = "mid-conversation-output-config-2026-07-01";
+
+function resolveAnthropicControlBetas(
+	model: Model<"anthropic-messages">,
+	prefixMismatchBehavior: "drop_block" | "error" | undefined,
+): string[] {
+	const betas: string[] = [];
+	if (prefixMismatchBehavior) betas.push(THINKING_BINDING_CONTROLS_BETA);
+	if (model.compat.supportsMidConversationSystem) betas.push(midConversationSystemBeta);
+	if (model.compat.supportsTurnScopedSystem) betas.push(midConversationSystemClearAtBeta);
+	if (model.compat.supportsMidConversationToolChanges) betas.push(midConversationToolChangesBeta);
+	if (model.compat.supportsPerMessageEffort) betas.push(midConversationOutputConfigBeta);
+	return betas;
+}
 
 
 function buildClaudeCodeBetas({
@@ -2176,6 +2192,9 @@ const streamAnthropicOnce = (
 				) {
 					extraBetas.push(THINKING_BINDING_CONTROLS_BETA);
 				}
+				if (model.compat.supportsMidConversationSystem && !extraBetas.includes(midConversationSystemBeta)) {
+					extraBetas.push(midConversationSystemBeta);
+				}
 				// `context_management.clear_thinking_20251015` requires this beta. OAuth
 				// requests carry it in `claudeCodeAgentBetaDefaults`; API-key requests
 				// need it added explicitly so the field is honored instead of rejected
@@ -3285,16 +3304,7 @@ export function buildAnthropicSystemBlocks(
 	if (includeClaudeCodeInstruction && !hasBillingHeader) {
 		const blocks: AnthropicSystemBlock[] = [
 			{ type: "text", text: createClaudeBillingHeader(firstUserMessageText ?? "") },
-			{
-				type: "text",
-				text: claudeCodeSystemInstruction,
-				cache_control:
-					cacheControl && (sanitizedPrompts.length === 0 || firstUserMessageText !== undefined)
-						? cloneAnthropicCacheControl(cacheControl)
-						: cacheControl
-							? undefined
-							: { type: "ephemeral" },
-			},
+			{ type: "text", text: claudeCodeSystemInstruction },
 		];
 
 		for (const instruction of trimmedInstructions) {
@@ -3646,7 +3656,7 @@ function applyPromptCaching(
 			params.system as AnthropicSystemBlock[],
 			cacheControl,
 			maxSystemBreakpoints,
-			0,
+			isCCLayout ? firstCacheableSystemIndex(params.system as AnthropicSystemBlock[]) : 0,
 		);
 	}
 	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
@@ -4163,7 +4173,7 @@ function buildParams(
 	const firstUserMessageText = shouldInjectClaudeCodeInstruction
 		? extractClaudeCodeFirstUserMessageText(context.messages)
 		: "";
-	const systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
+	let systemBlocks = buildAnthropicSystemBlocks(context.systemPrompt, {
 		includeClaudeCodeInstruction: shouldInjectClaudeCodeInstruction,
 		firstUserMessageText,
 		cacheControl,
@@ -4310,7 +4320,7 @@ function buildParams(
 	);
 	wireMessages = materializeAnthropicControlTransitions(wireMessages, providerSessionState);
 	const outputConfigEntries: AnthropicOutputConfig = {};
-	if (outputConfigEffort && model.provider !== "google-vertex") outputConfigEntries.effort = outputConfigEffort;
+	if (topLevelEffort && model.provider !== "google-vertex") outputConfigEntries.effort = topLevelEffort;
 	if (options?.taskBudget) outputConfigEntries.task_budget = options.taskBudget;
 	const outputConfig = Object.keys(outputConfigEntries).length ? outputConfigEntries : undefined;
 
@@ -4319,14 +4329,15 @@ function buildParams(
 	// ceiling (e.g. 128k on Opus 4.8).
 	const modelMaxTokens = model.maxTokens ?? CLAUDE_CODE_MAX_OUTPUT_TOKENS;
 	const maxOutputTokens = isOAuthToken ? Math.min(CLAUDE_CODE_MAX_OUTPUT_TOKENS, modelMaxTokens) : modelMaxTokens;
+	const vertexControlBetas = isVertexRawPredictUrl(model.baseUrl)
+		? resolveAnthropicControlBetas(model, prefixMismatchBehavior)
+		: [];
 
 	// Build params in the canonical field order: model → messages → system → tools →
 	// metadata → max_tokens → thinking → context_management → output_config → stream.
 	const params: MessageCreateParamsStreaming = {
 		model: options?.requestModelId ?? model.requestModelId ?? model.id,
-		messages: convertAnthropicMessages(context.messages, effectiveModel, isOAuthToken, {
-			serverSideFallbackEnabled: !!fallbacks?.length,
-		}),
+		messages: wireMessages,
 		...(systemBlocks && { system: systemBlocks }),
 		...(tools !== undefined && { tools }),
 		...(metadata && { metadata }),
@@ -4335,6 +4346,7 @@ function buildParams(
 		...(contextManagement && { context_management: contextManagement }),
 		...(outputConfig && { output_config: outputConfig }),
 		...(fallbacks?.length ? { fallbacks } : {}),
+		...(vertexControlBetas.length > 0 ? { anthropic_beta: vertexControlBetas } : {}),
 		stream: true,
 	};
 
