@@ -16,6 +16,7 @@ import competitiveRecon from "./bundled-skills/competitive-recon.md" with { type
 import concurrencyCorrectness from "./bundled-skills/concurrency-correctness.md" with { type: "text" };
 import databaseCraft from "./bundled-skills/database-craft.md" with { type: "text" };
 import dependencyDoctor from "./bundled-skills/dependency-doctor.md" with { type: "text" };
+import executionHarness from "./bundled-skills/execution-harness.md" with { type: "text" };
 import featureAnatomy from "./bundled-skills/feature-anatomy.md" with { type: "text" };
 import featureGym from "./bundled-skills/feature-gym.md" with { type: "text" };
 import frontendAccessibility from "./bundled-skills/frontend-accessibility.md" with { type: "text" };
@@ -107,6 +108,11 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		name: "dependency-doctor",
 		content: dependencyDoctor,
 		filePath: `${import.meta.dir}/bundled-skills/dependency-doctor.md`,
+	},
+	{
+		name: "execution-harness",
+		content: executionHarness,
+		filePath: `${import.meta.dir}/bundled-skills/execution-harness.md`,
 	},
 	{
 		name: "feature-anatomy",

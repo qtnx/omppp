@@ -25,6 +25,7 @@ import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../tools/hub";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
+import { type ParentContextSnapshot, writeParentContextSnapshot } from "./context-snapshot";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess } from "./executor";
 import {
@@ -502,29 +503,12 @@ function resolveAutoloadSkills(session: ToolSession, agent: AgentDefinition) {
 	};
 }
 
-async function writeContextSnapshot(
-	session: ToolSession,
-	policy: EffectiveSubagentPolicy,
-	lease: ArtifactLease,
-): Promise<NonNullable<ExecutorOptions["contextFiles"]>[number] | undefined> {
-	if (policy.enableIrc && (policy.effectiveAgent.tools === undefined || policy.effectiveAgent.tools.includes("irc"))) {
-		return undefined;
-	}
-	const compactContext = (
-		session as ToolSession & { getCompactContext?: () => string | undefined }
-	).getCompactContext?.();
-	if (!compactContext) return undefined;
-	const contextFilePath = path.join(lease.artifactsDir, `context-${Snowflake.next()}.md`);
-	await Bun.write(contextFilePath, compactContext);
-	return { path: contextFilePath, content: compactContext };
-}
-
 function buildExecutorOptions(
 	request: StructuredSubagentRequest,
 	policy: EffectiveSubagentPolicy,
 	lease: ArtifactLease,
 	id: string,
-	contextSnapshot?: NonNullable<ExecutorOptions["contextFiles"]>[number],
+	contextSnapshot?: ParentContextSnapshot,
 ): ExecutorOptions {
 	const { session } = request;
 	const { skills, autoloadSkills } = resolveAutoloadSkills(session, policy.effectiveAgent);
@@ -535,9 +519,9 @@ function buildExecutorOptions(
 	const restrictToolNames = policy.planMode || session.restrictToolNames === true;
 	const allowsMCP = !restrictToolNames && !usesRestrictedResourceProfile(policy.effectiveAgent);
 	const enableMCP = !restrictToolNames && allowsMCP && (session.enableMCP ?? true);
-	const baseContextFiles = session.contextFiles?.filter(
-		file => path.basename(file.path).toLowerCase() !== "agents.md",
-	);
+	// Repository context remains authoritative; the parent snapshot is passed separately
+	// so user/assistant history is never wrapped as `<repo-rules>`.
+	const baseContextFiles = session.contextFiles;
 	return {
 		cwd: session.cwd,
 		additionalDirectories: session.additionalDirectories,
@@ -587,7 +571,8 @@ function buildExecutorOptions(
 		settings: session.settings,
 		mcpManager: allowsMCP ? session.mcpManager : undefined,
 		enableMCP,
-		contextFiles: contextSnapshot ? [contextSnapshot, ...(baseContextFiles ?? [])] : baseContextFiles,
+		parentContextFile: contextSnapshot?.path,
+		contextFiles: baseContextFiles,
 		skills,
 		autoloadSkills,
 		workspaceTree: session.workspaceTree,
@@ -730,7 +715,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			...request.identity,
 			label: request.identity?.label ?? (request.invocationKind === "eval" ? "EvalAgent" : undefined),
 		});
-		const contextSnapshot = await writeContextSnapshot(request.session, policy, lease);
+		const contextSnapshot = await writeParentContextSnapshot(request.session, lease.artifactsDir);
 		const baseOptions = buildExecutorOptions(request, policy, lease, id, contextSnapshot);
 		baseOptions.onCleanupDeferred = completion => {
 			deferredCleanup = completion;
@@ -849,7 +834,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 					gatePolicy,
 					lease,
 					gateId,
-					await writeContextSnapshot(request.session, gatePolicy, lease),
+					await writeParentContextSnapshot(request.session, lease.artifactsDir),
 				);
 				return runSubprocess({
 					...gateOptions,

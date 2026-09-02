@@ -19,6 +19,9 @@
 ### Changed
 
 - Long-running Anthropic sessions now keep recalled memory in conversation context instead of the system prompt, allowing later turns to reuse the growing prompt cache.
+- Delegated task, workflow, and Vibe subagents now receive bounded parent conversation context separately from repository rules, reducing redundant discovery while preserving project-specific guidance.
+- The main agent takes a direct path on small tasks: it pins the user's request, edits after a few targeted reads, and runs one named gate, without loading planning/verification skills, writing plan documents, or building reproduction harnesses unless the lane or evidence requires them. It also treats the working tree as shared with other agents and never resets, stashes, or cleans it.
+- Startup context is smaller: the system prompt keeps short formulas and routes detail to bundled skills (`execution-harness`, `work-playbooks`, `subagents-development`), skill index lines are truncated to one sentence, and tool descriptions are compressed.
 
 ### Fixed
 

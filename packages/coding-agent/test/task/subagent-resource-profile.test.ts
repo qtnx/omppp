@@ -252,6 +252,49 @@ describe("subagent resource profile", () => {
 		expect(capturedOptions?.customTools ?? []).toEqual([]);
 	});
 
+	it("renders the parent handoff outside repository rules", async () => {
+		using tempDir = TempDir.createSync("@omp-subagent-parent-handoff-");
+		const snapshotPath = path.join(tempDir.path(), "context-0123456789abcdef.md");
+		await Bun.write(snapshotPath, "compact parent context");
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			capturedOptions = options;
+			return createSessionResult(createYieldingSession());
+		});
+
+		await taskExecutor.runSubprocess({
+			cwd: tempDir.path(),
+			agent: {
+				name: "explore",
+				description: "Read-only scout",
+				systemPrompt: "Investigate read-only.",
+				tools: ["read"],
+				resourceProfile: "minimal",
+				source: "bundled",
+			},
+			task: "inspect",
+			index: 0,
+			id: "Explore",
+			settings: Settings.isolated(),
+			modelRegistry: createModelRegistry(),
+			enableLsp: false,
+			parentContextFile: snapshotPath,
+			contextFiles: [{ path: "/tmp/AGENTS.md", content: "repo-specific rule" }],
+		});
+
+		const systemPrompt = capturedOptions?.systemPrompt;
+		if (typeof systemPrompt !== "function") throw new Error("Expected system prompt callback");
+		const renderedPrompt = await systemPrompt([]);
+		const promptText = Array.isArray(renderedPrompt) ? renderedPrompt.join("\n") : renderedPrompt;
+		expect(capturedOptions?.contextFiles).toContainEqual({
+			path: "/tmp/AGENTS.md",
+			content: "repo-specific rule",
+		});
+		expect(capturedOptions?.contextFiles?.map(file => file.path)).not.toContain(snapshotPath);
+		expect(promptText).toContain(snapshotPath);
+		expect(promptText).not.toContain("compact parent context");
+	});
+
 	it("preserves IRC for unrestricted and explicit-IRC subagents", async () => {
 		const capturedToolNames: Array<string[] | undefined> = [];
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
@@ -423,7 +466,7 @@ describe("subagent resource profile", () => {
 		const options = runSpy.mock.calls[0]?.[0];
 		expect(options?.skills?.map(skill => skill.name)).toEqual([runtimeSkill.name]);
 		expect(options?.autoloadSkills?.map(skill => skill.name)).toEqual([runtimeSkill.name]);
-		expect(options?.contextFiles?.[0]?.path).toBeString();
+		expect(options?.parentContextFile).toBeString();
 	});
 
 	it("autoloads only filtered minimal-profile skills into the child session", async () => {
@@ -817,6 +860,49 @@ describe("subagent resource profile", () => {
 		expect(options?.minimalExtensionRuntime).toBe(false);
 	});
 
+	it("forwards compact and repository context to IRC subagents", async () => {
+		using tempDir = TempDir.createSync("@omp-subagent-irc-context-");
+		const sessionFile = path.join(tempDir.path(), "session.jsonl");
+		const agent: AgentDefinition = {
+			name: "coordinator",
+			description: "IRC-enabled scout",
+			systemPrompt: "Coordinate with the parent.",
+			tools: ["read", "irc"],
+			resourceProfile: "minimal",
+			source: "bundled",
+		};
+		const params: TaskParams = {
+			agent: agent.name,
+			tasks: [{ id: "InspectContext", description: "Inspect context", assignment: "Use the parent context." }],
+		};
+		let capturedOptions: ExecutorOptions | undefined;
+
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
+		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
+			capturedOptions = options;
+			return createResult(options);
+		});
+
+		const session = createToolSession([], sessionFile);
+		session.settings = Settings.isolated({
+			"async.enabled": false,
+			"task.isolation.mode": "none",
+			"irc.enabled": true,
+		});
+		session.contextFiles = [{ path: "/tmp/AGENTS.md", content: "repo-specific rule" }];
+		const tool = await TaskTool.create(session);
+		await tool.execute("task-call", params);
+
+		const snapshot = capturedOptions?.parentContextFile;
+		expect(snapshot).toBeDefined();
+		expect(await Bun.file(snapshot!).text()).toBe("compact parent context");
+		expect(capturedOptions?.contextFiles).toContainEqual({
+			path: "/tmp/AGENTS.md",
+			content: "repo-specific rule",
+		});
+		expect(capturedOptions?.contextFiles).not.toContainEqual(expect.objectContaining({ path: snapshot }));
+	});
+
 	it("writes a distinct compact context file for each subagent in a batch", async () => {
 		using tempDir = TempDir.createSync("@omp-subagent-context-");
 		const sessionFile = path.join(tempDir.path(), "session.jsonl");
@@ -839,7 +925,7 @@ describe("subagent resource profile", () => {
 
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
 		vi.spyOn(taskExecutor, "runSubprocess").mockImplementation(async options => {
-			if (options.contextFiles?.[0]) contextFiles.push(options.contextFiles[0].path);
+			if (options.parentContextFile) contextFiles.push(options.parentContextFile);
 			return createResult(options);
 		});
 

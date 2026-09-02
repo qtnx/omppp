@@ -40,6 +40,10 @@ Acyclic waves via `agent(…, handle=true)` + `pipeline`/`parallel`:
 - **Acyclic only.** No node waits on its own descendant.
 </dag>
 {{/if}}
+{{#if spawns}}
+# Agent Handoff
+`agent()` prompts carry the same `H` handoff and `follow(repoSpec)` contract as the `task` tool: decisive excerpts and exact `skill://`/context-file paths inline, so the child acts without repo-wide rediscovery; a missing or stale fact justifies only a narrow lookup and a reported rediscovery.
+{{/if}}
 
 <critical>
 Prior top-level names survive into the next cell — reuse; NEVER re-import/re-declare. Re-read only if file changed since last read.

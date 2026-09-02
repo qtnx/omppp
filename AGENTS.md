@@ -38,6 +38,12 @@ This is the **OMPx fork** of `can1357/oh-my-pi`. The decisions below intentional
 - **CI structure stays fork-shaped:** GitHub-hosted runners, the release security gate, and the OSV scanner. Port upstream's new/renamed test paths without discarding these.
 - **Anthropic cache policy stays fork-shaped:** Under Auto, official native Anthropic OAuth with long-cache support defaults to `1h`; API-key, custom-gateway, Foundry, and non-Anthropic routes default to `short`; preserve precedence `explicit request > PI_CACHE_RETENTION > route default`. When Anthropic caching/auth/base-URL code changes, preserve and run `packages/ai/test/anthropic-alignment.test.ts`.
 
+### Git integration protocol
+`repoGitFlow := gitFlow` (generic flow in `skill://git-craft`) `with sync from upstream/main and publish to origin only`
+- Several agents work in these worktrees at once. NEVER `git reset`, `checkout -- .`, `restore`, `stash`, or `clean` a shared worktree; a sync, merge, rebase, or cherry-pick that needs a clean tree runs in its own `git worktree add`. Run `git status --porcelain` first; anything you did not write is a peer's work.
+- Sync fetches `upstream`, never rewrites shared history, and pushes only to `origin`; verify current-head CI/review after publish.
+- Conflicts follow `skill://git-craft`. Where upstream collides with a Fork Divergence Guardrail above, resolve in favor of the fork decision and record each such path/hunk in the PR resolution ledger.
+
 ## GitHub
 
 Unless user tells you exactly what to write:

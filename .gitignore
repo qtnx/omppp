@@ -93,6 +93,11 @@ docs/product/.ompx-preview/
 .omp/kanban.db-shm
 .omp/kanban.db-wal
 
+# context-gc plugin local store (written to the cwd of test/dev runs)
+context-gc.sqlite
+context-gc.sqlite-shm
+context-gc.sqlite-wal
+
 # Bazel
 /bazel-bin
 /bazel-out

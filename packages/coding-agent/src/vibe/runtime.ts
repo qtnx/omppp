@@ -27,6 +27,7 @@ import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { SessionManager, SessionPersistenceIndeterminateError } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
+import { writeParentContextSnapshot } from "../task/context-snapshot";
 import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
 import { generateTaskName } from "../task/name-generator";
 import { AgentOutputManager } from "../task/output-manager";
@@ -1425,6 +1426,7 @@ export class VibeSessionRegistry {
 		const artifactsDir = sessionArtifactsDir ?? path.join(os.tmpdir(), `omp-vibe-${Snowflake.next()}`);
 		await fs.mkdir(artifactsDir, { recursive: true });
 		if (!sessionArtifactsDir) registerArtifactsDir(artifactsDir);
+		const contextSnapshot = await writeParentContextSnapshot(session, artifactsDir);
 		const localProtocolOptions: LocalProtocolOptions = session.localProtocolOptions ?? {
 			getArtifactsDir: session.getArtifactsDir ?? (() => null),
 			getSessionId: session.getSessionId ?? (() => null),
@@ -1454,7 +1456,8 @@ export class VibeSessionRegistry {
 			modelRegistry: session.modelRegistry,
 			settings: session.settings,
 			mcpManager: session.mcpManager ?? MCPManager.instance(),
-			contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
+			contextFiles: session.contextFiles,
+			parentContextFile: contextSnapshot?.path,
 			skills: [...(session.skills ?? [])],
 			workspaceTree: session.workspaceTree,
 			promptTemplates: session.promptTemplates,

@@ -13,6 +13,12 @@ Many small owners beat one big agent: a 5-package fan-out with tight scopes fini
 - Lock only the minimum shared type/schema required by the NEXT executable slice, then dispatch. NEVER pre-lock contracts for later phases.
 - Assignment uncertainty inside one package belongs to its owner. State assumptions and dispatch; only a contradictory/impossible shared contract blocks that package. Do not “settle design” indefinitely.
 
+## Handoff formula
+`H := goal + workspace/current state + owned paths/symbols + evidence-backed anchors + locked contract + dependencies/ownership + acceptance + stop conditions + applicable repoSpec excerpts` (the system prompt's definition, restated for readers without it; realized as the task tool's assignment-fmt)
+- The parent completes reconnaissance before dispatch. Send H once with decisive excerpts and exact `skill://`/context-file paths; a child that can act from H NEVER repeats repo-wide discovery.
+- Child order: `read(forwarded skill/context when absent) → read(named anchors) → edit/check`; widen only for a stale anchor, a direct dependency required for correctness, or a missing contract, and report `Rediscovery: <path/symbol> — <reason>`.
+- For a heavy Git conflict, use `skill://git-craft`'s conflict fanout contract: both-side diffs and intent per disjoint cluster; parent owns shared/generated/lock files and final integration.
+
 ## Gold-standard assignment — copy this shape, filled to this density
 ```
 TARGET
@@ -67,3 +73,22 @@ SERIALIZE only the minimum current-path architecture/contract/schema/risk decisi
 
 ## Anti-patterns
 One vague mega-task; package quotas; planning future rows; RED-only/seam-map waves; sibling fixer churn; reverting or clobbering a sibling's edits in shared files; serial Foundation; dispatch blocked by local unknowns; unconditional QA/gates; trusting evidence-free completion.
+
+## Work package contract — what every batch and assignment must carry
+Every assignment MUST be executable by a reader with ZERO conversation history. Shared batch context names the Goal (observable outcome, repo/worktree, cwd, current state, exact bootstrap/run commands — never invented), Constraints (repo rules, batch non-goals, safe assumptions, shared-file ownership, parent-only broad gates), and Contract (literal shared signatures/types/schemas/error shapes pasted or cited as an exact readable `file:symbol`, ownership map, dependencies, explicitly OPEN local choices). Every named path, symbol, caller count, contract, and command MUST be grounded in repo/tool evidence before dispatch; unknown → read it first or mark the package `BLOCKED`.
+
+Each assignment follows the task tool's assignment-fmt (Target / Pointers / Change / Acceptance / Done): exact write-owned files and symbols marked create/modify/delete, read-only references, forbidden files, non-goals; `file:line` anchors for every edit site with the decisive code pasted inline and what NOT to read; current → desired behavior with the locked contract quoted and the `file:symbol` pattern to mirror; 1–2 copy-pasteable focused checks with cwd, expected output, and one failure path for behavior; the deliverable form and the report shape (`command/check → decisive output` per Acceptance item, deviations, assumptions, unresolved risks).
+
+Default stop conditions (every assignment names them): on-disk contract differs from LOCKED; correctness requires a forbidden edit; an Acceptance command remains unusable after its documented setup; ambiguity materially changes public behavior. The owner returns `BLOCKED` with condition, evidence, attempts, and decision needed; it NEVER silently redesigns a locked contract or broadens scope. Implementation packages complete only with production code and Acceptance evidence; read-only packages only with the requested evidence.
+
+## Tier profiles — each tightens assignment-fmt, never replaces a section
+- `quick_task` — one locked mechanical concern: list every file/symbol or an exact enumerable pattern with the expected match count; prescribe the transformation completely (no architecture, API, edge-case, or product decision left open); one cheapest decisive check (a behavior probe only when runtime behavior changes); minimal report, 1–3 bullets per section, shared context never repeated. Contract mismatch, unexpected cross-module work, or an unbounded match set → `BLOCKED`, never "investigate".
+- `task` — one contained senior slice across a few files with explicit write ownership and integration boundary; lock local/public contracts, edge/error behavior, reference pattern, callsites, owned wiring; 1–2 focused checks covering changed behavior and one failure path; production slice + evidence; broader architecture or a newly discovered RISK boundary → `BLOCKED`.
+- `heavy_task` — one indivisible load-bearing objective after all independent mechanical/perimeter work is split off: primary files, affected modules, forbidden siblings, callsite/blast-radius denominator; locked interfaces and state transitions; invariants, failure modes, concurrency/data-integrity concerns, integration order, explicit non-goals; staged focused gates plus the required execution-harness rung with realistic success input, failure input, expected output/state, and rollback/observability checks when risk requires them; report production result, caller-migration count, evidence per stage, residual risk. A contract/risk contradiction → `BLOCKED`; NEVER ship a partial core or compatibility fallback.
+
+## Heavy-task decomposition gate
+Before EVERY `heavy_task`, split off ANY independently ownable `task`/`quick_task` slice; keep ONLY the indivisible RISK/load-bearing core in `heavy_task`. A heavy package with 2+ independently ownable concerns MUST split. Skip splitting ONLY when ownership cannot be cut, contracts cannot pre-lock, the package is wholly RISK-core, or integration overhead exceeds the latency saved. NEVER down-tier RISK/load-bearing work to hit a wall-clock target.
+
+## Assignment quality — verify before sending
+Self-contained (no "as discussed", bare pronouns, hidden decisions, unstated setup) · source-grounded (every path, symbol, count, contract, command exists) · anchored (`file:line` sites with decisive code pasted) · scoped (one concern, exact write ownership, explicit non-goals) · contract-locked (shared shapes, ownership, OPEN choices agree across tasks) · verifiable (commands runnable as written, expected evidence concrete) · bounded (stop conditions yield a decisive `BLOCKED`).
+WRONG: "Fix the spinner bug in the event controller and make sure tests pass." RIGHT: the gold-standard assignment above — owned files with symbols, anchors with pasted code, the exact change, one copy-pasteable check with expected output, and the report shape.

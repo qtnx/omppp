@@ -192,6 +192,7 @@ import sandboxRelaunchContinuePrompt from "../prompts/system/sandbox-relaunch-co
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
 import timeBudgetActivationPrompt from "../prompts/system/time-budget-activation.md" with { type: "text" };
 import timeBudgetCheckpointTemplate from "../prompts/system/time-budget-checkpoint.md" with { type: "text" };
+import subagentContextSnapshotHeader from "../prompts/system/subagent-context-snapshot.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import { detectSecretsInText, kindToName } from "../secrets/detect";
 import {
@@ -326,8 +327,10 @@ import {
 import { LoopManager } from "./loop-manager";
 import {
 	type BashExecutionMessage,
+	type BranchSummaryMessage,
 	buildReplanTitleContext,
 	CHECKPOINT_ACTIVE_REMINDER_TYPE,
+	type CompactionSummaryMessage,
 	type CustomMessage,
 	type CustomMessagePayload,
 	convertToLlm,
@@ -406,6 +409,7 @@ import {
 	type TimeBudgetSnapshot,
 	timeBudgetPhase,
 } from "./time-budget";
+import { truncateMiddle } from "./streaming-output";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
@@ -439,6 +443,8 @@ import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 const PLAN_MODE_REMINDER_MAX = 3;
 const POST_PROMPT_DRAIN_TIMEOUT_MS = 5_000;
 
+const SUBAGENT_CONTEXT_MAX_BYTES = 64 * 1024;
+const SUBAGENT_CONTEXT_MAX_LINES = 1200;
 /** Internal marker for hook messages queued through the agent loop */
 // ============================================================================
 // Constants
@@ -10653,6 +10659,99 @@ export class AgentSession {
 			tools: this.agent.state.tools,
 			inlineToolDescriptors: this.#pruneToolDescriptions,
 		});
+	}
+
+	/**
+	 * Return bounded, provider-safe parent conversation context for delegated
+	 * subagents. System prompts, agent-attributed steering, tool calls/results,
+	 * and hidden reasoning stay out; user-attributed developer messages remain
+	 * visible as user context without inheriting the parent's full transcript.
+	 */
+	formatCompactContext(): string {
+		const lines = [subagentContextSnapshotHeader.trim(), ""];
+		const redact = (text: string | undefined): string | undefined => {
+			const redacted = this.#obfuscateTextForProvider(text);
+			return redacted && redacted.trim().length > 0 ? redacted : undefined;
+		};
+		const contentParts = (content: unknown): string[] => {
+			if (typeof content === "string") {
+				const text = redact(content);
+				return text ? [text] : [];
+			}
+			if (!Array.isArray(content)) return [];
+			const parts: string[] = [];
+			for (const block of content) {
+				if (!isRecord(block)) continue;
+				if (block.type === "text" && typeof block.text === "string") {
+					const text = redact(block.text);
+					if (text) parts.push(text);
+				} else if (block.type === "image") {
+					parts.push("[Image attached]");
+				}
+			}
+			return parts;
+		};
+		let hasContent = false;
+
+		for (const message of this.messages) {
+			if (message.role === "user") {
+				if (message.attribution === "agent") continue;
+				const parts = contentParts(message.content);
+				if (parts.length === 0) continue;
+				lines.push("## User", ...parts, "");
+				hasContent = true;
+				continue;
+			}
+			if (message.role === "developer") {
+				if (message.attribution !== "user") continue;
+				const parts = contentParts(message.content);
+				if (parts.length === 0) continue;
+				lines.push("## User", ...parts, "");
+				hasContent = true;
+				continue;
+			}
+			if (message.role === "assistant") {
+				const parts = contentParts(message.content);
+				if (parts.length === 0) continue;
+				lines.push("## Assistant", ...parts, "");
+				hasContent = true;
+				continue;
+			}
+			if (message.role === "fileMention") {
+				const fileMessage = message as FileMentionMessage;
+				if (!Array.isArray(fileMessage.files)) continue;
+				const fileLines: string[] = [];
+				for (const file of fileMessage.files) {
+					if (!isRecord(file)) continue;
+					fileLines.push(`- ${file.path}`);
+					fileLines.push(...contentParts(file.content));
+					if (file.image) fileLines.push("[Image attached]");
+				}
+				if (fileLines.length === 0) continue;
+				lines.push("## File Mentions", ...fileLines, "");
+				hasContent = true;
+				continue;
+			}
+			if (message.role === "branchSummary") {
+				const summary = redact((message as BranchSummaryMessage).summary);
+				if (!summary) continue;
+				lines.push("## Branch Summary", summary, "");
+				hasContent = true;
+				continue;
+			}
+			if (message.role === "compactionSummary") {
+				const summary = redact((message as CompactionSummaryMessage).summary);
+				if (!summary) continue;
+				lines.push("## Compaction Summary", summary, "");
+				hasContent = true;
+			}
+		}
+
+		if (!hasContent) return "";
+		return truncateMiddle(lines.join("\n").trim(), {
+			maxBytes: SUBAGENT_CONTEXT_MAX_BYTES,
+			maxLines: SUBAGENT_CONTEXT_MAX_LINES,
+		}).content.trim();
 	}
 
 	/**

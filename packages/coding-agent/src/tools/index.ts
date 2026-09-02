@@ -463,6 +463,8 @@ export interface ToolSession {
 	) => void | Promise<void>;
 	/** Path of the session's active plan reference (e.g. `local://<title>.md`); defaults to `local://PLAN.md`. */
 	getPlanReferencePath?: () => string;
+	/** Get a bounded parent conversation snapshot for delegated subagents. */
+	getCompactContext?: () => string;
 	/** Goal mode state (if active or paused) */
 	getGoalModeState?: () => GoalModeState | undefined;
 	/** Goal runtime for the active agent session. */

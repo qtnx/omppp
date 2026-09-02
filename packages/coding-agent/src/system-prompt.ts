@@ -734,6 +734,19 @@ export interface BuildSystemPromptResult {
 }
 
 /** Build the system prompt with tools, guidelines, and context */
+const SKILL_INDEX_MAX_CHARS = 120;
+
+/** First sentence of a skill description, bounded, for the `<skills>` routing index. */
+export function skillIndexLine(description: string): string {
+	const text = description.replace(/\s+/g, " ").trim();
+	const sentenceEnd = text.search(/[.!?](?=\s|$)/);
+	const firstSentence = sentenceEnd > 0 ? text.slice(0, sentenceEnd + 1) : text;
+	if (firstSentence.length <= SKILL_INDEX_MAX_CHARS) return firstSentence;
+	const cut = firstSentence.slice(0, SKILL_INDEX_MAX_CHARS);
+	const lastSpace = cut.lastIndexOf(" ");
+	return `${cut.slice(0, lastSpace > 60 ? lastSpace : SKILL_INDEX_MAX_CHARS).trimEnd()}…`;
+}
+
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
 	if ($env.NULL_PROMPT === "true") {
 		return { systemPrompt: [] };
@@ -1029,7 +1042,11 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	// - require the `read` tool so the model can actually fetch skill content;
 	// - drop skills with frontmatter `hide: true` (still loadable via skill:// and /skill:<name>).
 	const hasRead = toolNames.includes("read");
-	const filteredSkills = hasRead ? skills.filter(skill => skill.hide !== true) : [];
+	// The listing is a routing index, not documentation: the first sentence of each
+	// description (bounded) is enough to pick a skill; the full text loads on read.
+	const filteredSkills = hasRead
+		? skills.filter(skill => skill.hide !== true).map(skill => ({ ...skill, description: skillIndexLine(skill.description) }))
+		: [];
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [
 		resolvedCustomPrompt,

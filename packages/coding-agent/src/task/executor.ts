@@ -547,6 +547,8 @@ export interface ExecutorOptions {
 	artifactsDir?: string;
 	eventBus?: EventBus;
 	contextFiles?: ContextFileEntry[];
+	/** Parent conversation snapshot path; read on demand, never treated as repository rules. */
+	parentContextFile?: string;
 	skills?: Skill[];
 	promptTemplates?: PromptTemplate[];
 	workspaceTree?: WorkspaceTree;
@@ -3247,9 +3249,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const lspEnabled = enableLsp ?? true;
 	const ircEnabled =
 		options.enableIrc !== false && isIrcEnabled(subagentSettings, childDepth) && ircAllowedByAgentTools;
-	const contextFileForPrompt = ircEnabled
-		? undefined
-		: options.contextFiles?.find(file => path.basename(file.path).startsWith("context-"))?.path;
+	// The snapshot is reference data, not a repository context file; expose only its
+	// path, and only to a child that can actually open it.
+	const childCanRead = !Array.isArray(toolNames) || toolNames.includes("read");
+	const contextFileForPrompt = childCanRead ? options.parentContextFile : undefined;
 	const skipPythonPreflight = Array.isArray(toolNames) && !toolNames.includes("eval");
 	const subagentRole = options.role?.trim();
 	const subagentDisplayName = resolveSubagentDisplayName(subagentRole, agent.name);
