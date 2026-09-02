@@ -45,7 +45,7 @@ interface FakeAcpBuiltinSession {
 	setFastMode(enabled: boolean): boolean;
 	isFastModeEnabled(): boolean;
 	setForcedToolChoice(toolName: string): void;
-	setCavemanEnabled(enabled: boolean): void;
+	setCavemanEnabled(enabled: boolean): Promise<void>;
 	fetchUsageReports?: () => Promise<unknown>;
 	getAsyncJobSnapshot: (opts?: { recentLimit?: number }) => { running: unknown[]; recent: unknown[] } | null;
 	formatSessionAsText: () => string;
@@ -176,7 +176,7 @@ function createRuntime() {
 			this._todoPhases = phases;
 		},
 		async refreshBaseSystemPrompt() {},
-		setCavemanEnabled(enabled: boolean) {
+		async setCavemanEnabled(enabled: boolean) {
 			settings.override("caveman.enabled", enabled);
 		},
 		getAsyncJobSnapshot: () => null,

@@ -317,12 +317,12 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				return commandConsumed();
 			}
 			if (arg === "on") {
-				runtime.session.setCavemanEnabled(true);
+				await runtime.session.setCavemanEnabled(true);
 				await runtime.output("Caveman mode is on: skill loaded for this session and implementer subagents.");
 				return commandConsumed();
 			}
 			if (arg === "off") {
-				runtime.session.setCavemanEnabled(false);
+				await runtime.session.setCavemanEnabled(false);
 				await runtime.output(
 					[
 						"Caveman mode is off: skill removed from this session and implementer subagents.",

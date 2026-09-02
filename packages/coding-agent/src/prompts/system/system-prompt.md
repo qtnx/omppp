@@ -487,6 +487,10 @@ Skill routing (when matching skills are available):
 </skills>
 {{/if}}
 
+{{#if cavemanMode}}
+{{{cavemanMode}}}
+{{/if}}
+
 {{#if alwaysApplyRules.length}}
 <generic-rules>
 {{#each alwaysApplyRules}}

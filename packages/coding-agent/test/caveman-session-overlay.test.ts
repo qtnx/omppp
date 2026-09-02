@@ -6,90 +6,104 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { buildSystemPrompt } from "../src/system-prompt";
 
-// Contract: caveman mode is a system-prompt overlay, not a chat message. When
-// `caveman.enabled` is on the bundled skill body is present in the effective
-// system prompt before the first turn; `/caveman off` (setCavemanEnabled(false))
-// removes it from the prompt the model receives, and `on` restores it.
+// Contract: caveman mode is part of the base system prompt, not a chat
+// message. With `cavemanEnabled` the bundled skill body is present before the
+// first turn; without it the prompt carries no caveman block. `/caveman on|off`
+// (setCavemanEnabled) rebuilds the base prompt with the new setting so the next
+// turn already runs with the block injected or removed.
 
 const CAVEMAN_HEADER = "# Caveman Mode (active)";
 const CAVEMAN_BODY = "Respond terse like smart caveman.";
 
-function createModel(): Model<"openai-responses"> {
-	return buildModel({
-		id: "mock-model",
-		name: "Mock",
-		api: "openai-responses",
-		provider: "openai",
-		baseUrl: "https://example.invalid",
-		reasoning: false,
-		input: ["text"],
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: 128000,
-		maxTokens: 4096,
+async function renderPrompt(cavemanEnabled: boolean): Promise<string> {
+	const { systemPrompt } = await buildSystemPrompt({
+		cwd: import.meta.dir,
+		toolNames: ["read", "bash", "edit"],
+		contextFiles: [],
+		skills: [],
+		rules: [],
+		workspaceTree: { rootPath: import.meta.dir, rendered: "", truncated: false, totalLines: 0, agentsMdFiles: [] },
+		activeRepoContext: null,
+		personality: "none",
+		cavemanEnabled,
 	});
+	return systemPrompt[0] ?? "";
 }
 
-const readTool: AgentTool = {
-	name: "read",
-	label: "Read",
-	description: "Read tool",
-	parameters: { type: "object", properties: {} } as never,
-	execute: async () => ({ content: [{ type: "text", text: "" }], details: undefined }),
-};
+describe("caveman mode in the system prompt", () => {
+	it("injects the skill body (frontmatter stripped) only when enabled", async () => {
+		const on = await renderPrompt(true);
+		expect(on).toContain(CAVEMAN_HEADER);
+		expect(on).toContain(CAVEMAN_BODY);
+		expect(on).not.toContain("license: MIT");
 
-describe("caveman system-prompt overlay", () => {
+		const off = await renderPrompt(false);
+		expect(off).not.toContain(CAVEMAN_HEADER);
+		expect(off).not.toContain(CAVEMAN_BODY);
+	});
+});
+
+describe("AgentSession.setCavemanEnabled", () => {
 	const sessions: AgentSession[] = [];
 
 	afterEach(async () => {
 		for (const session of sessions.splice(0)) await session.dispose();
 	});
 
-	function newSession(settings: Settings): { session: AgentSession; agent: Agent } {
+	it("rebuilds the base prompt with the new setting and skips no-op toggles", async () => {
+		const model: Model<"openai-responses"> = buildModel({
+			id: "mock-model",
+			name: "Mock",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://example.invalid",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 4096,
+		});
+		const readTool: AgentTool = {
+			name: "read",
+			label: "Read",
+			description: "Read tool",
+			parameters: { type: "object", properties: {} } as never,
+			execute: async () => ({ content: [{ type: "text", text: "" }], details: undefined }),
+		};
+		const settings = Settings.isolated({ "compaction.enabled": false });
 		const agent = new Agent({
 			getApiKey: () => "test-key",
-			initialState: { model: createModel(), systemPrompt: ["base"], tools: [readTool], messages: [] },
+			initialState: { model, systemPrompt: ["base"], tools: [readTool], messages: [] },
 			convertToLlm,
 		});
-		const toolRegistry = new Map<string, AgentTool>([[readTool.name, readTool]]);
+		const rebuilds: boolean[] = [];
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry: { getApiKey: async () => "test-key" } as never,
-			toolRegistry,
+			toolRegistry: new Map<string, AgentTool>([[readTool.name, readTool]]),
 			builtInToolNames: ["read"],
 			ensureWriteRegistered: async () => false,
-			rebuildSystemPrompt: async () => ({ systemPrompt: ["base"] }),
+			rebuildSystemPrompt: async () => {
+				const enabled = settings.get("caveman.enabled");
+				rebuilds.push(enabled);
+				return { systemPrompt: [enabled ? `base\n${CAVEMAN_HEADER}` : "base"] };
+			},
 		});
 		sessions.push(session);
-		return { session, agent };
-	}
 
-	function cavemanBlocks(agent: Agent): string[] {
-		return agent.state.systemPrompt.filter(block => block.includes(CAVEMAN_HEADER));
-	}
+		await session.setCavemanEnabled(true); // default already on: no rebuild
+		expect(rebuilds).toEqual([]);
 
-	it("loads the skill into the prompt by default and drops it on /caveman off", () => {
-		const { session, agent } = newSession(Settings.isolated({ "compaction.enabled": false }));
-
-		const initial = cavemanBlocks(agent);
-		expect(initial).toHaveLength(1);
-		expect(initial[0]).toContain(CAVEMAN_BODY);
-		// Frontmatter is stripped; only the skill body is injected.
-		expect(initial[0]).not.toContain("license: MIT");
-		expect(agent.state.systemPrompt[0]).toBe("base");
-
-		session.setCavemanEnabled(false);
-		expect(cavemanBlocks(agent)).toHaveLength(0);
+		await session.setCavemanEnabled(false);
+		expect(rebuilds).toEqual([false]);
 		expect(agent.state.systemPrompt).toEqual(["base"]);
 
-		session.setCavemanEnabled(true);
-		expect(cavemanBlocks(agent)).toHaveLength(1);
-	});
-
-	it("keeps the prompt clean when caveman is disabled in settings", () => {
-		const { agent } = newSession(Settings.isolated({ "compaction.enabled": false, "caveman.enabled": false }));
-		expect(cavemanBlocks(agent)).toHaveLength(0);
+		await session.setCavemanEnabled(true);
+		expect(rebuilds).toEqual([false, true]);
+		expect(agent.state.systemPrompt[0]).toContain(CAVEMAN_HEADER);
 	});
 });

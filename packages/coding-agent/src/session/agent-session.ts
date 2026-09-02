@@ -395,7 +395,6 @@ import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./ses
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
 import {
 	buildAdvisorSkillsAndRulesPrompt,
-	buildSystemPromptWithCavemanOverlay,
 	buildSystemPromptWithOrchestratorOverlay,
 	SessionTools,
 	type SessionToolsHost,
@@ -430,7 +429,6 @@ export {
 export type { SystemPromptRebuildContext } from "./session-tools";
 export {
 	buildAdvisorSkillsAndRulesPrompt,
-	buildSystemPromptWithCavemanOverlay,
 	buildSystemPromptWithOrchestratorOverlay,
 	detectUserCompactIntent,
 	stripUserCompactIntent,
@@ -1864,10 +1862,7 @@ export class AgentSession {
 				: baseSystemPrompt;
 			// The board briefing belongs in the system prompt, not in history: a
 			// compaction would otherwise erase the workflow the agent must follow.
-			const withKanban = this.#kanbanBriefing ? [...withOrchestrator, this.#kanbanBriefing] : withOrchestrator;
-			// Caveman rides the overlay for the same reason: it must survive
-			// compaction while `/caveman off` can still drop it on the next reapply.
-			return this.settings.get("caveman.enabled") ? buildSystemPromptWithCavemanOverlay(withKanban) : withKanban;
+			return this.#kanbanBriefing ? [...withOrchestrator, this.#kanbanBriefing] : withOrchestrator;
 		});
 		void this.#duoOrchestrator.initialize();
 
@@ -2429,13 +2424,13 @@ export class AgentSession {
 
 	/**
 	 * Toggles caveman mode for this session and its implementer subagents. The
-	 * overlay reapply injects or removes the caveman block immediately, so the
-	 * next turn already runs with the new setting.
+	 * base system prompt is rebuilt so the caveman block is injected or removed
+	 * before the next turn.
 	 */
-	setCavemanEnabled(enabled: boolean): void {
+	async setCavemanEnabled(enabled: boolean): Promise<void> {
 		if (this.settings.get("caveman.enabled") === enabled) return;
 		this.settings.override("caveman.enabled", enabled);
-		this.#tools.reapplySystemPromptOverlay();
+		await this.refreshBaseSystemPrompt();
 	}
 
 	onKanbanEventsDurable(listener: (eventIds: readonly string[]) => void): () => void {
