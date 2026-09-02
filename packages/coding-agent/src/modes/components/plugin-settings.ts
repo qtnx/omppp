@@ -325,7 +325,7 @@ export class PluginDetailComponent extends OverlayPanel {
 		if (manifest.features && Object.keys(manifest.features).length > 0) {
 			const enabledSet = new Set(plugin.enabledFeatures ?? []);
 			const defaultFeatures = Object.entries(manifest.features)
-				.filter(([_, f]) => f.default)
+				.filter(([_featureName, f]) => f.default)
 				.map(([name]) => name);
 
 			// If enabledFeatures is null, use defaults

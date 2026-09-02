@@ -15,6 +15,7 @@ import type {
 	ReviewFindingGenerationEventsResponse,
 	ReviewFindingListResponse,
 	ReviewFindingStatus,
+	SessionListResponse,
 	SessionListTrace,
 	SessionTrace,
 	TimeRange,

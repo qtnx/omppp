@@ -122,7 +122,9 @@ function readBoolVector(reader: HeaderReader, count: number): boolean[] {
 }
 
 function readDefinedVector(reader: HeaderReader, count: number): boolean[] {
-	if (reader.readByte() !== 0) return new Array<boolean>(count).fill(true);
+	if (reader.readByte() !== 0) {
+		return new Array<boolean>(count).fill(true);
+	}
 	return readBoolVector(reader, count);
 }
 
@@ -229,7 +231,9 @@ function parsePackInfo(reader: HeaderReader, streams: SevenZipStreams, options: 
 		} else reader.skipSizedProperty();
 	}
 	if (streams.packSizes.length !== count) throw new ArchiveError("Invalid 7z PackInfo without complete sizes");
-	if (streams.packCrcs.length === 0) streams.packCrcs = new Array(count).fill(undefined);
+	if (streams.packCrcs.length === 0) {
+		streams.packCrcs = new Array(count).fill(undefined);
+	}
 }
 
 function parseUnpackInfo(reader: HeaderReader, streams: SevenZipStreams, options: FormatReadOptions): void {

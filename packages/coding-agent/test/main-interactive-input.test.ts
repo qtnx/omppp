@@ -115,7 +115,7 @@ describe("submitInteractiveInput", () => {
 		};
 		const session = {
 			prompt: vi.fn(async () => true),
-			promptCustomMessage: vi.fn(async () => {}),
+			promptCustomMessage: vi.fn(async () => true),
 			isStreaming: false,
 		};
 		const input = createInput({ text: "resume now", started: true, synthetic: true });
@@ -137,7 +137,7 @@ describe("submitInteractiveInput", () => {
 		};
 		const session = {
 			prompt: vi.fn(async () => true),
-			promptCustomMessage: vi.fn(async () => {}),
+			promptCustomMessage: vi.fn(async () => true),
 			isStreaming: false,
 		};
 		const input = createInput();
@@ -159,7 +159,7 @@ describe("submitInteractiveInput", () => {
 		};
 		const session = {
 			prompt: vi.fn(async () => true),
-			promptCustomMessage: vi.fn(async () => {}),
+			promptCustomMessage: vi.fn(async () => true),
 			isStreaming: false,
 		};
 		const input = createInput({ text: "continue goal", customType: "goal-continuation" });
@@ -191,7 +191,7 @@ describe("submitInteractiveInput", () => {
 		};
 		const session = {
 			prompt: vi.fn(async () => true),
-			promptCustomMessage: vi.fn(async () => {}),
+			promptCustomMessage: vi.fn(async () => true),
 			isStreaming: false,
 		};
 		const input = createInput({ text: "loop prompt" });
@@ -211,7 +211,7 @@ describe("submitInteractiveInput", () => {
 		};
 		const session = {
 			prompt: vi.fn(async () => true),
-			promptCustomMessage: vi.fn(async () => {}),
+			promptCustomMessage: vi.fn(async () => true),
 			isStreaming: true,
 		};
 		const input = createInput({ text: "interrupt now", streamingBehavior: "steer" });
@@ -234,7 +234,7 @@ describe("submitInteractiveInput", () => {
 		};
 		const session = {
 			prompt: vi.fn(async () => true),
-			promptCustomMessage: vi.fn(async () => {}),
+			promptCustomMessage: vi.fn(async () => true),
 			isStreaming: true,
 		};
 		const input = createInput({ text: "continue goal", customType: "goal-continuation" });
@@ -264,7 +264,7 @@ describe("submitInteractiveInput", () => {
 		};
 		const session = {
 			prompt: vi.fn(async () => true),
-			promptCustomMessage: vi.fn(async () => {}),
+			promptCustomMessage: vi.fn(async () => true),
 			isStreaming: true,
 		};
 		const input = createInput({ text: "loop prompt" });

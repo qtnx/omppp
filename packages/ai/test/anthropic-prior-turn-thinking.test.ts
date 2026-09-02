@@ -22,13 +22,11 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
  * reasoning chain on continuation for custom anthropic-messages providers
  * configured via `models.yaml` and for session-level model swaps (#2257).
  *
- * The signature policy is a second axis: official Anthropic cryptographically
- * binds signatures to its key+session+model, so cross-model signatures must
- * be stripped (and matching redacted siblings dropped) whenever either side
- * of the replay is official Anthropic. Unsigned-replay third-party fixtures
- * treat signatures as opaque continuation hints they pass through unchanged,
- * so 3p ↔ 3p replays preserve them as-is to keep the reasoning chain signed
- * for the next turn (#2265).
+ * The signature policy is a second axis. Same-deployment official Anthropic
+ * replays preserve signatures across model switches so Anthropic can apply
+ * its model-compatibility rules. Deployment-boundary replays strip signatures;
+ * unsigned-replay third-party fixtures treat them as opaque continuation hints
+ * and preserve them to keep the reasoning chain signed (#2265).
  */
 function makeAnthropicModel(overrides: Partial<ModelSpec<"anthropic-messages">> = {}): Model<"anthropic-messages"> {
 	return buildModel({
@@ -264,10 +262,10 @@ describe("Anthropic prior-turn thinking preservation (#2257, #2265)", () => {
 		expect(priorBlocks.find(b => b.type === "redacted_thinking")).toBeUndefined();
 	});
 
-	it("preserves signed official Anthropic prior thinking across model switches", () => {
-		// Official Anthropic → official Anthropic sibling deployments share the
-		// signing boundary. Prior signed thinking stays native across a model-id
-		// switch so the reasoning chain remains available to the next turn.
+	it("preserves official Anthropic prior signatures across a same-deployment model switch", () => {
+		// Official Anthropic can validate signatures minted by another model in
+		// the same deployment and apply its one-way model-compatibility rules.
+		// Keep the native block so the API can retain or drop it authoritatively.
 		const cases = [
 			{ id: "claude-opus-4-8", name: "Claude Opus 4.8" },
 			{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
@@ -308,8 +306,11 @@ describe("Anthropic prior-turn thinking preservation (#2257, #2265)", () => {
 			expect(assistants).toHaveLength(2);
 			const priorBlocks = assistants[0].content as WireBlock[];
 			const thinking = priorBlocks.find(b => b.type === "thinking") as WireThinkingBlock | undefined;
-			expect(thinking?.thinking).toBe(reasoning);
-			expect(thinking?.signature).toBe("sig_source");
+			expect(thinking).toEqual({
+				type: "thinking",
+				thinking: reasoning,
+				signature: "sig_source",
+			});
 			expect(priorBlocks.find(b => b.type === "text")).toBeUndefined();
 		}
 	});

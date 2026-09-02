@@ -497,8 +497,7 @@ describe("isolated auto-learn capture", () => {
 			["capture-transport", "account-other"],
 		]);
 		const resolvedAffinities: string[] = [];
-		let sourceAgent: Agent;
-		sourceAgent = new Agent({
+		const sourceAgent = new Agent({
 			sessionId: "primary-affinity",
 			getApiKey: () => async () => {
 				const affinity = sourceAgent.sessionId ?? "";

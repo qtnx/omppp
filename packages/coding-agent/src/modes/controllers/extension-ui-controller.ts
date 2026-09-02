@@ -669,7 +669,6 @@ export class ExtensionUiController {
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<ExtensionAskDialogResult | undefined> {
 		return this.#presentDialog<ExtensionAskDialogResult>(dialogOptions?.signal, settle => {
-			let askDialog: AskDialogComponent | undefined;
 			let promptEditor: HookEditorComponent | undefined;
 			let promptResolve: ((value: string | undefined) => void) | undefined;
 			let closed = false;
@@ -728,7 +727,7 @@ export class ExtensionUiController {
 				return promise;
 			};
 
-			askDialog = new AskDialogComponent(
+			const askDialog = new AskDialogComponent(
 				questions,
 				{
 					onSubmit: result => settle(result),

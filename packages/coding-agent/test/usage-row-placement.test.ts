@@ -61,7 +61,6 @@ function readTurn(
 }
 
 function makeHarness(showTokenUsage: boolean): { ctx: InteractiveModeContext; helpers: UiHelpers } {
-	let helpers: UiHelpers;
 	const ctx = {
 		chatContainer: new Container(),
 		transcriptMessageComponents: new WeakMap(),
@@ -83,7 +82,7 @@ function makeHarness(showTokenUsage: boolean): { ctx: InteractiveModeContext; he
 		hideThinkingBlock: false,
 		clearTransientSessionUi: () => {},
 	} as unknown as InteractiveModeContext;
-	helpers = new UiHelpers(ctx);
+	const helpers = new UiHelpers(ctx);
 	return { ctx, helpers };
 }
 

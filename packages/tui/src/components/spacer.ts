@@ -20,7 +20,6 @@ export class Spacer implements Component {
 		this.#lines = lines;
 		this.#cached = undefined;
 	}
-
 	invalidate(): void {
 		// No cached state to invalidate currently
 	}
