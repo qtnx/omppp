@@ -15,6 +15,7 @@ import {
 	hasFsCode,
 	isEnoent,
 	logger,
+	parseFrontmatter,
 	prompt,
 } from "@oh-my-pi/pi-utils";
 import { contextFileCapability } from "./capability/context-file";
@@ -23,9 +24,11 @@ import { findConfigFile } from "./config";
 import type { Personality, SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { expandAtImports } from "./discovery/at-imports";
+import cavemanSkill from "./discovery/bundled-skills/caveman.md" with { type: "text" };
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
+import cavemanModeActiveTemplate from "./prompts/system/caveman-mode-active.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
@@ -164,6 +167,12 @@ function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | nu
 			relativeRepoRoot: normalizePromptPath(activeRepoContext.relativeRepoRoot),
 		})
 		.trim();
+}
+
+/** Bundled caveman skill body (frontmatter stripped) wrapped in the caveman-mode block. */
+function renderCavemanModeBlock(): string {
+	const skill = parseFrontmatter(cavemanSkill, { level: "off" }).body.trim();
+	return prompt.render(cavemanModeActiveTemplate, { skill }).trim();
 }
 
 function parseWindowsGpuModel(output: string): string | null {
@@ -703,6 +712,8 @@ export interface BuildSystemPromptOptions {
 	includeModelInPrompt?: boolean;
 	/** Personality preset rendered into the default system prompt. "none" omits the block. Default: "default" */
 	personality?: Personality;
+	/** Whether the bundled caveman skill is injected into the prompt so the main agent runs compressed from turn one. Default: false */
+	cavemanEnabled?: boolean;
 	/** Whether to include the workspace directory tree in the system prompt. Default: false */
 	includeWorkspaceTree?: boolean;
 	/** Whether Mermaid fenced blocks render as terminal ASCII diagrams. Default: true */
@@ -787,6 +798,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		model,
 		includeModelInPrompt = true,
 		personality = "default",
+		cavemanEnabled = false,
 		includeWorkspaceTree = false,
 		renderMermaid = true,
 		xdevTools = [],
@@ -1093,6 +1105,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		model: includeModelInPrompt ? (model ?? "") : "",
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
 		personality: personalityBlock,
+		cavemanMode: cavemanEnabled ? renderCavemanModeBlock() : "",
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
 		mcpDiscoveryMode,

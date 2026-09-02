@@ -45,6 +45,7 @@ interface FakeAcpBuiltinSession {
 	setFastMode(enabled: boolean): boolean;
 	isFastModeEnabled(): boolean;
 	setForcedToolChoice(toolName: string): void;
+	setCavemanEnabled(enabled: boolean): Promise<void>;
 	fetchUsageReports?: () => Promise<unknown>;
 	getAsyncJobSnapshot: (opts?: { recentLimit?: number }) => { running: unknown[]; recent: unknown[] } | null;
 	formatSessionAsText: () => string;
@@ -175,6 +176,9 @@ function createRuntime() {
 			this._todoPhases = phases;
 		},
 		async refreshBaseSystemPrompt() {},
+		async setCavemanEnabled(enabled: boolean) {
+			settings.override("caveman.enabled", enabled);
+		},
 		getAsyncJobSnapshot: () => null,
 		formatSessionAsText: () => "",
 		dumpLlmRequestToTmpDir: async () => undefined,
@@ -459,10 +463,12 @@ describe("ACP builtin slash commands", () => {
 		]);
 	});
 
-	it("toggles Caveman autoload for this runtime without persisting the setting", async () => {
+	it("toggles Caveman mode for this runtime without persisting the setting", async () => {
 		const { output, runtime } = createRuntime();
-		const statusOn = "Caveman autoload is on for implementer subagents.";
-		const statusOff = "Caveman autoload is off for implementer subagents.";
+		const statusOn = "Caveman mode is on for this session and implementer subagents.";
+		const statusOff = "Caveman mode is off for this session and implementer subagents.";
+		const turnedOn = "Caveman mode is on: skill loaded for this session and implementer subagents.";
+		const turnedOff = "Caveman mode is off: skill removed from this session and implementer subagents.";
 		const explicitSkill = "Explicit /skill:caveman remains available.";
 
 		expect(await executeAcpBuiltinSlashCommand("/caveman", runtime)).toEqual({ consumed: true });
@@ -470,14 +476,14 @@ describe("ACP builtin slash commands", () => {
 
 		expect(await executeAcpBuiltinSlashCommand("/caveman off", runtime)).toEqual({ consumed: true });
 		expect(runtime.settings.get("caveman.enabled")).toBe(false);
-		expect(output.at(-1)).toBe([statusOff, explicitSkill].join("\n"));
+		expect(output.at(-1)).toBe([turnedOff, explicitSkill].join("\n"));
 
 		expect(await executeAcpBuiltinSlashCommand("/caveman status", runtime)).toEqual({ consumed: true });
 		expect(output.at(-1)).toBe([statusOff, explicitSkill].join("\n"));
 
 		expect(await executeAcpBuiltinSlashCommand("/caveman on", runtime)).toEqual({ consumed: true });
 		expect(runtime.settings.get("caveman.enabled")).toBe(true);
-		expect(output.at(-1)).toBe(statusOn);
+		expect(output.at(-1)).toBe(turnedOn);
 
 		expect(await executeAcpBuiltinSlashCommand("/caveman nope", runtime)).toEqual({ consumed: true });
 		expect(output.at(-1)).toBe("Usage: /caveman [on|off|status]");

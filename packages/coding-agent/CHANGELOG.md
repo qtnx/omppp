@@ -6,6 +6,7 @@
 
 - Browser annotate submissions now arrive as visible queued follow-up messages by default (queue chip in the UI, processed after the current turn); set `browser.annotateDelivery` to `steer` to restore mid-turn injection. The untrusted-content notice wrapper around annotation text was removed.
 - `/time-budget` now applies real pressure: activation and checkpoint reminders demand a newly verified slice per 5-minute interval, every post-deadline checkpoint escalates in the overtime register instead of decaying to wrap-up copy, and subagent runtime caps are automatically clamped to the remaining budget so the executor's early-yield notice and hard stop engage.
+- Caveman mode now applies to the main agent, not only implementer subagents: the bundled skill is injected into the session system prompt from the first turn (on by default), and `/caveman off` removes it from context immediately; `/caveman on` restores it.
 
 ## [1.7.8] - 2026-08-29
 

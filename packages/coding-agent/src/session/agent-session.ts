@@ -2422,6 +2422,17 @@ export class AgentSession {
 		this.#tools.reapplySystemPromptOverlay();
 	}
 
+	/**
+	 * Toggles caveman mode for this session and its implementer subagents. The
+	 * base system prompt is rebuilt so the caveman block is injected or removed
+	 * before the next turn.
+	 */
+	async setCavemanEnabled(enabled: boolean): Promise<void> {
+		if (this.settings.get("caveman.enabled") === enabled) return;
+		this.settings.override("caveman.enabled", enabled);
+		await this.refreshBaseSystemPrompt();
+	}
+
 	onKanbanEventsDurable(listener: (eventIds: readonly string[]) => void): () => void {
 		this.#kanbanDurableListeners.add(listener);
 		return () => this.#kanbanDurableListeners.delete(listener);
