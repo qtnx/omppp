@@ -46,15 +46,17 @@ for (const [index, block] of systemPrompt.entries()) {
 const template = systemPrompt[0] ?? "";
 const sections: Array<{ name: string; start: number }> = [];
 const headerRe = /^([A-Z][A-Z &/]+)\n=+$/gm;
-let match: RegExpExecArray | null;
-while ((match = headerRe.exec(template)) !== null) sections.push({ name: match[1], start: match.index });
+for (const match of template.matchAll(headerRe)) {
+	sections.push({ name: match[1], start: match.index ?? 0 });
+}
 sections.unshift({ name: "(preamble)", start: 0 });
 const rows = sections.map((section, index) => {
 	const end = sections[index + 1]?.start ?? template.length;
 	return { name: section.name, tokens: tok(template.slice(section.start, end)) };
 });
 console.log("\nSections (tokens):");
-for (const row of rows.sort((a, b) => b.tokens - a.tokens)) console.log(`  ${String(row.tokens).padStart(6)}  ${row.name}`);
+for (const row of rows.sort((a, b) => b.tokens - a.tokens))
+	console.log(`  ${String(row.tokens).padStart(6)}  ${row.name}`);
 
 // Tool definitions as sent to the provider.
 let toolTotal = 0;
@@ -65,7 +67,8 @@ for (const [name, meta] of metadata) {
 	toolRows.push({ name, tokens: size });
 }
 console.log(`\nTools: ${metadata.size} definitions ≈ ${toolTotal} tokens`);
-for (const row of toolRows.sort((a, b) => b.tokens - a.tokens).slice(0, 20)) console.log(`  ${String(row.tokens).padStart(6)}  ${row.name}`);
+for (const row of toolRows.sort((a, b) => b.tokens - a.tokens).slice(0, 20))
+	console.log(`  ${String(row.tokens).padStart(6)}  ${row.name}`);
 
 const contextTotal = contextFiles.reduce((sum, file) => sum + tok(file.content), 0);
 console.log(`\nContext files: ${contextFiles.length} ≈ ${contextTotal} tokens`);

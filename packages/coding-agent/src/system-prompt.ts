@@ -1045,7 +1045,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	// The listing is a routing index, not documentation: the first sentence of each
 	// description (bounded) is enough to pick a skill; the full text loads on read.
 	const filteredSkills = hasRead
-		? skills.filter(skill => skill.hide !== true).map(skill => ({ ...skill, description: skillIndexLine(skill.description) }))
+		? skills
+				.filter(skill => skill.hide !== true)
+				.map(skill => ({ ...skill, description: skillIndexLine(skill.description) }))
 		: [];
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [

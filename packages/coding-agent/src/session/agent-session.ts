@@ -190,9 +190,9 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
 import sandboxRelaunchContinuePrompt from "../prompts/system/sandbox-relaunch-continue.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
+import subagentContextSnapshotHeader from "../prompts/system/subagent-context-snapshot.md" with { type: "text" };
 import timeBudgetActivationPrompt from "../prompts/system/time-budget-activation.md" with { type: "text" };
 import timeBudgetCheckpointTemplate from "../prompts/system/time-budget-checkpoint.md" with { type: "text" };
-import subagentContextSnapshotHeader from "../prompts/system/subagent-context-snapshot.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import { detectSecretsInText, kindToName } from "../secrets/detect";
 import {
@@ -401,6 +401,7 @@ import {
 } from "./session-tools";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { skillPromptTitleInput } from "./skill-title-input";
+import { truncateMiddle } from "./streaming-output";
 import {
 	formatTimeBudgetSnapshot,
 	parseTimeBudgetCommand,
@@ -409,7 +410,6 @@ import {
 	type TimeBudgetSnapshot,
 	timeBudgetPhase,
 } from "./time-budget";
-import { truncateMiddle } from "./streaming-output";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
