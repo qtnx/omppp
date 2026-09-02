@@ -265,28 +265,28 @@ jobs:
                 echo "Reusing the existing cross-platform cache warm run $cross_platform_run_id."
               fi
 
-   # Fast lint, type check, and browser bundle build (no Rust, no native build needed)
+   # Fast lint, type check, and browser bundle. Tag releases skip this job:
+   # the tagged tree already passed on the main push, and a hung `tsgo` here
+   # blocked v1.7.9 for 49m after every test had already passed.
    check:
       name: Lint, type check & web build
       runs-on: ubuntu-22.04
       needs: [release_metadata]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' }}
+      timeout-minutes: 10
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && needs.release_metadata.outputs.is-release != 'true' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/bun-install
          - name: Verify Rust license compliance (cargo-deny 0.20.2)
            run: |
-              cargo install --locked --version 0.20.2 cargo-deny
-              # `--offline` needs every workspace crate already in the registry
-              # cache. PR runs use a fresh GitHub-hosted runner (see runs-on
-              # above), where the only prior cargo work is the cargo-deny
-              # install, so nothing populates the index for our own graph and
-              # resolution fails. Non-PR events land on omp-kata, whose Cargo
-              # cache is warm, which is why main stayed green. Fetch first.
-              cargo fetch --locked
-              cargo deny --locked --offline check licenses sources
+              install_dir="$(mktemp -d)"
+              curl -L --proto '=https' --tlsv1.2 -sSf \
+                https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz \
+                | tar -xz -C "$install_dir"
+              export PATH="$install_dir/cargo-deny-0.20.2-x86_64-unknown-linux-musl:$PATH"
+              cargo deny --locked check licenses sources
          - name: Type check workspace
-           run: bun run ci:check:full
+           run: timeout --kill-after=30s 8m bun run ci:check:full
          - name: Build collab web
            run: bun run collab:web:build
 
@@ -790,7 +790,7 @@ jobs:
          needs.test_coding_agent_runtime.result == 'success' &&
          needs.test_coding_agent_native.result == 'success' &&
          needs.test_smoke.result == 'success' &&
-         needs.check.result == 'success' &&
+         (needs.check.result == 'success' || needs.check.result == 'skipped') &&
          needs.install_methods.result == 'success' &&
          needs.security.result == 'success' }}
       needs: [release_metadata, check, native_linux_x64, native_linux_x64_modern, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
@@ -818,7 +818,7 @@ jobs:
          needs.test_coding_agent_ui.result == 'success' &&
          needs.test_coding_agent_runtime.result == 'success' &&
          needs.test_coding_agent_native.result == 'success' &&
-         needs.test_smoke.result == 'success' && needs.check.result == 'success' &&
+         needs.test_smoke.result == 'success' && (needs.check.result == 'success' || needs.check.result == 'skipped') &&
          needs.install_methods.result == 'success' &&
          needs.security.result == 'success' }}
       needs: [release_metadata, check, native_linux_x64, native_linux_x64_modern, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
