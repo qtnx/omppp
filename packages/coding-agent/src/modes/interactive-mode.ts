@@ -221,6 +221,7 @@ import {
 	describeLoopRuntime,
 	formatAgentLoopList,
 	hasLoopIterationRemaining,
+	type LoopContextMode,
 	type LoopRuntime,
 	parseLoopLimitArgs,
 	parseLoopManagementArgs,
@@ -1843,7 +1844,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.loopModeEnabled) return;
 		const source = this.#currentLoopPromptSource();
 		if (!source) return;
-		const loopAction = settings.get("loop.mode");
+		const loopAction = this.loopRuntime?.context ?? settings.get("loop.mode");
 		this.#deferLoopAutoSubmit(() => {
 			void this.#runLoopIteration(loopAction, source);
 		});
@@ -1959,6 +1960,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			intervalMs: this.loopRuntime?.intervalMs,
 			initialIterations: this.loopRuntime?.initialIterations,
 			remainingIterations: this.loopRuntime?.remainingIterations,
+			context: this.loopRuntime?.context,
 		};
 	}
 
@@ -1977,6 +1979,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			remainingIterations >= 0
 		) {
 			runtime.remainingIterations = remainingIterations;
+		}
+		const context = modeData?.context;
+		if (context === "prompt" || context === "compact" || context === "reset") {
+			runtime.context = context;
 		}
 		return runtime;
 	}
@@ -2139,7 +2145,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		inputCallback(this.startPendingSubmission({ text: promptText }));
 	}
 
-	async #runLoopIteration(action: "prompt" | "compact" | "reset", source: LoopPromptSource): Promise<void> {
+	async #runLoopIteration(action: LoopContextMode, source: LoopPromptSource): Promise<void> {
 		if (!this.#isCurrentLoopPromptSource(source) || !this.onInputCallback) return;
 		if (this.#isAutoSubmitBlocked()) {
 			this.#deferLoopReadinessCheck(() => {

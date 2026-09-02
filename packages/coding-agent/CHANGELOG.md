@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/loop` accepts a per-loop context option: `/loop clean …` starts a fresh session before every iteration and `/loop compact …` compacts context first (`--keep` forces the default carry-over); the option overrides the `loop.mode` setting and survives session resume.
+
+### Fixed
+
+- `/loop 10 <prompt>` now repeats 10 times at the default interval instead of sleeping 10 seconds between unlimited repeats; a time unit (`/loop 10s`, `/loop 2m`) still sets the interval, and both can be combined in either order (`/loop 10 30s …`).
+
 ## [1.7.10] - 2026-09-02
 
 ### Changed
