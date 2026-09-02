@@ -15,10 +15,11 @@ import type {
 	ReviewFindingGenerationEventsResponse,
 	ReviewFindingListResponse,
 	ReviewFindingStatus,
-	SessionListResponse,
+	SessionListTrace,
 	SessionTrace,
 	TimeRange,
 	ToolDashboardStats,
+	TraceSessionSummary,
 } from "./types";
 
 const API_BASE = "/api";
@@ -108,11 +109,11 @@ export async function getSessions(query = "", limit = 100): Promise<SessionListR
 	return res.json() as Promise<SessionListResponse>;
 }
 
-export async function getSessionTrace(path: string): Promise<SessionTrace> {
+export async function getSessionTrace(path: string): Promise<SessionListTrace> {
 	const params = new URLSearchParams({ path });
 	const res = await fetch(`${API_BASE}/sessions/trace?${params.toString()}`);
 	if (!res.ok) throw new Error("Failed to fetch session trace");
-	return res.json() as Promise<SessionTrace>;
+	return res.json() as Promise<SessionListTrace>;
 }
 
 export async function getLearningAudits(query = "", limit = 100): Promise<LearningAuditListResponse> {
@@ -202,4 +203,25 @@ export async function getProviderDashboardStats(
 	return fetchJson<ProviderDashboardStats>(`${API_BASE}/stats/providers?range=${encodeURIComponent(range)}`, {
 		signal,
 	});
+}
+export async function getTraceSessions(limit = 100, q?: string, signal?: AbortSignal): Promise<TraceSessionSummary[]> {
+	const params = new URLSearchParams({ limit: String(limit) });
+	if (q) params.set("q", q);
+	return fetchJson<TraceSessionSummary[]>(`${API_BASE}/trace/sessions?${params}`, { signal });
+}
+
+export async function getTraceSession(file: string, signal?: AbortSignal): Promise<SessionTrace> {
+	return fetchJson<SessionTrace>(`${API_BASE}/session/trace?file=${encodeURIComponent(file)}`, { signal });
+}
+
+/** Fetch one full journal entry for the span drawer. Entries are opaque JSON. */
+export async function getSessionEntryDetail(
+	file: string,
+	id: string,
+	signal?: AbortSignal,
+): Promise<{ entry: unknown }> {
+	return fetchJson<{ entry: unknown }>(
+		`${API_BASE}/session/entry?file=${encodeURIComponent(file)}&id=${encodeURIComponent(id)}`,
+		{ signal },
+	);
 }

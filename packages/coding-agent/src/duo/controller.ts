@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { isFableOrMythos, parseAnthropicModel } from "@oh-my-pi/pi-catalog/identity";
+import { classifyModel } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { DuoResolvedConfig } from "../config/model-resolver";
@@ -574,11 +574,14 @@ export class DuoController {
 	}
 
 	#activationInput(): DuoActivationInput {
-		const parsed = parseAnthropicModel(this.#host.currentModel()?.id ?? "");
+		const currentModel = this.#host.currentModel();
+		const identity = currentModel
+			? classifyModel(currentModel.provider, currentModel.id, { lenient: true })
+			: undefined;
 		let mainModelKind: DuoActivationInput["mainModelKind"] = "other";
-		if (parsed?.kind === "opus") {
+		if (identity?.class === "anthropic" && identity.family === "opus") {
 			mainModelKind = "opus";
-		} else if (parsed && isFableOrMythos(parsed.kind)) {
+		} else if (identity?.class === "anthropic" && (identity.family === "fable" || identity.family === "mythos")) {
 			mainModelKind = "fable";
 		}
 		return {

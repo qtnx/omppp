@@ -1,7 +1,5 @@
 import { type } from "@oh-my-pi/omptype";
-import { parseKnownModel, semverEqual } from "../identity/classify";
 import { getBundledModels } from "../models";
-import { resolveOpenAIDaybreakStandardCost } from "../openai-pricing";
 import type { FetchImpl, ModelSpec } from "../types";
 import { discoveryFetch } from "../utils";
 import { CODEX_BASE_URL, CODEX_CLIENT_VERSION, OPENAI_HEADER_VALUES, OPENAI_HEADERS } from "../wire/codex";
@@ -324,19 +322,15 @@ function buildNormalizedCodexModel(
 	canonicalSlug: string,
 	baseUrl: string,
 ): NormalizedCodexModel {
-	// Codex discovery historically omitted `context_window` for GPT-5.6-family
-	// SKUs (#5705); luna/sol/terra use the 372K fallback only when the registry
-	// omits the field. Keyed on the canonical slug so a safe
-	// `gpt-5.6-luna-wm` row gets the same fallback as its plain listing.
-	const parsedKnown = parseKnownModel(canonicalSlug);
-	const fallbackContextWindow =
-		parsedKnown.family === "openai" && semverEqual(parsedKnown.version, "5.6")
-			? GPT_5_6_CONTEXT_WINDOW
-			: DEFAULT_CONTEXT_WINDOW;
+	// Codex discovery historically omitted `context_window` for these SKUs
+	// (#5705). Keep the fork's 372K floor for GPT-5.6 first-party routes and
+	// Daybreak Blue; explicit provider values remain authoritative.
+	const pinned372k = ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-daybreak-blue-latest"].includes(
+		canonicalSlug,
+	);
+	const fallbackContextWindow = pinned372k ? GPT_5_6_CONTEXT_WINDOW : DEFAULT_CONTEXT_WINDOW;
 	const contextWindow = parsed.contextWindow ?? fallbackContextWindow;
 	const maxTokens = Math.min(DEFAULT_MAX_TOKENS, contextWindow);
-	const daybreakCost = resolveOpenAIDaybreakStandardCost(canonicalSlug);
-
 	return {
 		priority: parsed.priority,
 		model: {
@@ -347,7 +341,9 @@ function buildNormalizedCodexModel(
 			baseUrl,
 			reasoning: parsed.reasoning,
 			input: parsed.input,
-			cost: daybreakCost ? { ...daybreakCost } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			// Daybreak standard API pricing is rule-owned (`providers/openai-codex.kdl`
+			// cost-patch) and corrected at build time.
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			remoteCompaction: CODEX_REMOTE_COMPACTION,
 			contextWindow,
 			maxTokens,

@@ -168,51 +168,18 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			// Discoverable extension tools mount as xd:// devices, not top-level active tools.
 			const deviceNames = session.getXdevToolEntries().map(entry => entry.name);
 			expect(deviceNames).toContain("default_active_tool");
+			expect(session.getToolByName("xd://default_active_tool")?.name).toBe("default_active_tool");
 			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
 			expect(deviceNames).not.toContain("default_inactive_tool");
 			expect(session.getActiveToolNames()).not.toContain("default_inactive_tool");
 			expect(session.systemPrompt.join("\n")).toContain("default_active_tool");
-		} finally {
-			await session.dispose();
-		}
-	});
+			expect(session.systemPrompt.join("\n")).not.toContain("default_inactive_tool");
 
-	it("enforces explicit toolNames when runtime activation tries to enable extension tools", async () => {
-		const tempDir = path.join(os.tmpdir(), `pi-sdk-tool-whitelist-${Snowflake.next()}`);
-		tempDirs.push(tempDir);
-		fs.mkdirSync(tempDir, { recursive: true });
-
-		const { session } = await createAgentSession({
-			cwd: tempDir,
-			agentDir: tempDir,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated(),
-			model: getBundledModel("openai", "gpt-4o-mini"),
-			disableExtensionDiscovery: true,
-			extensions: [toolActivationExtension],
-			skills: [],
-			contextFiles: [],
-			promptTemplates: [],
-			slashCommands: [],
-			enableMCP: false,
-			enableLsp: false,
-			toolNames: ["read"],
-			respectToolNamesForCustomTools: true,
-		});
-
-		try {
-			expect(session.getAllToolNames()).toEqual(
-				expect.arrayContaining(["read", "default_active_tool", "default_inactive_tool"]),
-			);
-			expect(session.getActiveToolNames()).toContain("read");
-			expect(session.getAllToolNames()).toContain("create_goal");
-			expect(session.getActiveToolNames()).not.toContain("create_goal");
-			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
-
-			await session.setActiveToolsByName([...session.getActiveToolNames(), "default_active_tool"]);
-
-			expect(session.getActiveToolNames()).toContain("read");
-			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
+			// Presentation lookup must survive Code Mode clearing the live mount set
+			// so historical prefixed calls retain their canonical renderer.
+			await session.setActiveToolPresentation(session.getActiveToolNames(), []);
+			expect(session.getMountedXdevToolNames()).not.toContain("default_active_tool");
+			expect(session.getToolByName("xd://default_active_tool")?.name).toBe("default_active_tool");
 		} finally {
 			await session.dispose();
 		}

@@ -177,7 +177,6 @@ Arguments absent from the rendered transcript are UNKNOWN, except for the
 delegation-stats header and advisor mission-brief context, which are
 authoritative session data you MAY assert and act on:
 - NEVER assert concrete values, array indexes, serialization shapes, or caller mistakes for hidden arguments.
-- Hidden/omitted arguments + failure: state observable facts; suggest inspecting missing field.
 - Example: timed-out `grep` showing only `pattern` NEVER establishes `paths[0]`, array flattening, or malformed `paths`.
 Cite exact instruction or risk.
 </critical>

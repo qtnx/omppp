@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { classifyModel } from "@oh-my-pi/pi-catalog/identity";
 import { Agent, type AgentMessage } from "../../../agent/src";
 import { clearCustomApis, type Model, registerCustomApi } from "../../../ai/src";
 import { AssistantMessageEventStream } from "../../../ai/src/utils/event-stream";
@@ -59,6 +60,7 @@ const model = {
 	contextWindow: 4096,
 	maxTokens: 1024,
 	compat: undefined,
+	identity: classifyModel("test-provider", "secret-prompt-hook-model", { lenient: true }),
 } satisfies Model;
 
 function getPromptText(messages: AgentMessage[]): string {

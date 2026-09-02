@@ -1,0 +1,4 @@
+// Devin selects reasoning tiers by model uid, never an inline effort field.
+provider "devin" {
+	trust-explicit-thinking-only #true
+}

@@ -565,9 +565,9 @@ describe("LiteLLM provider discovery", () => {
 			maxTokens: 131072,
 			input: ["text"],
 			cost: {
-				input: 1.4,
-				output: 4.4,
-				cacheRead: 0.26,
+				input: 0.966,
+				output: 3.036,
+				cacheRead: 0.1932,
 				cacheWrite: 0,
 			},
 			compat: {
@@ -1257,9 +1257,9 @@ describe("LiteLLM provider discovery", () => {
 			maxTokens: 131072,
 			input: ["text"],
 			cost: {
-				input: 1.4,
-				output: 4.4,
-				cacheRead: 0.26,
+				input: 0.966,
+				output: 3.036,
+				cacheRead: 0.1932,
 				cacheWrite: 0,
 			},
 			reasoning: true,

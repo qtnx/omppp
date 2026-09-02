@@ -18,18 +18,18 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { resolveBareVariantSelector, resolveVariantSelector } from "@oh-my-pi/pi-catalog/compat/collapse";
+import { collapseVariantId, stripThinkingVariantSuffix } from "@oh-my-pi/pi-catalog/compat/taxonomy";
 import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import {
-	type AnthropicKind,
 	buildModelProviderPriorityRank,
-	isFableOrMythos,
-	parseAnthropicModel,
+	classifyModel,
+	compareRevision,
+	parseRevision,
 } from "@oh-my-pi/pi-catalog/identity";
-import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { type GeneratedProvider, getBundledModels, modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
-import { resolveBareVariantAlias, resolveVariantAlias } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
@@ -521,8 +521,10 @@ export function resolveProviderModelReference(
 	// Retired effort-tier variant ids resolve to their collapsed logical
 	// model: hand-table aliases first, then the `X-thinking` → `X` grammar
 	// for auto-derived pairs. Exact lookup above always wins while raw is live.
+	const collapsedVariant = collapseVariantId(normalizedProvider, normalizedModelId);
 	const variantAliasId =
-		resolveVariantAlias(normalizedProvider, normalizedModelId) ?? stripThinkingVariantToken(normalizedModelId);
+		resolveVariantSelector(normalizedProvider, normalizedModelId) ??
+		(collapsedVariant.thinkingVariant ? collapsedVariant.logicalId : undefined);
 	if (variantAliasId) {
 		const aliased = index.get(`${normalizedProvider}\u0000${variantAliasId.toLowerCase()}`);
 		if (aliased) {
@@ -841,8 +843,8 @@ function matchModel(
 	// their collapsed logical model; models from the providers whose table
 	// declared the alias win ties. Auto-derived `X-thinking` pairs resolve
 	// through the grammar fallback.
-	const bareAlias = resolveBareVariantAlias(modelPattern);
-	const bareAliasTargetId = bareAlias?.id ?? stripThinkingVariantToken(modelPattern);
+	const bareAlias = resolveBareVariantSelector(modelPattern);
+	const bareAliasTargetId = bareAlias?.id ?? stripThinkingVariantSuffix(modelPattern);
 	if (bareAliasTargetId) {
 		const lowerAliasTarget = bareAliasTargetId.toLowerCase();
 		const aliasMatches = availableModels.filter(m => m.id.toLowerCase() === lowerAliasTarget);
@@ -1718,7 +1720,7 @@ export function resolveRoleSelection(
 	roles: readonly string[],
 	settings: Settings,
 	availableModels: Model<Api>[],
-): { model: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
+): { role: string; model: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
 	const matchPreferences = getModelMatchPreferences(settings);
 	for (const role of roles) {
 		const resolved = resolveModelRoleValue(settings.getModelRole(role), availableModels, {
@@ -1726,7 +1728,7 @@ export function resolveRoleSelection(
 			matchPreferences,
 		});
 		if (resolved.model) {
-			return { model: resolved.model, thinkingLevel: resolved.thinkingLevel };
+			return { role, model: resolved.model, thinkingLevel: resolved.thinkingLevel };
 		}
 	}
 	return undefined;
@@ -1776,13 +1778,12 @@ export interface DuoResolvedConfig {
 	};
 }
 
-function compareAnthropicVersion(
-	a: { major: number; minor: number; patch: number },
-	b: { major: number; minor: number; patch: number },
-): number {
-	if (a.major !== b.major) return a.major - b.major;
-	if (a.minor !== b.minor) return a.minor - b.minor;
-	return a.patch - b.patch;
+function compareAnthropicVersion(a: string | undefined, b: string | undefined): number {
+	const aRevision = a === undefined ? undefined : parseRevision(a);
+	const bRevision = b === undefined ? undefined : parseRevision(b);
+	if (!aRevision) return bRevision ? -1 : 0;
+	if (!bRevision) return 1;
+	return compareRevision(aRevision, bRevision);
 }
 
 function resolveExplicitDuoModel(
@@ -1799,14 +1800,16 @@ function resolveExplicitDuoModel(
 
 function resolveNewestAnthropicDuoModel(
 	availableModels: Model<Api>[],
-	matchesKind: (kind: AnthropicKind) => boolean,
+	matchesKind: (kind: string | undefined) => boolean,
 ): Model<Api> | undefined {
-	let selected: { model: Model<Api>; version: { major: number; minor: number; patch: number } } | undefined;
+	let selected: { model: Model<Api>; revision: string } | undefined;
 	for (const model of availableModels) {
-		const parsed = parseAnthropicModel(stripThinkingVariantToken(model.id) ?? model.id);
-		if (!parsed || !matchesKind(parsed.kind)) continue;
-		if (!selected || compareAnthropicVersion(parsed.version, selected.version) > 0) {
-			selected = { model, version: parsed.version };
+		const identity = classifyModel(model.provider, stripThinkingVariantSuffix(model.id) ?? model.id, {
+			lenient: true,
+		});
+		if (identity.class !== "anthropic" || !matchesKind(identity.family) || identity.revision === undefined) continue;
+		if (!selected || compareAnthropicVersion(identity.revision, selected.revision) > 0) {
+			selected = { model, revision: identity.revision };
 		}
 	}
 	return selected?.model;
@@ -1817,7 +1820,7 @@ function resolveDuoSide(
 	availableModels: Model<Api>[],
 	settings: Settings,
 	modelRegistry: CanonicalModelRegistry,
-	matchesKind: (kind: AnthropicKind) => boolean,
+	matchesKind: (kind: string | undefined) => boolean,
 ): { model: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
 	const normalized = pattern?.trim();
 	if (normalized) {
@@ -1835,8 +1838,12 @@ export function resolveDuoConfig(
 	const availableModels = available.filter(model => registry.hasConfiguredAuth(model));
 	if (availableModels.length === 0) return undefined;
 
-	const planner = resolveDuoSide(settings.get("duo.plannerModel"), availableModels, settings, registry, kind =>
-		isFableOrMythos(kind),
+	const planner = resolveDuoSide(
+		settings.get("duo.plannerModel"),
+		availableModels,
+		settings,
+		registry,
+		family => family === "fable" || family === "mythos",
 	);
 	const executor = resolveDuoSide(
 		settings.get("duo.executorModel"),

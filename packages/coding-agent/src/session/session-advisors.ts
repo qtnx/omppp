@@ -356,6 +356,17 @@ export interface SessionAdvisorsHost {
 	hasRunningQaJobs(): boolean;
 }
 
+/**
+ * One advisor's status-line slice: runtime status plus whether it has
+ * finished reviewing the current yield — i.e. it is not going to add any
+ * more comments until a new primary turn starts (or an explicit reset).
+ */
+export interface AdvisorStatusOverviewEntry {
+	name: string;
+	status: AdvisorRuntimeStatus;
+	yielded: boolean;
+}
+
 /** Owns advisor runtimes, delivery policy, context maintenance, and status reporting. */
 export class SessionAdvisors {
 	readonly #host: SessionAdvisorsHost;
@@ -1213,7 +1224,10 @@ export class SessionAdvisors {
 			} = descriptor;
 
 			const emissionGuard = new AdvisorEmissionGuard();
-			const adviseTool = new AdviseTool((note, severity) => this.#routeAdvice(advisorRef, note, severity));
+			const adviseTool = new AdviseTool(
+				(note, severity) => this.#routeAdvice(advisorRef, note, severity),
+				note => this.#acceptAdvice(advisorRef, note),
+			);
 			const doneVerdictTool = new DoneVerdictTool((verdict: DoneVerdict) => {
 				const pending = this.#pendingDoneVerdict;
 				if (!pending) return false;
@@ -1544,6 +1558,12 @@ export class SessionAdvisors {
 							"advisor",
 						);
 					},
+					notifyIdle: () => {
+						// Repaint post-yield completions, including quota/halt latches.
+						void this.#host
+							.emitSessionEvent({ type: "advisor_yielded" })
+							.catch(err => logger.debug("advisor yield notification failed", { err: String(err) }));
+					},
 				},
 				1000,
 				{
@@ -1628,15 +1648,22 @@ export class SessionAdvisors {
 		return isTerminalTextAssistantAnswer(messages[tail]);
 	}
 
+	/** Emission-guard gate: the noise/empty/dedupe filter plus the
+	 *  one-advise-per-update budget, consumed the moment a note is emitted —
+	 *  whether it is delivered live or held for a deferred flush. A suppressed
+	 *  note never consumes the budget, so it cannot burn an update's slot ahead
+	 *  of a substantive concern. Returns whether the note may reach the primary. */
+	#acceptAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): boolean {
+		if (advisor.emissionGuard.accept(note)) return true;
+		logger.debug("advisor advice suppressed by emission guard", { severity, advisor: advisor.name });
+		return false;
+	}
+
+	/** Route an already-accepted advice note to the primary. Never re-runs the
+	 *  emission guard — the note passed {@link #acceptAdvice} when it was emitted,
+	 *  so a deferred flush replays the backlog without re-filtering. */
 	#routeAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): void {
 		const effectiveSeverity = this.#advisorConsultInFlight ? undefined : severity;
-		if (!advisor.emissionGuard.accept(note)) {
-			logger.debug("advisor advice suppressed by emission guard", {
-				severity: effectiveSeverity,
-				advisor: advisor.name,
-			});
-			return;
-		}
 		// The implicit single ("default") advisor stamps no source name, so its
 		// agent-facing `<advisory>` bytes stay identical to the pre-multi-advisor path.
 		const source = advisor.slug ? advisor.name : undefined;
@@ -2353,20 +2380,34 @@ export class SessionAdvisors {
 	 * flag and per-advisor name/status without computing token/cost breakdowns.
 	 * Avoids re-tokenizing the advisor transcript on every render frame.
 	 */
-	getAdvisorStatusOverview(): { configured: boolean; advisors: { name: string; status: AdvisorRuntimeStatus }[] } {
+	getAdvisorStatusOverview(): { configured: boolean; advisors: AdvisorStatusOverviewEntry[] } {
 		// Override stale map entries with live runtime status: failureNotified/quotaExhausted
 		// clear on reset() but #advisorStatuses lags until the next build.
-		const liveStatusBySlug = new Map<string, AdvisorRuntimeStatus>();
+		const liveStatusBySlug = new Map<
+			string,
+			{ status: AdvisorRuntimeStatus; yielded: boolean; canReview: boolean }
+		>();
 		for (const a of this.#advisors) {
-			liveStatusBySlug.set(
-				a.slug,
-				a.runtime.quotaExhausted ? "quota_exhausted" : a.runtime.failureNotified ? "error" : "running",
-			);
+			liveStatusBySlug.set(a.slug, {
+				status: a.runtime.quotaExhausted ? "quota_exhausted" : a.runtime.failureNotified ? "error" : "running",
+				yielded: a.runtime.yielded,
+				canReview: !a.runtime.quotaExhausted && !a.runtime.halted && !a.runtime.disposed,
+			});
 		}
-		const advisors = [...this.#advisorStatuses.entries()].map(([slug, { name, status }]) => ({
-			name,
-			status: liveStatusBySlug.get(slug) ?? status,
-		}));
+		const advisors = [...this.#advisorStatuses.entries()].map(([slug, { name, status }]) => {
+			const live = liveStatusBySlug.get(slug);
+			return {
+				name,
+				status: live?.status ?? status,
+				// The eye only closes after the primary itself has yielded: while it
+				// is streaming, an advisor that can still accept review work may
+				// receive (and comment on) new deltas even when its backlog is
+				// empty. Advisors that cannot accept work — no live runtime
+				// (paused/no-model) or a quota-exhausted/halted runtime — stay
+				// yielded regardless of the primary's stream state.
+				yielded: live?.canReview && this.#host.agent.state.isStreaming ? false : (live?.yielded ?? true),
+			};
+		});
 		return { configured: this.#advisorEnabled, advisors };
 	}
 
