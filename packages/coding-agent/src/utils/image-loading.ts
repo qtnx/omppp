@@ -1,13 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type {
-	Context,
-	ImageContent,
-	Message,
-	Model,
-	OpenAIResponsesHistoryPayload,
-	TextContent,
-} from "@oh-my-pi/pi-ai";
+import type { Context, ImageContent, Message, Model, ProviderPayload, TextContent } from "@oh-my-pi/pi-ai";
 import { rasterizeSvg } from "@oh-my-pi/pi-natives";
 import { formatBytes, isRecord, logger, readImageMetadata, SUPPORTED_IMAGE_MIME_TYPES } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
@@ -129,8 +122,8 @@ async function normalizeNativeResponsesItem(item: Record<string, unknown>): Prom
 }
 
 async function normalizeNativeResponsesHistoryPayload(
-	payload: OpenAIResponsesHistoryPayload | undefined,
-): Promise<OpenAIResponsesHistoryPayload | undefined> {
+	payload: ProviderPayload | undefined,
+): Promise<ProviderPayload | undefined> {
 	if (payload?.type !== "openaiResponsesHistory" || !Array.isArray(payload.items)) return payload;
 	let items: Array<Record<string, unknown>> | undefined;
 	for (let index = 0; index < payload.items.length; index++) {

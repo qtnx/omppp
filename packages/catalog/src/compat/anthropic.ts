@@ -5,6 +5,7 @@
  * classification, with explicit spec overrides assigned on top.
  */
 import { hostMatchesUrl, modelMatchesHost } from "../hosts";
+import { parseAnthropicModel, semverGte } from "../identity/classify";
 import {
 	hasOpus47ApiRestrictions,
 	isAnthropicFableOrMythosModel,
@@ -132,8 +133,20 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 	const requiresThinkingEnabled = modelMatchesHost(spec, "moonshotNative") && matchesKimiMandatoryThinkingModel(spec);
 	const isAzure = isAzureAnthropicRoute(baseUrl);
 	const signingEndpoint = official || isCopilot || isZenmux || isAnthropicSigningProxyUrl(baseUrl);
+	const parsed = parseAnthropicModel(spec.id);
+	const supportsFable51Controls =
+		official &&
+		parsed !== null &&
+		(parsed.kind === "fable" || parsed.kind === "mythos") &&
+		semverGte(parsed.version, "5.1");
 	const compat: ResolvedAnthropicCompat = {
 		officialEndpoint: official,
+		supportsContextManagement: true,
+		supportsOutputEffort: spec.provider !== "google-vertex",
+		supportsTurnScopedSystem: supportsFable51Controls,
+		supportsMidConversationToolChanges: supportsFable51Controls,
+		supportsPerMessageEffort: supportsFable51Controls,
+		supportsThinkingBindingControls: supportsFable51Controls,
 		signingEndpoint,
 		disableStrictTools: isAzure,
 		disableAdaptiveThinking: false,
