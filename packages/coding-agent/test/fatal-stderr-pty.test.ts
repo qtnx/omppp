@@ -35,13 +35,15 @@ describe.skipIf(process.platform === "win32")("fatal stderr terminal handoff", (
 		await closed.promise;
 		expect(exitCode).toBe(1);
 
-		const screen = new VirtualTerminal({ cols: COLUMNS, rows: ROWS, scrollback: 100 });
+		const screen = new VirtualTerminal({ cols: COLUMNS, rows: ROWS, scrollback: 1000 });
 		for (const chunk of chunks) await writeTerminal(screen, chunk);
 		const buffer = screen.buffer.active;
 		const lines = Array.from({ length: buffer.length }, (_, row) =>
 			buffer.getLine(row)?.translateToString(true).trimEnd(),
 		);
-		const composerRow = lines.indexOf("╰─");
+		// Match by prefix: the fork's crash-report line and longer inspect output can
+		// share the row tail on narrow runners; the boundary glyph is the contract.
+		const composerRow = lines.findIndex(line => line?.startsWith("╰─") === true);
 		const errorRow = lines.findIndex(line => line?.includes("error: fatal PTY fixture") === true);
 
 		expect(composerRow).toBeGreaterThanOrEqual(0);
