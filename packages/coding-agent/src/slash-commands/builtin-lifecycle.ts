@@ -2,7 +2,10 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import { logger, sanitizeText, setProjectDir } from "@oh-my-pi/pi-utils";
+import { reset as resetCapabilities } from "../capability";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
+import { clearClaudePluginRootsCache } from "../discovery/helpers";
+import { loadSlashCommands } from "../extensibility/slash-commands";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import type { FreshSessionResult, HandoffResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
@@ -10,6 +13,7 @@ import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
 import { toggleSessionPin } from "../session/session-pins";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
+import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import {
 	buildMacOSSandboxRelaunchArgv,
 	formatMacOSSandboxRestartCommand,
@@ -57,6 +61,11 @@ function formatWorkspaceDirectories(runtime: SlashCommandRuntime, note?: string)
 	const additional = runtime.sessionManager.getAdditionalDirectories();
 	const lines = ["Workspace directories:", `  ${cwd} (working directory)`, ...additional.map(d => `  ${d}`)];
 	return note ? `${note}\n${lines.join("\n")}` : lines.join("\n");
+}
+async function fatalMoveFailure(text: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+	await runtime.output(text);
+	await runtime.session.dispose();
+	return commandConsumed();
 }
 
 function sanitizeInlineText(value: string, maxWidth: number = TRUNCATE_LENGTHS.LINE): string {
@@ -513,6 +522,8 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			{ name: "view", description: "Show current memory injection payload" },
 			{ name: "stats", description: "Show memory backend statistics" },
 			{ name: "diagnose", description: "Run memory backend diagnostics" },
+			{ name: "queue", description: "Show pending memory deltas awaiting consolidation" },
+			{ name: "sync", description: "Run memory consolidation now" },
 			{ name: "clear", description: "Clear persisted memory data and artifacts" },
 			{ name: "reset", description: "Alias for clear" },
 			{ name: "enqueue", description: "Enqueue memory consolidation maintenance" },
@@ -555,6 +566,20 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					await runtime.output("Memory consolidation enqueued.");
 					return commandConsumed();
 				}
+				case "queue": {
+					const payload = await backend.queuePreview?.({
+						agentDir: runtime.settings.getAgentDir(),
+						cwd: runtime.cwd,
+						session: runtime.session,
+					});
+					await runtime.output(payload ?? `Memory queue is not available for the ${backend.id} backend.`);
+					return commandConsumed();
+				}
+				case "sync": {
+					await backend.enqueue(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
+					await runtime.output("Memory consolidation ran.");
+					return commandConsumed();
+				}
 				case "stats":
 				case "diagnose": {
 					const hook = verb === "stats" ? backend.stats : backend.diagnose;
@@ -568,7 +593,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 						runtime,
 					);
 				default:
-					return usage("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild>", runtime);
+					return usage("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync>", runtime);
 			}
 		},
 		handleTui: async (command, runtime) => {
@@ -631,18 +656,66 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			} catch (err) {
 				return usage(`Failed to save pending settings: ${errorMessage(err)}`, runtime);
 			}
+			const previousState = runtime.sessionManager.captureState();
 			try {
 				await runtime.session.moveSession(resolvedPath);
 			} catch (err) {
 				return usage(`Move failed: ${errorMessage(err)}`, runtime);
 			}
-			setProjectDir(resolvedPath);
-			await runtime.settings.reloadForCwd(resolvedPath);
-			applyProviderGlobalsFromSettings(runtime.settings);
-			// Reload plugin/capability caches so the next prompt sees commands and
-			// capabilities scoped to the new cwd.
-			await runtime.reloadPlugins();
-			await runtime.session.refreshBaseSystemPrompt();
+			try {
+				setProjectDir(resolvedPath);
+			} catch (err) {
+				try {
+					await runtime.sessionManager.rollbackMove(previousState);
+				} catch (rollbackError) {
+					const actual = runtime.sessionManager.getCwd();
+					let realigned = false;
+					try {
+						await rescopeHeadlessToCwd(runtime, actual);
+						realigned = true;
+					} catch {}
+					if (!realigned) {
+						return fatalMoveFailure(
+							`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
+							runtime,
+						);
+					}
+					return usage(
+						`Move failed and rollback failed: ${errorMessage(rollbackError)} (workspace remains at ${actual})`,
+						runtime,
+					);
+				}
+				return usage(`Move failed: ${errorMessage(err)}`, runtime);
+			}
+			try {
+				await rescopeHeadlessToCwd(runtime, resolvedPath);
+				// Refresh the base prompt after moving so memory and workspace context
+				// reflect the new project directory.
+				await runtime.session.refreshBaseSystemPrompt();
+			} catch (err) {
+				try {
+					await runtime.sessionManager.rollbackMove(previousState);
+					await rescopeHeadlessToCwd(runtime, previousState.cwd);
+				} catch (rollbackError) {
+					const actual = runtime.sessionManager.getCwd();
+					let realigned = false;
+					try {
+						await rescopeHeadlessToCwd(runtime, actual);
+						realigned = true;
+					} catch {}
+					if (!realigned) {
+						return fatalMoveFailure(
+							`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
+							runtime,
+						);
+					}
+					return usage(
+						`Move failed and rollback failed: ${errorMessage(rollbackError)} (workspace remains at ${actual})`,
+						runtime,
+					);
+				}
+				return usage(`Move failed: ${errorMessage(err)}`, runtime);
+			}
 			await runtime.notifyConfigChanged?.();
 			await runtime.notifyTitleChanged?.();
 			await runtime.output(`Moved to ${runtime.sessionManager.getCwd()}.`);
@@ -706,4 +779,31 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		description: "Exit the application",
 		handleTui: shutdownHandlerTui,
 	},
+	{
+		name: "restart",
+		icon: "restart",
+		description: "Restart omp with the same launch flags, resuming this session",
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.restart();
+		},
+	},
 ];
+async function rescopeHeadlessToCwd(runtime: SlashCommandRuntime, cwd: string): Promise<void> {
+	setProjectDir(cwd);
+	await runtime.settings.reloadForCwd(cwd);
+	applyProviderGlobalsFromSettings(runtime.settings);
+	clearClaudePluginRootsCache();
+	const src = discoverTitleSystemPromptFile(cwd);
+	const p = await resolvePromptInput(src, "title system prompt");
+	runtime.session.setTitleSystemPrompt(p);
+	resetCapabilities();
+	await runtime.session.refreshSkills();
+	const cmds = await loadSlashCommands({
+		cwd,
+		extensionRoots: runtime.session.effectiveExtensionRoots,
+	});
+	runtime.session.setSlashCommands(cmds);
+	await runtime.refreshCommands?.();
+	await runtime.reloadPlugins();
+}

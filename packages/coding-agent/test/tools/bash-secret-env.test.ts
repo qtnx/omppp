@@ -21,6 +21,7 @@ function makeTool(options: { injectEnv: boolean }): BashTool {
 	const session = {
 		cwd: process.cwd(),
 		hasUI: false,
+		getSessionFile: () => null,
 		secretVault: fakeVault,
 		settings: {
 			get(key: string): unknown {

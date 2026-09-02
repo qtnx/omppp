@@ -31,14 +31,8 @@ export function getTabBarTheme(): TabBarTheme {
 	};
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Working-message hint
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
- * Suffix appended to the loader's working message to remind users they can
- * abort with Esc. Rendered with the active theme's bracket glyphs so it stays
- * visually consistent with badges and other bracketed UI affordances.
+ * Append the standard interrupt hint to a working status message.
  *
  * The leading space separates the hint from the message body and is consumed
  * by `endsWith`/`slice` matching in the loader renderer.

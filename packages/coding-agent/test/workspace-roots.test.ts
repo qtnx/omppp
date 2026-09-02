@@ -10,11 +10,11 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import { parseArgs } from "../src/cli/args";
 import { buildSystemPrompt } from "../src/system-prompt";
-import * as git from "../src/utils/git";
 import type { WorkspaceRoot } from "../src/workspace-roots";
 import { resolveWorkspaceRoots } from "../src/workspace-roots";
 
@@ -117,17 +117,17 @@ describe("parseArgs — workspace flags", () => {
 		expect(parseArgs(["--no-worktree", "--be", "/srv/api"]).noWorktree).toBe(true);
 	});
 });
-
-describe("git.worktree.add — newBranch", () => {
+describe("workspace worktree add — newBranch", () => {
 	test("creates a new branch at the start point in a fresh worktree", async () => {
 		await withTempDir(async dir => {
 			const repo = await initRepo(path.join(dir, "repo"));
 			const wt = path.join(dir, "wt");
 
-			await git.worktree.add(repo, wt, "feature", { newBranch: true, startPoint: "HEAD" });
+			await $`git worktree add -q -b feature ${wt} HEAD`.cwd(repo).quiet();
 
-			expect(await git.branch.list(repo)).toContain("feature");
-			expect(await git.branch.current(wt)).toBe("feature");
+			const repository = vcs.requireGit(repo);
+			expect(await repository.listBranches(false)).toContain("feature");
+			expect(await vcs.requireGit(wt).currentBranch()).toBe("feature");
 			expect(await Bun.file(path.join(wt, "README.md")).text()).toBe("seed\n");
 		});
 	});
@@ -208,7 +208,7 @@ describe("resolveWorkspaceRoots — --be/--fe worktrees", () => {
 
 			// Worktrees are real checkouts of the seeded commit, on the new branch.
 			expect(await Bun.file(path.join(beRoot!.path, "README.md")).text()).toBe("seed\n");
-			expect(await git.branch.current(beRoot!.path)).toBe("omp/feat-x");
+			expect(await vcs.requireGit(beRoot!.path).currentBranch()).toBe("omp/feat-x");
 			// fe is non-primary, so its bounded tree was rendered for the prompt.
 			expect(typeof feRoot?.tree).toBe("string");
 		});
@@ -242,9 +242,9 @@ describe("resolveWorkspaceRoots — --be/--fe worktrees", () => {
 			const first = await resolveWorkspaceRoots(parseArgs(["--be", be, "--worktree", "dup"]));
 			const second = await resolveWorkspaceRoots(parseArgs(["--be", be, "--worktree", "dup"]));
 			expect(second.roots[0]?.path).toBe(first.roots[0]?.path);
-
 			const repoRoot = first.roots[0]!.sourceRepo!;
-			const worktrees = await git.worktree.list(repoRoot);
+
+			const worktrees = await vcs.requireGit(repoRoot).worktrees();
 			expect(worktrees.filter(w => w.branch === "refs/heads/omp/dup")).toHaveLength(1);
 		});
 	});

@@ -68,7 +68,7 @@ describe("musl release artifacts", () => {
 			"curl",
 			`#!/bin/sh
 case "$*" in
-  *api.github.com*) echo '{"tag_name":"v1.0.0"}' ;;
+  *api.github.com*) echo '{"tag_name":"v1.0.0","mentions_count":0}' ;;
   *SHA256SUMS*) while [ "$#" -gt 0 ]; do
        [ "$1" = "-o" ] && { printf '%s  ompx-linux-musl-x64\n' '${binaryChecksum}' > "$2"; exit 0; }
        shift
@@ -89,6 +89,7 @@ esac
 		});
 
 		expect(result.exitCode, result.stderr).toBe(0);
+		expect(result.stdout).toContain("Using version: v1.0.0");
 		expect(result.stdout).toContain("Downloading ompx-linux-musl-x64...");
 		expect(await Bun.file(path.join(installDir, "ompx")).text()).toBe(binaryContent);
 	});

@@ -92,6 +92,7 @@ function createStatusContext(
 		speculationBlinkOn: true,
 		subagentCount: 0,
 		activeMs: 0,
+		turnElapsedMs: null,
 		activeRepo: null,
 		worktree: null,
 		git: { branch: null, status: null, pr: null },

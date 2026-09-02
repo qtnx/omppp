@@ -34,6 +34,8 @@ export interface PersistedSubagentReviveContext {
 	 * the same lifecycle/progress frames a live run does.
 	 */
 	eventBus?: EventBus;
+	/** Root-scoped observability bus the revived run's frames also publish to. */
+	subagentEventBus?: EventBus;
 }
 
 /**
@@ -103,6 +105,13 @@ export function createPersistedSubagentReviverFactory(
 			init.modelRole && init.modelRole !== "default"
 				? [formatModelRoleAlias(init.modelRole), ...(init.resolvedModel ? [init.resolvedModel] : [])]
 				: init.resolvedModel;
+		// Older session files persisted the synthetic xd:// write transport in the
+		// enabled set. A read-only agent definition could never grant full write,
+		// so remove that transport name before replaying tools as explicit grants.
+		const revivedToolNames =
+			init.readOnly === true && init.tools.includes("write")
+				? init.tools.filter(name => name !== "write")
+				: init.tools;
 		return async expectedRef => {
 			// Re-open fresh on every revive: park closes the writer, so this takes
 			// the single-writer lock cleanly and restores the full message history.
@@ -119,6 +128,9 @@ export function createPersistedSubagentReviverFactory(
 			const { session } = await createAgentSession({
 				cwd: ctx.session.sessionManager.getCwd(),
 				authStorage: ctx.authStorage,
+				// Revived agents join the root session tree, so their observability
+				// frames ride the same bus the RPC/collab surfaces subscribed to.
+				subagentEventBus: ctx.subagentEventBus,
 				modelRegistry: ctx.modelRegistry,
 				...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
 				modelPatternAuthFallback: init.resolvedModel,
@@ -130,7 +142,7 @@ export function createPersistedSubagentReviverFactory(
 				parentAgentId: ref.parentId,
 				expectedAgentRef: expectedRef,
 				taskDepth,
-				toolNames: init.tools,
+				toolNames: revivedToolNames,
 				outputSchema: init.outputSchema,
 				outputSchemaMode: init.outputSchemaMode,
 				restrictToolNames: restrictToolNames || undefined,
@@ -146,6 +158,7 @@ export function createPersistedSubagentReviverFactory(
 							enableIrc: false,
 							enableMCP: false,
 							preloadedExtensionPaths: [],
+							preloadedPreparedExtensions: [],
 							preloadedCustomToolPaths: [],
 						}
 					: {
@@ -157,7 +170,7 @@ export function createPersistedSubagentReviverFactory(
 			// Clamp the active set to the persisted list: createAgentSession's
 			// `alwaysInclude` can re-add non-defaultInactive extension/custom tools
 			// the original run didn't carry. Unknown/missing names are ignored.
-			await session.setActiveToolsByName([...init.tools, ...session.getMountedXdevToolNames()]);
+			await session.setActiveToolsByName([...revivedToolNames, ...session.getMountedXdevToolNames()]);
 			// Wire the extension runtime exactly as the live executor does. Without
 			// this the runner stays pre-init, every action method throws
 			// `ExtensionRuntimeNotInitializedError`, and a `tool_call` handler that
@@ -186,6 +199,7 @@ export function createPersistedSubagentReviverFactory(
 				id: ref.id,
 				agent: wakeAgent,
 				eventBus: ctx.eventBus,
+				subagentEventBus: ctx.subagentEventBus,
 				sessionFile,
 				outputSchema: init.outputSchema,
 				outputSchemaMode: init.outputSchemaMode,

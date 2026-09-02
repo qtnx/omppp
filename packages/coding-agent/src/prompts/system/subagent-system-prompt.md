@@ -39,15 +39,27 @@ A bounded spawn-time snapshot is available at `{{contextFile}}`. It contains sel
 {{/if}}
 If a named anchor had to be rediscovered, report `Rediscovery: <path/symbol> — <reason>` once in the terminal result.
 
-{{#if ircPeers}}
+{{#if ircSelfId}}
 # Peers
 You can reach other live agents via the `hub` tool. Your id is `{{ircSelfId}}`. Currently visible peers:
-{{ircPeers}}
+{{#if ircPeers}}
+{{#each ircPeers}}
+- `{{this.id}}` — {{this.displayName}} ({{this.kind}}, {{this.status}}){{#if this.activity}}: {{this.activity}}{{/if}}
+{{/each}}
+{{#if ircOmittedCount}}
+{{ircOmittedCount}} more live peer(s) omitted.
+{{/if}}
+{{else}}
+- ({{#if ircParkedCount}}no live agents{{else}}no other agents{{/if}})
+{{/if}}
+{{#if ircParkedCount}}
+{{ircParkedCount}} parked peer(s) omitted.
+{{/if}}
 
 Use `irc` for fork-compatible quick coordination and `hub` when it is available; NEVER use either for long-form content. Address peers by id or use `"all"` to broadcast.
 - Discovery: the roster shows live peers and a parked count, never parked names or task labels. `irc` op:"list" refreshes it; use `hub` op:"list" when available, and pass `status:"parked"` to inspect parked history.
 - Parked history: omitted from this roster. Sending to a known parked id revives it; `history://<id>` and `agent://<id>` remain readable.
-- Coordination: before you edit a file or start work a sibling may already own, message that peer first; same-file edits serialize safely, but coordinating avoids redundant or conflicting work.
+- Coordination: before you edit a file or start work a sibling may already own, message that peer first; same-file edits serialize safely, but coordinating avoids redundant or conflicting work. Idle peers are not gone: messaging them wakes them.
 - Follow-up: answer a peer's question with a short reply (set `replyTo`); use `await` only when you genuinely cannot proceed without the answer.
 - Progress: MUST notify `Main` for long phases, plan changes, blockers, or overridable assumptions. NEVER narrate routine activity.
 - Status: MUST answer requests immediately with done/in-flight/remaining/blocker. Coordinate directly with peers, not through `Main`.

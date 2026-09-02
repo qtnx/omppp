@@ -290,6 +290,43 @@ describe("Editor slash autocomplete acceptance", () => {
 			fs.rmSync(baseDir, { recursive: true, force: true });
 		}
 	});
+	it("accepts the selection with right arrow when the cursor is at end of line", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([{ name: "skills:fix-bug", description: "Fix a bug" }], "/tmp"),
+		);
+
+		editor.handleInput("/");
+		await untilAutocompleteShown(editor);
+		editor.handleInput("s");
+		editor.handleInput("k");
+		editor.handleInput("i");
+		await untilAutocompleteShown(editor);
+
+		editor.handleInput("\x1b[C");
+
+		expect(editor.getText()).toBe("/skills:fix-bug ");
+	});
+
+	it("keeps right arrow as cursor movement mid-line while the popup is open", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([{ name: "skills:fix-bug", description: "Fix a bug" }], "/tmp"),
+		);
+
+		editor.handleInput("/");
+		await untilAutocompleteShown(editor);
+		editor.handleInput("s");
+		editor.handleInput("k");
+		editor.handleInput("i");
+		await untilAutocompleteShown(editor);
+
+		editor.handleInput("\x1b[D"); // Left: cursor now mid-line before "i"
+		editor.handleInput("\x1b[C"); // Right: plain movement back to EOL, no accept
+
+		expect(editor.getText()).toBe("/ski");
+		expect(editor.getCursor()).toEqual({ line: 0, col: 4 });
+	});
 });
 
 describe("Editor dollar autocomplete acceptance", () => {
@@ -941,7 +978,7 @@ describe("Editor autocomplete invalidation on destructive edits (issue #4295)", 
 		expect(editor.getText()).toBe("/todo ");
 	});
 
-	it("cancels a stale popup and moves the cursor right without applying its selection", async () => {
+	it("moves cursor right mid-line without applying its selection", async () => {
 		const editor = new Editor(defaultEditorTheme);
 		editor.setAutocompleteProvider(new TodoSubcommandProvider());
 		await primeAutocomplete(editor);
@@ -953,7 +990,7 @@ describe("Editor autocomplete invalidation on destructive edits (issue #4295)", 
 		editor.handleInput("X");
 
 		expect(editor.getText()).toBe("/Xtodo s");
-		expect(editor.isShowingAutocomplete()).toBe(false);
+		expect(editor.isShowingAutocomplete()).toBe(true);
 	});
 
 	it("does not insert a stale suggestion when Tab follows Ctrl+U", async () => {

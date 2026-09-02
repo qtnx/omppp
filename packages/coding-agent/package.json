@@ -539,6 +539,10 @@
       "import": "./src/orchestrator-mode/*.ts"
     },
     "./prompts/*": "./src/prompts/*.md",
+    "./registry/*": {
+      "types": "./src/registry/*.ts",
+      "import": "./src/registry/*.ts"
+    },
     "./secrets": {
       "types": "./src/secrets/index.ts",
       "import": "./src/secrets/index.ts"

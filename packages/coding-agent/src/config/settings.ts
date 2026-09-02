@@ -48,6 +48,7 @@ import {
 import { AgentStorage } from "../session/agent-storage";
 import { type CompactionMethod, DEFAULT_COMPACTION_METHOD_ORDER } from "../session/compaction-methods";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
+import { applyHyperlinkSetting } from "../tui/hyperlink";
 import { replaceFileAtomically } from "../utils/atomic-file";
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { INSPECT_IMAGE_MODES } from "../utils/inspect-image-mode";
@@ -77,11 +78,62 @@ export interface RawSettings {
 	[key: string]: unknown;
 }
 
+type YamlContentGeneration = {
+	kind: "content";
+	source: string;
+	mtimeNs: bigint;
+	ctimeNs: bigint;
+	inode: bigint;
+	size: bigint;
+};
+
+type YamlGeneration = { kind: "missing" } | YamlContentGeneration | { kind: "unreadable" };
+
+type PendingYamlMutation = {
+	generation: YamlGeneration;
+	baseValue: unknown;
+};
+
 type YamlLoadResult =
 	| { kind: "missing" }
-	| { kind: "loaded"; settings: RawSettings }
-	| { kind: "invalid"; error: unknown; backupPath?: string }
+	| { kind: "loaded"; settings: RawSettings; generation: YamlContentGeneration }
+	| { kind: "invalid"; error: unknown; generation: YamlContentGeneration; backupPath?: string }
 	| { kind: "unreadable"; error: unknown };
+
+type LockedYamlLoadResult = {
+	settings: RawSettings | null;
+	generation: YamlGeneration;
+};
+
+function yamlGenerationFromLoadResult(result: YamlLoadResult): YamlGeneration {
+	switch (result.kind) {
+		case "missing":
+			return { kind: "missing" };
+		case "loaded":
+		case "invalid":
+			return result.generation;
+		case "unreadable":
+			return { kind: "unreadable" };
+	}
+}
+
+function yamlGenerationsMatch(left: YamlGeneration, right: YamlGeneration): boolean {
+	switch (left.kind) {
+		case "missing":
+			return right.kind === "missing";
+		case "content":
+			return (
+				right.kind === "content" &&
+				left.source === right.source &&
+				left.mtimeNs === right.mtimeNs &&
+				left.ctimeNs === right.ctimeNs &&
+				left.inode === right.inode &&
+				left.size === right.size
+			);
+		case "unreadable":
+			return false;
+	}
+}
 
 type MainYamlReadResult = {
 	settings: RawSettings | null;
@@ -635,6 +687,9 @@ export class Settings {
 	#modifiedProjectModelRoles = new Set<string>();
 	/** Individual global model roles modified during this session (for partial save) */
 	#modifiedGlobalModelRoles = new Set<string>();
+	/** On-disk generations and prior values observed before each pending global mutation. */
+	#modifiedPathMutations = new Map<string, PendingYamlMutation>();
+	#modifiedGlobalModelRoleMutations = new Map<string, PendingYamlMutation>();
 	/** Changes whenever a live API mutates a persisted layer. */
 	#persistedMutationGeneration = 0;
 	/**
@@ -811,6 +866,7 @@ export class Settings {
 	set<P extends SettingPath>(path: P, value: SettingValue<P>): void {
 		const prev = this.get(path);
 		const segments = path.split(".");
+		this.#captureGlobalMutation(path, this.#modifiedPathMutations, getByPath(this.#global, segments));
 		setByPath(this.#global, segments, value);
 		this.#persistedMutationGeneration++;
 		if (this.#reloadFromDiskPromise) {
@@ -1156,6 +1212,22 @@ export class Settings {
 	}
 
 	/**
+	 * Provenance of the effective `extensions` array for extension-root
+	 * sub-discovery. `"project"` only when a project settings provider owns it
+	 * (any of `.omp/config.yml`, `.omp/settings.json`, `.claude/settings.json`,
+	 * … — all merged into the project layer) and no higher user-level layer (a
+	 * `--config` overlay or a runtime override) replaces it; otherwise `"user"`.
+	 * Callers pass this into {@link EffectiveExtensionRoots.configuredLevel} so
+	 * discovery labels roots by the authority that produced them rather than
+	 * re-deriving provenance from a partial disk scan.
+	 */
+	extensionsSourceLevel(): "user" | "project" {
+		if (Object.hasOwn(this.#overrides, "extensions")) return "user";
+		if (Object.hasOwn(this.#configOverlay, "extensions")) return "user";
+		return Object.hasOwn(this.#project, "extensions") ? "project" : "user";
+	}
+
+	/**
 	 * Get all settings in a group with full type safety.
 	 */
 	getGroup<G extends GroupPrefix>(prefix: G): GroupTypeMap[G] {
@@ -1367,6 +1439,7 @@ export class Settings {
 	setModelRole(role: ModelRole | string, modelId: string | undefined): void {
 		const prev = this.get("modelRoles");
 		const current = this.#modelRolesFromLayer(this.#global);
+		this.#captureGlobalMutation(role, this.#modifiedGlobalModelRoleMutations, current[role]);
 		if (modelId === undefined) {
 			delete current[role];
 		} else {
@@ -1562,6 +1635,31 @@ export class Settings {
 		return this;
 	}
 
+	#readYamlGeneration(filePath: string): YamlGeneration {
+		try {
+			const source = fs.readFileSync(filePath, "utf8");
+			const stat = fs.statSync(filePath, { bigint: true });
+			return {
+				kind: "content",
+				source,
+				mtimeNs: stat.mtimeNs,
+				ctimeNs: stat.ctimeNs,
+				inode: stat.ino,
+				size: stat.size,
+			};
+		} catch (error) {
+			return isEnoent(error) ? { kind: "missing" } : { kind: "unreadable" };
+		}
+	}
+
+	#captureGlobalMutation(key: string, mutations: Map<string, PendingYamlMutation>, baseValue: unknown): void {
+		if (!this.#persist || !this.#configPath) return;
+		mutations.set(key, {
+			generation: this.#readYamlGeneration(this.#configPath),
+			baseValue: structuredClone(baseValue),
+		});
+	}
+
 	async #loadYaml(filePath: string, options: RawSettingsMigrationOptions = {}): Promise<RawSettings> {
 		const loaded = await this.#loadYamlIfPresentForStartup(filePath, options);
 		return loaded ?? {};
@@ -1569,8 +1667,18 @@ export class Settings {
 
 	async #loadYamlIfPresent(filePath: string, options: RawSettingsMigrationOptions = {}): Promise<YamlLoadResult> {
 		let content: string;
+		let generation: YamlContentGeneration;
 		try {
 			content = await fs.promises.readFile(filePath, "utf8");
+			const stat = await fs.promises.stat(filePath, { bigint: true });
+			generation = {
+				kind: "content",
+				source: content,
+				mtimeNs: stat.mtimeNs,
+				ctimeNs: stat.ctimeNs,
+				inode: stat.ino,
+				size: stat.size,
+			};
 		} catch (error) {
 			if (isEnoent(error)) return { kind: "missing" };
 			return { kind: "unreadable", error };
@@ -1580,7 +1688,7 @@ export class Settings {
 		try {
 			parsed = YAML.parse(content);
 		} catch (error) {
-			return { kind: "invalid", error };
+			return { kind: "invalid", error, generation };
 		}
 		// The fork's setup-config migration only applies to the persisted global
 		// config, and write-path re-reads opt out of recording modified paths.
@@ -1596,12 +1704,14 @@ export class Settings {
 						persistModifiedPaths: applySetupConfigMigration && (options.trackSetupMigration ?? true),
 					},
 				),
+				generation,
 			};
 		}
 		if (typeof parsed !== "object" || Array.isArray(parsed)) {
 			return {
 				kind: "invalid",
 				error: new Error("Settings YAML must contain a mapping at the document root"),
+				generation,
 			};
 		}
 		return {
@@ -1611,6 +1721,7 @@ export class Settings {
 				persistModifiedPaths: applySetupConfigMigration && (options.trackSetupMigration ?? true),
 				captureLegacyChangelogVersion: options.captureLegacyChangelogVersion,
 			}),
+			generation,
 		};
 	}
 
@@ -1651,9 +1762,10 @@ export class Settings {
 		if (result.kind !== "invalid" || !this.#persist) {
 			return this.#unwrapYamlLoadResult(filePath, result);
 		}
-		return await this.#withYamlWriteLock(filePath, async writePath =>
-			this.#loadYamlIfPresentForWriteLocked(filePath, writePath, true, options),
-		);
+		return await this.#withYamlWriteLock(filePath, async writePath => {
+			const loaded = await this.#loadYamlIfPresentForWriteLocked(filePath, writePath, true, options);
+			return loaded.settings;
+		});
 	}
 
 	/**
@@ -1667,8 +1779,9 @@ export class Settings {
 		rejectMissing = false,
 		options: RawSettingsMigrationOptions = {},
 		quarantineInvalid = true,
-	): Promise<RawSettings | null> {
+	): Promise<LockedYamlLoadResult> {
 		let result = await this.#loadYamlIfPresent(writePath, options);
+		const generation = yamlGenerationFromLoadResult(result);
 		if (result.kind === "missing" && rejectMissing) {
 			throw new Error(
 				`Settings config was invalid before locking and is now missing: ${filePath}; another process may have moved it aside`,
@@ -1678,7 +1791,10 @@ export class Settings {
 			result = await this.#quarantineInvalidYamlLocked(writePath, result);
 			this.#quarantinedYamlTargets.set(filePath, writePath);
 		}
-		return this.#unwrapYamlLoadResult(filePath, result);
+		return {
+			settings: this.#unwrapYamlLoadResult(filePath, result),
+			generation,
+		};
 	}
 
 	async #quarantineInvalidYamlLocked(
@@ -2716,10 +2832,19 @@ export class Settings {
 		const pathsToPersist = hasExplicitMutation
 			? modifiedPaths.filter(path => !deferredMigrationPaths.includes(path))
 			: modifiedPaths;
+		const modifiedPathMutations = new Map(this.#modifiedPathMutations);
+		const modifiedModelRoleMutations = new Map(this.#modifiedGlobalModelRoleMutations);
 		const globalRolesAtStart = this.#modelRolesFromLayer(this.#global);
+		const previousCodeModeValues = this.#codeModeSignalSnapshot();
+		const previousHookValues = new Map<SettingPath, unknown>();
+		for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
+			previousHookValues.set(key, this.get(key));
+		}
 		this.#modified.clear();
 		this.#explicitModifiedPaths.clear();
 		this.#modifiedGlobalModelRoles.clear();
+		this.#modifiedPathMutations.clear();
+		this.#modifiedGlobalModelRoleMutations.clear();
 		try {
 			await this.#withYamlWriteLock(configPath, async writePath => {
 				// Re-read to preserve external changes. If this instance moved a
@@ -2733,13 +2858,30 @@ export class Settings {
 					this.#reloadFromDiskPromise === undefined,
 				);
 				const current =
-					loaded ?? (this.#quarantinedYamlTargets.has(configPath) ? structuredClone(this.#global) : {});
+					loaded.settings ?? (this.#quarantinedYamlTargets.has(configPath) ? structuredClone(this.#global) : {});
+				let shouldWrite = false;
 
-				// Apply only our modified whole-value paths
+				// Apply pending changes unless a newer file generation also
+				// changed that setting. Disjoint external edits still merge.
 				for (const modPath of pathsToPersist) {
 					const segments = modPath.split(".");
+					const mutation = modifiedPathMutations.get(modPath);
+					const canApply =
+						(mutation === undefined && this.#pendingSetupConfigMigrationPaths.has(modPath)) ||
+						(mutation !== undefined &&
+							mutation.generation.kind !== "unreadable" &&
+							(yamlGenerationsMatch(mutation.generation, loaded.generation) ||
+								Bun.deepEquals(getByPath(current, segments), mutation.baseValue)));
+					if (!canApply) {
+						logger.warn("Settings: skipped stale change after external config edit", {
+							path: configPath,
+							setting: modPath,
+						});
+						continue;
+					}
 					const value = getByPath(this.#global, segments);
 					setByPath(current, segments, value);
+					shouldWrite = true;
 				}
 
 				// Merge only the model roles captured by this save. Then retain
@@ -2757,15 +2899,30 @@ export class Settings {
 						rolesToPreserve.add(role);
 					}
 				}
-				if (modifiedModelRoles.length > 0 || rolesToPreserve.size > 0) {
-					const currentRoles = getByPath(current, ["modelRoles"]);
-					const mergedRoles: Record<string, unknown> = isRecord(currentRoles) ? { ...currentRoles } : {};
-					if (modifiedModelRoles.length > 0 && this.#pendingSetupConfigMigrationPaths.has("modelRoles")) {
+				const currentRoles = getByPath(current, ["modelRoles"]);
+				const currentRoleValues: Record<string, unknown> = isRecord(currentRoles) ? currentRoles : {};
+				const rolesToApply = modifiedModelRoles.filter(role => {
+					const mutation = modifiedModelRoleMutations.get(role);
+					const canApply =
+						mutation !== undefined &&
+						mutation.generation.kind !== "unreadable" &&
+						(yamlGenerationsMatch(mutation.generation, loaded.generation) ||
+							Bun.deepEquals(currentRoleValues[role], mutation.baseValue));
+					if (canApply) return true;
+					logger.warn("Settings: skipped stale change after external config edit", {
+						path: configPath,
+						setting: `modelRoles.${role}`,
+					});
+					return false;
+				});
+				if (rolesToApply.length > 0 || rolesToPreserve.size > 0) {
+					const mergedRoles: Record<string, unknown> = { ...currentRoleValues };
+					if (rolesToApply.length > 0 && this.#pendingSetupConfigMigrationPaths.has("modelRoles")) {
 						for (const [role, value] of Object.entries(globalRolesAtStart)) {
 							if (!Object.hasOwn(mergedRoles, role)) mergedRoles[role] = value;
 						}
 					}
-					for (const role of modifiedModelRoles) {
+					for (const role of rolesToApply) {
 						if (Object.hasOwn(globalRolesAtStart, role)) {
 							mergedRoles[role] = globalRolesAtStart[role];
 						} else {
@@ -2780,15 +2937,18 @@ export class Settings {
 						}
 					}
 					setByPath(current, ["modelRoles"], mergedRoles);
+					shouldWrite = true;
 				}
 
-				// Update our global with any external changes we preserved
+				// Update our global with any external changes we preserved.
 				this.#global = current;
-				await this.#writeYamlAtomically(writePath, this.#global);
-				this.#lastWrittenFileHashes.set(
-					path.normalize(configPath),
-					hashSettingsContent(YAML.stringify(this.#global, null, 2)),
-				);
+				if (shouldWrite) {
+					await this.#writeYamlAtomically(writePath, this.#global);
+					this.#lastWrittenFileHashes.set(
+						path.normalize(configPath),
+						hashSettingsContent(YAML.stringify(this.#global, null, 2)),
+					);
+				}
 				this.#quarantinedYamlTargets.delete(configPath);
 				// These pending roles were included in this write. Remove each
 				// only if no newer local change arrived while the write was in flight.
@@ -2796,20 +2956,46 @@ export class Settings {
 				for (const role of rolesToPreserve) {
 					if (latestGlobalRoles[role] === globalRolesAfterWrite[role]) {
 						this.#modifiedGlobalModelRoles.delete(role);
+						this.#modifiedGlobalModelRoleMutations.delete(role);
 					}
 				}
 			});
 		} catch (error) {
 			logger.warn("Settings: save failed", { error: String(error) });
-			// Re-add failed paths for retry
+			// A quarantined file is now missing by our own action, not because
+			// another writer superseded the mutation. Retry against that state.
+			const retryGeneration = this.#quarantinedYamlTargets.has(configPath)
+				? this.#readYamlGeneration(configPath)
+				: undefined;
+			// Re-add failed paths for retry, retaining any newer mutation's generation.
 			for (const p of modifiedPaths) {
 				this.#modified.add(p);
+				if (!this.#modifiedPathMutations.has(p)) {
+					const mutation = modifiedPathMutations.get(p) ?? {
+						generation: { kind: "unreadable" },
+						baseValue: undefined,
+					};
+					this.#modifiedPathMutations.set(
+						p,
+						retryGeneration ? { ...mutation, generation: retryGeneration } : mutation,
+					);
+				}
 			}
 			for (const p of explicitModifiedPaths) {
 				this.#explicitModifiedPaths.add(p);
 			}
 			for (const role of modifiedModelRoles) {
 				this.#modifiedGlobalModelRoles.add(role);
+				if (!this.#modifiedGlobalModelRoleMutations.has(role)) {
+					const mutation = modifiedModelRoleMutations.get(role) ?? {
+						generation: { kind: "unreadable" },
+						baseValue: undefined,
+					};
+					this.#modifiedGlobalModelRoleMutations.set(
+						role,
+						retryGeneration ? { ...mutation, generation: retryGeneration } : mutation,
+					);
+				}
 			}
 			this.#rebuildMerged();
 			throw error;
@@ -2821,6 +3007,7 @@ export class Settings {
 		this.#rebuildMerged();
 		if (this.#reloadFromDiskPromise === undefined) {
 			this.#fireChangedSettings(previous);
+			this.#fireCodeModeChangeIfNeeded(previousCodeModeValues);
 		}
 	}
 	#queueProjectSave(): void {
@@ -2855,7 +3042,7 @@ export class Settings {
 			await this.#withYamlWriteLock(projectConfigPath, async writePath => {
 				const loaded = await this.#loadYamlIfPresentForWriteLocked(projectConfigPath, writePath);
 				const projectSettings =
-					loaded ??
+					loaded.settings ??
 					(this.#quarantinedYamlTargets.has(projectConfigPath) ? structuredClone(this.#projectFileSettings) : {});
 
 				const projectRoles = getByPath(this.#project, ["modelRoles"]);
@@ -3067,6 +3254,11 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 			setSyntaxHighlightingMode(value ? "native" : "off");
 		}
 	},
+	// A project-scoped reload (`/move`, cross-project resume, rollback) can change
+	// the effective value; reapply so pi-tui renderers gating on the shared flag
+	// track it the same instant path/resource links do. Runtime `/settings` edits
+	// also go through the selector controller to invalidate and repaint live views.
+	"tui.hyperlinks": value => applyHyperlinkSetting(value),
 	"provider.appendOnlyContext": value => {
 		if (typeof value === "string") {
 			appendOnlyModeSignal.fire(value);

@@ -10,7 +10,8 @@ import {
 } from "@oh-my-pi/pi-coding-agent/hindsight/bank";
 import { HindsightApi } from "@oh-my-pi/pi-coding-agent/hindsight/client";
 import type { HindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
-import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
+import type { VcsRepo } from "@oh-my-pi/pi-natives";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 // Isolate `git` invocations in this file from the host's global config —
@@ -288,7 +289,7 @@ describe("resolveBankScope", () => {
 	});
 
 	it("uses the primary git checkout rather than the current worktree directory", async () => {
-		vi.spyOn(git.repo, "primaryRoot").mockResolvedValue("/repos/oh-my-pi");
+		vi.spyOn(vcs, "repo").mockReturnValue({ primaryRoot: () => "/repos/oh-my-pi" } as VcsRepo);
 
 		const scope = await resolveBankScope(
 			baseConfig({ scoping: "per-project-tagged" }),
@@ -300,7 +301,7 @@ describe("resolveBankScope", () => {
 	});
 
 	it("falls back to the cwd basename outside git repositories", async () => {
-		vi.spyOn(git.repo, "primaryRoot").mockResolvedValue(null);
+		vi.spyOn(vcs, "repo").mockReturnValue(null);
 
 		const scope = await resolveBankScope(baseConfig({ scoping: "per-project-tagged" }), "/scratch/no-repo");
 

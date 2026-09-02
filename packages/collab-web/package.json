@@ -46,6 +46,7 @@
     "lucide-react": "catalog:",
     "marked": "catalog:",
     "mermaid": "11.16.1",
+    "katex": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:"
   },

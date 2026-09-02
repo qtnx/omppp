@@ -352,6 +352,13 @@ describe("model thinking derivation", () => {
 			baseUrl: "https://openrouter.ai/api/v1",
 			thinking: discovered,
 		});
+		const routedDated = createModel({
+			id: "deepseek/deepseek-v4-pro-0813:nitro",
+			api: "openrouter",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			thinking: discovered,
+		});
 		const bare = createModel({
 			id: "deepseek/deepseek-v4-pro",
 			api: "openrouter",
@@ -360,9 +367,12 @@ describe("model thinking derivation", () => {
 			thinking: discovered,
 		});
 
-		// The dated SKU keeps its advertised ladder; :max no longer clamps.
+		// The dated SKU keeps its advertised ladder, including through a route suffix;
+		// :max no longer clamps.
 		expect(getSupportedEfforts(dated)).toEqual([Effort.Low, Effort.High, Effort.Max]);
 		expect(clampThinkingLevelForModel(dated, Effort.Max)).toBe(Effort.Max);
+		expect(getSupportedEfforts(routedDated)).toEqual([Effort.Low, Effort.High, Effort.Max]);
+		expect(clampThinkingLevelForModel(routedDated, Effort.Max)).toBe(Effort.Max);
 		// The undated OpenRouter route stays high-only.
 		expect(getSupportedEfforts(bare)).toEqual([Effort.High]);
 		expect(clampThinkingLevelForModel(bare, Effort.Max)).toBe(Effort.High);
@@ -733,7 +743,6 @@ describe("model thinking derivation", () => {
 		expect(direct.compat.supportsPerMessageEffort).toBe(true);
 		expect(direct.compat.supportsTurnScopedSystem).toBe(true);
 	});
-
 	it("classifies OpenAI-schema Bedrock models as effort, leaving gpt-oss on budget", () => {
 		// Bedrock serves the GPT-5.x SKUs through OpenAI's own request schema,
 		// which rejects Anthropic's budget block: `unknown_parameter: 'thinking'`.
@@ -750,6 +759,7 @@ describe("model thinking derivation", () => {
 				?.mode,
 		).toBe("budget");
 	});
+
 	it("backfills wire facts onto explicit thinking, explicit values winning", () => {
 		// Authored partial ladders on wire-exact models normalize to the
 		// model-defined ladder, and the wire map is re-derived alongside:

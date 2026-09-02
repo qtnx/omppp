@@ -49,6 +49,7 @@ function createCtx(pr: TestPr): SegmentContext {
 		speculationBlinkOn: false,
 		subagentCount: 0,
 		activeMs: 0,
+		turnElapsedMs: null,
 		git: {
 			branch: "feature/pr-status",
 			status: null,

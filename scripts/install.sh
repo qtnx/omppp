@@ -1189,7 +1189,7 @@ install_binary() {
     if [ -n "$REF" ]; then
         echo "Fetching release $REF..."
         if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "${API_BASE_URL}/releases/tags/${REF}"); then
-            LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+            LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
         else
             echo "Failed to fetch release metadata for: $REF"
             echo "If this is a branch or commit, use --source with --ref."
@@ -1198,7 +1198,7 @@ install_binary() {
     else
         echo "Fetching latest release..."
         if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "${API_BASE_URL}/releases/latest"); then
-            LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+            LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
         else
             echo "Failed to fetch latest release metadata."
             exit 1

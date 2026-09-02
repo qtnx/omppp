@@ -19,11 +19,13 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getWorktreeDir, hashPath, logger } from "@oh-my-pi/pi-utils";
+import { $ } from "bun";
 import type { Args } from "./cli/args";
 import { generateTaskName } from "./task/name-generator";
 import { expandTilde } from "./tools/path-utils";
-import * as git from "./utils/git";
+import { withRepoLock } from "./utils/repo-lock";
 import { buildWorkspaceTree } from "./workspace-tree";
 
 /** A tagged working directory the session is aware of. */
@@ -149,19 +151,29 @@ function uniqueTag(base: string, roots: WorkspaceRoot[]): string {
  * default branch, then HEAD.
  */
 async function resolveStartPoint(repoRoot: string, tag: string, notices: string[]): Promise<string> {
-	const defaultBranch = await git.branch.default(repoRoot).catch(() => null);
-	const remotes = await git.remote.list(repoRoot).catch(() => [] as string[]);
+	const repository = vcs.git(repoRoot);
+	if (!repository) {
+		notices.push(`--${tag}: default branch not found; branching off current HEAD.`);
+		return "HEAD";
+	}
+	const defaultBranch = await repository.defaultBranch().catch(() => null);
+	const remotes: string[] = await repository.remoteList().catch(() => [] as string[]);
 	if (defaultBranch && remotes.includes("origin")) {
 		try {
-			await git.fetch(repoRoot, "origin", `refs/heads/${defaultBranch}`, `refs/remotes/origin/${defaultBranch}`);
+			await repository.fetch(
+				"origin",
+				`refs/heads/${defaultBranch}`,
+				`refs/remotes/origin/${defaultBranch}`,
+				30 * 60 * 1000,
+			);
 		} catch (err) {
 			notices.push(`--${tag}: could not fetch origin/${defaultBranch} (${errText(err)}); using local state.`);
 		}
-		if (await git.ref.exists(repoRoot, `refs/remotes/origin/${defaultBranch}`).catch(() => false)) {
+		if (await repository.refExists(`refs/remotes/origin/${defaultBranch}`).catch(() => false)) {
 			return `origin/${defaultBranch}`;
 		}
 	}
-	if (defaultBranch && (await git.ref.exists(repoRoot, `refs/heads/${defaultBranch}`).catch(() => false))) {
+	if (defaultBranch && (await repository.refExists(`refs/heads/${defaultBranch}`).catch(() => false))) {
 		return defaultBranch;
 	}
 	notices.push(`--${tag}: default branch not found; branching off current HEAD.`);
@@ -179,11 +191,11 @@ function toOptionalString(value: unknown): string | undefined {
 async function resolveExplicitRepoInput(input: string): Promise<{ resolved: string; repoRoot: string } | null> {
 	const resolved = path.resolve(expandTilde(input));
 	const realResolved = await fs.realpath(resolved).catch(() => resolved);
-	const repository = await git.repo.resolve(realResolved).catch(() => null);
+	const repository = vcs.repo(realResolved);
 	if (!repository) return null;
-	const realRepoRoot = await fs.realpath(repository.repoRoot).catch(() => repository.repoRoot);
+	const realRepoRoot = await fs.realpath(repository.root()).catch(() => repository.root());
 	if (path.resolve(realRepoRoot) !== path.resolve(realResolved)) return null;
-	const repoRoot = (await git.repo.primaryRoot(realResolved).catch(() => null)) ?? repository.repoRoot;
+	const repoRoot = await fs.realpath(repository.primaryRoot()).catch(() => repository.primaryRoot());
 	return { resolved: realResolved, repoRoot };
 }
 
@@ -271,27 +283,33 @@ async function createRepoWorktree(
 	const branchRef = `refs/heads/${branch}`;
 	const worktreePath = getWorktreeDir(`${slugify(worktreeName)}-${hashPath(repoRoot)}`);
 
-	return git.withRepoLock(repoRoot, async () => {
+	return withRepoLock(repoRoot, async () => {
+		const repository = vcs.git(repoRoot);
+		if (!repository) {
+			notices.push(`--${tag}: ${resolved} is not a git repository; skipping.`);
+			return null;
+		}
 		// Reuse an existing worktree for this branch (idempotent across runs).
-		const existing = await git.worktree.list(repoRoot).catch(() => []);
+		const existing = await repository.worktrees().catch(() => []);
 		const reused = existing.find(entry => entry.branch === branchRef || entry.path === worktreePath);
 		if (reused) {
 			return { tag, path: reused.path, sourceRepo: repoRoot, branch, primary };
 		}
 
-		const branchExists = await git.ref.exists(repoRoot, branchRef).catch(() => false);
+		const branchExists = await repository.refExists(branchRef).catch(() => false);
 		try {
 			await fs.mkdir(path.dirname(worktreePath), { recursive: true });
 			if (branchExists) {
 				// Branch already present but not checked out anywhere — attach it.
-				await git.worktree.add(repoRoot, worktreePath, branch);
+				await repository.worktreeAdd(worktreePath, branch, false);
 			} else {
 				const startPoint = await resolveStartPoint(repoRoot, tag, notices);
-				await git.worktree.add(repoRoot, worktreePath, branch, { newBranch: true, startPoint });
+				// Native VCS binding has no new-branch worktree operation.
+				await $`git worktree add -b ${branch} ${worktreePath} ${startPoint}`.cwd(repoRoot).quiet();
 			}
 		} catch (err) {
 			notices.push(`--${tag}: failed to create worktree (${errText(err)}); using repo checkout in place.`);
-			const current = (await git.branch.current(repoRoot).catch(() => null)) ?? undefined;
+			const current = (await repository.currentBranch().catch(() => null)) ?? undefined;
 			return { tag, path: repoRoot, sourceRepo: repoRoot, branch: current, primary };
 		}
 
@@ -314,7 +332,8 @@ async function tagRepoInPlace(
 		notices.push(`--${tag}: ${resolved} is not a git repository; skipping.`);
 		return null;
 	}
-	const branch = (await git.branch.current(repoRoot).catch(() => null)) ?? undefined;
+	const repository = vcs.git(repoRoot);
+	const branch = repository ? ((await repository.currentBranch().catch(() => null)) ?? undefined) : undefined;
 	return { tag, path: repoRoot, sourceRepo: repoRoot, branch, primary };
 }
 

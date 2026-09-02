@@ -1,3 +1,4 @@
+import { toClinePassWireModelId } from "@oh-my-pi/pi-catalog/cline-pass-model-id";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { toFirepassWireModelId, toFireworksWireModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { isGlm52ReasoningEffortModelId, isKimiK3ModelId } from "@oh-my-pi/pi-catalog/identity";
@@ -394,9 +395,14 @@ export function applyOpenAIResponsesServiceTierCost(
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
 }
 
-/** Reconcile token-price estimates with OpenRouter's authoritative account charge. */
-export function applyOpenRouterReportedCost(model: Pick<Model, "provider">, usage: Usage, rawUsage: unknown): void {
-	if (model.provider !== "openrouter" || typeof rawUsage !== "object" || rawUsage === null) return;
+/** Reconcile token-price estimates with a gateway's authoritative account charge. */
+export function applyProviderReportedCost(model: Pick<Model, "provider">, usage: Usage, rawUsage: unknown): void {
+	if (
+		(model.provider !== "openrouter" && model.provider !== "cline-pass") ||
+		typeof rawUsage !== "object" ||
+		rawUsage === null
+	)
+		return;
 	const reportedCost = Reflect.get(rawUsage, "cost");
 	if (typeof reportedCost !== "number" || !Number.isFinite(reportedCost) || reportedCost < 0) return;
 
@@ -565,6 +571,8 @@ export function applyWireModelIdTransform(
 	openrouterVariant?: string,
 ): string {
 	switch (mode) {
+		case "cline-pass":
+			return toClinePassWireModelId(baseId);
 		case "firepass":
 			return toFirepassWireModelId(baseId);
 		case "fireworks":
@@ -770,7 +778,7 @@ export type OpenAICompletionsParams = Omit<ChatCompletionCreateParamsStreaming, 
 		preserve_thinking?: boolean;
 		reasoning_effort?: string;
 	};
-	reasoning?: { effort?: string } | { enabled: false };
+	reasoning?: { effort?: string; enabled?: boolean; max_tokens?: number };
 	venice_parameters?: { disable_thinking?: boolean; [key: string]: unknown };
 	reasoning_effort?: string | null;
 	service_tier?: ServiceTier;
@@ -783,6 +791,7 @@ export type OpenAICompletionsParams = Omit<ChatCompletionCreateParamsStreaming, 
 export interface ChatCompletionsReasoningOptions {
 	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	disableReasoning?: boolean;
+	thinkingBudgets?: Partial<Record<Effort, number>>;
 }
 
 export type OpenAICompatEndpoint = "chat-completions" | "responses";
@@ -1022,9 +1031,8 @@ function encodeChatCompletionsDisabledReasoning(
 			params.chat_template_kwargs = { ...params.chat_template_kwargs, thinking: false };
 			break;
 		case "openrouter-enabled-false":
-			(params as typeof params & { reasoning?: { effort?: string } | { enabled: false } }).reasoning = {
-				enabled: false,
-			};
+		case "cline-enabled-false":
+			params.reasoning = { enabled: false };
 			break;
 		case "venice-disable-thinking":
 			params.venice_parameters = { ...params.venice_parameters, disable_thinking: true };
@@ -1172,16 +1180,26 @@ export function applyChatCompletionsReasoningParams(
 	compat: ResolvedOpenAICompat,
 	options: (ChatCompletionsReasoningOptions & { toolChoice?: unknown }) | undefined,
 ): void {
-	applyChatCompletionsCompatPolicy(
-		params,
-		resolveOpenAICompatPolicy(model, {
-			endpoint: "chat-completions",
-			compat,
-			reasoning: options?.reasoning,
-			disableReasoning: options?.disableReasoning,
-			toolChoice: options?.toolChoice,
-		}),
-	);
+	const policy = resolveOpenAICompatPolicy(model, {
+		endpoint: "chat-completions",
+		compat,
+		reasoning: options?.reasoning,
+		disableReasoning: options?.disableReasoning,
+		toolChoice: options?.toolChoice,
+	});
+	applyChatCompletionsCompatPolicy(params, policy);
+	if (
+		model.provider !== "cline-pass" ||
+		!policy.reasoning.enabled ||
+		model.thinking?.mode !== "budget" ||
+		options?.reasoning === undefined
+	) {
+		return;
+	}
+	const budget = options.thinkingBudgets?.[options.reasoning] ?? model.thinking.effortBudgets?.[options.reasoning];
+	if (budget === undefined) return;
+	delete params.reasoning_effort;
+	params.reasoning = { ...params.reasoning, max_tokens: budget };
 }
 
 export function disableChatCompletionsReasoningForDialect(
@@ -1207,14 +1225,17 @@ function isZaiReasoningEffortDialect(model: Model<"openai-completions">, compat:
  * Provider-specific Chat Completions output clamp.
  *
  * Most OpenAI-compatible endpoints retain the conservative 64k ceiling from
- * {@link resolveOpenAIOutputTokenParam}. Z.AI/GLM-5.2 reasoning and native
- * Moonshot K3 explicitly accept their full advertised model caps, so those
- * routes clamp to `model.maxTokens` instead.
+ * {@link resolveOpenAIOutputTokenParam}. ClinePass, Z.AI/GLM-5.2 reasoning,
+ * and native Moonshot K3 explicitly accept their full advertised model caps,
+ * so those routes clamp to `model.maxTokens` instead.
  */
 export function resolveOpenAICompletionsOutputClamp(
 	model: Model<"openai-completions">,
 	compat: ResolvedOpenAICompat,
 ): number | undefined {
+	if (model.provider === "cline-pass") {
+		return model.maxTokens ?? OPENAI_MAX_OUTPUT_TOKENS;
+	}
 	if (isZaiReasoningEffortDialect(model, compat)) {
 		return model.maxTokens ?? OPENAI_MAX_OUTPUT_TOKENS;
 	}
@@ -1846,8 +1867,25 @@ export interface BuildResponsesInputOptions<TApi extends Api> {
  */
 export function escapeReplayedControlTokens(items: ResponseInput): ResponseInput {
 	return items.map(item => {
-		if (item.type === "function_call_output" || item.type === "custom_tool_call_output") {
-			return typeof item.output === "string" ? { ...item, output: escapeHarmonyControlTokens(item.output) } : item;
+		if (item.type === "function_call_output") {
+			return typeof item.output === "string"
+				? { ...item, output: escapeHarmonyControlTokens(item.output) }
+				: {
+						...item,
+						output: item.output.map(part =>
+							part.type === "input_text" ? { ...part, text: escapeHarmonyControlTokens(part.text) } : part,
+						),
+					};
+		}
+		if (item.type === "custom_tool_call_output") {
+			return typeof item.output === "string"
+				? { ...item, output: escapeHarmonyControlTokens(item.output) }
+				: {
+						...item,
+						output: item.output.map(part =>
+							part.type === "input_text" ? { ...part, text: escapeHarmonyControlTokens(part.text) } : part,
+						),
+					};
 		}
 		if (item.type === "function_call") {
 			return typeof item.arguments === "string"
@@ -2269,21 +2307,81 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 	return outputItems;
 }
 
-const syntheticToolImageMessages = new WeakSet<object>();
-
-function insertResponsesToolOutput(messages: ResponseInput, output: ResponseInput[number]): void {
-	let index = messages.length;
-	while (index > 0) {
-		const previous = messages[index - 1];
-		if (typeof previous !== "object" || previous === null || !syntheticToolImageMessages.has(previous)) {
-			break;
-		}
-		index -= 1;
-	}
-	messages.splice(index, 0, output);
+/**
+ * Responses wire output for a tool result plus its text-only fallback.
+ *
+ * `output` preserves native image blocks for paired function/custom outputs.
+ * `outputText` feeds orphan and unsupported-computer fallback messages, which
+ * cannot carry the native output array.
+ */
+export interface ResponsesToolResultOutputEncoding {
+	output: string | ResponseInputContent[];
+	outputText: string;
 }
 
-/** Appends one tool result while keeping consecutive outputs ahead of its synthetic image messages. */
+/**
+ * Encodes one canonical tool result for OpenAI Responses replay.
+ *
+ * Image-capable models receive an ordered native content array; text-only
+ * models and callers without images receive the compatible string form.
+ */
+export function encodeResponsesToolResultOutput<TApi extends Api>(
+	toolResult: ToolResultMessage,
+	model: Model<TApi>,
+	supportsImageDetailOriginal: boolean,
+): ResponsesToolResultOutputEncoding {
+	const supportsImages = model.input.includes("image");
+	const textResult = toolResult.content
+		.filter((block): block is TextContent => block.type === "text")
+		.map(block => block.text)
+		.join("\n");
+	const imageBlocks = toolResult.content.filter((block): block is ImageContent => block.type === "image");
+	const hasImages = imageBlocks.length > 0;
+	const availableImageBlocks = imageBlocks.filter(
+		image =>
+			isImageContentAvailable(image) ||
+			(image.providerFile?.provider === "openai" && image.providerFile.id !== undefined) ||
+			image.url !== undefined,
+	);
+	const availableImageSet = new Set(availableImageBlocks);
+	const omittedImages = hasImages && !supportsImages;
+	const unavailableImages = supportsImages && availableImageBlocks.length < imageBlocks.length;
+	const baseOutput = omittedImages
+		? joinTextWithImagePlaceholder(textResult, true)
+		: textResult.length > 0
+			? textResult
+			: availableImageBlocks.length > 0
+				? "(see attached image)"
+				: "";
+	const rawOutput = joinTextWithImagePlaceholder(
+		baseOutput,
+		unavailableImages,
+		UNAVAILABLE_IMAGE_PLACEHOLDER,
+	).toWellFormed();
+	const escapeControlTokens = isHarmonyDialectModel(model);
+	// Harmony-server models reject reserved control-token spellings even as tool
+	// data; escape the transport copy so a grep/read result cannot poison the
+	// session (#6913). Covers every downstream branch that consumes `output`.
+	const outputText = escapeControlTokens ? escapeHarmonyControlTokens(rawOutput) : rawOutput;
+	const output: string | ResponseInputContent[] =
+		availableImageBlocks.length > 0 && supportsImages
+			? toolResult.content.map((block): ResponseInputContent => {
+					if (block.type === "image") {
+						return availableImageSet.has(block)
+							? convertResponsesInputImage(block, supportsImageDetailOriginal)
+							: { type: "input_text", text: UNAVAILABLE_IMAGE_PLACEHOLDER };
+					}
+					const text = block.text.toWellFormed();
+					return {
+						type: "input_text",
+						text: escapeControlTokens ? escapeHarmonyControlTokens(text) : text,
+					};
+				})
+			: outputText;
+	return { output, outputText };
+}
+
+/** Appends one Responses tool result. */
 export function appendResponsesToolResultMessages<TApi extends Api>(
 	messages: ResponseInput,
 	toolResult: ToolResultMessage,
@@ -2295,43 +2393,8 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 	supportsCustomToolCalls = true,
 	computerCallIds?: ReadonlySet<string>,
 ): void {
-	const supportsImages = model.input.includes("image");
-	const textResult = toolResult.content
-		.filter((block): block is TextContent => block.type === "text")
-		.map(block => block.text)
-		.join("\n");
-	const imageBlocks = toolResult.content.filter((block): block is ImageContent => block.type === "image");
-	const availableImageBlocks = imageBlocks.filter(
-		image =>
-			isImageContentAvailable(image) ||
-			(image.providerFile?.provider === "openai" && image.providerFile.id !== undefined) ||
-			image.url !== undefined,
-	);
-	const hasImages = imageBlocks.length > 0;
-	const omittedImages = hasImages && !supportsImages;
-	const unavailableImages = supportsImages && availableImageBlocks.length < imageBlocks.length;
+	const { output, outputText } = encodeResponsesToolResultOutput(toolResult, model, supportsImageDetailOriginal);
 	const normalized = normalizeResponsesToolCallId(toolResult.toolCallId);
-	// "(see attached image)" is only truthful when the result actually carries
-	// images (they ride as a separate user message on the Responses API). A
-	// genuinely empty text result (empty file read, silent tool) must stay
-	// empty — the placeholder sent models chasing an attachment that never
-	// existed.
-	const baseToolResultContent = omittedImages
-		? joinTextWithImagePlaceholder(textResult, true)
-		: textResult.length > 0
-			? textResult
-			: availableImageBlocks.length > 0
-				? "(see attached image)"
-				: "";
-	const rawOutput = joinTextWithImagePlaceholder(
-		baseToolResultContent,
-		unavailableImages,
-		UNAVAILABLE_IMAGE_PLACEHOLDER,
-	).toWellFormed();
-	// Harmony-server models reject reserved control-token spellings even as tool
-	// data; escape the transport copy so a grep/read result cannot poison the
-	// session (#6913). Covers every downstream branch that consumes `output`.
-	const output = isHarmonyDialectModel(model) ? escapeHarmonyControlTokens(rawOutput) : rawOutput;
 	if (toolResult.providerMetadata?.type === "computer" && model.supportsComputerUse !== true) {
 		messages.push({
 			type: "message",
@@ -2343,7 +2406,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 	if (computerCallIds?.has(normalized.callId)) {
 		if (toolResult.providerMetadata?.type !== "computer") {
 			const limit = 16_000;
-			const noteText = output.length > limit ? `${output.slice(0, limit)}\n...[truncated]` : output;
+			const noteText = outputText.length > limit ? `${outputText.slice(0, limit)}\n...[truncated]` : outputText;
 			messages.push({
 				type: "message",
 				role: "assistant",
@@ -2359,7 +2422,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 			} as ResponseInput[number]);
 			return;
 		}
-		insertResponsesToolOutput(messages, {
+		messages.push({
 			type: "computer_call_output",
 			call_id: normalized.callId,
 			output: structuredCloneJSON(toolResult.providerMetadata.screenshot),
@@ -2372,7 +2435,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 		// silently dropping the result loses information the model needs. Fold it
 		// into an assistant note instead (same shape as repairOrphanResponsesToolOutputs).
 		const limit = 16_000;
-		const noteText = output.length > limit ? `${output.slice(0, limit)}\n...[truncated]` : output;
+		const noteText = outputText.length > limit ? `${outputText.slice(0, limit)}\n...[truncated]` : outputText;
 		messages.push({
 			type: "message",
 			role: "assistant",
@@ -2381,32 +2444,18 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 		return;
 	}
 	if (supportsCustomToolCalls && customCallIds?.has(normalized.callId)) {
-		insertResponsesToolOutput(messages, {
+		messages.push({
 			type: "custom_tool_call_output",
 			call_id: normalized.callId,
 			output,
 		} as ResponseInput[number]);
 	} else {
-		insertResponsesToolOutput(messages, {
+		messages.push({
 			type: "function_call_output",
 			call_id: normalized.callId,
 			output,
 		});
 	}
-
-	if (availableImageBlocks.length === 0 || !supportsImages) {
-		return;
-	}
-
-	const contentParts: ResponseInputContent[] = [
-		{ type: "input_text", text: "Attached image(s) from tool result:" } satisfies ResponseInputText,
-	];
-	for (const block of availableImageBlocks) {
-		contentParts.push(convertResponsesInputImage(block, supportsImageDetailOriginal));
-	}
-	const imageMessage = { role: "user", content: contentParts } satisfies ResponseInput[number];
-	syntheticToolImageMessages.add(imageMessage);
-	messages.push(imageMessage);
 }
 
 /**
@@ -3320,7 +3369,7 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 			populateResponsesUsageFromResponse(output, response?.usage);
 			calculateCost(model, output.usage);
-			applyOpenRouterReportedCost(model, output.usage, response?.usage);
+			applyProviderReportedCost(model, output.usage, response?.usage);
 			applyOpenAIResponsesServiceTierCost(
 				model,
 				output.usage,

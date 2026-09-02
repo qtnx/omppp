@@ -1,8 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type ReviewFindingRecordItem, recordReviewFindings } from "@oh-my-pi/omp-stats/review-findings";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getAgentDbPath, getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
-import * as git from "../utils/git";
 import {
 	collectReviewFindingRecordItems,
 	isReviewFindingAgent,
@@ -184,7 +184,7 @@ async function* collectTaskFindingBatches(
 
 async function resolveRepoRoot(cwd: string): Promise<string> {
 	try {
-		return (await git.repo.root(cwd)) ?? cwd;
+		return vcs.repo(cwd)?.root() ?? cwd;
 	} catch {
 		return cwd;
 	}
