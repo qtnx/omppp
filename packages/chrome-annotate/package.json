@@ -6,7 +6,8 @@
   "description": "Chrome extension: annotate any page and send feedback to a paired ompx session",
   "scripts": {
     "build": "bun run build.ts",
-    "check": "biome check . && tsgo -p tsconfig.json --noEmit"
+    "check": "biome check . && bun run check:types",
+    "check:types": "tsgo -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/bun": "catalog:",
