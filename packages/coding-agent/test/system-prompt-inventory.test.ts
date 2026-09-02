@@ -980,7 +980,9 @@ describe("system prompt tool inventory", () => {
 		expect(text).toMatch(
 			/(?=[^\n]*ADHD-friendly output)(?=[^\n]*skill:\/\/i-have-adhd)(?=[^\n]*proactively)(?=[^\n]*NEVER infer a diagnosis)[^\n]*/i,
 		);
-		expect(text).toMatch(/(?=[^\n]*Token-efficiency or brevity)(?=[^\n]*skill:\/\/caveman)[^\n]*/i);
+		expect(text).toMatch(
+			/(?=[^\n]*Caveman Mode \(active\))(?=[^\n]*already loaded)(?=[^\n]*\/caveman off)(?=[^\n]*skill:\/\/caveman)[^\n]*/i,
+		);
 		expect(text).toMatch(/AI-tell prose cleanup[^\n]*skill:\/\/stop-slop/i);
 		expect(text).toMatch(/Architecture presentation[^\n]*skill:\/\/archify/i);
 		expect(text).toMatch(/Marketing or copywriting[^\n]*skill:\/\/humanizer/i);

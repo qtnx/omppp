@@ -2,11 +2,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import * as path from "node:path";
 import type { Agent, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { isRecord, logger, prompt, stringProperty, untilAborted } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, parseFrontmatter, prompt, stringProperty, untilAborted } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../capability";
 import type { ModelRegistry } from "../config/model-registry";
 import { formatModelString } from "../config/model-resolver";
 import type { Settings, SkillsSettings } from "../config/settings";
+import cavemanSkill from "../discovery/bundled-skills/caveman.md" with { type: "text" };
 import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
 import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/extensions";
@@ -19,6 +20,7 @@ import { resolveMemoryBackend } from "../memory-backend/resolve";
 import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
 import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import advisorSkillOversightPrompt from "../prompts/system/advisor-skill-oversight.md" with { type: "text" };
+import cavemanModeActiveTemplate from "../prompts/system/caveman-mode-active.md" with { type: "text" };
 import orchestratorModeActivePrompt from "../prompts/system/orchestrator-mode-active.md" with { type: "text" };
 import orchestratorModeOverlayTemplate from "../prompts/system/orchestrator-mode-overlay.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
@@ -164,6 +166,17 @@ export function buildSystemPromptWithOrchestratorOverlay(baseSystemPrompt: strin
 		skillsAndRules,
 	});
 	return [orchestratorPrompt, ...baseSystemPrompt.slice(1)];
+}
+
+/**
+ * Appends the bundled caveman skill as a trailing system-prompt block so the
+ * main agent runs compressed from its first turn. Trailing placement keeps the
+ * cached base prefix intact; `/caveman off` drops the block on the next
+ * overlay reapply.
+ */
+export function buildSystemPromptWithCavemanOverlay(baseSystemPrompt: string[]): string[] {
+	const skill = parseFrontmatter(cavemanSkill, { level: "off" }).body.trim();
+	return [...baseSystemPrompt, prompt.render(cavemanModeActiveTemplate, { skill }).trim()];
 }
 
 export function buildAdvisorSkillsAndRulesPrompt(baseSystemPrompt: string[]): string | undefined {

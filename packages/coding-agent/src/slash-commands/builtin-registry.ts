@@ -298,34 +298,34 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "caveman",
-		description: "Control Caveman autoload for implementer subagents",
+		description: "Control Caveman mode for this session and implementer subagents",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
-			{ name: "on", description: "Enable Caveman autoload for implementer subagents" },
-			{ name: "off", description: "Disable Caveman autoload for implementer subagents" },
-			{ name: "status", description: "Show Caveman autoload status" },
+			{ name: "on", description: "Load the Caveman skill into the session and implementer subagents" },
+			{ name: "off", description: "Remove the Caveman skill from the session and implementer subagents" },
+			{ name: "status", description: "Show Caveman mode status" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
-			`Caveman autoload: ${runtime.ctx.session.settings.get("caveman.enabled") ? "on" : "off"}`,
+			`Caveman: ${runtime.ctx.session.settings.get("caveman.enabled") ? "on" : "off"}`,
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (!arg || arg === "status") {
 				const enabled = runtime.settings.get("caveman.enabled");
-				const status = `Caveman autoload is ${enabled ? "on" : "off"} for implementer subagents.`;
+				const status = `Caveman mode is ${enabled ? "on" : "off"} for this session and implementer subagents.`;
 				await runtime.output(enabled ? status : [status, "Explicit /skill:caveman remains available."].join("\n"));
 				return commandConsumed();
 			}
 			if (arg === "on") {
-				runtime.settings.override("caveman.enabled", true);
-				await runtime.output("Caveman autoload is on for implementer subagents.");
+				runtime.session.setCavemanEnabled(true);
+				await runtime.output("Caveman mode is on: skill loaded for this session and implementer subagents.");
 				return commandConsumed();
 			}
 			if (arg === "off") {
-				runtime.settings.override("caveman.enabled", false);
+				runtime.session.setCavemanEnabled(false);
 				await runtime.output(
 					[
-						"Caveman autoload is off for implementer subagents.",
+						"Caveman mode is off: skill removed from this session and implementer subagents.",
 						"Explicit /skill:caveman remains available.",
 					].join("\n"),
 				);

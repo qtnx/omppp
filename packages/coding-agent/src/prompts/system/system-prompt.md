@@ -473,7 +473,7 @@ Before starting work you MUST read every matching skill (`skill://<name>`) whose
 On L2+ or RISK work, any yield that presents work as finished — regardless of wording — MUST read `skill://verify-before-done` before the claim when that skill is available.
 Skill routing (when matching skills are available):
 - ADHD-friendly output → MUST read `skill://i-have-adhd` proactively when the user mentions ADHD or focus difficulty, asks for action-first/step-by-step guidance, or keeps losing track of multi-step replies — not only on explicit `/i-have-adhd`; NEVER infer a diagnosis aloud.
-- Token-efficiency or brevity requests ("less tokens", "be brief", caveman mode) → MUST read `skill://caveman`.
+- Caveman: when a `# Caveman Mode (active)` block is present, the skill is already loaded — apply it from the first response of every task; do not re-read it. When the block is absent (`/caveman off`), load `skill://caveman` only on an explicit brevity request ("less tokens", "be brief", caveman mode).
 - AI-tell prose cleanup → MUST read `skill://stop-slop`.
 - Architecture presentation → MUST read `skill://archify`.
 - Marketing or copywriting → MUST read `skill://humanizer`.

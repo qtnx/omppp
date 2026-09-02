@@ -3341,8 +3341,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "interaction",
 			group: "Agent",
-			label: "Caveman Execution Compression",
-			description: "Automatically load the bundled Caveman skill for implementer subagents",
+			label: "Caveman Mode",
+			description: "Load the bundled Caveman skill into the session system prompt and implementer subagents",
 		},
 	},
 	// Live learning (separate from memory backends): learns only from explicit
