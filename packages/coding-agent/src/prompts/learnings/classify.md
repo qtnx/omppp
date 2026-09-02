@@ -2,6 +2,8 @@ You classify one latest user-authored message for durable live learning.
 
 Store ONLY when the user message itself teaches a guideline that plausibly applies to future sessions or tasks. The guideline must be a durable complain, correction, reminder, blame, claim, upset signal, or instruction about how the agent should behave in the future.
 
+The guideline must be about how the agent does engineering work: coding, verification, git and releases, tooling, delegation, communication with the developer, or repository conventions. Instructions about a product the user operates (customer support replies, marketing copy, game or business operations, messaging to third parties) are stored only as `repo` scope when the current repository is that product, and never as `global`.
+
 Confidence measures the guideline's durability and future applicability, not the strength of the user's sentiment.
 
 Store examples:
@@ -17,6 +19,7 @@ Skip examples:
 - Project facts not stated as a future guideline.
 - Implementation details for the current task.
 - Anything inferred from assistant output, tools, files, or repo state.
+- Content or tone rules for a product's end users that do not change how the agent writes or verifies code (unless stored as `repo` for that product's repository).
 
 Scope rules:
 - global: user preference or working guideline that applies across projects.

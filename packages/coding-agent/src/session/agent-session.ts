@@ -163,6 +163,7 @@ import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-ur
 import type { IrcMessage } from "../irc/bus";
 import { stopLinearIntegration, unregisterKanbanSession } from "../kanban";
 import type { DaemonCompletionNotification } from "../launch/protocol";
+import { invalidateLearningInjection } from "../learnings/injection-cache";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { renderOrchestrateNotice, requestsOrchestrate } from "../modes/orchestrate";
@@ -5015,6 +5016,7 @@ export class AgentSession {
 		this.sessionManager.appendResetBoundary();
 
 		resetCapabilities();
+		invalidateLearningInjection();
 		await this.refreshBaseSystemPrompt();
 
 		return { droppedCount };
@@ -8108,6 +8110,7 @@ export class AgentSession {
 			// directory set, not the previous session's — refresh before the next
 			// turn goes out.
 			resetCapabilities();
+			invalidateLearningInjection();
 			await this.refreshBaseSystemPrompt();
 
 			// Emit session_switch event with reason "new" to hooks
@@ -9339,6 +9342,7 @@ export class AgentSession {
 			// Refresh the workspace-roots block to match the resumed session's directory set.
 			// Wrapped so a rebuild failure (e.g. a gate that intentionally fails in tests)
 			// doesn't roll back an otherwise-successful session switch.
+			invalidateLearningInjection();
 			try {
 				await this.refreshBaseSystemPrompt();
 			} catch (refreshErr) {

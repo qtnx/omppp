@@ -16,7 +16,12 @@ import type { DuoStatus } from "../duo";
 import type { Skill } from "../extensibility/skills";
 import { disableHerdrNotify, enableHerdrNotify, herdrNotifyStatus } from "../herdr/notify-optin";
 import { isHerdrPane } from "../herdr/socket";
-import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../learnings";
+import {
+	buildLearningDeveloperInstructions,
+	clearLearningData,
+	getLearningLogText,
+	invalidateLearningInjection,
+} from "../learnings";
 import * as learningConsolidation from "../learnings/consolidate";
 import { resolveRepoKey } from "../learnings/repo-key";
 import * as learningStorage from "../learnings/storage";
@@ -784,7 +789,9 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			switch (verb) {
 				case "view": {
 					const agentDir = runtime.settings.getAgentDir();
-					const payload = await buildLearningDeveloperInstructions(agentDir, runtime.settings, runtime.cwd);
+					const payload = await buildLearningDeveloperInstructions(agentDir, runtime.settings, runtime.cwd, {
+						cache: false,
+					});
 					const repoKey = await resolveRepoKey(runtime.cwd);
 					const db = learningStorage.openLearningDb(getAgentDbPath(agentDir));
 					try {
@@ -797,7 +804,7 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 						const details = entries
 							.map(
 								(entry: learningStorage.RankedLearningEntry) =>
-									`[l:${entry.alias}] score ${entry.score.toFixed(2)} · strength ${entry.strength} · useful ${entry.usefulCount} · not_useful ${entry.notUsefulCount}\n${entry.content}`,
+									`[l:${entry.alias}] score ${entry.score.toFixed(2)} · strength ${entry.strength} · useful ${entry.usefulCount} · not_useful ${entry.notUsefulCount} · shown ${entry.shownCount}\n${entry.content}`,
 							)
 							.join("\n\n");
 						const view = [payload, details].filter(Boolean).join("\n\n");
@@ -826,10 +833,11 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 							: reports
 									.map(
 										report =>
-											`${report.target}: ${report.outcome} (ops applied: ${report.opsApplied ?? 0}, ops skipped stale: ${report.opsSkippedStale ?? 0})`,
+											`${report.target}: ${report.outcome} (ops applied: ${report.opsApplied ?? 0}, ops skipped stale: ${report.opsSkippedStale ?? 0}, cap archived: ${report.capArchived ?? 0})`,
 									)
 									.join("\n");
-					if (reports.some(report => (report.opsApplied ?? 0) > 0)) {
+					if (reports.some(report => (report.opsApplied ?? 0) > 0 || (report.capArchived ?? 0) > 0)) {
+						invalidateLearningInjection();
 						await runtime.session.refreshBaseSystemPrompt();
 					}
 					await runtime.output(reportText);
@@ -866,7 +874,10 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 					} finally {
 						learningStorage.closeLearningDb(db);
 					}
-					if (archived) await runtime.session.refreshBaseSystemPrompt();
+					if (archived) {
+						invalidateLearningInjection();
+						await runtime.session.refreshBaseSystemPrompt();
+					}
 					return commandConsumed();
 				}
 				case "clear":

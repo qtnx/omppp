@@ -10,7 +10,9 @@ import * as taskExecutor from "../task/executor";
 import type { AgentDefinition } from "../task/types";
 import * as repoKey from "./repo-key";
 import {
+	archiveBeyondActiveCap,
 	archiveLearning,
+	archiveStaleRepoLearnings,
 	closeLearningDb,
 	computeLearningWatermark,
 	healSiblingLegacyCwds,
@@ -19,6 +21,7 @@ import {
 	markConsolidationFailed,
 	markConsolidationSucceeded,
 	mergeConsolidatedEntries,
+	normalizeLearningContent,
 	openLearningDb,
 	rescopeLearning,
 	rewriteLearning,
@@ -44,19 +47,26 @@ export interface ConsolidationRunReport {
 		| "failed";
 	opsApplied?: number;
 	opsSkippedStale?: number;
+	/** Lowest-ranked entries archived after the model pass to honour `maxEntriesPerScope`. */
+	capArchived?: number;
 }
 
 interface ConsolidationConfig {
 	intervalDays: number;
 	maxEntriesPerScope: number;
 	minEntries: number;
+	halfLifeDays: number;
+	staleRepoDays: number;
 	models: string[];
 	timeoutMs: number;
 }
 
 interface ConsolidationTarget {
 	scope: LearningScope;
+	/** Key of the entries this target consolidates (`""` for global). */
 	repoKey: string;
+	/** Repo the session runs in; destination for `rescope` → `repo` ops on the global target. */
+	currentRepoKey: string;
 	target: string;
 	jobKey: string;
 }
@@ -73,6 +83,7 @@ interface ActiveLearningRow {
 	useful_count: number;
 	not_useful_count: number;
 	last_reinforced_at: number | null;
+	shown_count: number;
 }
 
 interface TargetJobRow {
@@ -93,6 +104,7 @@ interface ConsolidationSnapshotEntry {
 	usefulCount: number;
 	notUsefulCount: number;
 	lastReinforcedAt: number | null;
+	shownCount: number;
 	ageDays: number;
 }
 
@@ -103,6 +115,7 @@ interface ConsolidatorTaskEntry {
 	strength: number;
 	usefulCount: number;
 	notUsefulCount: number;
+	shownCount: number;
 	ageDays: number;
 	updatedAt: number;
 }
@@ -122,7 +135,7 @@ interface RewriteOperation {
 interface RescopeOperation {
 	op: "rescope";
 	id: string;
-	scope: "global";
+	scope: LearningScope;
 }
 
 interface ArchiveOperation {
@@ -144,13 +157,22 @@ interface ApplyCounts {
 }
 
 const DEFAULT_WRITER_MODELS = ["pi/plan", "pi/default"];
-const DEFAULT_INTERVAL_DAYS = 7;
+const DEFAULT_INTERVAL_DAYS = 1;
 const DEFAULT_MAX_ENTRIES_PER_SCOPE = 40;
 const DEFAULT_MIN_ENTRIES = 15;
+const DEFAULT_HALF_LIFE_DAYS = 45;
+const DEFAULT_STALE_REPO_DAYS = 90;
 const DEFAULT_TIMEOUT_MS = 240_000;
-const MIN_CONSOLIDATION_LEASE_SECONDS = 300;
+/** Extra subagent time granted per entry on top of the configured base timeout. */
+const TIMEOUT_PER_ENTRY_MS = 1_500;
+const MAX_TIMEOUT_MS = 600_000;
 const CONSOLIDATION_RETRY_DELAY_SECONDS = 300;
 const CONSOLIDATION_RETRY_LIMIT = 3;
+/** Snapshots larger than this are consolidated in content-sorted batches so no single subagent run exceeds the timeout. */
+const CONSOLIDATION_BATCH_SIZE = 60;
+/** Matches the one-sentence limit in `prompts/learnings/consolidate.md`; rewrites of entries already within it must shrink them. */
+const REWRITE_WORD_LIMIT = 30;
+const MIN_CONSOLIDATION_LEASE_SECONDS = 300;
 
 const CONSOLIDATION_OUTPUT_SCHEMA = {
 	type: "object",
@@ -186,7 +208,7 @@ const CONSOLIDATION_OUTPUT_SCHEMA = {
 						properties: {
 							op: { const: "rescope" },
 							id: { type: "string" },
-							scope: { const: "global" },
+							scope: { enum: ["global", "repo"] },
 						},
 						required: ["op", "id", "scope"],
 					},
@@ -220,9 +242,8 @@ const CONSOLIDATOR_AGENT: AgentDefinition = {
 	name: "learning-consolidator",
 	description: "Consolidates active live-learning entries into durable guidance",
 	systemPrompt: consolidatePrompt,
-	tools: ["read"],
 	model: DEFAULT_WRITER_MODELS,
-	thinkingLevel: Effort.High,
+	thinkingLevel: Effort.Medium,
 	output: CONSOLIDATION_OUTPUT_SCHEMA,
 	source: "bundled",
 };
@@ -236,11 +257,20 @@ export async function maybeRunLearningConsolidation(
 	const config = loadConsolidationConfig(settings);
 	const db = openLearningDb(getAgentDbPath(agentDir));
 	try {
+		const stale = archiveStaleRepoLearnings(db, {
+			excludeRepoKey: resolvedRepoKey,
+			staleDays: config.staleRepoDays,
+			nowSec: unixNow(),
+		});
+		if (stale.archived > 0) {
+			logger.debug("live-learning: archived learnings of idle repositories", stale);
+		}
 		const targets: ConsolidationTarget[] = [
-			{ scope: "global", repoKey: "", target: "global", jobKey: "global" },
+			{ scope: "global", repoKey: "", currentRepoKey: resolvedRepoKey, target: "global", jobKey: "global" },
 			{
 				scope: "repo",
 				repoKey: resolvedRepoKey,
+				currentRepoKey: resolvedRepoKey,
 				target: `repo:${resolvedRepoKey}`,
 				jobKey: `repo:${resolvedRepoKey}`,
 			},
@@ -303,7 +333,7 @@ async function runTargetConsolidation(options: {
 	const claimResult = tryClaimConsolidationJob(db, {
 		jobKey: target.jobKey,
 		workerId: session.sessionId,
-		leaseSeconds: Math.max(MIN_CONSOLIDATION_LEASE_SECONDS, Math.ceil(config.timeoutMs / 1_000) + 60),
+		leaseSeconds: consolidationLeaseSeconds(config, activeCount),
 		nowSec: claimNow,
 		inputWatermark,
 		retryLimit: CONSOLIDATION_RETRY_LIMIT,
@@ -319,7 +349,7 @@ async function runTargetConsolidation(options: {
 
 	const runId = `consolidation-${claimNow}-${crypto.randomUUID()}`;
 	const auditDir = path.join(agentDir, "learning-audit", "consolidation", runId);
-	let parsedOps: ConsolidationOperation[] = [];
+	const parsedOps: ConsolidationOperation[] = [];
 	try {
 		if (target.scope === "repo") {
 			const healed = await healSiblingLegacyCwds(db, {
@@ -335,18 +365,16 @@ async function runTargetConsolidation(options: {
 		}
 
 		const snapshot = listTargetEntries(db, target, unixNow());
-		const taskEntries = snapshot.map(toConsolidatorTaskEntry);
-		const task = JSON.stringify({
-			target: target.target,
-			maxEntriesPerScope: config.maxEntriesPerScope,
-			entries: taskEntries,
-		});
 		const modelOverride = config.models.length > 0 ? config.models : DEFAULT_WRITER_MODELS;
 		await writeAuditFile(auditDir, "request.json", {
 			target: target.target,
 			inputWatermark: claimResult.claim.inputWatermark,
 			modelOverride,
-			task: JSON.parse(task),
+			task: {
+				target: target.target,
+				maxEntriesPerScope: config.maxEntriesPerScope,
+				entries: snapshot.map(toConsolidatorTaskEntry),
+			},
 		});
 		if (snapshot.length === 0) {
 			await writeAuditFile(auditDir, "ops.json", { ops: [] });
@@ -369,34 +397,53 @@ async function runTargetConsolidation(options: {
 
 		const sessionFile = session.sessionManager.getSessionFile() ?? undefined;
 		const contextFiles = sessionFile ? [{ path: sessionFile, content: "" }] : undefined;
-		const result = await taskExecutor.runSubprocess({
-			cwd,
-			agent: CONSOLIDATOR_AGENT,
-			task,
-			index: 0,
-			id: "learning-consolidator",
-			modelOverride,
-			parentActiveModelPattern: session.model ? formatModelId(session.model) : undefined,
-			thinkingLevel: Effort.High,
-			outputSchema: CONSOLIDATION_OUTPUT_SCHEMA,
-			taskDepth: 0,
-			enableLsp: false,
-			signal: AbortSignal.timeout(config.timeoutMs),
-			contextFiles,
-			artifactsDir: auditDir,
-			persistArtifacts: true,
-			modelRegistry,
-			settings,
-		});
-		if (result.exitCode !== 0) throw new Error(consolidatorFailureMessage(result));
-		const parsed = parseConsolidationOperations(result.output);
-		if (!parsed) throw new Error("Consolidator returned an invalid operations payload");
-		parsedOps = parsed;
+		const batches = splitConsolidationBatches(snapshot);
+		for (const [batchIndex, batch] of batches.entries()) {
+			const task = JSON.stringify({
+				target: target.target,
+				batch: { index: batchIndex + 1, count: batches.length },
+				maxEntriesPerScope: Math.max(1, Math.ceil((config.maxEntriesPerScope * batch.length) / snapshot.length)),
+				entries: batch.map(toConsolidatorTaskEntry),
+			});
+			const result = await taskExecutor.runSubprocess({
+				cwd,
+				agent: CONSOLIDATOR_AGENT,
+				task,
+				index: batchIndex,
+				// One registry slot per target run: reusing a fixed id across the global
+				// and repo targets (or across batches) trips the "already owned by another
+				// session generation" guard on the second spawn.
+				id: `learning-consolidator-${target.scope}-${claimNow}-${batchIndex + 1}`,
+				modelOverride,
+				parentActiveModelPattern: session.model ? formatModelId(session.model) : undefined,
+				thinkingLevel: Effort.Medium,
+				outputSchema: CONSOLIDATION_OUTPUT_SCHEMA,
+				taskDepth: 0,
+				enableLsp: false,
+				signal: AbortSignal.timeout(consolidationTimeoutMs(config, batch.length)),
+				contextFiles,
+				artifactsDir: batches.length === 1 ? auditDir : path.join(auditDir, `batch-${batchIndex + 1}`),
+				persistArtifacts: true,
+				modelRegistry,
+				settings,
+			});
+			if (result.exitCode !== 0) throw new Error(consolidatorFailureMessage(result));
+			const parsed = parseConsolidationOperations(result.output);
+			if (!parsed) throw new Error("Consolidator returned an invalid operations payload");
+			parsedOps.push(...parsed);
+		}
 		await writeAuditFile(auditDir, "ops.json", { ops: parsedOps });
 		if (!isConsolidationClaimHeld(db, { claim: claimResult.claim, nowSec: unixNow() })) {
 			throw new Error("lease lost");
 		}
 		const counts = applyConsolidationOperations(db, target, snapshot, parsedOps);
+		const capArchived = archiveBeyondActiveCap(db, {
+			scope: target.scope,
+			repoKey: target.repoKey,
+			maxActive: config.maxEntriesPerScope,
+			halfLifeDays: config.halfLifeDays,
+			nowSec: unixNow(),
+		}).length;
 		if (!markConsolidationSucceeded(db, { claim: claimResult.claim, nowSec: unixNow() })) {
 			throw new Error("Consolidation lease was lost before completion");
 		}
@@ -404,6 +451,7 @@ async function runTargetConsolidation(options: {
 			target: target.target,
 			outcome: "applied",
 			...counts,
+			capArchived,
 		};
 		await writeAuditFile(auditDir, "result.json", report);
 		logger.debug("live-learning: consolidation applied", {
@@ -439,7 +487,7 @@ function listTargetEntries(db: Database, target: ConsolidationTarget, nowSec: nu
 			? (db
 					.prepare(`
 SELECT id, scope, content, content_hash, confidence, created_at, updated_at, strength,
-	useful_count, not_useful_count, last_reinforced_at
+	useful_count, not_useful_count, last_reinforced_at, shown_count
 FROM live_learnings
 WHERE scope = 'global' AND cwd = '' AND status = 'active'
 ORDER BY updated_at ASC, created_at ASC, id ASC
@@ -448,7 +496,7 @@ ORDER BY updated_at ASC, created_at ASC, id ASC
 			: (db
 					.prepare(`
 SELECT id, scope, content, content_hash, confidence, created_at, updated_at, strength,
-	useful_count, not_useful_count, last_reinforced_at
+	useful_count, not_useful_count, last_reinforced_at, shown_count
 FROM live_learnings
 WHERE scope = 'repo' AND COALESCE(repo_key, cwd) = ? AND status = 'active'
 ORDER BY updated_at ASC, created_at ASC, id ASC
@@ -468,6 +516,7 @@ ORDER BY updated_at ASC, created_at ASC, id ASC
 			usefulCount: row.useful_count,
 			notUsefulCount: row.not_useful_count,
 			lastReinforcedAt: row.last_reinforced_at,
+			shownCount: row.shown_count,
 			ageDays: Math.max(0, (nowSec - lastActivity) / 86_400),
 		};
 	});
@@ -481,9 +530,45 @@ function toConsolidatorTaskEntry(entry: ConsolidationSnapshotEntry): Consolidato
 		strength: entry.strength,
 		usefulCount: entry.usefulCount,
 		notUsefulCount: entry.notUsefulCount,
+		shownCount: entry.shownCount,
 		ageDays: entry.ageDays,
 		updatedAt: entry.updatedAt,
 	};
+}
+
+/** Subagent budget for one batch: configured base plus a per-entry allowance, capped. */
+function consolidationTimeoutMs(config: ConsolidationConfig, entryCount: number): number {
+	return Math.min(MAX_TIMEOUT_MS, config.timeoutMs + TIMEOUT_PER_ENTRY_MS * entryCount);
+}
+
+/** Lease long enough for every batch to run back-to-back at its full timeout, plus apply slack. */
+function consolidationLeaseSeconds(config: ConsolidationConfig, entryCount: number): number {
+	const batches = Math.max(1, Math.ceil(entryCount / CONSOLIDATION_BATCH_SIZE));
+	const perBatchMs = consolidationTimeoutMs(config, Math.min(entryCount, CONSOLIDATION_BATCH_SIZE));
+	return Math.max(MIN_CONSOLIDATION_LEASE_SECONDS, Math.ceil((batches * perBatchMs) / 1_000) + 60);
+}
+
+/**
+ * Splits a snapshot into batches of at most {@link CONSOLIDATION_BATCH_SIZE}.
+ * Entries are ordered by normalized content first so near-duplicates (which
+ * usually share their opening words) land in the same batch and can be merged.
+ */
+function splitConsolidationBatches(snapshot: ConsolidationSnapshotEntry[]): ConsolidationSnapshotEntry[][] {
+	if (snapshot.length <= CONSOLIDATION_BATCH_SIZE) return [snapshot];
+	const sorted = snapshot.toSorted((left, right) =>
+		normalizeLearningContent(left.content).localeCompare(normalizeLearningContent(right.content)),
+	);
+	const batchCount = Math.ceil(sorted.length / CONSOLIDATION_BATCH_SIZE);
+	const batchSize = Math.ceil(sorted.length / batchCount);
+	const batches: ConsolidationSnapshotEntry[][] = [];
+	for (let start = 0; start < sorted.length; start += batchSize) {
+		batches.push(sorted.slice(start, start + batchSize));
+	}
+	return batches;
+}
+
+function countWords(content: string): number {
+	return normalizeLearningContent(content).split(" ").filter(Boolean).length;
 }
 
 function readLastSuccessAt(db: Database, jobKey: string): number | null {
@@ -556,6 +641,16 @@ function applyConsolidationOperations(
 			continue;
 		}
 		if (operation.op === "rewrite") {
+			// A rewrite that does not shrink an already-short entry is churn: it bumps
+			// updated_at (re-dirtying the job for another LLM pass) without gaining
+			// anything. Treat it as keep.
+			if (
+				normalizeLearningContent(operation.content) === normalizeLearningContent(entry.content) ||
+				(countWords(entry.content) <= REWRITE_WORD_LIMIT &&
+					countWords(operation.content) >= countWords(entry.content))
+			) {
+				continue;
+			}
 			if (
 				rewriteLearning(db, {
 					id: entry.id,
@@ -576,7 +671,7 @@ function applyConsolidationOperations(
 				rescopeLearning(db, {
 					id: entry.id,
 					scope: operation.scope,
-					repoKey: "",
+					repoKey: operation.scope === "repo" ? target.currentRepoKey : "",
 					guardUpdatedAt: entry.updatedAt,
 					nowSec: unixNow(),
 				})
@@ -654,9 +749,14 @@ function parseConsolidationOperation(rawOperation: unknown): ConsolidationOperat
 		return { op: "rewrite", id: rawOperation.id.trim(), content: rawOperation.content.trim() };
 	}
 	if (rawOperation.op === "rescope") {
-		if (typeof rawOperation.id !== "string" || !rawOperation.id.trim() || rawOperation.scope !== "global")
+		if (
+			typeof rawOperation.id !== "string" ||
+			!rawOperation.id.trim() ||
+			(rawOperation.scope !== "global" && rawOperation.scope !== "repo")
+		) {
 			return undefined;
-		return { op: "rescope", id: rawOperation.id.trim(), scope: "global" };
+		}
+		return { op: "rescope", id: rawOperation.id.trim(), scope: rawOperation.scope };
 	}
 	if (rawOperation.op === "archive") {
 		if (
@@ -697,6 +797,8 @@ function loadConsolidationConfig(settings: Settings): ConsolidationConfig {
 	const maxEntriesPerScope = settings.get("learning.maxEntriesPerScope") ?? DEFAULT_MAX_ENTRIES_PER_SCOPE;
 	const minEntries = settings.get("learning.consolidation.minEntries") ?? DEFAULT_MIN_ENTRIES;
 	const timeoutMs = settings.get("learning.consolidation.timeoutMs") ?? DEFAULT_TIMEOUT_MS;
+	const halfLifeDays = settings.get("learning.halfLifeDays") ?? DEFAULT_HALF_LIFE_DAYS;
+	const staleRepoDays = settings.get("learning.staleRepoDays") ?? DEFAULT_STALE_REPO_DAYS;
 	return {
 		intervalDays: Number.isFinite(intervalDays) && intervalDays >= 0 ? intervalDays : DEFAULT_INTERVAL_DAYS,
 		maxEntriesPerScope:
@@ -704,6 +806,8 @@ function loadConsolidationConfig(settings: Settings): ConsolidationConfig {
 				? Math.floor(maxEntriesPerScope)
 				: DEFAULT_MAX_ENTRIES_PER_SCOPE,
 		minEntries: Number.isFinite(minEntries) && minEntries >= 0 ? Math.floor(minEntries) : DEFAULT_MIN_ENTRIES,
+		halfLifeDays: Number.isFinite(halfLifeDays) && halfLifeDays > 0 ? halfLifeDays : DEFAULT_HALF_LIFE_DAYS,
+		staleRepoDays: Number.isFinite(staleRepoDays) && staleRepoDays > 0 ? staleRepoDays : DEFAULT_STALE_REPO_DAYS,
 		models: settings.get("learning.consolidation.models") ?? [],
 		timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS,
 	};

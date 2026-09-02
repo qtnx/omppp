@@ -11,6 +11,14 @@
 ### Fixed
 
 - `/loop 10 <prompt>` now repeats 10 times at the default interval instead of sleeping 10 seconds between unlimited repeats; a time unit (`/loop 10s`, `/loop 2m`) still sets the interval, and both can be combined in either order (`/loop 10 30s …`).
+### Changed
+
+- Live learnings now keep the system prompt cache-stable: the injected block is computed once per conversation and reused across prompt rebuilds; learnings stored or consolidated mid-session appear in the next conversation (or after `/learning consolidate`, `/learning drop`, `/learning clear`, `/new`, or a session switch). Ranking is quantized to the day so rebuilds never reorder entries.
+- Live-learning injection is capped by the new `learning.maxInjectedPerScope` setting (default 20 per scope) instead of the storage cap of 40, cutting prompt size roughly in half for large learning stores.
+- Live learnings track how often they were injected; entries that keep being shown without ever being rated useful sink in rank and are preferred for archival during consolidation. `/learning view` shows the `shown` count.
+- Live-learning consolidation now runs daily by default (`learning.consolidation.intervalDays` 7 → 1), enforces `learning.maxEntriesPerScope` by archiving the lowest-ranked leftovers after the model pass, and archives learnings of repositories idle for `learning.staleRepoDays` (default 90) so abandoned checkouts stop accumulating entries.
+- The live-learning classifier only stores guidance about how the agent does engineering work; product-operations instructions (support replies, marketing copy, game or business operations) are kept out of the global scope.
+- Live-learning consolidation is now reliable on large stores: entries are consolidated in batches of at most 60 with a timeout that scales per entry, the consolidator runs at medium reasoning effort, and each target/batch gets its own agent id (the repo target previously failed with "already owned by another session generation" right after the global one). The consolidator prompt now groups by behavior, caps every entry at one 30-word sentence, keeps repository product decisions, and archives product-operations guidance; `rescope` can move an entry from global to the current repository.
 
 ## [1.7.10] - 2026-09-02
 

@@ -10,6 +10,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	buildLearningDeveloperInstructions,
 	clearLearningData,
+	invalidateLearningInjection,
 	startLearningStartupTask,
 } from "@oh-my-pi/pi-coding-agent/learnings";
 import * as consolidation from "@oh-my-pi/pi-coding-agent/learnings/consolidate";
@@ -265,11 +266,13 @@ async function readJsonFile(filePath: string): Promise<Record<string, unknown>> 
 
 describe("live learnings runtime", () => {
 	beforeEach(() => {
+		invalidateLearningInjection();
 		vi.clearAllMocks();
 		vi.restoreAllMocks();
 	});
 
 	afterEach(async () => {
+		invalidateLearningInjection();
 		vi.restoreAllMocks();
 		for (const dir of createdDirs) {
 			await fs.rm(dir, { recursive: true, force: true });
@@ -327,7 +330,7 @@ describe("live learnings runtime", () => {
 		});
 
 		await waitFor(async () => {
-			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
+			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
 			expect(payload).toContain("When the user complains about missing verification");
 			expect(payload).toContain("Repository-specific learnings");
 		});
@@ -353,7 +356,7 @@ describe("live learnings runtime", () => {
 		expect(completeSpy.mock.calls[0]?.[1].systemPrompt?.[0]).toContain(
 			"Treat blame, claims, and upset messages about agent behavior as store-worthy complaints",
 		);
-		expect(fx.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
 		expect(debugSpy).toHaveBeenCalledWith(
 			"live-learning: attached",
 			expect.objectContaining({ cwd: fx.cwd, sessionId: "session-1" }),
@@ -757,12 +760,12 @@ describe("live learnings runtime", () => {
 		});
 
 		await waitFor(async () => {
-			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
+			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
 			expect(payload).toContain("Treat user reminders about verification");
 		});
 		expect(completeSpy).toHaveBeenCalledTimes(1);
 		expect(writerSpy).toHaveBeenCalledTimes(1);
-		expect(fx.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
 	});
 
 	test("falls back to the next configured classifier model after an invalid response", async () => {
@@ -815,7 +818,7 @@ describe("live learnings runtime", () => {
 		});
 
 		await waitFor(async () => {
-			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
+			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
 			expect(payload).toContain("configured classifier fallback chain");
 		});
 		expect(completeSpy).toHaveBeenCalledTimes(2);
@@ -929,7 +932,7 @@ describe("live learnings runtime", () => {
 		});
 
 		await waitFor(async () => {
-			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
+			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
 			expect(payload).toContain("Global learnings");
 			expect(payload).toContain("Keep responses concise");
 		});
@@ -1026,7 +1029,7 @@ describe("live learnings runtime", () => {
 			}
 		});
 		expect(writerSpy.mock.calls[0]?.[0]?.task).toContain(`[l:${alias}]`);
-		expect(fx.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
 	});
 
 	test("skips an unknown reinforce alias", async () => {
@@ -1153,7 +1156,7 @@ describe("live learnings runtime", () => {
 		expect(payload.indexOf("High-ranked repository learning.")).toBeLessThan(
 			payload.indexOf("Lower-ranked repository learning."),
 		);
-		expect(payload).toContain("Call `rate_learning` with an entry's id");
+		expect(payload).toContain("call `rate_learning` for every entry that changed what you did");
 	});
 
 	test("uses learning and consolidation defaults and starts consolidation once", async () => {
@@ -1162,11 +1165,10 @@ describe("live learnings runtime", () => {
 
 		expect(fx.settings.get("learning.halfLifeDays")).toBe(45);
 		expect(fx.settings.get("learning.consolidation.enabled")).toBe(true);
-		expect(fx.settings.get("learning.consolidation.intervalDays")).toBe(7);
+		expect(fx.settings.get("learning.consolidation.intervalDays")).toBe(1);
 		expect(fx.settings.get("learning.consolidation.minEntries")).toBe(15);
 		expect(fx.settings.get("learning.consolidation.timeoutMs")).toBe(240_000);
 		expect(fx.settings.get("learning.consolidation.models")).toEqual([]);
-
 		startLearningStartupTask({
 			session: fx.session,
 			settings: fx.settings,
@@ -1187,11 +1189,13 @@ describe("live learnings runtime", () => {
 		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
 	});
 
-	test("refreshes the prompt after startup consolidation applies operations", async () => {
+	test("keeps the prompt untouched after startup consolidation applies operations", async () => {
 		const fx = await createFixture();
-		vi.spyOn(consolidation, "maybeRunLearningConsolidation").mockResolvedValueOnce([
-			{ target: "global", outcome: "applied", opsApplied: 1, opsSkippedStale: 0 },
-		]);
+		const consolidationSpy = vi
+			.spyOn(consolidation, "maybeRunLearningConsolidation")
+			.mockResolvedValueOnce([
+				{ target: "global", outcome: "applied", opsApplied: 1, opsSkippedStale: 0, capArchived: 0 },
+			]);
 
 		startLearningStartupTask({
 			session: fx.session,
@@ -1202,7 +1206,110 @@ describe("live learnings runtime", () => {
 		});
 
 		await waitFor(() => {
-			expect(fx.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
+			expect(consolidationSpy).toHaveBeenCalledTimes(1);
 		});
+		// The startup task's `.then` handler was registered before this await, so it settles first.
+		await consolidationSpy.mock.results[0]?.value;
+		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
+	});
+
+	test("memoizes injected learnings until invalidated and bypasses shown tracking without cache", async () => {
+		const fx = await createFixture();
+		const db = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			upsertLearning(db, {
+				scope: "global",
+				cwd: "",
+				content: "First cached learning.",
+				sourceMessageHash: "first",
+				trigger: "test",
+				confidence: 0.8,
+				nowSec: 100,
+			});
+		} finally {
+			db.close();
+		}
+
+		const first = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
+		if (!first) throw new Error("Expected cached learning injection");
+		expect(first).toContain("First cached learning.");
+
+		const shownDb = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			expect(
+				shownDb.prepare("SELECT shown_count FROM live_learnings WHERE content = ?").get("First cached learning."),
+			).toEqual({ shown_count: 1 });
+			upsertLearning(shownDb, {
+				scope: "global",
+				cwd: "",
+				content: "Stored between prompt rebuilds.",
+				sourceMessageHash: "second",
+				trigger: "test",
+				confidence: 0.8,
+				nowSec: 101,
+			});
+		} finally {
+			shownDb.close();
+		}
+
+		const cached = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
+		expect(cached).toBe(first);
+		expect(cached).not.toContain("Stored between prompt rebuilds.");
+
+		invalidateLearningInjection();
+		const refreshed = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
+		expect(refreshed).toContain("Stored between prompt rebuilds.");
+
+		const uncachedDb = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			upsertLearning(uncachedDb, {
+				scope: "global",
+				cwd: "",
+				content: "Fresh uncached learning.",
+				sourceMessageHash: "uncached",
+				trigger: "test",
+				confidence: 0.8,
+				nowSec: 102,
+			});
+		} finally {
+			uncachedDb.close();
+		}
+
+		const uncached = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
+		expect(uncached).toContain("Fresh uncached learning.");
+		const readDb = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			expect(
+				readDb.prepare("SELECT shown_count FROM live_learnings WHERE content = ?").get("Fresh uncached learning."),
+			).toEqual({ shown_count: 0 });
+		} finally {
+			readDb.close();
+		}
+	});
+
+	test("limits each injected scope to learning.maxInjectedPerScope entries", async () => {
+		const fx = await createFixture({ "learning.maxInjectedPerScope": 2 });
+		const db = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			for (const content of ["Injected one.", "Injected two.", "Injected three."]) {
+				upsertLearning(db, {
+					scope: "global",
+					cwd: "",
+					content,
+					sourceMessageHash: content,
+					trigger: "test",
+					confidence: 0.8,
+					nowSec: 100,
+				});
+			}
+		} finally {
+			db.close();
+		}
+
+		const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
+		if (!payload) throw new Error("Expected capped learning injection");
+		expect(
+			["Injected one.", "Injected two.", "Injected three."].filter(content => payload.includes(content)),
+		).toHaveLength(2);
 	});
 });

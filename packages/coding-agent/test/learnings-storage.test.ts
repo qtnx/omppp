@@ -4,7 +4,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	archiveBeyondActiveCap,
 	archiveLearning,
+	archiveStaleRepoLearnings,
 	closeLearningDb,
 	computeLearningWatermark,
 	findActiveByAliasPrefix,
@@ -16,14 +18,17 @@ import {
 	listActiveLearnings,
 	markConsolidationFailed,
 	markConsolidationSucceeded,
+	markLearningsShown,
 	markMergedInto,
 	mergeConsolidatedEntries,
 	openLearningDb,
+	rankActiveLearnings,
 	recordLearningFeedback,
 	reinforceLearning,
 	rescopeLearning,
 	resolveActiveSurvivor,
 	rewriteLearning,
+	scoreLearningEntry,
 	sweepTombstoneTouches,
 	tryClaimConsolidationJob,
 	upsertLearning,
@@ -48,8 +53,9 @@ type LearningRow = {
 	last_reinforced_at: number | null;
 	merged_into: string | null;
 	repo_key: string | null;
+	shown_count: number;
+	last_shown_at: number | null;
 };
-
 type JobRow = {
 	status: string;
 	ownership_token: string | null;
@@ -1331,5 +1337,114 @@ INSERT INTO live_learnings (
 				retryLimit: 3,
 			}).kind,
 		).toBe("claimed");
+	});
+
+	describe("ranking and retention", () => {
+		test("keeps scores stable within a UTC day while decaying on the next day", () => {
+			const entry = {
+				strength: 2,
+				usefulCount: 0,
+				notUsefulCount: 0,
+				lastReinforcedAt: 0,
+				updatedAt: 0,
+				shownCount: 0,
+			};
+
+			const morning = scoreLearningEntry(entry, { nowSec: 86_400 + 1, halfLifeDays: 45 });
+			const evening = scoreLearningEntry(entry, { nowSec: 86_400 + 86_399, halfLifeDays: 45 });
+			const nextDay = scoreLearningEntry(entry, { nowSec: 172_800, halfLifeDays: 45 });
+
+			expect(evening).toBe(morning);
+			expect(nextDay).toBeLessThan(morning);
+		});
+
+		test("ranks repeatedly shown unrated learning below an otherwise identical fresh learning", async () => {
+			const db = await createDb();
+			store(db, { content: "Fresh unrated", repoKey: "/repo", nowSec: 100 });
+			store(db, { content: "Over-shown unrated", repoKey: "/repo", nowSec: 100 });
+			const overShown = activeRow(db, "Over-shown unrated");
+			db.prepare("UPDATE live_learnings SET shown_count = 300 WHERE id = ?").run(overShown.id);
+
+			const ranked = rankActiveLearnings(db, { repoKey: "/repo", halfLifeDays: 45, nowSec: 100 });
+			expect(ranked.map(entry => entry.content)).toEqual(["Fresh unrated", "Over-shown unrated"]);
+
+			const usefulFresh = scoreLearningEntry(
+				{ ...ranked[0]!, usefulCount: 1, shownCount: 0 },
+				{ nowSec: 100, halfLifeDays: 45 },
+			);
+			const usefulShown = scoreLearningEntry(
+				{ ...ranked[0]!, usefulCount: 1, shownCount: 300 },
+				{ nowSec: 100, halfLifeDays: 45 },
+			);
+			expect(usefulShown).toBe(usefulFresh);
+		});
+
+		test("records shown state only for active learning ids", async () => {
+			const db = await createDb();
+			store(db, { content: "Visible", repoKey: "/repo", nowSec: 100 });
+			store(db, { content: "Archived", repoKey: "/repo", nowSec: 100 });
+			const visible = activeRow(db, "Visible");
+			const archived = activeRow(db, "Archived");
+			expect(archiveLearning(db, { id: archived.id, guardUpdatedAt: archived.updated_at, nowSec: 101 })).toBe(true);
+
+			expect(markLearningsShown(db, { ids: [visible.id, archived.id], nowSec: 200 })).toBe(1);
+			expect(readLearning(db, visible.id)).toMatchObject({ shown_count: 1, last_shown_at: 200 });
+			expect(readLearning(db, archived.id)).toMatchObject({ shown_count: 0, last_shown_at: null });
+		});
+
+		test("archives only the lowest-ranked entries beyond a scope cap", async () => {
+			const db = await createDb();
+			for (const [content, strength] of [
+				["Global best", 3],
+				["Global middle", 2],
+				["Global lowest", 1],
+			] as const) {
+				store(db, { content, scope: "global", cwd: "", nowSec: 100 });
+				db.prepare("UPDATE live_learnings SET strength = ? WHERE content = ?").run(strength, content);
+			}
+			const lowestId = activeRow(db, "Global lowest").id;
+			store(db, { content: "Repo survives", repoKey: "/repo", nowSec: 100 });
+
+			const archived = archiveBeyondActiveCap(db, {
+				scope: "global",
+				repoKey: "/repo",
+				maxActive: 2,
+				halfLifeDays: 45,
+				nowSec: 200,
+			});
+
+			expect(archived).toEqual([lowestId]);
+			expect(
+				db
+					.prepare(
+						"SELECT content FROM live_learnings WHERE scope = 'global' AND status = 'active' ORDER BY strength DESC",
+					)
+					.all(),
+			).toEqual([{ content: "Global best" }, { content: "Global middle" }]);
+			expect(activeRow(db, "Repo survives").status).toBe("active");
+		});
+
+		test("archives idle repository learnings without touching fresh, current, or global entries", async () => {
+			const db = await createDb();
+			store(db, { content: "Idle repo", cwd: "/idle", repoKey: "/idle", nowSec: 0 });
+			store(db, { content: "Fresh repo", cwd: "/fresh", repoKey: "/fresh", nowSec: 0 });
+			store(db, { content: "Current repo", cwd: "/current", repoKey: "/current", nowSec: 0 });
+			store(db, { content: "Global stays", scope: "global", cwd: "", nowSec: 0 });
+			const idle = activeRow(db, "Idle repo");
+			const fresh = activeRow(db, "Fresh repo");
+			expect(markLearningsShown(db, { ids: [fresh.id], nowSec: 950_000 })).toBe(1);
+
+			const result = archiveStaleRepoLearnings(db, {
+				excludeRepoKey: "/current",
+				staleDays: 10,
+				nowSec: 1_000_000,
+			});
+
+			expect(result).toEqual({ repoKeys: ["/idle"], archived: 1 });
+			expect(readLearning(db, idle.id).status).toBe("archived");
+			expect(activeRow(db, "Fresh repo").status).toBe("active");
+			expect(activeRow(db, "Current repo").status).toBe("active");
+			expect(activeRow(db, "Global stays").status).toBe("active");
+		});
 	});
 });
