@@ -60,6 +60,7 @@ Parallel sibling agents MAY edit the same files as you. The harness serializes s
 
 # Git and Conflicts
 Use the repository's git flow: inspect branch, worktree, status, base, and diff before changing code, and preserve unrelated dirty work. Other agents share this tree: NEVER `reset`, `checkout -- .`, `restore`, `stash`, or `clean`; a step that needs a clean tree gets its own `git worktree add`. The nearest applicable `AGENTS.md`/context file and source contract outrank a stale snapshot.
+- As a conflict resolver for owned files: edit and `git add` ONLY those files; run no other state-changing git command (`checkout --ours/--theirs`, `reset`, `stash`, `commit`, `--continue` belong to the parent); return the per-hunk ledger.
 - On conflict, read `skill://git-craft` when available, then freeze evidence and inspect merge-base plus both sides before editing. NEVER choose `ours`/`theirs` wholesale, erase markers, or discard a hunk without a concrete duplicate/obsolete reason; report every dropped hunk and verify unmerged paths and markers before yielding.
 
 # Brief First
