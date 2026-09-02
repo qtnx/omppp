@@ -58,18 +58,28 @@ describe("loop argument parsing", () => {
 		expect(parseLoopArgs("")).toEqual({ intervalMs: 800 });
 	});
 
-	test("parses a bare positive integer as seconds between loop turns", () => {
-		expect(parseLoopArgs("10")).toEqual({ intervalMs: 10_000 });
+	test("parses a bare positive integer as the iteration count at the default interval", () => {
+		expect(parseLoopArgs("10")).toEqual({ intervalMs: 800, iterations: 10 });
 	});
 
-	test("parses interval aliases with an optional iteration limit", () => {
+	test("parses interval aliases with an optional iteration limit in either order", () => {
 		expect(parseLoopArgs("500ms")).toEqual({ intervalMs: 500 });
 		expect(parseLoopArgs("10s 3")).toEqual({ intervalMs: 10_000, iterations: 3 });
+		expect(parseLoopArgs("3 10s")).toEqual({ intervalMs: 10_000, iterations: 3 });
 		expect(parseLoopArgs("2 minutes 5")).toEqual({ intervalMs: 120_000, iterations: 5 });
 	});
 
+	test("parses context options with their aliases", () => {
+		expect(parseLoopArgs("clean")).toEqual({ intervalMs: 800, context: "reset" });
+		expect(parseLoopArgs("--clear 5")).toEqual({ intervalMs: 800, iterations: 5, context: "reset" });
+		expect(parseLoopArgs("compact 30s")).toEqual({ intervalMs: 30_000, context: "compact" });
+		expect(parseLoopArgs("--keep")).toEqual({ intervalMs: 800, context: "prompt" });
+		expect(parseLoopArgs("clean compact")).toBe("Loop context option may only be given once.");
+	});
+
 	test("rejects invalid intervals and iteration counts", () => {
-		expect(parseLoopArgs("0")).toBe("Loop sleep time must be positive.");
+		expect(parseLoopArgs("0")).toBe("Loop iteration count must be a positive integer.");
+		expect(parseLoopArgs("0s")).toBe("Loop sleep time must be positive.");
 		expect(parseLoopArgs("-1")).toContain("Usage: /loop");
 		expect(parseLoopArgs("10fortnights")).toBe(
 			"Loop sleep time unit must be milliseconds, seconds, minutes, or hours.",
@@ -88,8 +98,8 @@ describe("loop limit parsing", () => {
 		expect(parseLoopLimitArgs("   ")).toEqual({});
 	});
 
-	test("parses a bare positive integer as a seconds interval", () => {
-		expect(parseLoopLimitArgs("10")).toEqual({ limit: { intervalMs: 10_000 } });
+	test("parses a bare positive integer as the iteration count", () => {
+		expect(parseLoopLimitArgs("10")).toEqual({ limit: { intervalMs: 800, iterations: 10 } });
 	});
 
 	test("parses minute duration aliases as loop intervals", () => {
@@ -103,16 +113,29 @@ describe("loop limit parsing", () => {
 		expect(parseLoopLimitArgs("2h30min")).toEqual({ limit: { intervalMs: 9_000_000 } });
 	});
 
-	test("treats trailing text after a valid interval as an inline prompt", () => {
+	test("treats trailing text after the options as an inline prompt", () => {
 		expect(parseLoopLimitArgs("10m keep refactoring")).toEqual({
 			limit: { intervalMs: 600_000 },
 			prompt: "keep refactoring",
 		});
 		expect(parseLoopLimitArgs("5 fix the bug")).toEqual({
-			limit: { intervalMs: 5_000 },
+			limit: { intervalMs: 800, iterations: 5 },
 			prompt: "fix the bug",
 		});
-		// Space-separated unit must win over treating the count as a default-seconds interval.
+		expect(parseLoopLimitArgs("clean 10 fix the bug")).toEqual({
+			limit: { intervalMs: 800, iterations: 10, context: "reset" },
+			prompt: "fix the bug",
+		});
+		expect(parseLoopLimitArgs("10 30s --compact fix the bug")).toEqual({
+			limit: { intervalMs: 30_000, iterations: 10, context: "compact" },
+			prompt: "fix the bug",
+		});
+		// A second bare number is prompt text, not a second count.
+		expect(parseLoopLimitArgs("3 5 things")).toEqual({
+			limit: { intervalMs: 800, iterations: 3 },
+			prompt: "5 things",
+		});
+		// Space-separated unit must win over treating the number as an iteration count.
 		expect(parseLoopLimitArgs("10 minutes keep going")).toEqual({
 			limit: { intervalMs: 600_000 },
 			prompt: "keep going",
@@ -125,7 +148,7 @@ describe("loop limit parsing", () => {
 	});
 
 	test("rejects zero, negative, and unknown interval-shaped tokens", () => {
-		expect(parseLoopLimitArgs("0")).toBe("Loop sleep time must be positive.");
+		expect(parseLoopLimitArgs("0")).toBe("Loop iteration count must be a positive integer.");
 		expect(parseLoopLimitArgs("-1")).toContain("Usage: /loop");
 		expect(parseLoopLimitArgs("10fortnights")).toBe(
 			"Loop sleep time unit must be milliseconds, seconds, minutes, or hours.",

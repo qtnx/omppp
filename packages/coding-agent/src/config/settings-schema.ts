@@ -2331,7 +2331,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			group: "Input",
 			label: "Loop Mode",
-			description: "What happens between /loop iterations before re-submitting the prompt",
+			description:
+				"What happens between /loop iterations before re-submitting the prompt (a /loop clean or /loop compact argument overrides this per loop)",
 			options: [
 				{
 					value: "prompt",

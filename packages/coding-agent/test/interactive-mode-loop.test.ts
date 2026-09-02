@@ -322,6 +322,72 @@ describe("InteractiveMode loop auto-submit", () => {
 		expect(await Bun.file(resolveLocalPromptFile(mode)).text()).toBe("reset survives");
 	});
 
+	it("starts a clean session before each iteration when /loop clean overrides the prompt setting", async () => {
+		settings.set("loop.mode", "prompt");
+		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
+		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
+		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
+
+		await mode.handleLoopCommand("clean 1ms");
+		await mode.captureLoopPrompt("clean survives");
+		const originalSessionId = mode.sessionManager.getSessionId();
+
+		const input = await mode.getUserInput();
+
+		expect(mode.sessionManager.getSessionId()).not.toBe(originalSessionId);
+		expect(input.text).toBe("clean survives");
+		expect(mode.loopRuntime?.context).toBe("reset");
+	});
+
+	it("compacts before each iteration when /loop compact overrides the prompt setting", async () => {
+		vi.useFakeTimers();
+		settings.set("loop.mode", "prompt");
+		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
+		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
+		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
+		const compact = vi.spyOn(mode, "handleCompactCommand").mockImplementation(async () => "ok");
+
+		await mode.handleLoopCommand("compact 2");
+		mode.loopPrompt = "repeat after compact";
+		const resolved: SubmittedUserInput[] = [];
+		void mode.getUserInput().then(input => resolved.push(input));
+
+		vi.advanceTimersByTime(800);
+		await flushMicrotasks();
+
+		expect(compact).toHaveBeenCalledTimes(1);
+		expect(resolved).toHaveLength(1);
+		expect(resolved[0].text).toBe("repeat after compact");
+	});
+
+	it("treats a bare /loop number as the iteration count, not seconds", async () => {
+		vi.useFakeTimers();
+		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
+		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
+		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
+
+		await mode.handleLoopCommand("2");
+		expect(mode.loopRuntime).toEqual({ intervalMs: 800, initialIterations: 2, remainingIterations: 2 });
+		mode.loopPrompt = "twice";
+		const resolved: SubmittedUserInput[] = [];
+		void mode.getUserInput().then(input => resolved.push(input));
+
+		vi.advanceTimersByTime(800);
+		await flushMicrotasks();
+		expect(resolved).toHaveLength(1);
+
+		void mode.getUserInput().then(input => resolved.push(input));
+		vi.advanceTimersByTime(800);
+		await flushMicrotasks();
+		expect(resolved).toHaveLength(2);
+
+		void mode.getUserInput().then(input => resolved.push(input));
+		vi.advanceTimersByTime(800);
+		await flushMicrotasks();
+		expect(resolved).toHaveLength(2);
+		expect(mode.loopModeEnabled).toBe(false);
+	});
+
 	it("reports waiting, running, paused, resumed, and disabled loop states", async () => {
 		const setLoopModeStatus = vi.spyOn(mode.statusLine, "setLoopModeStatus");
 		const limit = expect.objectContaining({ initialIterations: 3, remainingIterations: 3 });
