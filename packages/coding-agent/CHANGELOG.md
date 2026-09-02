@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/feedback <text>` records your feedback about the current session locally (optionally prefixed with `+1`/`-1`), `/feedback rate <1-5> [text]` scores it, `/feedback list` reviews it and `/feedback export [path]` bundles the session transcript and feedback into a `.zip` for later evaluation. Nothing is sent to a server.
+- After the agent finishes and the terminal stays idle (`feedback.ratingIdleSeconds`, default 90s), the TUI asks once per session for a 1-5 rating; scores of 3 or below ask what went wrong. Disable with `feedback.ratingPrompt: false`.
+
 ## [1.7.10] - 2026-09-02
 
 ### Changed
