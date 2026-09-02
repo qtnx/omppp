@@ -18,18 +18,56 @@ import dateCwdReminderTemplate from "../prompts/system/date-cwd-reminder.md" wit
 export function renderDateCwdReminder(date: string, cwd: string): string {
 	return prompt.render(dateCwdReminderTemplate, { date, cwd }).trim();
 }
-
 function messageStartsWithReminder(message: UserMessage, reminder: string): boolean {
 	if (typeof message.content === "string") return message.content.startsWith(reminder);
 	return message.content[0]?.type === "text" && message.content[0].text === reminder;
 }
 
+const injectCache = new WeakMap<Message, { reminder: string; injected: Message }>();
+
+/**
+ * Prepends `reminder` to the first user message without mutating the input.
+ * Reuses the injected message for the same pristine message/reminder pair so
+ * append-only context transforms preserve object identity across requests.
+ */
+export function injectDateCwdReminder(messages: Message[], reminder: string): Message[] {
+	const index = messages.findIndex(message => message.role === "user");
+	if (index < 0) return messages;
+	const first = messages[index]!;
+	if (first.role !== "user" || messageStartsWithReminder(first, reminder)) return messages;
+	const cached = injectCache.get(first);
+	if (cached?.reminder === reminder) {
+		const out = messages.slice();
+		out[index] = cached.injected;
+		return out;
+	}
+	const injected = injectReminder(first, reminder);
+	injectCache.set(first, { reminder, injected });
+	const out = messages.slice();
+	out[index] = injected;
+	return out;
+}
+
 function injectReminder(message: UserMessage, reminder: string): UserMessage {
+	const cached = injectCache.get(message);
+	if (cached?.reminder === reminder && cached.injected.role === "user") return cached.injected;
 	const content: UserMessage["content"] =
 		typeof message.content === "string"
 			? `${reminder}\n\n${message.content}`
 			: [{ type: "text", text: reminder }, ...message.content];
-	return { ...message, content };
+	const injected = { ...message, content };
+	injectCache.set(message, { reminder, injected });
+	return injected;
+}
+
+/**
+ * Applies the current date/cwd reminder to a provider context while keeping
+ * the system prompt byte-stable.
+ */
+export function withDateCwdReminder(context: Context, date: string, cwd: string): Context {
+	if (!context.systemPrompt || context.systemPrompt.length === 0 || context.messages.length === 0) return context;
+	const messages = injectDateCwdReminder(context.messages, renderDateCwdReminder(date, cwd));
+	return messages === context.messages ? context : { ...context, messages };
 }
 
 /**
