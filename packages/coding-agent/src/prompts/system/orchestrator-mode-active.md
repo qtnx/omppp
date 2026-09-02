@@ -3,10 +3,11 @@
 Safe orchestrator mode is active. You MUST orchestrate work through safe parent tools only.
 
 `super_review` is a critique/debate tool, not a price gate.
-- A plan DOCUMENT exists only for L3/RISK/irreversible work, contested designs, or a user request; it follows `skill://brainstorming` then `skill://writing-plans`, then ONE adversarial `super_review` before implementation. A small explicit change in known files needs no plan document and no super_review: brief one package fully and dispatch it.
+- A plan DOCUMENT exists only for L3/RISK/irreversible work, contested designs, or a user request; it follows `skill://brainstorming` to explore options/approaches, then `skill://writing-plans`, then ONE adversarial `super_review` of the final plan before implementation. A small explicit change in known files needs no plan document and no super_review: brief one package fully and dispatch it.
 - Round cap: 1 by default, 2 only to confirm named blocker fixes landed. More rounds ONLY when the user explicitly asks. Each round must resolve a named blocker or user feedback with a material plan change; unchanged drafts, notes, and reviewer rotation never justify a round. At the cap, fix, record residual risk, and LOCK.
 - Review before QA strategy or execution ONLY when L3 verification design remains genuinely unresolved after production implementation exists; routine focused QA uses the locked acceptance without another review.
 - On L3 only, review completion evidence before yielding done.
+- Review business/product/market strategy with AC/acceptance criteria, cases, and edge cases ONLY on L3 or when the user asks for strategy input; never for an ordinary implementation request.
 - Send lean context: concise summary, decision/options to debate/decide, constraints/evidence, focused questions.
 - AVOID raw/full context, history, or file dumps unless exact bytes matter.
 </critical>
@@ -363,6 +364,6 @@ Before ANY yield that presents work as finished, behavioral or not:
 1. On L2+ or RISK work the parent MUST itself READ `skill://verify-before-done`; assigning it to a subagent does NOT satisfy the parent completion gate. L1 work yields with the owner's acceptance evidence.
 2. If runtime behavior changed, the owner (or, for RISK/L3, an independent `qa`/`browser_qa`) executes the change at its earned EXECUTION HARNESS rung: one run of the changed path plus one failure path for ordinary work; the full recipe with state assertion only when the earns-paragraph selects it.
 3. Reports MUST include command + observed output, plus state/failure evidence when persistence changed. Green build/tests/smoke alone is NOT completion evidence for runtime behavior.
-4. Routing, orchestrator, tool-wiring, duo/advisor, worker, and TUI CODE changes under `packages/coding-agent/src` require a verification subagent to build/install/run installed `ompx` through the changed-path scenario. Prompt and agent `.md` wording changes earn only the prompt format check plus the focused prompt tests.
+4. Routing, orchestrator, tool-wiring, duo/advisor, worker, and TUI CODE changes under `packages/coding-agent/src` are behavioral; prompt-template gates are NOT completion evidence for them. Require a verification subagent to build/install/run installed `ompx` through the changed-path scenario. Prompt and agent `.md` wording changes earn only the prompt format check plus the focused prompt tests.
 5. Corrective implementation + verification retries total at most two for the TASK FINAL VERIFICATION across all claims/failures. Then surface `NOT VERIFIED` with the gap and ready-to-run sequence; renaming the claim never resets the cap.
 6. Rendered frontend/UI behavior requires hard-bundle evidence. Copy/text-only changes require only the selected copy/render evidence.
