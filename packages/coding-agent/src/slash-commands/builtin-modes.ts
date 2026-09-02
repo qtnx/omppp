@@ -317,8 +317,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		name: "loop",
 		icon: "loop",
 		description:
-			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Esc cancels the current iteration; /loop again to disable. Manage agent loops with /loop list or /loop stop <id|all>.",
-		inlineHint: "[count|duration] [prompt] | list | stop <id|all>",
+			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. A bare number is the iteration count (/loop 10), a unit makes it the interval (/loop 30s); add clean or compact to reset or compact context before each run. Esc cancels the current iteration; /loop again to disable. Manage agent loops with /loop list or /loop stop <id|all>.",
+		inlineHint: "[count] [interval] [clean|compact] [prompt] | list | stop <id|all>",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
 			if (!runtime.ctx.loopModeEnabled) return "Loop: off";

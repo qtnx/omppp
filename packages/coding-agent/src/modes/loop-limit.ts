@@ -2,22 +2,43 @@ import type { LoopSnapshot } from "../session/loop-manager";
 import { previewLine, TRUNCATE_LENGTHS } from "../tools/render-utils";
 import { sanitizeStatusText } from "./shared";
 
+/** What happens to the session context before each repeated loop turn. */
+export type LoopContextMode = "prompt" | "compact" | "reset";
+
 export type LoopConfig = {
 	intervalMs: number;
 	iterations?: number;
+	/** Per-loop override of the `loop.mode` setting; undefined defers to the setting. */
+	context?: LoopContextMode;
 };
 
 export type LoopRuntime = {
 	intervalMs: number;
 	initialIterations?: number;
 	remainingIterations?: number;
+	context?: LoopContextMode;
 };
 
 export const DEFAULT_LOOP_INTERVAL_MS = 800;
 export const MAX_LOOP_INTERVAL_MS = 2_147_483_647;
 
 const LOOP_USAGE =
-	"Usage: /loop [time] [iteration] [prompt]. Omit iteration for unlimited repeats. Examples: /loop 10, /loop 10s 5, /loop 2m keep going.";
+	"Usage: /loop [count] [interval] [clean|compact|--keep] [prompt]. A bare number is the iteration count; add a unit (10s, 2m, 1h30m) for the sleep interval. Examples: /loop 10, /loop 10s 5, /loop clean 10 fix the tests, /loop 2m keep going.";
+
+/**
+ * Context option tokens. Bare `clean` / `compact` are accepted for convenience;
+ * bare `keep` is not, so a prose prompt like "keep going" stays a prompt.
+ */
+const LOOP_CONTEXT_TOKENS: Record<string, LoopContextMode> = {
+	"--keep": "prompt",
+	"--prompt": "prompt",
+	"--compact": "compact",
+	compact: "compact",
+	"--clean": "reset",
+	"--clear": "reset",
+	"--reset": "reset",
+	clean: "reset",
+};
 
 const TIME_UNITS_MS = new Map<string, number>([
 	["ms", 1],
@@ -48,9 +69,9 @@ type ParsedInterval = {
 };
 
 export interface ParsedLoopArgs {
-	/** Repeat cadence / iteration budget, when the user supplied a leading time token. */
+	/** Repeat cadence / iteration budget / context option, when the user supplied any leading option token. */
 	limit?: LoopConfig;
-	/** Inline loop prompt: text after the parsed time / iteration, or the whole argument when no time was supplied. */
+	/** Inline loop prompt: text after the parsed options, or the whole argument when no option was supplied. */
 	prompt?: string;
 }
 
@@ -100,52 +121,77 @@ export function parseLoopArgs(args: string): LoopConfig | string {
 }
 
 /**
- * Parse `/loop` arguments into OMPx's repeat interval / optional iteration
- * count plus upstream's optional inline prompt. Tokens that look numeric but
- * fail interval parsing are hard errors; plain prose is treated as an unbounded
- * default-interval loop prompt.
+ * Parse `/loop` arguments into OMPx's repeat config plus upstream's optional
+ * inline prompt. Leading tokens are consumed in any order: a bare integer is
+ * the iteration count, a token with a time unit (or `N <unit>`) is the sleep
+ * interval, and `clean` / `compact` / `--keep` pick the context mode. Tokens
+ * that look numeric but fail interval parsing are hard errors; the first
+ * token that is none of the above starts the prompt.
  */
 export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
 	const trimmed = args.trim();
 	if (!trimmed) return {};
 
 	const parts = trimmed.split(/\s+/);
-	const firstToken = parts[0].toLowerCase();
-	if (!/^[+-]?\d/.test(firstToken)) {
-		return { prompt: trimmed };
-	}
-
-	const parsedInterval = parseInterval(parts);
-	if (typeof parsedInterval === "string") return parsedInterval;
-
-	let nextIndex = parsedInterval.nextIndex;
+	let index = 0;
+	let intervalMs: number | undefined;
 	let iterations: number | undefined;
-	if (nextIndex < parts.length && /^\d+$/.test(parts[nextIndex])) {
-		const parsedIterations = parseIterationCount(parts[nextIndex]);
-		if (typeof parsedIterations === "string") return parsedIterations;
-		iterations = parsedIterations;
-		nextIndex += 1;
+	let context: LoopContextMode | undefined;
+
+	while (index < parts.length) {
+		const token = parts[index].toLowerCase();
+		const contextMode = Object.hasOwn(LOOP_CONTEXT_TOKENS, token) ? LOOP_CONTEXT_TOKENS[token] : undefined;
+		if (contextMode !== undefined) {
+			if (context !== undefined) return "Loop context option may only be given once.";
+			context = contextMode;
+			index += 1;
+			continue;
+		}
+		if (!/^[+-]?\d/.test(token)) break;
+
+		const unitFollows = index + 1 < parts.length && TIME_UNITS_MS.has(parts[index + 1].toLowerCase());
+		if (/^\d+$/.test(token) && !unitFollows) {
+			if (iterations !== undefined) break;
+			const parsedIterations = parseIterationCount(token);
+			if (typeof parsedIterations === "string") return parsedIterations;
+			iterations = parsedIterations;
+			index += 1;
+			continue;
+		}
+
+		if (intervalMs !== undefined) break;
+		const parsedInterval = parseInterval(parts, index);
+		if (typeof parsedInterval === "string") return parsedInterval;
+		intervalMs = parsedInterval.intervalMs;
+		index = parsedInterval.nextIndex;
 	}
 
-	const prompt = parts.slice(nextIndex).join(" ").trim() || undefined;
-	return { limit: { intervalMs: parsedInterval.intervalMs, iterations }, prompt };
+	const prompt = parts.slice(index).join(" ").trim() || undefined;
+	if (intervalMs === undefined && iterations === undefined && context === undefined) {
+		return { prompt };
+	}
+	const limit: LoopConfig = { intervalMs: intervalMs ?? DEFAULT_LOOP_INTERVAL_MS };
+	if (iterations !== undefined) limit.iterations = iterations;
+	if (context !== undefined) limit.context = context;
+	return { limit, prompt };
 }
 
-function parseInterval(parts: string[]): ParsedInterval | string {
-	if (parts.length >= 2 && /^\d+$/.test(parts[0]) && TIME_UNITS_MS.has(parts[1].toLowerCase())) {
+function parseInterval(parts: string[], start: number): ParsedInterval | string {
+	const first = parts[start].toLowerCase();
+	if (start + 1 < parts.length && /^\d+$/.test(first) && TIME_UNITS_MS.has(parts[start + 1].toLowerCase())) {
 		const amount = parsePositiveInteger(
-			parts[0],
+			first,
 			"Loop sleep time must use a positive integer amount.",
 			"Loop sleep time must be positive.",
 		);
 		if (typeof amount === "string") return amount;
-		return parseIntervalAmount(amount, parts[1].toLowerCase(), 2);
+		return parseIntervalAmount(amount, parts[start + 1].toLowerCase(), start + 2);
 	}
 
-	const compoundInterval = parseCompoundInterval(parts[0].toLowerCase());
+	const compoundInterval = parseCompoundInterval(first, start + 1);
 	if (compoundInterval !== undefined) return compoundInterval;
 
-	const compactMatch = /^(\d+)([a-z]+)?$/.exec(parts[0].toLowerCase());
+	const compactMatch = /^(\d+)([a-z]+)?$/.exec(first);
 	if (compactMatch) {
 		const amount = parsePositiveInteger(
 			compactMatch[1],
@@ -153,13 +199,13 @@ function parseInterval(parts: string[]): ParsedInterval | string {
 			"Loop sleep time must be positive.",
 		);
 		if (typeof amount === "string") return amount;
-		return parseIntervalAmount(amount, compactMatch[2] ?? "s", 1);
+		return parseIntervalAmount(amount, compactMatch[2] ?? "s", start + 1);
 	}
 
 	return LOOP_USAGE;
 }
 
-function parseCompoundInterval(token: string): ParsedInterval | string | undefined {
+function parseCompoundInterval(token: string, nextIndex: number): ParsedInterval | string | undefined {
 	const segmentPattern = /(\d+)([a-z]+)/g;
 	let match = segmentPattern.exec(token);
 	let nextOffset = 0;
@@ -194,7 +240,7 @@ function parseCompoundInterval(token: string): ParsedInterval | string | undefin
 	if (intervalMs > MAX_LOOP_INTERVAL_MS) {
 		return `Loop sleep time must be at most ${MAX_LOOP_INTERVAL_MS} milliseconds.`;
 	}
-	return { intervalMs, nextIndex: 1 };
+	return { intervalMs, nextIndex };
 }
 
 function parseIntervalAmount(amount: number, unitText: string, nextIndex: number): ParsedInterval | string {
@@ -235,6 +281,7 @@ export function createLoopRuntime(config: LoopConfig): LoopRuntime {
 		runtime.initialIterations = config.iterations;
 		runtime.remainingIterations = config.iterations;
 	}
+	if (config.context !== undefined) runtime.context = config.context;
 	return runtime;
 }
 
@@ -249,10 +296,24 @@ export function consumeLoopIteration(runtime: LoopRuntime | undefined): boolean 
 	return true;
 }
 
+export function describeLoopContext(context: LoopContextMode): string {
+	switch (context) {
+		case "prompt":
+			return "keeping context";
+		case "compact":
+			return "compacting context before each run";
+		case "reset":
+			return "starting a clean session before each run";
+	}
+}
+
 export function describeLoopConfig(config: LoopConfig): string {
 	const interval = formatDuration(config.intervalMs);
-	if (config.iterations === undefined) return `every ${interval}`;
-	return `every ${interval} for ${config.iterations} ${config.iterations === 1 ? "iteration" : "iterations"}`;
+	const cadence =
+		config.iterations === undefined
+			? `every ${interval}`
+			: `every ${interval} for ${config.iterations} ${config.iterations === 1 ? "iteration" : "iterations"}`;
+	return config.context === undefined ? cadence : `${cadence}, ${describeLoopContext(config.context)}`;
 }
 
 export function describeLoopRuntime(runtime: LoopRuntime): string | undefined {
