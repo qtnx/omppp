@@ -402,7 +402,8 @@ describe("Context GC tools", () => {
 		expect(active).toContain("Active snapshot: available");
 		expect(active).toContain("Active unloaded source estimate: 17");
 		expect(active).toContain("Active projected net savings: 88 token(s)");
-		expect(active).not.toContain("99");
+		// The temp dir name can contain any digits; only the savings line matters.
+		expect(active).not.toContain("net savings: 99");
 
 		const invalid = renderContextGcReport({
 			agentDir: tempDir,
