@@ -65,10 +65,6 @@ export type BedrockThinkingDisplay = "summarized" | "omitted";
 /** Bedrock guardrail trace verbosity, mirrors the Converse `guardrailConfig.trace` values. */
 export type BedrockGuardrailTrace = "enabled" | "disabled" | "enabled_full";
 
-
-/** Bedrock guardrail trace verbosity, mirrors the Converse `guardrailConfig.trace` values. */
-export type BedrockGuardrailTrace = "enabled" | "disabled" | "enabled_full";
-
 export interface BedrockOptions extends StreamOptions {
 	region?: string;
 	profile?: string;

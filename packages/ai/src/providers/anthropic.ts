@@ -408,18 +408,15 @@ let warnedStopSequencesTrim = false;
 const ANTHROPIC_PROVIDER_SESSION_STATE_KEY = "anthropic-messages";
 
 type AnthropicProviderSessionState = ProviderSessionState & {
-	strictToolsDisabled: boolean;
-	fastModeDisabled: boolean;
 	/**
-	 * Runtime-learned: this endpoint returned `400 Invalid signature in
-	 * thinking block` for a replayed unsigned thinking block, so it must be
-	 * treated as a signing proxy from now on. All subsequent requests demote
-	 * unsigned thinking to text for this (baseUrl, modelId), same behavior as
-	 * an explicit `compat.replayUnsignedThinking: false`. Cleared on session
-	 * close.
+	 * Whether this session has learned that the endpoint rejects the fast-mode
+	 * beta. Keyed by endpoint+model so the fallback cannot bleed across requests.
 	 */
 	replayUnsignedThinkingDisabled: boolean;
+	strictToolsDisabled: boolean;
+	fastModeDisabled: boolean;
 	cacheDiagnostics?: AnthropicCacheDiagnosticState;
+	prefixDroppedThinkingBlocks: Set<string>;
 };
 
 function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
@@ -427,6 +424,7 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 		strictToolsDisabled: false,
 		fastModeDisabled: false,
 		replayUnsignedThinkingDisabled: false,
+		prefixDroppedThinkingBlocks: new Set(),
 		close: () => {
 			state.strictToolsDisabled = false;
 			state.fastModeDisabled = false;
@@ -523,8 +521,6 @@ function getAnthropicProviderSessionState(
 	const existing = providerSessionState.get(key) as AnthropicProviderSessionState | undefined;
 	if (existing) {
 		existing.prefixDroppedThinkingBlocks ??= new Set();
-		existing.activeToolNames ??= new Set();
-		existing.controlTransitions ??= [];
 		return existing;
 	}
 	const created = createAnthropicProviderSessionState();
@@ -2063,6 +2059,11 @@ const streamAnthropicOnce = (
 				(providerSessionState?.strictToolsDisabled ?? false) || (model.compat?.disableStrictTools ?? false);
 			let dropFastMode = providerSessionState?.fastModeDisabled ?? false;
 			let forceDemoteUnsignedThinking = providerSessionState?.replayUnsignedThinkingDisabled ?? false;
+			let dropAllThinking = false;
+			let prefixMismatchBehavior =
+				model.thinking?.prefixBinding && model.compat.supportsThinkingBindingControls
+					? (options?.anthropicPrefixMismatchBehavior ?? "drop_block")
+					: undefined;
 			const mergedCallerHeaders = mergeHeaders(model.headers, options?.headers);
 			const umansGatewayWebSearchHeader = getUmansWebSearchHeader(model, mergedCallerHeaders);
 			// Keep fallback payloads aligned with the top-level Vertex effort gate:
@@ -2216,6 +2217,10 @@ const streamAnthropicOnce = (
 					forceDemoteUnsignedThinking,
 					supportsEagerToolInputStreaming,
 					baseUrl,
+					prefixMismatchBehavior,
+					dropAllThinking,
+					droppedThinkingBlocks: providerSessionState?.prefixDroppedThinkingBlocks,
+					providerSessionState,
 					fallbacks,
 				});
 				if (disableStrictTools) {
@@ -2406,8 +2411,8 @@ const streamAnthropicOnce = (
 						? mergeAnthropicBetaHeader(mergedCallerHeaders, effortBeta)
 						: undefined;
 				const perRequestHeaders =
-					umansGatewayWebSearchHeader || injectedClientBetaHeaders
-						? { ...umansGatewayWebSearchHeader, ...injectedClientBetaHeaders }
+					umansGatewayWebSearchHeader || injectedClientEffortHeaders
+						? { ...umansGatewayWebSearchHeader, ...injectedClientEffortHeaders }
 						: undefined;
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
@@ -3842,6 +3847,10 @@ type AnthropicParamBuildOptions = {
 	forceDemoteUnsignedThinking: boolean;
 	supportsEagerToolInputStreaming: boolean;
 	baseUrl: string;
+	prefixMismatchBehavior?: "drop_block" | "error";
+	dropAllThinking: boolean;
+	droppedThinkingBlocks?: ReadonlySet<string>;
+	providerSessionState?: AnthropicProviderSessionState;
 	/** Sanitized server-side fallback entries; defaults to `options?.fallbacks` when omitted. */
 	fallbacks?: AnthropicOptions["fallbacks"];
 };
@@ -3859,6 +3868,10 @@ function buildParams(
 		forceDemoteUnsignedThinking,
 		supportsEagerToolInputStreaming,
 		baseUrl,
+		prefixMismatchBehavior,
+		dropAllThinking,
+		droppedThinkingBlocks,
+		providerSessionState,
 		fallbacks = options?.fallbacks,
 	} = buildOptions;
 	// A session-scoped auto-demote (learned from a live signing 400) clones the
