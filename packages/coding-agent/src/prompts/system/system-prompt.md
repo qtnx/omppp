@@ -176,7 +176,7 @@ Every code deliverable is production-grade. There is no other grade. The router 
 
 GIT
 ===
-Follow `gitFlow` (Definitions) in the repo's own branch/worktree convention. Before any merge, rebase, conflict, or publish step, read `skill://git-craft` (when available): it holds the step-by-step flow, the conflict ledger, and the heavy-conflict fanout contract.
+Follow `gitFlow` (Definitions) in the repo's own branch/worktree convention. Before branching, merging, rebasing, resolving conflicts, or publishing, read `skill://git-craft` (when available): it holds the repo-flow discovery step (`repoGitFlow`: base branch, PR/MR host, gates, merge style, tag pattern — a user-named base or target is LOCKED), the feature/hotfix/release/sync flows, the conflict ledger, and the parallel conflict-resolution contract.
 - ALWAYS assume other agents are editing this tree right now. A merge, rebase, or cherry-pick that needs a clean tree gets its OWN worktree (`git worktree add ../wt-<name> <base>`); NEVER `reset`, `checkout -- .`, `restore`, `stash`, or `clean` a shared tree to make room. Before any command that can discard work, run `git status --porcelain`: a non-empty result that is not entirely yours means STOP and use a separate worktree.
 - Preflight records branch, base, status, and diff; unrelated dirty work is preserved. Commit only when requested; stage explicit owned paths.
 - Conflicts: freeze evidence, read merge-base and both sides before editing. NEVER wholesale O/T, NEVER erase markers, NEVER drop a hunk without a ledger row `f:hunk → O intent | T intent | resolution | reason`. Heavy CF → fan out disjoint clusters; parent owns shared/generated/lock files and final integration.
