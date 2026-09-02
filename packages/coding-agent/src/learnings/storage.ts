@@ -21,6 +21,8 @@ export interface LearningEntry {
 	usefulCount: number;
 	notUsefulCount: number;
 	lastReinforcedAt: number | null;
+	shownCount: number;
+	lastShownAt: number | null;
 	mergedInto: string | null;
 	repoKey: string | null;
 }
@@ -104,6 +106,8 @@ interface LearningRow {
 	useful_count: number;
 	not_useful_count: number;
 	last_reinforced_at: number | null;
+	shown_count: number;
+	last_shown_at: number | null;
 	merged_into: string | null;
 	repo_key: string | null;
 }
@@ -118,6 +122,8 @@ interface JobRow {
 	last_success_watermark: number | null;
 }
 
+/** Prompt injections an unrated entry survives before its score decays to 1/e. */
+const NEGLECT_SHOWN_SCALE = 200;
 const CONSOLIDATION_JOB_KIND = "consolidation";
 
 export function openLearningDb(dbPath: string): Database {
@@ -278,12 +284,51 @@ ON CONFLICT(scope, cwd, content_hash) DO NOTHING
 	});
 }
 
+/**
+ * Ranking score used for injection order and cap enforcement.
+ *
+ * `nowSec` is quantized to the calendar day so repeated prompt rebuilds within
+ * one day produce byte-identical ordering (prompt-cache stability). Entries
+ * that keep being shown without ever earning a `useful` rating decay by an
+ * additional neglect factor, so unrated noise slowly sinks below rated entries.
+ */
+export function scoreLearningEntry(
+	entry: Pick<
+		LearningEntry,
+		"strength" | "usefulCount" | "notUsefulCount" | "lastReinforcedAt" | "updatedAt" | "shownCount"
+	>,
+	opts: { nowSec: number; halfLifeDays: number },
+): number {
+	const halfLifeDays = opts.halfLifeDays > 0 ? opts.halfLifeDays : 45;
+	const dayNow = Math.floor(opts.nowSec / 86_400) * 86_400;
+	const lastActivity = entry.lastReinforcedAt ?? entry.updatedAt;
+	const ageDays = Math.max(0, (dayNow - lastActivity) / 86_400);
+	const neglect = entry.usefulCount > 0 ? 0 : entry.shownCount;
+	return (
+		(entry.strength + 1.5 * entry.usefulCount - 2 * entry.notUsefulCount) *
+		Math.exp(-ageDays / halfLifeDays) *
+		Math.exp(-neglect / NEGLECT_SHOWN_SCALE)
+	);
+}
+
 export function listActiveLearnings(
 	db: Database,
 	opts: { repoKey: string; limitPerScope: number; halfLifeDays: number; nowSec: number },
 ): RankedLearningEntry[] {
 	const limit = Math.max(1, Math.floor(opts.limitPerScope));
-	const halfLifeDays = opts.halfLifeDays > 0 ? opts.halfLifeDays : 45;
+	const ranked = rankActiveLearnings(db, opts).filter(entry => entry.notUsefulCount - entry.usefulCount < 3);
+	const selected: RankedLearningEntry[] = [];
+	for (const scope of ["global", "repo"] as const) {
+		selected.push(...ranked.filter(entry => entry.scope === scope).slice(0, limit));
+	}
+	return selected;
+}
+
+/** Every active entry for `global` + the given repo, scored and sorted best-first (no cap, no hide filter). */
+export function rankActiveLearnings(
+	db: Database,
+	opts: { repoKey: string; halfLifeDays: number; nowSec: number },
+): RankedLearningEntry[] {
 	const rows = db
 		.prepare(`
 SELECT * FROM live_learnings
@@ -294,27 +339,85 @@ WHERE status = 'active'
 	)
 `)
 		.all(opts.repoKey) as LearningRow[];
-	const ranked = rows
+	return rows
 		.filter(isLearningRow)
 		.map(row => {
 			const entry = toLearningEntry(row);
-			const lastActivity = entry.lastReinforcedAt ?? entry.updatedAt;
-			const ageDays = Math.max(0, (opts.nowSec - lastActivity) / 86_400);
-			const score =
-				(entry.strength + 1.5 * entry.usefulCount - 2 * entry.notUsefulCount) * Math.exp(-ageDays / halfLifeDays);
-			return { ...entry, alias: entry.contentHash.slice(0, 12), score };
+			return { ...entry, alias: entry.contentHash.slice(0, 12), score: scoreLearningEntry(entry, opts) };
 		})
-		.filter(entry => entry.notUsefulCount - entry.usefulCount < 3);
-	const selected: RankedLearningEntry[] = [];
-	for (const scope of ["global", "repo"] as const) {
-		selected.push(
-			...ranked
-				.filter(entry => entry.scope === scope)
-				.sort(compareRankedEntries)
-				.slice(0, limit),
-		);
+		.sort(compareRankedEntries);
+}
+
+/** Records that these entries were injected into a prompt; feeds the neglect factor in {@link scoreLearningEntry}. */
+export function markLearningsShown(db: Database, opts: { ids: readonly string[]; nowSec: number }): number {
+	if (opts.ids.length === 0) return 0;
+	const statement = db.prepare(`
+UPDATE live_learnings
+SET shown_count = MIN(9999, shown_count + 1), last_shown_at = ?
+WHERE id = ? AND status = 'active'
+`);
+	return withImmediateTransaction(db, () => {
+		let marked = 0;
+		for (const id of opts.ids) {
+			if (hasChanges(statement.run(opts.nowSec, id))) marked++;
+		}
+		return marked;
+	});
+}
+
+/**
+ * Archives the lowest-ranked active entries of one scope target until at most
+ * `maxActive` remain. Returns the archived ids (best-first order preserved).
+ */
+export function archiveBeyondActiveCap(
+	db: Database,
+	opts: { scope: LearningScope; repoKey: string; maxActive: number; halfLifeDays: number; nowSec: number },
+): string[] {
+	const maxActive = Math.max(0, Math.floor(opts.maxActive));
+	const ranked = rankActiveLearnings(db, opts).filter(entry => entry.scope === opts.scope);
+	const archived: string[] = [];
+	for (const entry of ranked.slice(maxActive)) {
+		if (archiveLearning(db, { id: entry.id, guardUpdatedAt: entry.updatedAt, nowSec: opts.nowSec })) {
+			archived.push(entry.id);
+		}
 	}
-	return selected;
+	return archived;
+}
+
+/**
+ * Archives every active repo-scoped entry whose repository has seen no learning
+ * activity (write, reinforcement, or injection) for `staleDays`. Repositories
+ * are otherwise only consolidated while open, so abandoned checkouts would
+ * accumulate forever. The current repo is never touched, and neither are legacy
+ * rows still keyed by cwd (`repo_key IS NULL`): those may belong to a sibling
+ * worktree of a live repo and are rekeyed by the healing passes first.
+ */
+export function archiveStaleRepoLearnings(
+	db: Database,
+	opts: { excludeRepoKey: string; staleDays: number; nowSec: number },
+): { repoKeys: string[]; archived: number } {
+	const cutoff = opts.nowSec - Math.max(1, opts.staleDays) * 86_400;
+	const staleRepos = db
+		.prepare(`
+SELECT repo_key AS key
+FROM live_learnings
+WHERE scope = 'repo' AND status = 'active' AND repo_key IS NOT NULL AND repo_key <> ?
+GROUP BY repo_key
+HAVING MAX(MAX(updated_at, COALESCE(last_reinforced_at, 0), COALESCE(last_shown_at, 0))) < ?
+ORDER BY repo_key ASC
+`)
+		.all(opts.excludeRepoKey, cutoff) as Array<{ key: string }>;
+	if (staleRepos.length === 0) return { repoKeys: [], archived: 0 };
+	const archive = db.prepare(`
+UPDATE live_learnings
+SET status = 'archived', status_changed_at = ?, merged_into = NULL, updated_at = ?
+WHERE scope = 'repo' AND status = 'active' AND repo_key = ?
+`);
+	return withImmediateTransaction(db, () => {
+		let archived = 0;
+		for (const repo of staleRepos) archived += archive.run(opts.nowSec, opts.nowSec, repo.key).changes;
+		return { repoKeys: staleRepos.map(repo => repo.key), archived };
+	});
 }
 
 export function healCurrentCwdRows(db: Database, opts: { cwd: string; repoKey: string; nowSec: number }): number {
@@ -902,6 +1005,8 @@ function migrateLearningColumns(db: Database): void {
 		{ name: "last_reinforced_at", sql: "ALTER TABLE live_learnings ADD COLUMN last_reinforced_at INTEGER" },
 		{ name: "merged_into", sql: "ALTER TABLE live_learnings ADD COLUMN merged_into TEXT" },
 		{ name: "repo_key", sql: "ALTER TABLE live_learnings ADD COLUMN repo_key TEXT" },
+		{ name: "shown_count", sql: "ALTER TABLE live_learnings ADD COLUMN shown_count INTEGER NOT NULL DEFAULT 0" },
+		{ name: "last_shown_at", sql: "ALTER TABLE live_learnings ADD COLUMN last_shown_at INTEGER" },
 	];
 	for (const migration of migrations) {
 		if (names.has(migration.name)) continue;
@@ -1216,6 +1321,8 @@ function toLearningEntry(row: ValidLearningRow): LearningEntry {
 		usefulCount: row.useful_count,
 		notUsefulCount: row.not_useful_count,
 		lastReinforcedAt: row.last_reinforced_at,
+		shownCount: row.shown_count,
+		lastShownAt: row.last_shown_at,
 		mergedInto: row.merged_into,
 		repoKey: row.repo_key,
 	};

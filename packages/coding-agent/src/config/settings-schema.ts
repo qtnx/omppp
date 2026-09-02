@@ -3421,7 +3421,11 @@ export const SETTINGS_SCHEMA = {
 
 	"learning.maxEntriesPerScope": { type: "number", default: 40 },
 
+	"learning.maxInjectedPerScope": { type: "number", default: 20 },
+
 	"learning.halfLifeDays": { type: "number", default: 45 },
+
+	"learning.staleRepoDays": { type: "number", default: 90 },
 
 	"learning.consolidation.enabled": {
 		type: "boolean",
@@ -3434,7 +3438,7 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"learning.consolidation.intervalDays": { type: "number", default: 7 },
+	"learning.consolidation.intervalDays": { type: "number", default: 1 },
 
 	"learning.consolidation.minEntries": { type: "number", default: 15 },
 

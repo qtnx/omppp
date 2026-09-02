@@ -203,7 +203,7 @@ describe("learnings/consolidate", () => {
 
 		expect(reports).toEqual([
 			{ target: "global", outcome: "applied", opsApplied: 0, opsSkippedStale: 0 },
-			{ target: `repo:${repoKeyValue}`, outcome: "applied", opsApplied: 1, opsSkippedStale: 0 },
+			{ target: `repo:${repoKeyValue}`, outcome: "applied", opsApplied: 1, opsSkippedStale: 0, capArchived: 0 },
 		]);
 		const survivor = readLearningByContent(
 			fixture.db,
@@ -255,6 +255,7 @@ describe("learnings/consolidate", () => {
 			outcome: "applied",
 			opsApplied: 0,
 			opsSkippedStale: 1,
+			capArchived: 0,
 		});
 		expect(readLearningByContent(fixture.db, source.content).content).toBe(source.content);
 	});
@@ -282,6 +283,7 @@ describe("learnings/consolidate", () => {
 			outcome: "applied",
 			opsApplied: 0,
 			opsSkippedStale: 1,
+			capArchived: 0,
 		});
 		expect(
 			fixture.db.prepare("SELECT COUNT(*) AS count FROM live_learnings WHERE content = ?").get(mergedContent),
@@ -553,5 +555,128 @@ describe("learnings/consolidate", () => {
 		expect(resolveKeySpy).toHaveBeenCalledWith(sibling);
 		expect(readLearningByContent(fixture.db, "Sibling legacy learning.")).toMatchObject({ repo_key: repoKeyValue });
 		expect(subprocessSpy.mock.calls[0]?.[0]?.task).toContain("Sibling legacy learning.");
+	});
+	test("batches large repo snapshots into disjoint bounded subprocess tasks", async () => {
+		const fixture = await createFixture();
+		const repoKeyValue = path.dirname(fixture.cwd);
+		vi.spyOn(repoKey, "resolveRepoKey").mockResolvedValue(repoKeyValue);
+		const seeded = Array.from({ length: 130 }, (_, index) =>
+			store(fixture, `Batching learning entry ${String(index).padStart(3, "0")}.`, 100 + index, repoKeyValue),
+		);
+		const subprocessSpy = vi
+			.spyOn(taskExecutor, "runSubprocess")
+			.mockResolvedValue(subprocessResult(JSON.stringify({ ops: [] })));
+
+		const reports = await maybeRunLearningConsolidation(runOptions(fixture, true));
+
+		expect(subprocessSpy).toHaveBeenCalledTimes(3);
+		const calls = subprocessSpy.mock.calls.map(
+			([call]) =>
+				JSON.parse(call.task) as {
+					entries: Array<{ alias: string }>;
+					batch: { index: number; count: number };
+				},
+		);
+		expect(calls.every(call => call.entries.length <= 60)).toBe(true);
+		expect(calls.reduce((sum, call) => sum + call.entries.length, 0)).toBe(130);
+		expect(calls.map(call => call.batch)).toEqual([
+			{ index: 1, count: 3 },
+			{ index: 2, count: 3 },
+			{ index: 3, count: 3 },
+		]);
+		const aliases = calls.flatMap(call => call.entries.map(entry => entry.alias));
+		expect(new Set(aliases).size).toBe(130);
+		expect(new Set(aliases)).toEqual(new Set(seeded.map(alias)));
+		expect(reports[0]).toMatchObject({
+			target: "global",
+			outcome: "applied",
+			opsApplied: 0,
+			opsSkippedStale: 0,
+		});
+		expect(reports[1]).toMatchObject({
+			target: `repo:${repoKeyValue}`,
+			outcome: "applied",
+			opsApplied: 0,
+			opsSkippedStale: 0,
+		});
+	});
+
+	test("uses the configured entry cap for a single consolidation batch", async () => {
+		const fixture = await createFixture({ "learning.consolidation.timeoutMs": 1_000 });
+		const repoKeyValue = path.dirname(fixture.cwd);
+		vi.spyOn(repoKey, "resolveRepoKey").mockResolvedValue(repoKeyValue);
+		for (let index = 0; index < 10; index++) {
+			store(fixture, `Single-batch timeout entry ${String(index).padStart(2, "0")}.`, 100 + index, repoKeyValue);
+		}
+		const subprocessSpy = vi
+			.spyOn(taskExecutor, "runSubprocess")
+			.mockResolvedValue(subprocessResult(JSON.stringify({ ops: [] })));
+
+		const reports = await maybeRunLearningConsolidation(runOptions(fixture, true));
+
+		expect(subprocessSpy).toHaveBeenCalledTimes(1);
+		const task = JSON.parse(subprocessSpy.mock.calls[0]?.[0]?.task ?? "{}") as {
+			maxEntriesPerScope: number;
+			entries: unknown[];
+		};
+		expect(task.maxEntriesPerScope).toBe(40);
+		expect(task.entries).toHaveLength(10);
+		expect(reports[1]).toMatchObject({
+			target: `repo:${repoKeyValue}`,
+			outcome: "applied",
+			opsApplied: 0,
+		});
+	});
+
+	test("rescope moves global learnings to the current repo and rejects invalid scopes", async () => {
+		const fixture = await createFixture();
+		const repoKeyValue = path.dirname(fixture.cwd);
+		const global = storage.upsertLearning(fixture.db, {
+			scope: "global",
+			cwd: "",
+			content: "Global guidance belongs to the active repository.",
+			sourceMessageHash: "global-rescope",
+			trigger: "test",
+			confidence: 0.8,
+			nowSec: 100,
+		});
+		expect(global).toBe(true);
+		const globalRow = readLearningByContent(fixture.db, "Global guidance belongs to the active repository.");
+		vi.spyOn(repoKey, "resolveRepoKey").mockResolvedValue(repoKeyValue);
+		const subprocessSpy = vi
+			.spyOn(taskExecutor, "runSubprocess")
+			.mockResolvedValueOnce(
+				subprocessResult(JSON.stringify({ ops: [{ op: "rescope", id: alias(globalRow), scope: "repo" }] })),
+			)
+			.mockResolvedValue(subprocessResult(JSON.stringify({ ops: [] })));
+
+		const applied = await maybeRunLearningConsolidation(runOptions(fixture, true));
+
+		expect(readLearningByContent(fixture.db, globalRow.content)).toMatchObject({
+			scope: "repo",
+			repo_key: repoKeyValue,
+		});
+		expect(applied[0]).toMatchObject({ target: "global", outcome: "applied", opsApplied: 1 });
+
+		storage.upsertLearning(fixture.db, {
+			scope: "global",
+			cwd: "",
+			content: "Invalid rescope scope must fail the consolidation run.",
+			sourceMessageHash: "invalid-rescope",
+			trigger: "test",
+			confidence: 0.8,
+			nowSec: 101,
+		});
+		const invalidRow = readLearningByContent(fixture.db, "Invalid rescope scope must fail the consolidation run.");
+		subprocessSpy
+			.mockReset()
+			.mockResolvedValueOnce(
+				subprocessResult(JSON.stringify({ ops: [{ op: "rescope", id: alias(invalidRow), scope: "nope" }] })),
+			)
+			.mockResolvedValue(subprocessResult(JSON.stringify({ ops: [] })));
+
+		const failed = await maybeRunLearningConsolidation(runOptions(fixture, true));
+
+		expect(failed[0]).toMatchObject({ target: "global", outcome: "failed" });
 	});
 });
