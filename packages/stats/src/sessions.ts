@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getSessionsDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { getSessionAggregates, initDb } from "./db";
-import type { SessionListResponse, SessionStatsAggregate, SessionSummary, SessionTrace, TraceNode } from "./types";
+import type { SessionListResponse, SessionListTrace, SessionStatsAggregate, SessionSummary, TraceNode } from "./types";
 
 const SESSION_SUFFIX = ".jsonl";
 const SESSION_PREFIX_BYTES = 512 * 1024;
@@ -467,7 +467,7 @@ function findTaskResultEntryId(
 	return undefined;
 }
 
-function buildTraceNodes(entries: JsonRecord[], subtracesByEntryId: Map<string, SessionTrace[]>): TraceNode[] {
+function buildTraceNodes(entries: JsonRecord[], subtracesByEntryId: Map<string, SessionListTrace[]>): TraceNode[] {
 	const nodesById = new Map<string, TraceNode>();
 	const roots: TraceNode[] = [];
 	let syntheticId = 0;
@@ -509,7 +509,7 @@ async function loadTrace(
 	context: LoadTraceContext,
 	depth: number,
 	parentPath?: string,
-): Promise<SessionTrace | null> {
+): Promise<SessionListTrace | null> {
 	const resolved = path.resolve(sessionFile);
 	if (context.seen.has(resolved)) return null;
 	context.seen.add(resolved);
@@ -521,7 +521,7 @@ async function loadTrace(
 		throw err;
 	}
 	const childFiles = depth >= context.maxDepth ? [] : await listDirectSubagentFiles(resolved);
-	const childTraces: Array<{ trace: SessionTrace; attachEntryId?: string }> = [];
+	const childTraces: Array<{ trace: SessionListTrace; attachEntryId?: string }> = [];
 	let truncatedSubtraces = false;
 	for (const childFile of childFiles) {
 		if (context.loadedSubtraces.count >= context.maxSubtraces) {
@@ -545,8 +545,8 @@ async function loadTrace(
 		entries,
 	);
 	if (!summary) return null;
-	const byEntry = new Map<string, SessionTrace[]>();
-	const orphanSubtraces: SessionTrace[] = [];
+	const byEntry = new Map<string, SessionListTrace[]>();
+	const orphanSubtraces: SessionListTrace[] = [];
 	for (const child of childTraces) {
 		if (child.attachEntryId) {
 			const list = byEntry.get(child.attachEntryId) ?? [];
@@ -568,7 +568,7 @@ async function loadTrace(
 export async function getSessionTrace(
 	sessionFile: string,
 	options: SessionTraceOptions = {},
-): Promise<SessionTrace | null> {
+): Promise<SessionListTrace | null> {
 	await initDb();
 	const maxDepth = clampInt(options.maxDepth, DEFAULT_TRACE_DEPTH, 0, MAX_TRACE_DEPTH);
 	const maxSubtraces = clampInt(options.maxSubtraces, DEFAULT_TRACE_SUBTRACES, 0, MAX_TRACE_SUBTRACES);

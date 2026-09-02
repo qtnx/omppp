@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import { scheduler } from "node:timers/promises";
 import * as tls from "node:tls";
 import { isAnthropicSigningProxyUrl, isOfficialAnthropicApiUrl } from "@oh-my-pi/pi-catalog/compat/anthropic";
+import { classifyModel } from "@oh-my-pi/pi-catalog/compat/taxonomy";
 import { hostMatchesUrl, isVertexRawPredictUrl } from "@oh-my-pi/pi-catalog/hosts";
-import { isFableOrMythos, parseAnthropicModel } from "@oh-my-pi/pi-catalog/identity/classify";
 import { mapEffortToAnthropicAdaptiveEffort } from "@oh-my-pi/pi-catalog/model-thinking";
 import { calculateCost, getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { isAnthropicOAuthToken } from "@oh-my-pi/pi-catalog/utils";
@@ -178,6 +178,7 @@ const oauthAuthBeta = "oauth-2025-04-20";
 const midConversationSystemBeta = "mid-conversation-system-2026-04-07";
 const contextManagementBeta = "context-management-2025-06-27";
 const structuredOutputsBeta = "structured-outputs-2025-12-15";
+const advancedToolUseBeta = "advanced-tool-use-2025-11-20";
 const thinkingTokenCountBeta = "thinking-token-count-2026-05-13";
 const fallbackCreditBeta = "fallback-credit-2026-06-01";
 const claudeCodeUtilityBetaDefaults = [
@@ -196,6 +197,7 @@ const claudeCodeAgentBetaDefaults = [
 	contextManagementBeta,
 	"prompt-caching-scope-2026-01-05",
 	midConversationSystemBeta,
+	advancedToolUseBeta,
 ] as const;
 const extendedCacheTtlBeta = "extended-cache-ttl-2025-04-11";
 const fineGrainedToolStreamingBeta = "fine-grained-tool-streaming-2025-05-14";
@@ -228,12 +230,14 @@ function buildClaudeCodeBetas({
 	disableStrictTools = false,
 	redactThinking = false,
 	supportsContextManagement = true,
+	includeAdvancedToolUse = true,
 }: {
 	agentRequest: boolean;
 	thinkingRequest: boolean;
 	disableStrictTools?: boolean;
 	redactThinking?: boolean;
 	supportsContextManagement?: boolean;
+	includeAdvancedToolUse?: boolean;
 }): readonly string[] {
 	// `context-1m-2025-08-07` is intentionally never advertised. OAuth
 	// subscription credentials have no long-context credit balance, so Anthropic
@@ -244,7 +248,9 @@ function buildClaudeCodeBetas({
 		return claudeCodeUtilityBetaDefaults;
 	const betas: string[] = [];
 	for (const beta of agentRequest ? claudeCodeAgentBetaDefaults : claudeCodeUtilityBetaDefaults) {
+		if (!includeAdvancedToolUse && beta === advancedToolUseBeta) continue;
 		if (disableStrictTools && beta === structuredOutputsBeta) continue;
+		if (!supportsContextManagement && beta === contextManagementBeta) continue;
 		betas.push(beta);
 		if (redactThinking && beta === interleavedThinkingBeta) betas.push(redactThinkingBeta);
 	}
@@ -297,7 +303,9 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 	// requests default to extras only, matching the streaming path.
 	const betaHeader = buildBetaHeader(
 		options.claudeCodeBetas ??
-			(oauthToken ? buildClaudeCodeBetas({ agentRequest: true, thinkingRequest: true }) : []),
+			(oauthToken
+				? buildClaudeCodeBetas({ agentRequest: true, thinkingRequest: true, includeAdvancedToolUse: false })
+				: []),
 		extraBetas,
 	);
 	const acceptHeader = oauthToken ? "application/json" : stream ? "text/event-stream" : "application/json";
@@ -2127,7 +2135,7 @@ const streamAnthropicOnce = (
 			// no nested effort field means the fallback scan cannot re-add its beta.
 			let fallbacks = options?.fallbacks;
 			if (
-				model.provider === "google-vertex" &&
+				!model.compat.supportsOutputEffort &&
 				fallbacks?.some(entry => entry.output_config?.effort !== undefined)
 			) {
 				fallbacks = fallbacks.map(entry => {
@@ -2182,7 +2190,7 @@ const streamAnthropicOnce = (
 						(model.compat.supportsForcedToolChoice && isForcedToolChoice(options?.toolChoice)));
 				if (
 					model.reasoning &&
-					model.provider !== "google-vertex" &&
+					model.compat.supportsOutputEffort &&
 					((options?.thinkingEnabled && options.effort !== "adaptive") || sendsAdaptiveEffortPin) &&
 					!extraBetas.includes(effortBeta)
 				) {
@@ -2203,17 +2211,12 @@ const streamAnthropicOnce = (
 				// `context_management.clear_thinking_20251015` requires this beta. OAuth
 				// requests carry it in `claudeCodeAgentBetaDefaults`; API-key requests
 				// need it added explicitly so the field is honored instead of rejected
-				// (#3288). Skip transports where this package cannot deliver or the
-				// provider cannot accept the beta: Copilot strips Anthropic betas;
-				// Vertex rawPredict needs betas in the body (`anthropic_beta`), not as
-				// an `anthropic-beta` HTTP header; and OpenCode Zen rejects the related
-				// `context_management` field (#6510).
+				// (#3288). Provider deployment contracts that cannot deliver or accept
+				// context management disable it through model compatibility policy.
 				if (
 					model.reasoning &&
 					options?.thinkingEnabled &&
-					model.provider !== "github-copilot" &&
-					model.provider !== "google-vertex" &&
-					model.provider !== "opencode-zen" &&
+					model.compat.supportsContextManagement !== false &&
 					!extraBetas.includes(contextManagementBeta)
 				) {
 					extraBetas.push(contextManagementBeta);
@@ -3476,6 +3479,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 					disableStrictTools,
 					redactThinking: shouldUseCoworkRedactThinkingBeta(model, thinkingEnabled, thinkingDisplay),
 					supportsContextManagement: model.compat.supportsContextManagement,
+					includeAdvancedToolUse: false,
 				})
 			: [],
 	});
@@ -3567,7 +3571,7 @@ function disableThinkingIfToolChoiceForced(
 	// body (dropped there too, see buildParams), so it keeps the delete behavior.
 	// The effort beta itself is attached at the request site — including per-request
 	// for injected SDK clients that bypass client-level beta construction.
-	if (isAdaptiveOnlyThinking(model) && model.provider !== "google-vertex") {
+	if (isAdaptiveOnlyThinking(model) && model.compat.supportsOutputEffort) {
 		const outputConfig = (params.output_config as AnthropicOutputConfig | undefined) ?? {};
 		outputConfig.effort = "low";
 		params.output_config = outputConfig;
@@ -3838,8 +3842,8 @@ function effectiveThinkingDisplay(
 	if (thinkingDisplay !== undefined) return thinkingDisplay;
 	if (!thinkingEnabled) return undefined;
 	if (!model.thinking?.supportsDisplay) return undefined;
-	const parsed = parseAnthropicModel(model.id);
-	return parsed && isFableOrMythos(parsed.kind) ? "omitted" : "summarized";
+	const family = classifyModel("anthropic", model.id, { lenient: true }).family;
+	return family === "fable" || family === "mythos" ? "omitted" : "summarized";
 }
 
 function shouldUseCoworkRedactThinkingBeta(
@@ -3848,8 +3852,8 @@ function shouldUseCoworkRedactThinkingBeta(
 	thinkingDisplay: AnthropicThinkingDisplay | undefined,
 ): boolean {
 	if (effectiveThinkingDisplay(model, thinkingEnabled, thinkingDisplay) !== "omitted") return false;
-	const parsed = parseAnthropicModel(model.id);
-	return parsed !== null && isFableOrMythos(parsed.kind);
+	const family = classifyModel("anthropic", model.id, { lenient: true }).family;
+	return family === "fable" || family === "mythos";
 }
 function usesAdaptiveThinkingTagOnly(model: Model<"anthropic-messages">): boolean {
 	const thinking = model.thinking;
@@ -4174,7 +4178,7 @@ function buildParams(
 		: undefined;
 
 	// Pre-compute system blocks so they occupy the right slot in the serialized body.
-	const shouldInjectClaudeCodeInstruction = isOAuthToken && !model.id.startsWith("claude-3-5-haiku");
+	const shouldInjectClaudeCodeInstruction = isOAuthToken && model.compat.injectClaudeCodeInstruction !== false;
 	const firstUserMessageText = shouldInjectClaudeCodeInstruction
 		? extractClaudeCodeFirstUserMessageText(context.messages)
 		: "";
@@ -4191,7 +4195,7 @@ function buildParams(
 		tools = convertTools(
 			context.tools,
 			isOAuthToken,
-			disableStrictTools || model.provider === "github-copilot",
+			disableStrictTools,
 			supportsEagerToolInputStreaming,
 			model.compat.escapeBuiltinToolNames,
 			useUmansGatewayWebSearch,
@@ -4277,20 +4281,12 @@ function buildParams(
 	// and the KV cache misses every turn (#3288). Narrowing this guard back
 	// to `isOAuthToken` regresses every API-key thinking provider. Skip
 	// injected clients because this code cannot add the required
-	// `context-management-2025-06-27` beta to caller-owned SDK clients. Skip
-	// Copilot because its proxy strips Anthropic betas and demotes thinking
-	// blocks to text upstream, so `keep: "all"` is a no-op that risks proxy
-	// rejection of an unrecognized field. Skip Vertex rawPredict because that
-	// adapter requires betas in the JSON body (`anthropic_beta`) instead of the
-	// Anthropic HTTP beta header this code can add. Skip OpenCode Zen because
-	// its Anthropic proxy rejects the unrecognized `context_management` field
-	// with `400 Extra inputs are not permitted` on several Claude families
-	// (#6510) — same rationale as Copilot.
+	// `context-management-2025-06-27` beta to caller-owned SDK clients.
+	// Providers that cannot deliver or accept context management disable it
+	// through model compatibility policy.
 	const shouldKeepThinkingContext =
 		!options?.client &&
-		model.provider !== "github-copilot" &&
-		model.provider !== "google-vertex" &&
-		model.provider !== "opencode-zen" &&
+		model.compat.supportsContextManagement !== false &&
 		(thinking?.type === "adaptive" || thinking?.type === "enabled");
 	const contextManagement = shouldKeepThinkingContext
 		? { edits: [{ type: "clear_thinking_20251015" as const, keep: "all" as const }] }

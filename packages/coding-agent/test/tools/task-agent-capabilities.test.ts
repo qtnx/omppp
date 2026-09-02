@@ -24,7 +24,20 @@ describe("task agent capability descriptions", () => {
 		}
 	});
 
-	it("disables read summarization for explore and librarian, leaves other agents summarizing", () => {
+	it("does not classify an agent declaring `hub` as read-only", () => {
+		// `hub` resolves to exec approval for start/stop/restart, process-stdin
+		// `send`, unrecognized ops and malformed params, so declaring it must
+		// disqualify an agent from the read-only label surfaced to the model.
+		const scout = agentByName(loadBundledAgents(), "scout");
+
+		expect(isReadOnlyAgent({ ...scout, tools: ["read", "grep", "hub", "yield"] })).toBe(false);
+		expect(isReadOnlyAgent({ ...scout, tools: ["hub"] })).toBe(false);
+
+		// Guard against over-correcting: the positive case must still hold.
+		expect(isReadOnlyAgent({ ...scout, tools: ["read", "grep", "yield"] })).toBe(true);
+	});
+
+	it("disables read summarization for scout and librarian, leaves other agents summarizing", () => {
 		const agents = loadBundledAgents();
 
 		expect(agentByName(agents, "explore").readSummarize).toBe(false);

@@ -13,7 +13,7 @@ import {
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import "../vendor/euphony/euphony.js";
 import { getSessions, getSessionTrace } from "../api";
-import type { SessionSummary, SessionTrace, TraceNode } from "../types";
+import type { SessionListTrace, SessionSummary, TraceNode } from "../types";
 
 interface TracesViewProps {
 	onSelectRequest?: (id: number) => void;
@@ -232,7 +232,7 @@ function pushEuphonyNode(node: TraceNode, messages: EuphonyMessage[]): void {
 	}
 }
 
-function toEuphonyConversation(trace: SessionTrace): EuphonyConversationData {
+function toEuphonyConversation(trace: SessionListTrace): EuphonyConversationData {
 	const messages: EuphonyMessage[] = [];
 	for (const node of trace.nodes) {
 		pushEuphonyNode(node, messages);
@@ -257,7 +257,7 @@ interface PromptContext {
 	tools: string[];
 }
 
-function traceDisplayName(trace: SessionTrace): string {
+function traceDisplayName(trace: SessionListTrace): string {
 	if (trace.summary.depth === 0) return "Root session";
 	return trace.summary.agentName || trace.summary.parentTaskId || trace.summary.title || "Subagent";
 }
@@ -282,7 +282,7 @@ function collectPromptContextNode(node: TraceNode, prompts: PromptContext[], lab
 }
 
 /** System prompts recorded in THIS trace only (subagents own their own panel). */
-function collectPromptContexts(trace: SessionTrace): PromptContext[] {
+function collectPromptContexts(trace: SessionListTrace): PromptContext[] {
 	const prompts: PromptContext[] = [];
 	const label = traceDisplayName(trace);
 	for (const node of trace.nodes) {
@@ -292,8 +292,8 @@ function collectPromptContexts(trace: SessionTrace): PromptContext[] {
 }
 
 /** Direct subagent traces spawned by THIS trace (attached to tool results + orphans). */
-function collectDirectSubagents(trace: SessionTrace): SessionTrace[] {
-	const subagents: SessionTrace[] = [];
+function collectDirectSubagents(trace: SessionListTrace): SessionListTrace[] {
+	const subagents: SessionListTrace[] = [];
 	const walk = (nodes: TraceNode[]): void => {
 		for (const node of nodes) {
 			subagents.push(...node.subtraces);
@@ -305,7 +305,7 @@ function collectDirectSubagents(trace: SessionTrace): SessionTrace[] {
 	return subagents;
 }
 
-function countNestedSubagents(trace: SessionTrace): number {
+function countNestedSubagents(trace: SessionListTrace): number {
 	const direct = collectDirectSubagents(trace);
 	let total = direct.length;
 	for (const sub of direct) total += countNestedSubagents(sub);
@@ -326,7 +326,7 @@ function collectEventNodes(nodes: TraceNode[]): TraceNode[] {
 }
 
 interface SubagentNav {
-	open: (trace: SessionTrace) => void;
+	open: (trace: SessionListTrace) => void;
 }
 
 const SubagentNavContext = createContext<SubagentNav | null>(null);
@@ -342,12 +342,12 @@ export function TracesView({ onSelectRequest }: TracesViewProps) {
 	const [sessions, setSessions] = useState<SessionSummary[]>([]);
 	const [query, setQuery] = useState("");
 	const [loadingSessions, setLoadingSessions] = useState(true);
-	const [trace, setTrace] = useState<SessionTrace | null>(null);
+	const [trace, setTrace] = useState<SessionListTrace | null>(null);
 	const [traceLoading, setTraceLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [modalStack, setModalStack] = useState<SessionTrace[]>([]);
+	const [modalStack, setModalStack] = useState<SessionListTrace[]>([]);
 
-	const openSubagent = useCallback((sub: SessionTrace) => {
+	const openSubagent = useCallback((sub: SessionListTrace) => {
 		setModalStack(stack => [...stack, sub]);
 	}, []);
 	const nav = useMemo<SubagentNav>(() => ({ open: openSubagent }), [openSubagent]);
@@ -496,7 +496,7 @@ function TraceHeader({
 	loading,
 	error,
 }: {
-	trace: SessionTrace | null;
+	trace: SessionListTrace | null;
 	loading: boolean;
 	error: string | null;
 }) {
@@ -532,7 +532,7 @@ function TraceHeader({
 	);
 }
 
-function TraceConversation({ trace }: { trace: SessionTrace }) {
+function TraceConversation({ trace }: { trace: SessionListTrace }) {
 	return (
 		<div className="max-w-[1120px] mx-auto space-y-5">
 			<TraceSummary trace={trace} />
@@ -550,7 +550,7 @@ function TraceConversation({ trace }: { trace: SessionTrace }) {
 	);
 }
 
-function SubagentsPanel({ trace }: { trace: SessionTrace }) {
+function SubagentsPanel({ trace }: { trace: SessionListTrace }) {
 	const subagents = useMemo(() => collectDirectSubagents(trace), [trace]);
 	const [expanded, setExpanded] = useState(true);
 	if (subagents.length === 0) return null;
@@ -584,7 +584,7 @@ function SubagentsPanel({ trace }: { trace: SessionTrace }) {
 	);
 }
 
-function SubagentCard({ trace }: { trace: SessionTrace }) {
+function SubagentCard({ trace }: { trace: SessionListTrace }) {
 	const nav = useSubagentNav();
 	const nested = useMemo(() => countNestedSubagents(trace), [trace]);
 	const stats = trace.summary.stats;
@@ -617,7 +617,7 @@ function SubagentModal({
 	onClose,
 	onNavigate,
 }: {
-	stack: SessionTrace[];
+	stack: SessionListTrace[];
 	rootLabel: string;
 	onClose: () => void;
 	onNavigate: (index: number) => void;
@@ -681,7 +681,7 @@ function SubagentModal({
 	);
 }
 
-function TraceSummary({ trace }: { trace: SessionTrace }) {
+function TraceSummary({ trace }: { trace: SessionListTrace }) {
 	const stats = trace.summary.stats;
 	return (
 		<div className="surface-elevated p-4 grid grid-cols-2 xl:grid-cols-5 gap-4">
@@ -736,7 +736,7 @@ function CompactEventRow({ node }: { node: TraceNode }) {
 	);
 }
 
-function PromptContextPanel({ trace }: { trace: SessionTrace }) {
+function PromptContextPanel({ trace }: { trace: SessionListTrace }) {
 	const prompts = useMemo(() => collectPromptContexts(trace), [trace]);
 	const isRoot = trace.summary.depth === 0;
 	const tools = useMemo(() => [...new Set(prompts.flatMap(prompt => prompt.tools))], [prompts]);
@@ -784,7 +784,7 @@ function PromptContextPanel({ trace }: { trace: SessionTrace }) {
 	);
 }
 
-function EuphonyConversationPanel({ trace }: { trace: SessionTrace }) {
+function EuphonyConversationPanel({ trace }: { trace: SessionListTrace }) {
 	const full = useMemo(() => toEuphonyConversation(trace), [trace]);
 	const [pageSize, setPageSize] = useState<number>(DEFAULT_TRACE_PAGE_SIZE);
 	const [page, setPage] = useState(0);

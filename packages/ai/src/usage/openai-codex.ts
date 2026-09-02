@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { quotaTierFor } from "@oh-my-pi/pi-catalog/compat/behavior";
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
 import { USER_AGENT } from "@oh-my-pi/pi-utils";
 import type {
@@ -570,10 +571,6 @@ function isCodexSparkPoolLimit(limit: UsageLimit): boolean {
 	return limit.scope.tier === "spark" || limit.id.startsWith("openai-codex:spark:");
 }
 
-function isCodexSparkModel(modelId: string | undefined): boolean {
-	return typeof modelId === "string" && modelId.includes("-spark");
-}
-
 // A Codex request gates only on the windows it actually consumes. A `-spark`
 // model spends the separate Spark meter; every other Codex model spends the
 // 5h/weekly chat windows. Scoping the gating set this way keeps an exhausted
@@ -594,7 +591,7 @@ function scopeCodexLimitsForRequest(report: UsageReport, context?: CredentialRan
 
 /** True when the requested model spends the separate Spark meter. */
 function isCodexSparkRequest(context?: CredentialRankingContext): boolean {
-	return isCodexSparkModel(context?.modelId);
+	return context?.modelId !== undefined && quotaTierFor("openai-codex", context.modelId) === "spark";
 }
 
 /** Chat-window backoff scope this fork persisted before the scope was renamed to `chat`. */

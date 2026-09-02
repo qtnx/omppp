@@ -1,4 +1,4 @@
-import { parseGeminiModel } from "@oh-my-pi/pi-catalog/identity";
+import { classifyModel, parseRevision } from "@oh-my-pi/pi-catalog/identity";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { fetchWithRetry, readSseJson } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
@@ -700,9 +700,10 @@ function resolveInteractionAnchor(
  * transport, so the catalog subset that supports it is Gemini 3.0+. Older Gemini and non-Gemini
  * ids keep `:streamGenerateContent`, which covers the full catalog.
  */
-export function modelSupportsInteractions(model: Pick<Model, "id">): boolean {
-	const parsed = parseGeminiModel(model.id);
-	return parsed !== null && parsed.version.major >= 3;
+export function modelSupportsInteractions(model: Pick<Model, "id" | "provider">): boolean {
+	const identity = classifyModel(model.provider, model.id, { lenient: true });
+	const revision = identity.revision === undefined ? undefined : parseRevision(identity.revision);
+	return identity.class === "gemini" && revision !== undefined && revision[0] >= 3;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { scheduler } from "node:timers/promises";
-import { bareModelId, parseAnthropicModel } from "@oh-my-pi/pi-catalog/identity";
+import { classifyModel } from "@oh-my-pi/pi-catalog/compat/taxonomy";
 import { toNumber } from "@oh-my-pi/pi-catalog/utils";
 import * as AIError from "../error";
 import { claudeCodeVersion } from "../providers/claude-code-fingerprint";
@@ -703,17 +703,11 @@ export const claudeUsageProvider: UsageProvider = {
 	supports: params => params.provider === "anthropic" && params.credential.type === "oauth",
 };
 
-/** Map a model id to its tier-specific window scope (case-insensitive substring match). */
-function claudeModelTier(modelId: string | undefined): ClaudeModelKind | undefined {
-	if (typeof modelId !== "string") return undefined;
-	const parsed = parseAnthropicModel(bareModelId(modelId))?.kind;
-	if (parsed) return parsed;
-	const lower = modelId.toLowerCase();
-	if (lower.includes("opus")) return "opus";
-	if (lower.includes("sonnet")) return "sonnet";
-	if (lower.includes("fable")) return "fable";
-	if (lower.includes("mythos")) return "mythos";
-	return undefined;
+function getClaudeModelKind(context: CredentialRankingContext | undefined): ClaudeModelKind | undefined {
+	const modelId = context?.modelId;
+	if (!modelId) return undefined;
+	const family = classifyModel("anthropic", modelId).family;
+	return family === "opus" || family === "sonnet" || family === "fable" || family === "mythos" ? family : undefined;
 }
 
 function isClaudeSharedLimit(limit: UsageLimit): boolean {
@@ -722,6 +716,9 @@ function isClaudeSharedLimit(limit: UsageLimit): boolean {
 
 function isClaudeTierLimit(limit: UsageLimit, tier: ClaudeModelKind): boolean {
 	return limit.id === `anthropic:7d:${tier}` || limit.scope.tier?.toLowerCase() === tier;
+}
+function claudeModelTier(modelId: string | undefined): ClaudeModelKind | undefined {
+	return getClaudeModelKind(modelId === undefined ? undefined : { modelId });
 }
 
 /**

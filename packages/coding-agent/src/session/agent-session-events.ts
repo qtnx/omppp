@@ -58,6 +58,7 @@ export type AgentSessionEvent =
 	| { type: "model_changed" }
 	| { type: "config_warnings_changed" }
 	| { type: "advisor_cost_changed" }
+	| { type: "advisor_yielded" }
 	| { type: "ttsr_triggered"; rules: Rule[] }
 	| { type: "todo_reminder"; todos: TodoItem[]; attempt: number; maxAttempts: number }
 	| { type: "todo_auto_clear" }

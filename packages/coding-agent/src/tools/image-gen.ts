@@ -2,7 +2,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { type ApiKey, type FetchImpl, getEnvApiKey, getOpenRouterHeaders, type Model, withAuth } from "@oh-my-pi/pi-ai";
+import {
+	type ApiKey,
+	type FetchImpl,
+	getEnvApiKey,
+	getOpenRouterHeaders,
+	isOfficialCodexApiUrl,
+	type Model,
+	withAuth,
+} from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import {
 	applyCodexResidencyHeader,
@@ -706,10 +714,9 @@ function resolveDefaultCodexImageModel(modelRegistry: ModelRegistry): Model | un
 }
 
 /**
- * Codex subscription credentials require a connected account claim. API keys
- * under the provider cannot use the ChatGPT image backend, so leave them for
- * the remaining providers instead of treating them as usable credentials.
- *
+ * Official Codex subscription credentials require a connected account claim.
+ * Custom Codex-compatible endpoints may use opaque credentials; API keys for
+ * the official ChatGPT backend cannot, so leave those for remaining providers.
  * Resolution is deliberately independent of the session's model: the only
  * model-derived preference is that a session ALREADY chatting with a Codex
  * hosted-image model keeps generating through that exact model (same account,
@@ -724,14 +731,16 @@ async function findCodexSubscriptionImageCredentials(
 ): Promise<ImageApiKey | null> {
 	if (!modelRegistry) return null;
 	const token = await modelRegistry.getApiKeyForProvider("openai-codex", sessionId);
-	if (!token || !getCodexAccountId(token)) return null;
+	if (!token) return null;
 	const model =
 		isOpenAIHostedImageModel(activeModel) && getOpenAIHostedImageProvider(activeModel) === "openai-codex"
 			? activeModel
 			: resolveDefaultCodexImageModel(modelRegistry);
 	if (!model) return null;
+	const acceptsOpaqueCredentials = !isOfficialCodexApiUrl(getOpenAIResponsesUrl(model));
+	if (!acceptsOpaqueCredentials && !getCodexAccountId(token)) return null;
 	const apiKey = await modelRegistry.getApiKey(model, sessionId);
-	if (!isAuthenticated(apiKey) || !getCodexAccountId(apiKey)) return null;
+	if (!isAuthenticated(apiKey) || (!acceptsOpaqueCredentials && !getCodexAccountId(apiKey))) return null;
 	return { provider: "openai-codex", apiKey, model };
 }
 

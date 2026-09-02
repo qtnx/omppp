@@ -86,13 +86,41 @@ export interface SessionCustomMessageEntry {
 	display: boolean;
 }
 
+export interface SessionModelUsageEntry {
+	type: "model_usage";
+	id: string;
+	parentId: string | null;
+	timestamp: string;
+	purpose: string;
+	role?: string;
+	api: string;
+	provider: string;
+	model: string;
+	usage: Usage;
+	stopReason?: StopReason;
+	errorMessage?: string;
+}
+
+/**
+ * Custom journal entry (`tool_execution_start`, `session_exit`, …). Mirrors
+ * the coding-agent shape structurally — stats never imports coding-agent.
+ */
 export interface SessionCustomEntry {
 	type: "custom";
-	id: string;
+	id?: string;
 	parentId?: string | null;
-	timestamp: string;
+	timestamp?: string;
 	customType: string;
-	data?: unknown;
+	data?: Record<string, unknown>;
+}
+
+/** Structural variants the trace builder matches on beyond messages. */
+export interface SessionTypedEntry {
+	type: "session_init" | "compaction" | "model_change" | "mode_change" | "reset_boundary";
+	id?: string;
+	parentId?: string | null;
+	timestamp?: string;
+	[key: string]: unknown;
 }
 
 export type SessionEntry =
@@ -100,7 +128,9 @@ export type SessionEntry =
 	| SessionMessageEntry
 	| SessionServiceTierChangeEntry
 	| SessionCustomMessageEntry
+	| SessionModelUsageEntry
 	| SessionCustomEntry
+	| SessionTypedEntry
 	| { type: string };
 
 /**
