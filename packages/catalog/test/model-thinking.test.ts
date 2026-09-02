@@ -708,6 +708,48 @@ describe("model thinking derivation", () => {
 		expect(sonnet5Bedrock.thinking?.supportsDisplay).toBe(true);
 	});
 
+	it("bakes Fable 5.1 prefix binding and first-party controls", () => {
+		const direct = createModel({
+			id: "claude-fable-5-1",
+			api: "anthropic-messages",
+			provider: "anthropic",
+		});
+		const vertex = createModel({
+			id: "claude-fable-5-1",
+			api: "anthropic-messages",
+			provider: "google-vertex",
+		});
+		const bedrock = createModel({
+			id: "global.anthropic.claude-fable-5-1-v1:0",
+			api: "bedrock-converse-stream",
+			provider: "amazon-bedrock",
+		});
+
+		expect(direct.thinking?.prefixBinding).toBe(true);
+		expect(vertex.thinking?.prefixBinding).toBe(true);
+		expect(bedrock.thinking?.prefixBinding).toBe(true);
+		expect(direct.compat.supportsThinkingBindingControls).toBe(true);
+		expect(direct.compat.supportsMidConversationToolChanges).toBe(true);
+		expect(direct.compat.supportsPerMessageEffort).toBe(true);
+		expect(direct.compat.supportsTurnScopedSystem).toBe(true);
+	});
+
+	it("classifies OpenAI-schema Bedrock models as effort, leaving gpt-oss on budget", () => {
+		// Bedrock serves the GPT-5.x SKUs through OpenAI's own request schema,
+		// which rejects Anthropic's budget block: `unknown_parameter: 'thinking'`.
+		for (const id of ["global.openai.gpt-5.6-luna", "global.openai.gpt-5.6-sol", "global.openai.gpt-5.6-terra"]) {
+			expect(createModel({ id, api: "bedrock-converse-stream", provider: "amazon-bedrock" }).thinking?.mode).toBe(
+				"effort",
+			);
+		}
+
+		// gpt-oss is not a `gpt-<digits>` id, so it stays unclassified and keeps
+		// the budget path it ships with today.
+		expect(
+			createModel({ id: "openai.gpt-oss-120b", api: "bedrock-converse-stream", provider: "amazon-bedrock" }).thinking
+				?.mode,
+		).toBe("budget");
+	});
 	it("backfills wire facts onto explicit thinking, explicit values winning", () => {
 		// Authored partial ladders on wire-exact models normalize to the
 		// model-defined ladder, and the wire map is re-derived alongside:

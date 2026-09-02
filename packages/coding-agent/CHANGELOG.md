@@ -20,6 +20,31 @@
 ### Changed
 
 - Long-running Anthropic sessions now keep recalled memory in conversation context instead of the system prompt, allowing later turns to reuse the growing prompt cache.
+- Synced with upstream oh-my-pi v17.3.4. The OMPx divergences are preserved: fork version line, `ompx` branding and `qtnx/omppp` self-update source, the `quick_task`/`task`/`heavy_task` implementer tiers (upstream's `sonic` rename is not adopted), fork-only packages and features, and the fork-shaped CI. Upstream's native `pdfToMarkdown` pipeline replaces the mupdf-wasm PDF path, so the `mupdf` dependency and the `gen:mupdf` scripts are gone.
+- The orchestrate contract stays tool-agnostic instead of adopting upstream's Handlebars per-tool gating: it defers to "the active toolset" rather than naming `edit`/`write`, so it can never advertise a tool the session lacks.
+- Footer and status-line context usage no longer reopen the Context GC database on every render: effective-token estimates are memoized until the branch, message list, or base token count changes.
+- Increased default input delay in trace CLI to 3s
+- Reworked the sloppy edit format's payload surface from `§`/`«`/`»`/`⟪│⟫` markers to XML tags: `<SM:EDIT path="…">` (with optional `all`), `<SM:FIND>` current text, `<SM:PUT>` final text; content between tags is raw file bytes with no entity escaping, and edit errors now return copy-ready XML payloads.
+
+### Fixed
+
+- Improved chat history stability during long-running sessions by preventing unnecessary message modification when date or directory context changes
+- Fixed `bun claude:trace` hanging due to a TLS ClientHello race condition in the proxy MITM bridge and added forward HTTP proxy support.
+- Fixed an invalid Lark grammar error in sloppy edit constrained decoding caused by unsupported regex lookahead.
+
+## [18.1.1] - 2026-09-01
+
+### Fixed
+
+- Fixed a native crash (and multi-gigabyte committed-memory growth held until exit) when git status ran over worktrees with tens of thousands of untracked files: whole-worktree porcelain status now runs through the git CLI with bounded output capture, falling back to the in-process gitoxide walk only when git is not installed, and any panic escaping a native VCS operation now surfaces as a structured `VcsError` instead of a process-level failure.
+
+## [18.1.0] - 2026-09-01
+
+## [1.7.2] - 2026-08-14
+### Added
+
+- Added `/loop list`, `/loop stop <id>`, `/loop cancel <id>`, and all-loop cancellation so loops scheduled by the agent can be inspected and stopped without leaving interactive loop mode.
+- Integrated CodeGraph as a managed built-in: OMPx now installs or upgrades the CodeGraph executable, initializes or syncs each top-level workspace in the background, exposes `codegraph_init`, `codegraph_index`, and default-active `codegraph_explore` tools, and guides the model to use indexed source and call paths before falling back to file-by-file exploration.
 - Delegated task, workflow, and Vibe subagents now receive bounded parent conversation context separately from repository rules, reducing redundant discovery while preserving project-specific guidance.
 - The main agent takes a direct path on small tasks: it pins the user's request, edits after a few targeted reads, and runs one named gate, without loading planning/verification skills, writing plan documents, or building reproduction harnesses unless the lane or evidence requires them. It also treats the working tree as shared with other agents and never resets, stashes, or cleans it.
 - Startup context is smaller: the system prompt keeps short formulas and routes detail to bundled skills (`execution-harness`, `work-playbooks`, `subagents-development`), skill index lines are truncated to one sentence, and tool descriptions are compressed.
@@ -30,6 +55,21 @@
 - Advisor safeguard-refusal fallback now defaults to GPT-5.6 Sol, and installation upgrades the legacy GPT-5.5 fallback without replacing custom advisor models.
 
 ## [18.0.6] - 2026-08-26
+- Recover stray <SM:EDIT> payloads emitted as plain text into real edit tool calls, with support for disabling this behavior through the edit.recoverInlineEdits setting.
+- Advisors now receive context from the active memory backend, including project decisions and recalled instructions; advisors also gain the recall tool when supported by the backend.
+
+### Changed
+
+- Replaced the sloppy edit format's symbolic markers with a clearer XML-based format using <SM:EDIT>, <SM:FIND>, and <SM:PUT> tags. Edit errors now include copy-ready XML payloads.
+- Increased the default input delay for the trace CLI to 3 seconds.
+
+### Fixed
+
+- Improved chat history stability in long-running sessions by avoiding unnecessary updates when date or directory context changes.
+- Fixed the trace CLI hanging during proxy connections and added support for forward HTTP proxies.
+- Fixed newly started sessions using stale model context-window limits after background model discovery completes; the active model now refreshes automatically so context usage and compaction thresholds match the model catalog.
+
+## [1.7.1] - 2026-08-13
 
 ### Added
 
