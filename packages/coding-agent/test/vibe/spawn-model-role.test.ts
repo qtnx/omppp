@@ -18,7 +18,10 @@ import type { SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { type VibeCli, VibeSessionRegistry } from "@oh-my-pi/pi-coding-agent/vibe/runtime";
 
-function makeParentSession(settings: Settings): ToolSession {
+function makeParentSession(
+	settings: Settings,
+	overrides: Pick<ToolSession, "contextFiles" | "getCompactContext"> = {},
+): ToolSession {
 	return {
 		cwd: "/tmp",
 		settings,
@@ -29,11 +32,16 @@ function makeParentSession(settings: Settings): ToolSession {
 		getArtifactsDir: () => null,
 		taskDepth: 0,
 		enableLsp: false,
+		...overrides,
 	} as unknown as ToolSession;
 }
 
 /** Spawn one worker and capture the ExecutorOptions the vibe path hands the executor. */
-async function spawnAndCaptureOptions(cli: VibeCli, settings: Settings): Promise<ExecutorOptions> {
+async function spawnAndCaptureOptions(
+	cli: VibeCli,
+	settings: Settings,
+	parentOverrides?: Pick<ToolSession, "contextFiles" | "getCompactContext">,
+): Promise<ExecutorOptions> {
 	const captured = Promise.withResolvers<ExecutorOptions>();
 	vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 		captured.resolve(options);
@@ -54,7 +62,7 @@ async function spawnAndCaptureOptions(cli: VibeCli, settings: Settings): Promise
 	});
 
 	const registry = VibeSessionRegistry.global();
-	await registry.spawn(makeParentSession(settings), { cli, prompt: "work" });
+	await registry.spawn(makeParentSession(settings, parentOverrides), { cli, prompt: "work" });
 	return captured.promise;
 }
 
@@ -103,5 +111,18 @@ describe("vibe worker spawn model role", () => {
 
 		expect(options.modelOverride).toEqual(["openai-codex/sol"]);
 		expect(options.modelRole).toBeUndefined();
+	});
+
+	it("forwards parent snapshots separately from repository context files", async () => {
+		const contextFiles = [{ path: "/tmp/AGENTS.md", content: "repo-specific rule" }];
+		const options = await spawnAndCaptureOptions("good", Settings.isolated({}), {
+			getCompactContext: () => "compact parent context",
+			contextFiles,
+		});
+
+		expect(options.parentContextFile).toBeDefined();
+		expect(await Bun.file(options.parentContextFile as string).text()).toBe("compact parent context");
+		expect(options.contextFiles).toContainEqual(contextFiles[0]);
+		expect(options.contextFiles?.some(entry => entry.path === options.parentContextFile)).toBeFalse();
 	});
 });

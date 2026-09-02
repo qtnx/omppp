@@ -10,6 +10,7 @@ import { resolveAgentModelPatterns } from "../config/model-resolver";
 import { MCPManager } from "../mcp/manager";
 import workflowDescription from "../prompts/tools/workflow.md" with { type: "text" };
 import { getBundledAgent } from "../task/agents";
+import { writeParentContextSnapshot } from "../task/context-snapshot";
 import { discoverAgents, getAgent } from "../task/discovery";
 import { type ExecutorOptions, runSubprocess } from "../task/executor";
 import { AgentOutputManager } from "../task/output-manager";
@@ -201,6 +202,9 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 				? await WorkflowJournal.openForResume(path.join(transcriptDir, "journal.jsonl"))
 				: await WorkflowJournal.open(path.join(transcriptDir, "journal.jsonl"))
 			: undefined;
+		const parentContextSnapshot = artifactsDir
+			? await writeParentContextSnapshot(this.session, artifactsDir)
+			: undefined;
 
 		const run = new WorkflowRun({
 			runId,
@@ -237,6 +241,7 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 					settings: this.session.settings,
 					mcpManager: MCPManager.instance(),
 					contextFiles: this.session.contextFiles,
+					parentContextFile: parentContextSnapshot?.path,
 					skills: this.session.skills ? [...this.session.skills] : undefined,
 					workspaceTree: this.session.workspaceTree,
 					workspaceRoots: this.session.workspaceRoots,

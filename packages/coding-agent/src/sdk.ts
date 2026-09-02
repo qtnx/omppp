@@ -2099,6 +2099,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getOrchestratorModeState: () => session?.getOrchestratorModeState(),
 			setOrchestratorModeState: state => session?.setOrchestratorModeState(state),
 			getPlanReferencePath: () => session?.getPlanReferencePath() ?? "local://PLAN.md",
+			getCompactContext: () => session?.formatCompactContext() ?? "",
 			getGoalModeState: () => session?.getGoalModeState(),
 			getGoalRuntime: () => session?.goalRuntime,
 			getUsageStatistics: () => sessionManager.getUsageStatistics(),

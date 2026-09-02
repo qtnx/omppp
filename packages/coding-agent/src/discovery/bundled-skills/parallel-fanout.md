@@ -44,6 +44,9 @@ Maximize parallel packages: dispatch every genuinely independent slice at once �
 
 Default: assume C until proven R. Nearly every "foundation first" serialization is a C-edge wearing an R costume — types flow, not behavior.
 
+## Conflict-specific fanout
+Heavy git conflicts slice by disjoint path cluster, not by feature, and ordinary same-file write locking does not make conflicting decisions safe. The contract (both-side diffs, merge-base, each side's intent, ownership, dropped-hunk ledger, parent-owned shared/generated/lock files and integration) lives in `skill://git-craft` — read it before dispatching conflict work.
+
 ## Tier table — per package, after slicing
 
 | Tier | Use for | Notes |
