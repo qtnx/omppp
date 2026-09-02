@@ -295,10 +295,7 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
  * without effort support — binary thinking formats (zai/qwen) drive reasoning
  * through other request fields.
  */
-function isAnthropicPrefixBindingModel<TApi extends Api>(
-	spec: ModelSpec<TApi>,
-	parsed: ParsedModel,
-): boolean {
+function isAnthropicPrefixBindingModel<TApi extends Api>(spec: ModelSpec<TApi>, parsed: ParsedModel): boolean {
 	return (
 		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
 		parsed.family === "anthropic" &&

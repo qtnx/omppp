@@ -4,8 +4,8 @@ import {
 	type OpenAIResponsesHistoryPayload,
 	type ServiceTierByFamily,
 } from "@oh-my-pi/pi-ai";
-import * as snapcompact from "@oh-my-pi/snapcompact";
 import { isRecord } from "@oh-my-pi/pi-utils";
+import * as snapcompact from "@oh-my-pi/snapcompact";
 import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
