@@ -11,6 +11,13 @@ import {
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import {
+	exportSessionFeedbackZip,
+	formatSessionFeedbackList,
+	listSessionFeedback,
+	parseFeedbackScore,
+	recordSessionFeedback,
+} from "../session/session-feedback";
+import {
 	getChangelogPath,
 	parseChangelog,
 	RECENT_CHANGELOG_ENTRY_LIMIT,
@@ -338,6 +345,64 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			await runtime.ctx.handleTodoCommand(command.args);
 			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "feedback",
+		icon: "pencil",
+		description: "Record feedback about this session locally; list or export it as a zip later",
+		acpInputHint: "<text> | rate <1-5> [text] | list | export [path]",
+		subcommands: [
+			{ name: "rate", description: "Rate this session from 1 (worst) to 5 (best)", usage: "<1-5> [<text>]" },
+			{ name: "list", description: "Show feedback recorded in this session" },
+			{ name: "export", description: "Zip the session transcript and its feedback", usage: "[<path>]" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			const { verb, rest } = parseSubcommand(command.args);
+			if (verb === "list") {
+				await runtime.output(formatSessionFeedbackList(listSessionFeedback(runtime.sessionManager)));
+				return commandConsumed();
+			}
+			if (verb === "export") {
+				try {
+					const result = await exportSessionFeedbackZip(runtime.sessionManager, rest);
+					const transcriptNote = result.includesTranscript ? "" : " (transcript not on disk; feedback only)";
+					await runtime.output(
+						`Exported ${result.count} feedback ${result.count === 1 ? "entry" : "entries"} to: ${result.path}${transcriptNote}`,
+					);
+				} catch (error) {
+					return usage(`Failed to export feedback: ${errorMessage(error)}`, runtime);
+				}
+				return commandConsumed();
+			}
+			if (verb === "rate") {
+				const { verb: scoreArg, rest: text } = parseSubcommand(rest);
+				const score = parseFeedbackScore(scoreArg);
+				if (score === undefined) return usage("Usage: /feedback rate <1-5> [text]", runtime);
+				try {
+					recordSessionFeedback(runtime.session, { score, text });
+					await runtime.output(`Rated this session ${score}/5. Review with /feedback list.`);
+				} catch (error) {
+					return usage(`Could not save rating: ${errorMessage(error)}`, runtime);
+				}
+				return commandConsumed();
+			}
+			if (!command.args.trim()) {
+				return usage(
+					"Usage: /feedback <text> | /feedback rate <1-5> [text] | /feedback list | /feedback export [path]",
+					runtime,
+				);
+			}
+			try {
+				const record = recordSessionFeedback(runtime.session, command.args);
+				const total = listSessionFeedback(runtime.sessionManager).length;
+				const ratingNote = record.rating ? ` (${record.rating})` : "";
+				await runtime.output(`Feedback saved${ratingNote}. ${total} recorded; review with /feedback list.`);
+			} catch (error) {
+				return usage(`Could not save feedback: ${errorMessage(error)}`, runtime);
+			}
+			return commandConsumed();
 		},
 	},
 	{
