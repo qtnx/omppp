@@ -537,6 +537,19 @@ describe("ci.yml workflow scheduling", () => {
 		expect(evaluateJobIf("release_binary", { ...ctx, needs: completedNeeds(false, true) })).toBe(true);
 	});
 
+	it("tag release skips redundant typecheck and still publishes when check is skipped", () => {
+		const ctx = baseCtx({
+			ref: "refs/tags/v15.12.6",
+			sha: "abc123",
+			event: {},
+		});
+		const needs = completedNeeds(false, true);
+		needs.check = { result: "skipped" };
+		expect(evaluateJobIf("check", { ...ctx, needs })).toBe(false);
+		expect(evaluateJobIf("release_gate", { ...ctx, needs })).toBe(true);
+		expect(evaluateJobIf("release_binary", { ...ctx, needs })).toBe(true);
+	});
+
 	it("workflow_dispatch from a version tag ref remains per-sha and non-cancellable", () => {
 		const ctx = baseCtx({
 			ref: "refs/tags/v15.12.6",
