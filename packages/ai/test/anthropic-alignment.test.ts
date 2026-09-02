@@ -933,6 +933,50 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(capturedBeta).toContain("mid-conversation-system-2026-04-07");
 	});
 
+	it("adds the mid-conversation output-config beta for Fable per-message effort", async () => {
+		let capturedBeta: string | undefined;
+		let capturedBody: { output_config?: { effort?: string } } | undefined;
+		const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
+			capturedBeta = (init?.headers as Record<string, string> | undefined)?.["anthropic-beta"];
+			capturedBody = JSON.parse(String(init?.body ?? "{}")) as { output_config?: { effort?: string } };
+			return new Response(
+				JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
+				{ status: 400, headers: { "Content-Type": "application/json" } },
+			);
+		}) as typeof fetch;
+		const fableModel: Model<"anthropic-messages"> = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
+			id: "claude-fable-5-1",
+			name: "Claude Fable 5.1",
+			reasoning: true,
+		});
+
+		await streamAnthropic(
+			fableModel,
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [
+					{ role: "user", content: "Hi", timestamp: Date.now() },
+					{
+						role: "developer",
+						content: "Use low effort.",
+						timestamp: Date.now(),
+						providerPayload: {
+							type: "anthropicMessage",
+							clearAt: "next_user_message",
+							effort: "low",
+							toolChanges: [{ type: "tool_removal", name: "write" }],
+						},
+					},
+				],
+			},
+			{ apiKey: "sk-ant-api-test", thinkingEnabled: true, reasoning: Effort.Low, fetch: fetchMock },
+		).result();
+
+		expect(capturedBody?.output_config).toEqual({ effort: "low" });
+		expect(capturedBeta).toContain("mid-conversation-output-config-2026-07-01");
+	});
+
 	it("adds the effort beta when a direct forced tool choice creates an adaptive effort pin", async () => {
 		let capturedBeta: string | undefined;
 		let capturedBody: { output_config?: { effort?: string }; tool_choice?: { type?: string } } | undefined;
