@@ -138,6 +138,20 @@ describe("AgentSession before_agent_start attribution fallback", () => {
 		expect(inferCopilotInitiator(llmMessages)).toBe("agent");
 	});
 
+	it("excludes agent-attributed prompts from compact context", async () => {
+		createSession();
+		const userPrompt = "real user context for subagent";
+		const syntheticPrompt = "internal synthetic reminder for subagent";
+
+		await session.prompt(userPrompt);
+		await session.prompt(syntheticPrompt, { attribution: "agent" });
+
+		const compactContext = session.formatCompactContext();
+
+		expect(compactContext).toContain(userPrompt);
+		expect(compactContext).not.toContain(syntheticPrompt);
+	});
+
 	it("allows user-role prompts to opt into agent attribution", async () => {
 		const { emitBeforeAgentStart } = createSession();
 		const promptText = "delegated task";

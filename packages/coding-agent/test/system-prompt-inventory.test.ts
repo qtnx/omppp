@@ -183,9 +183,19 @@ describe("system prompt tool inventory", () => {
 	function executionHarnessFrom(text: string): string {
 		const harnessStart = text.indexOf("EXECUTION HARNESS");
 		expect(harnessStart).toBeGreaterThan(-1);
-		const executionStart = text.indexOf("EXECUTION\n=========", harnessStart);
-		expect(executionStart).toBeGreaterThan(harnessStart);
-		return text.slice(harnessStart, executionStart);
+		// The harness section runs until the tool inventory or the ENV block, whichever comes first.
+		const sectionEnds = ["\n# Inventory", "\nENV\n==="]
+			.map(marker => text.indexOf(marker, harnessStart))
+			.filter(index => index > harnessStart);
+		expect(sectionEnds.length).toBeGreaterThan(0);
+		return text.slice(harnessStart, Math.min(...sectionEnds));
+	}
+
+	async function executionHarnessSkillContent(): Promise<string> {
+		const { skills } = await loadSkills({ cwd: tempDir });
+		const skill = skills.find(item => item.name === "execution-harness");
+		expect(skill).toBeDefined();
+		return skill?.content ?? "";
 	}
 
 	function reportSectionFrom(text: string): string {
@@ -845,7 +855,7 @@ describe("system prompt tool inventory", () => {
 	it("renders super_review critique and debate guidance in the normal prompt", async () => {
 		const text = await render({ nativeTools: true, inlineToolDescriptors: false });
 		const exactPricePattern = /(?:~?\$1\/(?:call|task)|~?\$5\/call)/;
-		const superReviewGuidance = text.match(/`super_review`[\s\S]{0,2000}/)?.[0] ?? "";
+		const superReviewGuidance = text.match(/# `super_review` critique checkpoints[\s\S]{0,2000}/)?.[0] ?? "";
 		const superReviewPolicyViolations: string[] = [];
 
 		if (!superReviewGuidance) {
@@ -863,14 +873,8 @@ describe("system prompt tool inventory", () => {
 		if (!/before[\s\S]{0,80}(?:claiming|yielding)[\s\S]{0,120}(?:done|completion)/i.test(superReviewGuidance)) {
 			superReviewPolicyViolations.push("missing done or completion evidence checkpoint");
 		}
-		if (
-			!/(?=[\s\S]*(?:business|product|market))(?=[\s\S]*(?:strategy|review))(?=[\s\S]*\b(?:AC|acceptance criteria)\b)(?=[\s\S]*(?:\bcases\b[\s\S]{0,120}\bedge cases\b|\bedge cases\b[\s\S]{0,120}\bcases\b))/i.test(
-				superReviewGuidance,
-			)
-		) {
-			superReviewPolicyViolations.push(
-				"missing business/product/market strategy review with AC, cases, and edge cases",
-			);
+		if (!/plan documents? only[\s\S]{0,60}L3/i.test(superReviewGuidance)) {
+			superReviewPolicyViolations.push("missing lane gate: plan documents are L3 or user-requested only");
 		}
 		if (
 			!/brainstorm(?:ing)?[\s\S]{0,120}(?:options|approaches|choices)|(?:options|approaches|choices)[\s\S]{0,120}brainstorm(?:ing)?/i.test(
@@ -1060,11 +1064,11 @@ describe("system prompt tool inventory", () => {
 		const report = reportSectionFrom(text);
 
 		expect(report).toMatch(/Lead with outcome[\s\S]{0,80}1-3 sentences/i);
-		expect(report).toMatch(/Default final report\s*<=10 human prose lines/i);
+		expect(report).toMatch(/Default final report\s*(?:<=|≤)10 human prose lines/i);
 		expect(report).toMatch(
 			/NEVER restate the task[\s\S]{0,120}narrate process[\s\S]{0,120}preamble[\s\S]{0,120}ceremony[\s\S]{0,120}mechanical headers/i,
 		);
-		expect(report).toMatch(/Evidence bullets:\s*`command\/check -> decisive output`/i);
+		expect(report).toMatch(/Evidence bullets:\s*`command\/check (?:->|→) decisive output`/i);
 		expect(report).toMatch(
 			/NEVER mention internal skill[\s\S]{0,80}rule[\s\S]{0,80}tool[\s\S]{0,80}prompt mechanics/i,
 		);
@@ -1075,7 +1079,7 @@ describe("system prompt tool inventory", () => {
 			/Expand ONLY caveats[\s\S]{0,80}action-needed[\s\S]{0,80}blockers[\s\S]{0,80}NOT VERIFIED/i,
 		);
 		expect(report).toMatch(
-			/ASCII tables\/diagrams[\s\S]{0,80}replace prose[\s\S]{0,80}<=12 lines[\s\S]{0,80}<=80 cols[\s\S]{0,80}no decoration/i,
+			/ASCII tables\/diagrams[\s\S]{0,80}replace prose[\s\S]{0,80}(?:<=|≤)12 lines[\s\S]{0,80}(?:<=|≤)80 cols[\s\S]{0,80}no decoration/i,
 		);
 		expect(report).toMatch(/two competent devs talking[\s\S]{0,80}direct[\s\S]{0,80}concrete/i);
 		expect(report).toMatch(
@@ -1129,23 +1133,30 @@ describe("system prompt tool inventory", () => {
 		expect(text).not.toContain("a references lookup on every symbol you will change");
 	});
 
-	it("renders execution harness rungs, recipes, and evidence format before execution", async () => {
-		const text = await renderOrchestratorPrompt();
-		const harnessStart = text.indexOf("EXECUTION HARNESS");
-		expect(harnessStart).toBeGreaterThan(-1);
-		expect(text.indexOf("EXECUTION\n=========", harnessStart)).toBeGreaterThan(harnessStart);
-		const harness = text.slice(harnessStart, text.indexOf("EXECUTION\n=========", harnessStart));
+	it("renders execution harness rungs and always-on evidence rules, and points at the recipe skill", async () => {
+		const harness = executionHarnessFrom(await renderOrchestratorPrompt());
 
 		expect(harness).toMatch(/Evidence rungs[\s\S]{0,240}STATIC[\s\S]{0,240}DIRECT INVOCATION/i);
 		expect(harness).toMatch(/ENTRY POINT[\s\S]{0,240}STATE & SIDE EFFECTS/i);
-		expect(harness).toMatch(/Step 0[\s\S]{0,240}Manifest scripts[\s\S]{0,240}docker-compose/i);
-		expect(harness).toMatch(/Recipe — HTTP API[\s\S]{0,1200}Authenticate like a real client/i);
-		expect(harness).toMatch(/Anti-theater rules[\s\S]{0,240}Boot is not verification/i);
-		expect(harness).toMatch(/Missing harness[\s\S]{0,1000}VERIFIED to rung N/i);
-		expect(harness).toMatch(/Evidence format[\s\S]{0,240}RUNG 3\+4 — POST \/users/i);
+		expect(harness).toMatch(/Always-on rules[\s\S]{0,400}manifest scripts[\s\S]{0,200}compose/i);
+		expect(harness).toMatch(/NOT VERIFIED:[\s\S]{0,200}blocked on/i);
+		expect(harness).toContain("skill://execution-harness");
+		// Full recipes live in the skill, not in every turn's prompt.
+		expect(harness).not.toMatch(/Recipe — HTTP API/);
+		expect(harness).not.toMatch(/Authenticate like a real client/);
 	});
 
-	it("classifies coding-agent prompt configuration as behavioral and requires installed ompx evidence", async () => {
+	it("keeps the full harness recipes, anti-theater rules, and evidence format in the execution-harness skill", async () => {
+		const skill = await executionHarnessSkillContent();
+
+		expect(skill).toMatch(/Step 0[\s\S]{0,240}Manifest scripts[\s\S]{0,240}docker-compose/i);
+		expect(skill).toMatch(/Recipe — HTTP API[\s\S]{0,1200}Authenticate like a real client/i);
+		expect(skill).toMatch(/Anti-theater rules[\s\S]{0,240}Boot is not verification/i);
+		expect(skill).toMatch(/Missing harness[\s\S]{0,1000}VERIFIED to rung N/i);
+		expect(skill).toMatch(/Evidence format[\s\S]{0,240}RUNG 3\+4 — POST \/users/i);
+	});
+
+	it("classifies coding-agent prompt configuration as behavioral but scopes installed-ompx evidence to code changes", async () => {
 		const text = await renderOrchestratorPrompt();
 		const harness = executionHarnessFrom(text);
 
@@ -1153,45 +1164,45 @@ describe("system prompt tool inventory", () => {
 			/Executable configuration exception:[\s\S]{0,260}packages\/coding-agent\/src[\s\S]{0,260}(?:system\/agent prompts|tool definitions|model routing|orchestrator\/duo\/advisor|workers|TUI)[\s\S]{0,80}YES/i,
 		);
 		expect(harness).toMatch(
-			/Prompt\/tool\/agent\/routing\/orchestrator\/TUI changes under `packages\/coding-agent\/src` require this installed-entrypoint evidence/i,
+			/Prompt and agent `\.md` wording changes[\s\S]{0,200}prompt format check[\s\S]{0,260}installed-binary recipe applies only to routing, orchestrator, tool-wiring, and TUI CODE changes/i,
 		);
 	});
 
-	it("requires production-equivalent installed ompx for CLI and agent rung 3 evidence", async () => {
-		const harness = executionHarnessFrom(await renderOrchestratorPrompt());
+	it("requires production-equivalent installed binaries for CLI and agent rung 3 evidence in the skill", async () => {
+		const skill = await executionHarnessSkillContent();
 
-		expect(harness).toMatch(
-			/Recipe — CLI \(rung 3\)[\s\S]{0,360}PRODUCTION-EQUIVALENT entrypoint[\s\S]{0,180}clean shell outside the repo[\s\S]{0,180}build\/package[\s\S]{0,180}install into a clean prefix[\s\S]{0,180}installed `ompx`\/published bin/i,
+		expect(skill).toMatch(
+			/Recipe — CLI \(rung 3\)[\s\S]{0,360}PRODUCTION-EQUIVALENT entrypoint[\s\S]{0,180}clean shell outside the repo[\s\S]{0,180}build\/package[\s\S]{0,180}install into a clean prefix[\s\S]{0,180}installed bin/i,
 		);
-		expect(harness).toMatch(
+		expect(skill).toMatch(
 			/Dev-tree invocations[\s\S]{0,220}`node dist\/cli\.js`[\s\S]{0,160}`tsx src`[\s\S]{0,160}workspace links[\s\S]{0,160}`bun link`[\s\S]{0,160}below rung 3/i,
 		);
-		expect(harness).toMatch(/`--help`\/`--version`[\s\S]{0,140}smoke only[\s\S]{0,140}not verification/i);
-		expect(harness).toMatch(
-			/Recipe — TUI \/ interactive agent \(rung 3\)[\s\S]{0,260}installed `ompx`[\s\S]{0,260}changed path/i,
+		expect(skill).toMatch(/`--help`\/`--version`[\s\S]{0,140}smoke only[\s\S]{0,140}not verification/i);
+		expect(skill).toMatch(
+			/Recipe — TUI \/ interactive agent \(rung 3\)[\s\S]{0,260}installed binary[\s\S]{0,260}changed path/i,
 		);
 	});
 
 	it("requires changed-path evidence that is revert-sensitive, not adjacent smoke output", async () => {
 		const harness = executionHarnessFrom(await renderOrchestratorPrompt());
+		const skill = await executionHarnessSkillContent();
 
-		expect(harness).toMatch(/BANNED:[\s\S]{0,220}changed path[\s\S]{0,220}adjacent output/i);
-		expect(harness).toMatch(/revert-sensitive:[\s\S]{0,180}reverting the diff[\s\S]{0,180}asserted output\/state/i);
+		expect(harness).toMatch(/traverse the changed code[\s\S]{0,60}revert-sensitive/i);
+		expect(skill).toMatch(/BANNED:[\s\S]{0,220}changed path[\s\S]{0,220}adjacent output/i);
+		expect(skill).toMatch(/revert-sensitive:[\s\S]{0,180}reverting the diff[\s\S]{0,180}asserted output\/state/i);
 	});
 
 	it("keeps browser QA wording gated to task-capable prompts", async () => {
 		const normalText = await render({ nativeTools: true, inlineToolDescriptors: false });
 		const orchestratorText = await renderOrchestratorPrompt();
 
-		expect(normalText).toContain("Run the dev server and drive the actual flow with browser/E2E tooling.");
+		expect(normalText).toContain("skill://execution-harness");
 		expect(normalText).not.toContain("browser_qa");
-		expect(orchestratorText).toContain("browser/E2E tooling or dispatch `browser_qa`");
+		expect(orchestratorText).toContain("browser_qa");
 	});
 
 	it("exempts non-behavioral L1 work from runtime harness rungs", async () => {
-		const text = await renderOrchestratorPrompt();
-		const harnessStart = text.indexOf("EXECUTION HARNESS");
-		const harness = text.slice(harnessStart, text.indexOf("EXECUTION\n=========", harnessStart));
+		const harness = executionHarnessFrom(await renderOrchestratorPrompt());
 
 		expect(harness).toMatch(/BEHAVIOR=no L1 changes[\s\S]{0,160}do not require runtime rungs/i);
 		expect(harness).toMatch(/targeted static\/render\/link gates/i);
@@ -1219,7 +1230,7 @@ describe("system prompt tool inventory", () => {
 		});
 		const text = systemPrompt.join("\n\n");
 
-		expect(text).toContain("a `code_eval` cell for interpreter code");
+		expect(text).toContain("Default for compute → `code_eval`");
 		expect(text).not.toContain('python -c "from m import f; print(f(X))"');
 		expect(text).not.toContain("`node -e`");
 		expect(text).not.toContain("`npx tsx -e`");
@@ -1317,7 +1328,7 @@ describe("system prompt tool inventory", () => {
 
 		expect(withoutBrowser).not.toContain("browser-drive with `browser`");
 		expect(withoutBrowser).not.toContain("browser-drive with browser");
-		expect(withoutBrowser).toContain("Recipe — TUI / interactive agent");
+		expect(withoutBrowser).toContain("skill://execution-harness");
 		expect(withoutBrowser).toContain("Smoke test: run the thing, not a test file");
 
 		tools.set("browser", {
@@ -1335,7 +1346,9 @@ describe("system prompt tool inventory", () => {
 			})
 		).systemPrompt.join("\n\n");
 
-		expect(withBrowser).toContain("browser-drive with `browser`");
+		// The browser-specific recipe lives in the execution-harness skill; the
+		// prompt itself never hard-codes a browser instruction.
+		expect(withBrowser).not.toContain("browser-drive with `browser`");
 		// A browser-only session still needs the smoke-test fallback for
 		// native-desktop surfaces (no computer tool).
 		expect(withBrowser).toContain("Smoke test: run the thing, not a test file");

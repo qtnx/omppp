@@ -576,7 +576,7 @@ describe("InteractiveMode orchestrator mode", () => {
 		expect(reportSection).toMatch(
 			/final reports?[\s\S]{0,120}(?:lead|start|begin)[\s\S]{0,120}outcome[\s\S]{0,120}1-3 sentences?/i,
 		);
-		expect(reportSection).toMatch(/evidence bullets?[\s\S]{0,120}`command\/check -> decisive output`/i);
+		expect(reportSection).toMatch(/evidence bullets?[\s\S]{0,120}`command\/check (?:->|→) decisive output`/i);
 		expect(reportSection).toMatch(
 			/(?:never|do not|don't|must not)[\s\S]{0,160}(?:internal )?skill\/rule\/tool\/prompt mechanics[\s\S]{0,160}unless the user asks/i,
 		);
