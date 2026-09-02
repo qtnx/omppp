@@ -29,6 +29,7 @@ import {
 	toLearningAuditInsert,
 } from "./audit";
 import * as consolidation from "./consolidate";
+import { getCachedLearningInjection, invalidateLearningInjection, setCachedLearningInjection } from "./injection-cache";
 import { resolveRepoKey } from "./repo-key";
 import {
 	clearLearningData as clearLearningDataInDb,
@@ -39,6 +40,7 @@ import {
 	type LearningScope,
 	learningMessageHash,
 	listActiveLearnings,
+	markLearningsShown,
 	openLearningDb,
 	type RankedLearningEntry,
 	reinforceLearning,
@@ -55,6 +57,7 @@ interface LearningRuntimeConfig {
 	writerTimeoutMs: number;
 	maxUserMessageChars: number;
 	maxEntriesPerScope: number;
+	maxInjectedPerScope: number;
 	halfLifeDays: number;
 	consolidationEnabled: boolean;
 	consolidationIntervalDays: number;
@@ -106,9 +109,10 @@ const DEFAULTS: LearningRuntimeConfig = {
 	writerTimeoutMs: 60_000,
 	maxUserMessageChars: 4_000,
 	maxEntriesPerScope: 40,
+	maxInjectedPerScope: 20,
 	halfLifeDays: 45,
 	consolidationEnabled: true,
-	consolidationIntervalDays: 7,
+	consolidationIntervalDays: 1,
 	consolidationMinEntries: 15,
 	consolidationTimeoutMs: 240_000,
 	consolidationModels: [],
@@ -221,7 +225,7 @@ export function startLearningStartupTask(options: {
 					agentDir,
 					config,
 				});
-				if (stored) await session.refreshBaseSystemPrompt?.();
+				if (stored) logger.debug("live-learning: stored; injected on next conversation", { cwd });
 			})
 			.catch(error => {
 				logger.debug("live-learning: processing failed", {
@@ -235,10 +239,10 @@ export function startLearningStartupTask(options: {
 	if (settings.get("learning.consolidation.enabled") !== false) {
 		void consolidation
 			.maybeRunLearningConsolidation({ session, settings, modelRegistry, agentDir })
-			.then(async reports => {
-				if (reports.some(report => (report.opsApplied ?? 0) > 0)) {
-					await session.refreshBaseSystemPrompt?.();
-				}
+			.then(reports => {
+				const applied = reports.reduce((sum, report) => sum + (report.opsApplied ?? 0), 0);
+				if (applied > 0)
+					logger.debug("live-learning: consolidation applied; injected on next conversation", { applied });
 			})
 			.catch(error => {
 				logger.debug("live-learning: consolidation failed", {
@@ -250,14 +254,22 @@ export function startLearningStartupTask(options: {
 	}
 }
 
+export { invalidateLearningInjection };
+
 export async function buildLearningDeveloperInstructions(
 	agentDir: string,
 	settings: Settings,
 	cwd = settings.getCwd(),
+	options: { cache?: boolean } = {},
 ): Promise<string | undefined> {
 	const config = loadLearningConfig(settings);
 	if (!config.enabled) return undefined;
 	const repoKey = await resolveRepoKey(cwd);
+	const useCache = options.cache !== false;
+	if (useCache) {
+		const cached = getCachedLearningInjection(repoKey);
+		if (cached.hit) return cached.value;
+	}
 	const db = openLearningDb(getAgentDbPath(agentDir));
 	try {
 		if (!preparedLearningRepoKeys.has(repoKey)) {
@@ -266,21 +278,33 @@ export async function buildLearningDeveloperInstructions(
 			healCurrentCwdRows(db, { cwd, repoKey, nowSec });
 			preparedLearningRepoKeys.add(repoKey);
 		}
+		const nowSec = unixNow();
 		const entries = listActiveLearnings(db, {
 			repoKey,
-			limitPerScope: config.maxEntriesPerScope,
+			limitPerScope: config.maxInjectedPerScope,
 			halfLifeDays: config.halfLifeDays,
-			nowSec: unixNow(),
+			nowSec,
 		});
-		if (entries.length === 0) return undefined;
-		const global = entries.filter(entry => entry.scope === "global");
-		const repo = entries.filter(entry => entry.scope === "repo");
-		return prompt
-			.render(injectionTemplate, {
-				global_section: renderLearningSection("Global learnings", global),
-				repo_section: renderLearningSection("Repository-specific learnings", repo),
-			})
-			.trim();
+		const rendered =
+			entries.length === 0
+				? undefined
+				: prompt
+						.render(injectionTemplate, {
+							global_section: renderLearningSection(
+								"Global learnings",
+								entries.filter(entry => entry.scope === "global"),
+							),
+							repo_section: renderLearningSection(
+								"Repository-specific learnings",
+								entries.filter(entry => entry.scope === "repo"),
+							),
+						})
+						.trim();
+		if (useCache) {
+			setCachedLearningInjection(repoKey, rendered);
+			markLearningsShown(db, { ids: entries.map(entry => entry.id), nowSec });
+		}
+		return rendered;
 	} finally {
 		closeLearningDb(db);
 	}
@@ -297,6 +321,7 @@ export async function clearLearningData(
 	} finally {
 		closeLearningDb(db);
 	}
+	invalidateLearningInjection();
 }
 
 export async function getLearningLogText(maxLines = LEARNING_LOG_LINE_LIMIT): Promise<string> {
@@ -946,6 +971,7 @@ function loadLearningConfig(settings: Settings): LearningRuntimeConfig {
 		writerTimeoutMs: settings.get("learning.writerTimeoutMs") ?? DEFAULTS.writerTimeoutMs,
 		maxUserMessageChars: settings.get("learning.maxUserMessageChars") ?? DEFAULTS.maxUserMessageChars,
 		maxEntriesPerScope: settings.get("learning.maxEntriesPerScope") ?? DEFAULTS.maxEntriesPerScope,
+		maxInjectedPerScope: settings.get("learning.maxInjectedPerScope") ?? DEFAULTS.maxInjectedPerScope,
 		halfLifeDays: settings.get("learning.halfLifeDays") ?? DEFAULTS.halfLifeDays,
 		consolidationEnabled: settings.get("learning.consolidation.enabled") ?? DEFAULTS.consolidationEnabled,
 		consolidationIntervalDays:

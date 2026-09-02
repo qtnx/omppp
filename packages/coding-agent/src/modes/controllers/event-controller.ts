@@ -34,6 +34,12 @@ import {
 	readQueueChipText,
 	resolveAbortLabel,
 } from "../../session/messages";
+import {
+	type FeedbackScore,
+	hasSessionRating,
+	LOW_SCORE_THRESHOLD,
+	recordSessionFeedback,
+} from "../../session/session-feedback";
 import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "../../tools/resolve";
@@ -179,6 +185,10 @@ export class EventController {
 	// In-flight ephemeral recap turn; aborted by #cancelIdleRecap when any
 	// activity (new turn, compaction, editor draft) supersedes the idle recap.
 	#idleRecapAbort?: AbortController;
+	#idleRatingTimer?: NodeJS.Timeout;
+	// Session ids whose idle rating prompt was already shown (answered or
+	// dismissed) in this process; a persisted score suppresses across resumes.
+	#ratingPromptedSessions = new Set<string>();
 	#ircExpiryTimers = new Map<string, NodeJS.Timeout>();
 	// Insertion-ordered IRC cards not yet retired; values are the transcript
 	// components each card contributed (see #retireIrcCard for the guard).
@@ -337,6 +347,7 @@ export class EventController {
 		this.#cancelIdleCompaction();
 		this.#exitThinkingWait(false);
 		this.#cancelIdleRecap();
+		this.#cancelIdleRating();
 		this.#idleMemoryTrim?.dispose();
 		this.#setTerminalProgress(false);
 		for (const timer of this.#ircExpiryTimers.values()) {
@@ -765,6 +776,7 @@ export class EventController {
 		this.#retryPending = this.ctx.viewSession.isRetrying;
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
+		this.#cancelIdleRating();
 		for (const timer of this.#ircExpiryTimers.values()) {
 			clearTimeout(timer);
 		}
@@ -895,6 +907,7 @@ export class EventController {
 		}
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
+		this.#cancelIdleRating();
 		// Cancel idle memory trim the same way idle compaction cancels on activity.
 		this.#idleMemoryTrim?.notifyActivityStart();
 		this.ctx.statusLine.markActivityStart();
@@ -1988,6 +2001,7 @@ export class EventController {
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();
 		this.#scheduleIdleRecap();
+		this.#scheduleIdleRating();
 		// Arm idle low-memory trim independently of idle compaction.
 		// v1 limitation: timer arms only on main agent_end. A detached subagent
 		// that outlives the turn keeps isActive() true and suppresses fire; nothing
@@ -2057,6 +2071,7 @@ export class EventController {
 	): Promise<void> {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
+		this.#cancelIdleRating();
 		this.#setTerminalProgress(true);
 		this.#stopWorkingLoader();
 		this.ctx.statusContainer.disposeChildren();
@@ -2115,6 +2130,7 @@ export class EventController {
 	async #handleAutoCompactionEnd(event: Extract<AgentSessionEvent, { type: "auto_compaction_end" }>): Promise<void> {
 		this.#cancelIdleCompaction();
 		this.#cancelIdleRecap();
+		this.#cancelIdleRating();
 		this.#setTerminalProgress(false);
 		// Stop + null BOTH the legacy loader (defensive) and the progress overlay so
 		// the 1s timer is released and no handle leaks. Mirrors the #handleAgentEnd /
@@ -2467,6 +2483,81 @@ export class EventController {
 		if (this.ctx.viewSession.isCompacting) return false;
 		if (this.ctx.editor.getText().trim()) return false;
 		return true;
+	}
+
+	#cancelIdleRating(): void {
+		if (this.#idleRatingTimer) {
+			clearTimeout(this.#idleRatingTimer);
+			this.#idleRatingTimer = undefined;
+		}
+	}
+
+	/**
+	 * Arm the once-per-session rating prompt. Fires only when the terminal has
+	 * stayed idle (no stream, no compaction, empty draft, no other dialog) and
+	 * the session has produced at least one assistant reply and holds no score.
+	 */
+	#scheduleIdleRating(): void {
+		this.#cancelIdleRating();
+		const viewSession = this.ctx.viewSession ?? this.ctx.session;
+		if (viewSession.isCompacting) return;
+		if (this.ctx.collabGuest) return;
+		// Focused controller tests build a partial context without the dialog surface.
+		if (typeof this.ctx.showHookSelector !== "function") return;
+		if (typeof this.ctx.sessionManager?.getEntries !== "function") return;
+
+		const feedbackSettings = settings.getGroup("feedback");
+		if (!feedbackSettings.ratingPrompt) return;
+		if (this.ctx.editor.getText().trim()) return;
+		if (this.#ratingPromptedSessions.has(this.ctx.sessionManager.getSessionId())) return;
+		if (hasSessionRating(this.ctx.sessionManager)) return;
+		if (
+			!this.ctx.sessionManager
+				.getBranch()
+				.some(entry => entry.type === "message" && entry.message.role === "assistant")
+		)
+			return;
+
+		const timeoutMs =
+			Math.max(IDLE_RECAP_MIN_SECONDS, Math.min(IDLE_RECAP_MAX_SECONDS, feedbackSettings.ratingIdleSeconds)) * 1000;
+		this.#idleRatingTimer = setTimeout(() => {
+			this.#idleRatingTimer = undefined;
+			void this.#runIdleRatingPrompt();
+		}, timeoutMs);
+		this.#idleRatingTimer.unref?.();
+	}
+
+	async #runIdleRatingPrompt(): Promise<void> {
+		if (!this.#idleConditionsHold()) return;
+		if (this.ctx.hookSelector || this.ctx.hookInput || this.ctx.hookEditor) return;
+		const sessionId = this.ctx.sessionManager.getSessionId();
+		if (this.#ratingPromptedSessions.has(sessionId) || hasSessionRating(this.ctx.sessionManager)) return;
+		this.#ratingPromptedSessions.add(sessionId);
+
+		const choice = await this.ctx.showHookSelector("How did this session go?\nPress 1-5, or esc to skip.", [
+			"1. Bad",
+			"2. Poor",
+			"3. Okay",
+			"4. Good",
+			"5. Excellent",
+		]);
+		if (!choice) return;
+		const score = Number(choice[0]) as FeedbackScore;
+		// The prompt session may have been swapped (/new, /resume) while the dialog was open.
+		if (this.ctx.sessionManager.getSessionId() !== sessionId) return;
+
+		let text: string | undefined;
+		if (score <= LOW_SCORE_THRESHOLD) {
+			text = await this.ctx.showHookInput(`Rated ${score}/5. What went wrong? (enter to skip)`);
+			if (this.ctx.sessionManager.getSessionId() !== sessionId) return;
+		}
+		try {
+			recordSessionFeedback(this.ctx.session, { score, text, source: "rating-prompt" });
+			const detail = text?.trim() ? " with your note" : "";
+			this.ctx.showStatus(`Thanks — rated ${score}/5${detail}. Saved locally; review with /feedback list.`);
+		} catch (error) {
+			logger.debug("Idle rating prompt failed to save", { error: String(error) });
+		}
 	}
 
 	#idleRecapGoalText(): string | undefined {

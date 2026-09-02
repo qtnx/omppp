@@ -28,7 +28,12 @@ import {
 	seedAlreadyExists,
 	summarizeMentalModel,
 } from "../../hindsight";
-import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../../learnings";
+import {
+	buildLearningDeveloperInstructions,
+	clearLearningData,
+	getLearningLogText,
+	invalidateLearningInjection,
+} from "../../learnings";
 import * as learningConsolidation from "../../learnings/consolidate";
 import { resolveRepoKey } from "../../learnings/repo-key";
 import * as learningStorage from "../../learnings/storage";
@@ -866,7 +871,7 @@ export class CommandController {
 		const cwd = this.ctx.sessionManager.getCwd();
 
 		if (action === "view") {
-			const payload = await buildLearningDeveloperInstructions(agentDir, this.ctx.settings, cwd);
+			const payload = await buildLearningDeveloperInstructions(agentDir, this.ctx.settings, cwd, { cache: false });
 			const repoKey = await resolveRepoKey(cwd);
 			const db = learningStorage.openLearningDb(getAgentDbPath(agentDir));
 			try {
@@ -879,7 +884,7 @@ export class CommandController {
 				const details = entries
 					.map(
 						entry =>
-							`[l:${entry.alias}] score ${entry.score.toFixed(2)} · strength ${entry.strength} · useful ${entry.usefulCount} · not_useful ${entry.notUsefulCount}\n${entry.content}`,
+							`[l:${entry.alias}] score ${entry.score.toFixed(2)} · strength ${entry.strength} · useful ${entry.usefulCount} · not_useful ${entry.notUsefulCount} · shown ${entry.shownCount}\n${entry.content}`,
 					)
 					.join("\n\n");
 				const view = [payload, details].filter(Boolean).join("\n\n");
@@ -918,10 +923,11 @@ export class CommandController {
 					: reports
 							.map(
 								report =>
-									`${report.target}: ${report.outcome} (ops applied: ${report.opsApplied ?? 0}, ops skipped stale: ${report.opsSkippedStale ?? 0})`,
+									`${report.target}: ${report.outcome} (ops applied: ${report.opsApplied ?? 0}, ops skipped stale: ${report.opsSkippedStale ?? 0}, cap archived: ${report.capArchived ?? 0})`,
 							)
 							.join("\n");
-			if (reports.some(report => (report.opsApplied ?? 0) > 0)) {
+			if (reports.some(report => (report.opsApplied ?? 0) > 0 || (report.capArchived ?? 0) > 0)) {
+				invalidateLearningInjection();
 				await this.ctx.session.refreshBaseSystemPrompt();
 			}
 			showMarkdownPanel(this.ctx, "Live Learning Consolidation", reportText);
@@ -962,7 +968,10 @@ export class CommandController {
 			} finally {
 				learningStorage.closeLearningDb(db);
 			}
-			if (archived) await this.ctx.session.refreshBaseSystemPrompt();
+			if (archived) {
+				invalidateLearningInjection();
+				await this.ctx.session.refreshBaseSystemPrompt();
+			}
 			return;
 		}
 
