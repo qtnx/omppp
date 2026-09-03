@@ -71,12 +71,12 @@ describe("streaming reveal deferred target updates", () => {
 		const requestRender = vi.fn();
 		const { component, controller } = makeController({ requestRender });
 
-		controller.begin(component, makeMessage([{ type: "text", text: "abc" }]));
+		controller.begin(component, makeMessage([{ type: "text", text: "abc" }]), false);
 		const postBeginUpdates = component.messages.length;
 
-		controller.setTarget(makeMessage([{ type: "text", text: "abcdef" }]));
-		controller.setTarget(makeMessage([{ type: "text", text: "abcdefghi" }]));
-		controller.setTarget(makeMessage([{ type: "text", text: "abcdefghijkl" }]));
+		controller.setTarget(makeMessage([{ type: "text", text: "abcdef" }]), false);
+		controller.setTarget(makeMessage([{ type: "text", text: "abcdefghi" }]), false);
+		controller.setTarget(makeMessage([{ type: "text", text: "abcdefghijkl" }]), false);
 
 		expect(component.messages).toHaveLength(postBeginUpdates);
 		expect(requestRender).not.toHaveBeenCalled();
@@ -93,8 +93,8 @@ describe("streaming reveal deferred target updates", () => {
 		const { component, controller } = makeController();
 		const targetText = "abcdefghijkl";
 
-		controller.begin(component, makeMessage([{ type: "text", text: "abc" }]));
-		controller.setTarget(makeMessage([{ type: "text", text: targetText }]));
+		controller.begin(component, makeMessage([{ type: "text", text: "abc" }]), false);
+		controller.setTarget(makeMessage([{ type: "text", text: targetText }]), false);
 		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 10);
 
 		expect(textAt(component.messages.at(-1)!, 0)).toBe(targetText);
@@ -107,8 +107,8 @@ describe("streaming reveal deferred target updates", () => {
 		const first = makeMessage([{ type: "text", text: "chunk" }]);
 		const second = makeMessage([{ type: "text", text: "chunky" }]);
 
-		controller.begin(component, first);
-		controller.setTarget(second);
+		controller.begin(component, first, false);
+		controller.setTarget(second, false);
 		const updates = component.messages.length;
 		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 10);
 
@@ -123,26 +123,20 @@ describe("streaming reveal deferred target updates", () => {
 	test("renders fully revealed tool-call boundaries synchronously on begin and setTarget", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();
-		const beginMessage = makeMessage([
-			{ type: "text", text: "before tool" },
-			{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
-		]);
+		const beginMessage = makeMessage([{ type: "text", text: "before tool" }]);
 		const beginCase = makeController({ requestRender });
 
-		beginCase.controller.begin(beginCase.component, beginMessage);
+		beginCase.controller.begin(beginCase.component, beginMessage, true);
 
 		expect(beginCase.component.messages).toHaveLength(1);
 		expect(textAt(beginCase.component.messages[0], 0)).toBe("before tool");
 
 		const setTargetCase = makeController({ requestRender });
-		const toolTarget = makeMessage([
-			{ type: "text", text: "snap now" },
-			{ type: "toolCall", id: "call-2", name: "write", arguments: { path: "out.txt" } },
-		]);
-		setTargetCase.controller.begin(setTargetCase.component, makeMessage([{ type: "text", text: "" }]));
+		const toolTarget = makeMessage([{ type: "text", text: "snap now" }]);
+		setTargetCase.controller.begin(setTargetCase.component, makeMessage([{ type: "text", text: "" }]), false);
 		const beforeToolUpdates = setTargetCase.component.messages.length;
 
-		setTargetCase.controller.setTarget(toolTarget);
+		setTargetCase.controller.setTarget(toolTarget, true);
 		const afterToolUpdates = setTargetCase.component.messages.length;
 		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 10);
 

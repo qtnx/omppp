@@ -55,7 +55,6 @@ function transcriptWith(messages: AgentMessage[]): SessionContext {
 
 function makeRenderCtx(transcript: SessionContext): { ctx: InteractiveModeContext; chatContainer: Container } {
 	const chatContainer = new Container();
-	let helpers: UiHelpers;
 	const ctx = {
 		chatContainer,
 		pendingMessagesContainer: new Container(),
@@ -104,7 +103,7 @@ function makeRenderCtx(transcript: SessionContext): { ctx: InteractiveModeContex
 		) => helpers.renderSessionContextIncrementally(context, options, renderChunk),
 		showStatus: vi.fn(),
 	} as unknown as InteractiveModeContext;
-	helpers = new UiHelpers(ctx);
+	const helpers = new UiHelpers(ctx);
 	return { ctx, chatContainer };
 }
 

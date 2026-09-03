@@ -108,8 +108,8 @@ it("infer method output", () => {
 
 	const brand = Base.brand("brand");
 
-	const filterFn = (v: Base): v is Base & { filter: 1 } => true;
-	const narrowFn = (v: Base): v is Base & { narrow: 1 } => true;
+	const filterFn = (_v: Base): _v is Base & { filter: 1 } => true;
+	const narrowFn = (_v: Base): _v is Base & { narrow: 1 } => true;
 	const pipeFn = () => ({ pipe: 1 });
 
 	const Expected = type({

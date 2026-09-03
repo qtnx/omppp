@@ -37,7 +37,7 @@ interface PrimitiveMap {
 	Key: PropertyKey;
 	Date: Date;
 	Array: unknown[];
-	// biome-ignore lint/complexity/noBannedTypes: built-in Function keyword
+	// biome-ignore lint/complexity/noBannedTypes: inference over object-ish types
 	Function: Function;
 	RegExp: RegExp;
 	File: File;

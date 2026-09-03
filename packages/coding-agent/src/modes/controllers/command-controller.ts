@@ -45,7 +45,7 @@ import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import { MoveOverlay, type MoveOverlayResult } from "../../modes/components/move-overlay";
 import { TranscriptBlock } from "../../modes/components/transcript-container";
-import { UsagePanel } from "../../modes/components/usage-panel";
+import type { UsagePanel } from "../../modes/components/usage-panel";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
@@ -57,6 +57,7 @@ import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
+import { formatProviderName } from "../../slash-commands/helpers/format";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
 import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
@@ -135,11 +136,6 @@ export class CommandController {
 		return true;
 	}
 
-	#deactivateUsagePanelAfterScroll(panel: UsagePanel): void {
-		if (this.#usagePanel !== panel) return;
-		this.clearUsagePanelActive();
-	}
-
 	async refreshActiveUsagePanel(): Promise<void> {
 		if (!this.#usagePanelActive) return;
 		// Re-use the normal renderer so account identity, usage reports, and active-account highlighting are all fresh.
@@ -213,6 +209,24 @@ export class CommandController {
 			this.openInBrowser(filePath);
 		} catch (error: unknown) {
 			this.ctx.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+		}
+	}
+	async handleTraceCommand(): Promise<void> {
+		const sessionFile = this.ctx.session.sessionFile;
+		if (!sessionFile) {
+			this.ctx.showWarning("No session file yet — send a message first.");
+			return;
+		}
+		try {
+			// Lazy: the stats dashboard (server + sqlite) loads on demand only,
+			// matching src/cli/stats-cli.ts, to keep CLI startup fast.
+			const { formatStatsDashboardUrl, startServer } = await import("@oh-my-pi/omp-stats");
+			const { hostname, port } = await startServer();
+			const url = `${formatStatsDashboardUrl(hostname, port)}/#/traces?s=${encodeURIComponent(sessionFile)}`;
+			this.openInBrowser(url);
+			this.ctx.showStatus(`Trace: ${url}`);
+		} catch (error: unknown) {
+			this.ctx.showError(`Failed to open trace: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 	}
 
@@ -690,29 +704,7 @@ export class CommandController {
 			return;
 		}
 
-		const availableWidth = Math.max(40, (this.ctx.ui.terminal.columns ?? 100) - 2);
-		const currentProvider = this.ctx.session.model?.provider;
-		const activeAccount = currentProvider
-			? this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(
-					currentProvider,
-					this.ctx.session.sessionId,
-				)
-			: undefined;
-		const usageModelSelectors = this.ctx.session.getUsageReportingModelSelectors(usageReports);
-		const output = renderUsageReports(
-			usageReports,
-			theme,
-			Date.now(),
-			availableWidth,
-			provider => (provider === currentProvider ? activeAccount : undefined),
-			usageModelSelectors,
-		);
-		let panel: UsagePanel;
-		panel = new UsagePanel(output, () => this.#deactivateUsagePanelAfterScroll(panel));
-		this.ctx.presentCommandOutput(panel);
-		// A successful render marks /usage as the last account-dependent panel eligible for live refresh.
-		this.#usagePanel = panel;
-		this.#usagePanelActive = true;
+		this.ctx.showUsageDashboard(usageReports);
 	}
 
 	async handleChangelogCommand(showFull = false): Promise<void> {
@@ -1864,13 +1856,6 @@ function truncateJobLabel(label: string, maxWidth: number): string {
 	}
 
 	return `${out}…`;
-}
-
-function formatProviderName(provider: string): string {
-	return provider
-		.split(/[-_]/g)
-		.map(part => (part ? part[0].toUpperCase() + part.slice(1) : ""))
-		.join(" ");
 }
 
 function formatNumber(value: number, maxFractionDigits = 1): string {

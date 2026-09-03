@@ -89,7 +89,7 @@ import type { FileSlashCommand } from "../extensibility/slash-commands";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState, GoalStatus } from "../goals/state";
 import { copyLocalArtifacts, resolveLocalUrlToPath } from "../internal-urls";
-import { setKanbanBoardForker } from "../kanban";
+import { type KanbanBoardOwner, setKanbanBoardForker } from "../kanban";
 import type { KanbanForkedAgent, KanbanForkRequest } from "../kanban/runtime";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
@@ -257,6 +257,7 @@ import {
 } from "./theme/theme";
 import { getSlashCommandTypeIcon } from "./theme/tui-adapters";
 import type {
+	AgentHubOpenOptions,
 	CompactionQueuedMessage,
 	InteractiveModeContext,
 	InteractiveModeInitOptions,
@@ -605,7 +606,6 @@ const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 
 export class InteractiveMode implements InteractiveModeContext {
 	#ownsStartedUi: boolean;
-	#startupSubmitGated: boolean;
 	session: AgentSession;
 	sessionManager: SessionManager;
 	settings: Settings;
@@ -970,7 +970,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
 		this.editor.imageReferenceHyperlink = imageReferenceHyperlink;
 		this.#ownsStartedUi = wasStarted;
-		this.#startupSubmitGated = true;
 		this.keybindings = KeybindingsManager.inMemory();
 		this.agent = session.agent;
 		this.#version = version;
@@ -1121,7 +1120,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
 		this.#tanCommandController = new TanCommandController(this);
-		setKanbanBoardForker(this.session, request => this.handleKanbanBoardAgent(request));
+		setKanbanBoardForker(this.session as unknown as KanbanBoardOwner, request =>
+			this.handleKanbanBoardAgent(request),
+		);
 		this.#omfgController = new OmfgController(this);
 		this.#cleanseController = new CleanseCommandController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
@@ -1588,6 +1589,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Initial top border update
 		this.updateEditorTopBorder();
+		// Init complete: subscriptions, reconciliation, and submit pipeline are live.
+		// Lift bootstrap gate so early Enter can safely steer an in-flight first turn.
+		this.editor.disableSubmit = false;
 	}
 
 	#hasActiveSessionWork(): boolean {
@@ -1920,11 +1924,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.onInputCallback = undefined;
 			resolve(input);
 		};
-		if (this.#startupSubmitGated) {
-			this.#startupSubmitGated = false;
-			this.editor.disableSubmit = false;
-			this.ui.requestRender();
-		}
 		this.#scheduleLoopAutoSubmit();
 		this.#scheduleGoalContinuation();
 
@@ -6088,6 +6087,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	handleExportCommand(text: string): Promise<void> {
 		return this.#commandController.handleExportCommand(text);
 	}
+	handleTraceCommand(): Promise<void> {
+		return this.#commandController.handleTraceCommand();
+	}
 
 	handleDumpCommand(target?: "clipboard" | "file"): Promise<void> {
 		return this.#commandController.handleDumpCommand(target);
@@ -6320,7 +6322,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#selectorController.showDebugSelector();
 	}
 
-	showAgentHub(options?: { requireContent?: boolean; armCloseTap?: boolean }): void {
+	showAgentHub(options?: AgentHubOpenOptions): void {
 		this.#selectorController.showAgentHub(this.#observerRegistry, options);
 	}
 
@@ -6378,6 +6380,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	// Selector handling
 	showSettingsSelector(): void {
 		this.#selectorController.showSettingsSelector();
+	}
+
+	showUsageDashboard(reports: UsageReport[]): void {
+		this.#selectorController.showUsageDashboard(reports);
 	}
 
 	showAdvisorConfigure(): void {

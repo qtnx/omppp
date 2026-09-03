@@ -403,7 +403,7 @@ it("deep union", () => {
 		b: { a: "Function" },
 		c: "a|b",
 	}).export();
-	// biome-ignore lint/complexity/noBannedTypes: Function type in union assertion test
+	// biome-ignore lint/complexity/noBannedTypes: Type second generic parameter test
 	const _type43: Eq<typeof types.c.t, { a: (In: number) => Out<string> } | { a: Function }> = true;
 
 	expect(types.c({ a: 2 })).toEqual({ a: "2" });

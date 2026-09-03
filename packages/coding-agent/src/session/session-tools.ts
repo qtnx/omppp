@@ -13,7 +13,7 @@ import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/extensions";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
-import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
+import { type LocalProtocolOptions, stripXdUrlPrefix, XD_URL_PREFIX } from "../internal-urls";
 import { KanbanTool } from "../kanban/tool";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
@@ -22,6 +22,7 @@ import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import advisorSkillOversightPrompt from "../prompts/system/advisor-skill-oversight.md" with { type: "text" };
 import orchestratorModeActivePrompt from "../prompts/system/orchestrator-mode-active.md" with { type: "text" };
 import orchestratorModeOverlayTemplate from "../prompts/system/orchestrator-mode-overlay.md" with { type: "text" };
+import toolRosterNoticePrompt from "../prompts/system/tool-roster-notice.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import type { SecretVaultLike } from "../secrets/vault";
 import { usesCodexTaskPrompt } from "../task/prompt-policy";
@@ -251,6 +252,7 @@ export function projectMountedMCPXdevGuidance(routes: Iterable<MountedMCPToolRou
 	return { mappings, hasOmittedMappings };
 }
 
+const TOOL_ROSTER_NOTICE_MESSAGE_TYPE = "tool-roster-notice";
 const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
 
 /**
@@ -281,6 +283,7 @@ export class SessionTools {
 	#mcpManagerToolNames = new Set<string>();
 	#extensionMcpTools = new Map<string, AgentTool>();
 	#xdev: XdevState | undefined;
+	#pendingToolRosterDelta: { added: Set<string>; removed: Set<string> } | undefined;
 	#pendingXdevMountDelta: { added: Set<string>; removed: Set<string> } | undefined;
 	/**
 	 * Dynamic (`xd://`) devices the model has already been told are mounted.
@@ -558,9 +561,9 @@ export class SessionTools {
 		return this.#toolRegistry.has("edit");
 	}
 
-	/** Looks up a registered tool by name. */
+	/** Looks up a registered tool by its canonical name or `xd://` alias. */
 	getToolByName(name: string): AgentTool | undefined {
-		return this.#toolRegistry.get(name);
+		return this.#toolRegistry.get(name) ?? this.#toolRegistry.get(stripXdUrlPrefix(name));
 	}
 
 	/** Looks up an enabled tool through the same ACP permission gate as direct calls. */
@@ -1402,6 +1405,7 @@ export class SessionTools {
 			this.#toolPredicateNames = nextToolPredicateNames;
 			this.#setActiveToolNames?.(nextToolPredicateNames);
 		}
+		let frozenSignature: string | undefined;
 		try {
 			if (restrictDeviceOnlyWrite) this.#setDeviceOnlyWrite?.(true);
 			if (upgradeDeviceOnlyWrite) this.#setPendingFullWriteDescription?.(true);
@@ -1425,7 +1429,15 @@ export class SessionTools {
 					directToolNames,
 					promptXdevRouteSources,
 				);
-				if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
+				const freezeImplicitPromptRefresh =
+					!forcePromptRefresh &&
+					signature !== this.#lastAppliedToolSignature &&
+					this.#lastAppliedToolSignature !== undefined &&
+					this.#host.model()?.thinking?.prefixBinding === true &&
+					this.#host.agent.state.messages.some(message => message.role === "assistant");
+				if (freezeImplicitPromptRefresh) {
+					frozenSignature = signature;
+				} else if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
 					const built = await untilAborted(
 						signal,
 						this.#rebuildSystemPrompt(promptToolNames, this.#promptToolRegistryFor(promptToolNames), {
@@ -1490,6 +1502,9 @@ export class SessionTools {
 				this.#lastAppliedToolSignature = rebuiltSignature;
 				this.#promptModelKey = this.#currentPromptModelKey();
 				this.#basePromptXdevNames = new Set(rebuiltXdevCatalogNames);
+			} else if (frozenSignature) {
+				this.#notifyToolRosterDelta(previousActiveToolNames, appliedNames);
+				this.#lastAppliedToolSignature = frozenSignature;
 			}
 			if (restoreDormantDeviceOnlyWrite) {
 				this.#setDeviceOnlyWrite?.(true);
@@ -1507,6 +1522,22 @@ export class SessionTools {
 		if (!mountedNames) return;
 		mountedNames.clear();
 		for (const name of names) mountedNames.add(name);
+	}
+
+	#notifyToolRosterDelta(previousActiveToolNames: readonly string[], appliedNames: readonly string[]): void {
+		const previous = new Set(previousActiveToolNames);
+		const current = new Set(appliedNames);
+		const addedNames = appliedNames.filter(name => !previous.has(name));
+		const removedNames = previousActiveToolNames.filter(name => !current.has(name));
+		if (addedNames.length === 0 && removedNames.length === 0) return;
+		const pending = this.#pendingToolRosterDelta ?? { added: new Set<string>(), removed: new Set<string>() };
+		for (const name of addedNames) {
+			if (!pending.removed.delete(name)) pending.added.add(name);
+		}
+		for (const name of removedNames) {
+			if (!pending.added.delete(name)) pending.removed.add(name);
+		}
+		this.#pendingToolRosterDelta = pending.added.size > 0 || pending.removed.size > 0 ? pending : undefined;
 	}
 
 	/**
@@ -1613,6 +1644,27 @@ export class SessionTools {
 				else this.#announcedMounts.delete(name);
 			}
 		}
+	}
+
+	/** Consumes the hidden notice for provider-visible tool-roster changes. */
+	takePendingToolRosterNotice(): CustomMessage<{ added: string[]; removed: string[] }> | undefined {
+		const pending = this.#pendingToolRosterDelta;
+		if (!pending) return undefined;
+		this.#pendingToolRosterDelta = undefined;
+		const added = [...pending.added];
+		const removed = [...pending.removed];
+		return {
+			role: "custom",
+			customType: TOOL_ROSTER_NOTICE_MESSAGE_TYPE,
+			content: prompt.render(toolRosterNoticePrompt, {
+				added: added.length > 0 ? added.join(", ") : undefined,
+				removed: removed.length > 0 ? removed.join(", ") : undefined,
+			}),
+			details: { added, removed },
+			attribution: "agent",
+			display: false,
+			timestamp: Date.now(),
+		};
 	}
 
 	/** Consumes the hidden notice for unannounced `xd://` mount changes. */

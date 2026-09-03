@@ -336,6 +336,13 @@ describe("imageGenTool", () => {
 
 	it("falls back when an openai-codex API key lacks a subscription account claim", async () => {
 		const antigravityCredentials = JSON.stringify({ token: "test-antigravity-token", projectId: "test-project" });
+		const codexModel = {
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			baseUrl: "HTTPS://CHATGPT.COM/ignored/../backend-api/",
+		} as Model;
 		let requestUrl: string | undefined;
 		const fetchMock: typeof fetch = (async (input: string | URL | Request) => {
 			requestUrl = input.toString();
@@ -368,6 +375,9 @@ describe("imageGenTool", () => {
 				getSessionId: () => "test-session",
 			} as unknown as ReadonlySessionManager,
 			modelRegistry: {
+				find: (provider: string, id: string) =>
+					provider === "openai-codex" && id === "gpt-5.5" ? codexModel : undefined,
+				getAll: () => [codexModel],
 				getApiKey: async () => "plain-openai-key",
 				getApiKeyForProvider: async (provider: string) => {
 					if (provider === "openai-codex") return "plain-openai-key";
@@ -440,7 +450,7 @@ describe("imageGenTool", () => {
 		expect(captured.authorization).toBe("Bearer test-xai-token");
 		expect(result.details?.provider).toBe("xai");
 	});
-	it("sends Codex hosted image requests with opaque proxy bearer keys", async () => {
+	it("uses opaque Codex proxy credentials when the active model is not OpenAI", async () => {
 		let requestUrl: string | undefined;
 		let requestHeaders: Headers | undefined;
 
@@ -477,6 +487,12 @@ describe("imageGenTool", () => {
 			name: "GPT Codex",
 			baseUrl: "https://example-proxy.invalid/backend-api",
 		} as Model;
+		const activeModel = {
+			api: "anthropic-messages",
+			provider: "anthropic",
+			id: "claude-opus-4",
+			name: "Claude",
+		} as Model;
 		const ctx: CustomToolContext = {
 			fetch: fetchMock,
 			sessionManager: {
@@ -484,12 +500,19 @@ describe("imageGenTool", () => {
 				getSessionId: () => "test-session",
 			} as unknown as ReadonlySessionManager,
 			modelRegistry: {
+				find: (provider: string, id: string) =>
+					provider === "openai-codex" && id === "gpt-5.5-codex" ? model : undefined,
+				getAll: () => [model],
 				getApiKey: async () => "opaque-proxy-key",
-				getApiKeyForProvider: async () => undefined,
-				authStorage: { rotateSessionCredential: async () => false },
+				getApiKeyForProvider: async (provider: string) =>
+					provider === "openai-codex" ? "opaque-proxy-key" : undefined,
+				authStorage: {
+					hasNonEnvCredential: () => false,
+					rotateSessionCredential: async () => false,
+				},
 				resolver: () => async () => "opaque-proxy-key",
 			} as unknown as ModelRegistry,
-			model,
+			model: activeModel,
 			isIdle: () => true,
 			hasQueuedMessages: () => false,
 			abort: () => {},

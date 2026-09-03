@@ -264,7 +264,7 @@ function normalizeHtmlForTerminal(
 		}
 		lastIndex = index + tag.length;
 
-		const isClosing = /^<\//.test(tag);
+		const isClosing = tag.startsWith("</");
 		const isSelfClosing = /\/\s*>$/.test(tag);
 
 		switch (name) {
@@ -797,7 +797,7 @@ export function urlTokenPossible(src: string): boolean {
 	}
 	if (i === 0) return false;
 	if (i >= URL_GATE_EMAIL_SCAN_LIMIT) return true; // over-long run: give up conservatively
-	return src.charCodeAt(i) === 64 /* @ */;
+	return src.charCodeAt(i) === 64; /* @ */
 }
 
 // Setext-underline pre-gate for marked's `lheading` rule. The rule's lazy body
@@ -1134,7 +1134,7 @@ function listMayContinueAt(text: string, tailStart: number, listRaw: string): bo
 	// bare newline, or end-of-input (which appends can still extend).
 	if (i >= n) return true;
 	const after = text.charCodeAt(i);
-	return after === 0x20 /* space */ || after === 0x09 /* tab */ || after === 0x0a /* \n */;
+	return after === 0x20 /* space */ || after === 0x09 /* tab */ || after === 0x0a; /* \n */
 }
 
 const NO_BLOCK_BOUNDARY = { end: 0, count: 0 } as const;
@@ -3160,17 +3160,21 @@ export class Markdown implements Component {
 					markHtmlItemWhenContent(token.text);
 					const linkText = this.#renderInlineTokens(token.tokens || [], resolvedStyleContext);
 					const styledLinkText = this.#theme.link(this.#theme.underline(linkText));
-					const clickableLinkText = formatHyperlink(styledLinkText, token.href);
-					// If link text matches href, only show the link once
+					const href = typeof token.href === "string" ? token.href : "";
+					const clickableLinkText = formatHyperlink(styledLinkText, href);
+					// If link text matches href, only show the link once. A missing
+					// href (malformed/partial link token) renders as plain link text
+					// instead of crashing the renderer or emitting an empty "()"
+					// (issue #10283).
 					// Compare raw text (token.text) not styled text (linkText) since linkText has ANSI codes
 					// For mailto: links, strip the prefix before comparing (autolinked emails have
 					// text="foo@bar.com" but href="mailto:foo@bar.com")
-					const hrefForComparison = token.href.startsWith("mailto:") ? token.href.slice(7) : token.href;
-					if (token.text === token.href || token.text === hrefForComparison)
+					const hrefForComparison = href.startsWith("mailto:") ? href.slice(7) : href;
+					if (!href || token.text === href || token.text === hrefForComparison)
 						result += clickableLinkText + stylePrefix;
 					else {
-						const styledLinkUrl = this.#theme.linkUrl(`(${token.href})`);
-						result += `${clickableLinkText} ${formatHyperlink(styledLinkUrl, token.href)}${stylePrefix}`;
+						const styledLinkUrl = this.#theme.linkUrl(`(${href})`);
+						result += `${clickableLinkText} ${formatHyperlink(styledLinkUrl, href)}${stylePrefix}`;
 					}
 					break;
 				}

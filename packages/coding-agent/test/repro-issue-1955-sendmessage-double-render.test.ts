@@ -75,7 +75,6 @@ interface Harness {
 function createHarness(): Harness {
 	const entries: SessionEntry[] = [];
 	let capturedActions: ExtensionActions | undefined;
-	let helpers!: UiHelpers;
 	const fakeRunner = {
 		initialize: (
 			a: ExtensionActions,
@@ -164,7 +163,7 @@ function createHarness(): Harness {
 			helpers.renderSessionContext(buildSessionContext(entries));
 		},
 	} as unknown as InteractiveModeContext;
-	helpers = new UiHelpers(ctx);
+	const helpers = new UiHelpers(ctx);
 
 	const controller = new ExtensionUiController(ctx);
 

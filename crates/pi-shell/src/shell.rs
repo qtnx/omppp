@@ -2152,9 +2152,34 @@ mod tests {
 		let dir = tempfile::tempdir().expect("process test directory");
 		let name = format!("{prefix}{}", std::process::id());
 		let command = dir.path().join(&name);
-		let sleep = test_executable("sleep");
-		std::os::unix::fs::symlink(sleep, &command).expect("sleep symlink");
+		let test_binary = std::env::current_exe().expect("current test executable");
+		std::os::unix::fs::symlink(test_binary, &command).expect("test executable symlink");
 		(dir, command, name)
+	}
+
+	#[cfg(unix)]
+	fn process_test_child(command: &std::path::Path, duration: Duration) -> Command {
+		let duration_ms = u64::try_from(duration.as_millis()).expect("test duration fits u64");
+		let mut child = Command::new(command);
+		child
+			.args(["--ignored", "--exact", "shell::tests::process_test_sleeper"])
+			.env("PI_SHELL_PROCESS_TEST_SLEEP_MS", duration_ms.to_string())
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null());
+		child
+	}
+
+	#[cfg(unix)]
+	#[test]
+	#[ignore = "spawned by process-control tests"]
+	fn process_test_sleeper() {
+		let Ok(duration_ms) = std::env::var("PI_SHELL_PROCESS_TEST_SLEEP_MS") else {
+			return;
+		};
+		let duration_ms = duration_ms
+			.parse()
+			.expect("valid process test sleep duration");
+		std::thread::sleep(Duration::from_millis(duration_ms));
 	}
 
 	#[cfg(unix)]
@@ -2179,8 +2204,7 @@ mod tests {
 	#[tokio::test(flavor = "multi_thread")]
 	async fn pgrep_matches_name_and_pkills_signal_probe() {
 		let (_dir, command, name) = process_test_command("opg");
-		let mut child = Command::new(command)
-			.arg("30")
+		let mut child = process_test_child(&command, Duration::from_secs(30))
 			.spawn()
 			.expect("matching process");
 		let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
@@ -2236,8 +2260,8 @@ mod tests {
 	#[tokio::test(flavor = "multi_thread")]
 	async fn pkill_queue_option_consumes_its_value() {
 		let (_dir, command, name) = process_test_command("opq");
-		let mut command = Command::new(command);
-		command.arg("30").kill_on_drop(true);
+		let mut command = process_test_child(&command, Duration::from_secs(30));
+		command.kill_on_drop(true);
 		let mut child = command.spawn().expect("queue test process");
 		let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
 		wait_for_process_name(pid, &name).await;
@@ -2255,8 +2279,8 @@ mod tests {
 	#[tokio::test(flavor = "multi_thread")]
 	async fn pkill_interactive_prompt_honors_cancellation() {
 		let (_dir, command, name) = process_test_command("opi");
-		let mut command = Command::new(command);
-		command.arg("30").kill_on_drop(true);
+		let mut command = process_test_child(&command, Duration::from_secs(30));
+		command.kill_on_drop(true);
 		let mut child = command.spawn().expect("interactive target");
 		let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
 		wait_for_process_name(pid, &name).await;
@@ -2292,8 +2316,7 @@ mod tests {
 	#[tokio::test(flavor = "multi_thread")]
 	async fn pgrep_reads_pidfile_from_standard_input() {
 		let (_dir, command, name) = process_test_command("opf");
-		let mut child = Command::new(command)
-			.arg("30")
+		let mut child = process_test_child(&command, Duration::from_secs(30))
 			.spawn()
 			.expect("pidfile process");
 		let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
@@ -2317,8 +2340,7 @@ mod tests {
 		}
 
 		let (_dir, command, name) = process_test_command("opl");
-		let mut child = Command::new(command)
-			.arg("30")
+		let mut child = process_test_child(&command, Duration::from_secs(30))
 			.spawn()
 			.expect("locked pidfile process");
 		let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
@@ -2373,12 +2395,10 @@ mod tests {
 	#[tokio::test(flavor = "multi_thread")]
 	async fn pkill_signals_every_matching_process() {
 		let (_dir, command, name) = process_test_command("opk");
-		let mut first = Command::new(&command)
-			.arg("30")
+		let mut first = process_test_child(&command, Duration::from_secs(30))
 			.spawn()
 			.expect("first matching process");
-		let mut second = Command::new(command)
-			.arg("30")
+		let mut second = process_test_child(&command, Duration::from_secs(30))
 			.spawn()
 			.expect("second matching process");
 		let first_pid = i32::try_from(first.id().expect("first pid")).expect("pid fits i32");
@@ -2405,8 +2425,7 @@ mod tests {
 	#[tokio::test(flavor = "multi_thread")]
 	async fn pidwait_returns_after_the_matching_process_exits() {
 		let (_dir, command, name) = process_test_command("opw");
-		let mut child = Command::new(command)
-			.arg("30")
+		let mut child = process_test_child(&command, Duration::from_millis(250))
 			.spawn()
 			.expect("waited process");
 		let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
@@ -3300,6 +3319,56 @@ mod tests {
 		let out = std::fs::read_to_string(tmp.join("out.txt")).expect("out.txt");
 		assert!(out.contains("'rel'"), "verbose output missing operand `rel`: {out:?}");
 		assert!(!out.contains(tmp_str), "verbose output leaked absolute path: {out:?}");
+
+		let _ = std::fs::remove_dir_all(&tmp);
+	}
+
+	/// `command -v`/`-V` must iterate over every operand like bash/zsh, printing
+	/// one line per name that resolves and skipping the misses, rather than
+	/// honoring only the first operand. Regression test for silently dropped
+	/// operands in `command -v a b c` (issue #10544).
+	#[tokio::test(flavor = "multi_thread")]
+	async fn command_v_iterates_all_operands() {
+		let tmp = std::env::temp_dir().join(format!("pi-command-v-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&tmp);
+		std::fs::create_dir_all(&tmp).expect("temp dir");
+		let tmp_str = tmp.to_str().expect("utf8 temp path");
+
+		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
+		let mut session = create_session(&config).await.expect("create_session");
+		session.shell.set_working_dir(tmp_str).expect("set cwd");
+
+		let mut params = session.shell.default_exec_params();
+		params.set_fd(OpenFiles::STDIN_FD, null_file().expect("null"));
+		params.set_fd(OpenFiles::STDOUT_FD, null_file().expect("null"));
+		params.set_fd(OpenFiles::STDERR_FD, null_file().expect("null"));
+
+		let source_info = SourceInfo::from("pi-natives:test");
+
+		// Three always-registered builtins plus a name that never resolves. bash
+		// prints one line per resolved builtin and skips the miss, exiting 0.
+		let exec = session
+			.shell
+			.run_string("command -v true false pwd nope-xyz-10544 > out.txt", &source_info, &params)
+			.await
+			.expect("run_string");
+		assert_eq!(exit_code(&exec), 0, "command -v exit code with a resolvable name");
+
+		let out = std::fs::read_to_string(tmp.join("out.txt")).expect("out.txt");
+		let lines: Vec<&str> = out.lines().collect();
+		assert_eq!(
+			lines,
+			vec!["true", "false", "pwd"],
+			"command -v must print one line per resolved operand and skip misses: {out:?}"
+		);
+
+		// When no operand resolves, the exit status is a general error.
+		let exec = session
+			.shell
+			.run_string("command -v nope-a-10544 nope-b-10544", &source_info, &params)
+			.await
+			.expect("run_string");
+		assert_eq!(exit_code(&exec), 1, "command -v exit code when nothing resolves");
 
 		let _ = std::fs::remove_dir_all(&tmp);
 	}

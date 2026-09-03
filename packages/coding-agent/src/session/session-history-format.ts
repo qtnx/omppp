@@ -19,6 +19,7 @@ import type {
 	HookMessage,
 	PythonExecutionMessage,
 } from "./messages";
+import { truncateMiddle } from "./streaming-output";
 
 export interface HistoryFormatOptions {
 	/** Optional H1 prepended to the transcript. */
@@ -70,6 +71,14 @@ export interface HistoryFormatOptions {
 	 */
 	expandEditDiffs?: boolean;
 	/**
+	 * Append bounded tool-result text and, for `ask`, the structured questions.
+	 * Advisor transcripts enable this so reviewers see user decisions and the
+	 * evidence returned by primary tools without admitting unbounded output.
+	 */
+	expandToolIO?: boolean;
+	/** Transform expanded tool input/output before any byte or line truncation. */
+	transformExpandedToolIO?: (text: string) => string;
+	/**
 	 * Chunked rendering support: a caller formatting one logical transcript in
 	 * several calls (the advisor's chunked delta render) passes a result index
 	 * built over the WHOLE delta plus one shared consumed-id set, so a toolCall
@@ -90,6 +99,11 @@ export interface HistoryFormatOptions {
 
 /** Max length of the primary-arg summary inside `→ tool(...)` lines. */
 const PRIMARY_ARG_MAX = 120;
+/** Per-tool budget for expanded advisor input/output. */
+const EXPANDED_TOOL_IO_MAX_BYTES = 8 * 1024;
+const EXPANDED_TOOL_IO_MAX_LINES = 80;
+const EXPANDED_ASK_FIELD_MAX_BYTES = 2 * 1024;
+const EXPANDED_ASK_FIELD_MAX_LINES = 20;
 
 /** Per-tool preference order for the most informative scalar argument. */
 const PRIMARY_ARG_KEYS = [
@@ -244,13 +258,107 @@ function cappedExcerpt(text: string, maxLines: number, maxChars: number): string
  * run inside it, so a diff that touches markdown (triple backticks) can't break
  * out of the fence. Info string `diff` for syntax highlighting.
  */
-function fenceDiff(diff: string): string {
-	const longest = diff.match(/`+/g)?.reduce((m, run) => Math.max(m, run.length), 0) ?? 0;
+function fencedText(text: string, language: string): string {
+	const longest = text.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
 	const fence = "`".repeat(Math.max(3, longest + 1));
-	return `${fence}diff\n${diff}\n${fence}`;
+	return `${fence}${language}\n${text}\n${fence}`;
+}
+
+/** Wrap a diff in the shared adaptive Markdown fence. */
+function fenceDiff(diff: string): string {
+	return fencedText(diff, "diff");
+}
+
+function boundedToolContext(text: string): string {
+	return truncateMiddle(text, {
+		maxBytes: EXPANDED_TOOL_IO_MAX_BYTES,
+		maxLines: EXPANDED_TOOL_IO_MAX_LINES,
+	}).content;
+}
+
+function boundedAskJson(value: unknown, transform?: (text: string) => string): string {
+	return boundedToolContext(
+		JSON.stringify(
+			value,
+			(_key, nested) => {
+				if (typeof nested !== "string") return nested;
+				return truncateMiddle(transform?.(nested) ?? nested, {
+					maxBytes: EXPANDED_ASK_FIELD_MAX_BYTES,
+					maxLines: EXPANDED_ASK_FIELD_MAX_LINES,
+				}).content;
+			},
+			2,
+		),
+	);
+}
+
+function boundedFencedToolContext(text: string, language: string): string {
+	const longestFence = text.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+	// A pathological run can make Markdown fences larger than the whole budget.
+	// Use indented code in that case: constant wrapper cost and no delimiter collision.
+	if (longestFence * 2 > EXPANDED_TOOL_IO_MAX_BYTES / 2) {
+		const marker = "[…content elided to fit advisor context…]";
+		const truncated = truncateMiddle(text, {
+			maxBytes: EXPANDED_TOOL_IO_MAX_BYTES - Buffer.byteLength(marker) - 2,
+			maxLines: EXPANDED_TOOL_IO_MAX_LINES,
+		});
+		const bounded = truncated.truncated ? `${marker}\n${truncated.content}` : truncated.content;
+		return bounded.replace(/^/gm, "    ");
+	}
+	const fenceBytes = Math.max(3, longestFence + 1) * 2 + language.length + 2;
+	return fencedText(
+		truncateMiddle(text, {
+			maxBytes: Math.max(1, EXPANDED_TOOL_IO_MAX_BYTES - fenceBytes),
+			maxLines: EXPANDED_TOOL_IO_MAX_LINES,
+		}).content,
+		language,
+	);
+}
+
+function expandedAskArguments(
+	args: Record<string, unknown> | undefined,
+	transform?: (text: string) => string,
+): string | undefined {
+	if (!args) return undefined;
+	const visibleArgs = Object.fromEntries(Object.entries(args).filter(([key]) => key !== INTENT_FIELD));
+	try {
+		return boundedAskJson(visibleArgs, transform);
+	} catch {
+		return undefined;
+	}
+}
+
+function expandedAskDetails(
+	result: ToolResultMessage | undefined,
+	transform?: (text: string) => string,
+): string | undefined {
+	if (!result?.details || typeof result.details !== "object") return undefined;
+	const details = result.details as {
+		question?: unknown;
+		questions?: unknown;
+		results?: unknown;
+	};
+	const questions = Array.isArray(details.results)
+		? details.results
+				.map(item =>
+					item && typeof item === "object" && typeof (item as { question?: unknown }).question === "string"
+						? (item as { question: string }).question
+						: undefined,
+				)
+				.filter((question): question is string => question !== undefined)
+		: Array.isArray(details.questions)
+			? details.questions.filter((question): question is string => typeof question === "string")
+			: typeof details.question === "string"
+				? [details.question]
+				: [];
+	return questions.length > 0 ? boundedAskJson({ questions }, transform) : undefined;
 }
 
 /** One line per tool call: `→ read(src/foo.ts:50-80) ⇒ ok · 31 lines`. */
+
+function expandedToolResultText(text: string | undefined): string | undefined {
+	return text?.trim() ? text : undefined;
+}
 function toolCallLine(
 	name: string,
 	args: Record<string, unknown> | undefined,
@@ -258,19 +366,21 @@ function toolCallLine(
 	opts?: HistoryFormatOptions,
 ): string {
 	const head = `→ ${name}(${formatToolCallPrimaryArg(name, args)})`;
+	const rawResultText = result ? contentToText(result.content) : undefined;
+	const visibleResultText =
+		rawResultText === undefined ? undefined : (opts?.transformExpandedToolIO?.(rawResultText) ?? rawResultText);
 	let base: string;
 	if (!result) {
 		base = `${head} ⇒ pending`;
 	} else {
-		const text = contentToText(result.content);
-		const lines = lineCount(text);
+		const lines = lineCount(rawResultText ?? "");
 		const count = `${lines} ${lines === 1 ? "line" : "lines"}`;
 		if (result.isError) {
-			const firstLine = formatToolResultErrorPreview(result.content);
+			const firstLine = formatToolResultErrorPreview(visibleResultText ?? "");
 			base = firstLine ? `${head} ⇒ error · ${count} — ${firstLine}` : `${head} ⇒ error · ${count}`;
 			const n = opts?.errorResultLines;
-			if (typeof n === "number" && n > 0 && text.trim()) {
-				base = `${base}\n${errorExcerpt(text, n)}`;
+			if (typeof n === "number" && n > 0 && visibleResultText?.trim()) {
+				base = `${base}\n${errorExcerpt(visibleResultText, n)}`;
 			}
 		} else {
 			base = `${head} ⇒ ok · ${count}`;
@@ -282,6 +392,23 @@ function toolCallLine(
 		if (typeof diff === "string" && diff.trim()) {
 			base = `${base}\n${fenceDiff(diff)}`;
 		}
+	}
+
+	if (opts?.expandToolIO) {
+		const sections: string[] = [];
+		if (name === "ask") {
+			const askArguments =
+				expandedAskArguments(args, opts.transformExpandedToolIO) ??
+				expandedAskDetails(result, opts.transformExpandedToolIO);
+			if (askArguments) sections.push(`Ask input:\n${boundedFencedToolContext(askArguments, "json")}`);
+		}
+		if (result) {
+			const resultText = expandedToolResultText(visibleResultText);
+			if (resultText) {
+				sections.push(`Tool result:\n${boundedFencedToolContext(resultText, "text")}`);
+			}
+		}
+		if (sections.length > 0) base = `${base}\n${sections.join("\n")}`;
 	}
 
 	const formattedIntent = opts?.includeToolIntent ? formatToolCallIntentPreview(args) : undefined;

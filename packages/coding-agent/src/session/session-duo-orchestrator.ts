@@ -1,6 +1,6 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
-import { isFableOrMythos, parseAnthropicModel } from "@oh-my-pi/pi-catalog/identity";
+import { classifyModel } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
@@ -368,8 +368,14 @@ export class SessionDuoOrchestrator {
 		const mode = this.#host.settings.get("duo.mode");
 		if (mode === "off") return false;
 		if (mode === "on" || this.#host.settings.get("duo.orchestrator") === "always") return true;
-		const parsed = parseAnthropicModel(this.#host.currentModel()?.id ?? "");
-		return this.#orchestratorModeState?.enabled === true || (parsed !== null && isFableOrMythos(parsed.kind));
+		const currentModel = this.#host.currentModel();
+		const identity = currentModel
+			? classifyModel(currentModel.provider, currentModel.id, { lenient: true })
+			: undefined;
+		return (
+			this.#orchestratorModeState?.enabled === true ||
+			(identity?.class === "anthropic" && (identity.family === "fable" || identity.family === "mythos"))
+		);
 	}
 
 	async #setDuoOrchestratorEnabled(enabled: boolean): Promise<void> {

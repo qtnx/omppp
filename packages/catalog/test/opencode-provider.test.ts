@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { readModelCache, writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
@@ -18,6 +19,7 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import type { FetchImpl } from "@oh-my-pi/pi-utils";
+import { mergePreviousSnapshotModels } from "../scripts/generate-models";
 
 const LIVE_FREE_MODEL_IDS = [
 	"deepseek-v4-flash-free",
@@ -573,10 +575,54 @@ describe("OpenCode provider discovery", () => {
 			expect(flash?.input).toEqual(["text", "image"]);
 			expect(flash?.thinking).toEqual({
 				mode: "effort",
-				efforts: [Effort.Low, Effort.High, Effort.Max],
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 				defaultLevel: Effort.Max,
 				requiresEffort: true,
 			});
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test("drops cached Gemini 3.7 Flash effort metadata when refresh fails (#10543)", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-opencode-gemini37-cache-"));
+		const cacheDbPath = path.join(tempDir, "models.db");
+		try {
+			const options = opencodeZenModelManagerOptions({ apiKey: "zen-account-key" });
+			const cacheProviderId = options.cacheProviderId;
+			if (!cacheProviderId) throw new Error("OpenCode Zen cache provider id is missing");
+			const bundledModels = getBundledModels("opencode-zen");
+			const current = bundledModels.find(model => model.id === "gemini-3.7-flash");
+			if (!current?.thinking) throw new Error("OpenCode Zen Gemini 3.7 Flash is missing thinking metadata");
+			const stale = {
+				...current,
+				thinking: {
+					...current.thinking,
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High],
+				},
+			};
+			writeModelCache(cacheProviderId, Date.now(), [stale], true, "merge-v3:pre-10543", cacheDbPath);
+
+			let fetches = 0;
+			const upgraded = await resolveProviderModels(
+				{
+					...options,
+					staticModels: bundledModels,
+					cacheDbPath,
+					modelsDev: undefined,
+					fetchDynamicModels: async () => {
+						fetches++;
+						throw new Error("offline");
+					},
+				},
+				"online-if-uncached",
+			);
+			expect(fetches).toBe(1);
+			expect(upgraded.models.find(model => model.id === current.id)?.thinking?.efforts).toEqual([
+				Effort.Low,
+				Effort.Medium,
+				Effort.High,
+			]);
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
@@ -788,5 +834,70 @@ describe("OpenCode provider discovery", () => {
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
+	});
+	test("resolves the OpenCode Go long-usage fallback policy from KDL", () => {
+		const policy = resolveModelPolicy({
+			id: "deepseek-v4-flash",
+			name: "DeepSeek V4 Flash",
+			api: "openai-completions",
+			provider: "opencode-go",
+			baseUrl: "https://opencode.ai/zen/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 16_384,
+		});
+
+		expect(policy.catalog).toMatchObject({ longUsageLimitFallback: true });
+	});
+});
+
+describe("issue #10416 — retired bare opencode provider", () => {
+	// #309 split `opencode` into `opencode-go` / `opencode-zen`, and models.dev's
+	// `opencode` key is remapped to `opencode-zen`. The legacy `opencode` rows
+	// survived as previous-snapshot zombies and surfaced in the picker as a dead
+	// provider with no descriptor/auth path.
+	test("prunes bare `opencode` rows while restoring live previous-snapshot providers", () => {
+		const staleModel = buildModel({
+			id: "legacy-opencode-model",
+			name: "Legacy OpenCode Model",
+			api: "openai-completions",
+			provider: "opencode",
+			baseUrl: "https://legacy.invalid/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 16_384,
+		});
+		const liveModel = buildModel({
+			id: "live-fallback-model",
+			name: "Live Fallback Model",
+			api: "openai-completions",
+			provider: "fixture-provider",
+			baseUrl: "https://fixture.invalid/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 16_384,
+		});
+
+		const merged = mergePreviousSnapshotModels(
+			[],
+			{
+				opencode: { [staleModel.id]: staleModel },
+				"fixture-provider": { [liveModel.id]: liveModel },
+			},
+			new Set(),
+		);
+
+		expect(merged.map(model => `${model.provider}/${model.id}`)).toEqual(["fixture-provider/live-fallback-model"]);
+	});
+
+	test("the split OpenCode providers remain populated", () => {
+		expect(getBundledModels("opencode-go").length).toBeGreaterThan(0);
+		expect(getBundledModels("opencode-zen").length).toBeGreaterThan(0);
 	});
 });

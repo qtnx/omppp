@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [18.1.3] - 2026-09-02
+
+### Fixed
+
+- Fixed the TUI tearing in Herdr panes so the live viewport updates as one frame instead of leaving the top frozen while only the bottom refreshed. Pane identity vars (`HERDR_PANE_ID` / `HERDR_TAB_ID` / `HERDR_WORKSPACE_ID`) also count as inside Herdr, not only `HERDR_ENV=1`. A DECRPM “unrecognized” report keeps synchronized output on; a “permanently reset” report, or a custom terminal that omits the DECRPM status, still turns it off.
+
+## [18.1.0] - 2026-09-01
+
+### Fixed
+
+- Improved terminal stability when resuming image-heavy sessions, preventing large transcript repaints from being mistaken for stalled output or exceeding the terminal output limit.
+- Fixed inline images leaving blank rows in Herdr panes when resuming or rendering sessions in nested terminals.
+- Fixed the TUI crashing on reference-style Markdown links whose labels match JavaScript built-in names; these links now render safely as plain text.
+- Fixed fatal cleanup leaving the cursor inside a focused input before error output is displayed.
+- Fixed resumed sessions showing stale background bands until the next keypress in WSL and Windows Terminal.
+
 ## [18.0.11] - 2026-08-29
 
 ### Added

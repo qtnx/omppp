@@ -4,7 +4,7 @@ import type { Eq } from "../type-assert";
 
 it("can parse an undeclared restriction", () => {
 	const T = type({ "+": "reject" });
-	// biome-ignore lint/complexity/noBannedTypes: empty object type test
+	// biome-ignore lint/complexity/noBannedTypes: Type second generic parameter test
 	const _type1: Eq<typeof T.infer, {}> = true;
 	expect(T({ extra: true }).toString()).toBe("extra must be removed");
 });

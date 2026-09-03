@@ -104,7 +104,7 @@ export const NON_STRUCTURAL_SCHEMA_KEYS: Record<string, true> = {
 	title: true,
 	$comment: true,
 	if: true,
-	// biome-ignore lint/suspicious/noThenProperty: JSON Schema keyword
+	// biome-ignore lint/suspicious/noThenProperty: schema keyword, not a thenable
 	then: true,
 	else: true,
 	not: true,

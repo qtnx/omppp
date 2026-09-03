@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+## [18.1.3] - 2026-09-02
+
+### Changed
+
+- The `doubleEscapeAction` setting now accepts `tree`, so double-Escape can open the session tree instead of the rewind selector.
+- Updated the visual representation for the IRC tool from "irc" to "#"
+- Rewinding to a user message (double-Escape, `/branch`) now branches within the current session — the old path stays reachable in `/tree` — instead of forking a child session; `/rewind` is an alias for `/branch` ([#10565](https://github.com/can1357/oh-my-pi/pull/10565) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+
+### Fixed
+
+- Active sessions now keep memory proportional to truncated raw SSE and tool outputs instead of retaining complete oversized backing strings ([#10547](https://github.com/can1357/oh-my-pi/issues/10547)).
+- Anthropic sessions now keep tool-roster changes and warm-prefix pruning from invalidating preserved thinking or the prompt cache.
+- TypeScript code intelligence now works on TypeScript 7 projects: the built-in `typescript-native` server runs `tsc --lsp --stdio` when the resolved TypeScript install no longer ships `tsserver.js`, replacing `typescript-language-server` for that project.
+- Claude marketplace MCP servers now resolve environment placeholders in stdio environment values instead of passing strings such as `${NAME:-}` literally ([#10481](https://github.com/can1357/oh-my-pi/pull/10481) by [@mrexodia](https://github.com/mrexodia)).
+- Fixed prewalk conflicting with `todo.eager=always`: the forced eager-todo prelude ("call todo first this turn") was injected alongside the prewalk plan nudge ("write a complete plan first, then todo"), giving the model contradictory instructions; the eager-todo prelude is now suppressed only when prewalk will perform a handoff ([#10510](https://github.com/can1357/oh-my-pi/issues/10510)).
+- Fixed `authHeader: true` + command-backed `apiKey` discovery providers (no explicit `headers:` block) resending a stale bearer after a 401 force-refresh; discovered models now re-derive `Authorization` from the live `apiKey` each request ([#10551](https://github.com/can1357/oh-my-pi/issues/10551)).
+- Fixed the embedded shell's `command -v`/`-V` honoring only the first operand: it now iterates every name like bash/zsh, printing one line per resolved name and skipping misses ([#10544](https://github.com/can1357/oh-my-pi/issues/10544)).
+- Fixed hard-killed subagents vanishing from the agent registry under concurrent fan-out: `AgentLifecycleManager.release` now applies the terminal `aborted` transition before awaiting the tombstone sidecar write, closing a race where the dying session's own dispose-path unregister deleted the ref instead of leaving it as a tombstone ([#10531](https://github.com/can1357/oh-my-pi/issues/10531)).
+- `omp commit` now keeps extension-provided model credentials available in its nested commit-agent session ([#10528](https://github.com/can1357/oh-my-pi/issues/10528)).
+- MCP tool results now surface `structuredContent`: servers that return their payload in the structured channel while keeping `content` a terse ack (e.g. rhizome-mcp) are no longer data-less to the model ([#10522](https://github.com/can1357/oh-my-pi/issues/10522)).
+- Fixed the Agent Hub roster shuffling erratically while open: rows no longer re-sort on every agent heartbeat, so the list stays stable and navigable with many active agents ([#10524](https://github.com/can1357/oh-my-pi/issues/10524)).
+- Exiting Vibe mode now removes its restrictions from subsequent model turns, including restored sessions ([#10500](https://github.com/can1357/oh-my-pi/issues/10500)).
+- Fixed all-sessions listing (`Tab` in session picker) and cross-project resume failing when sessions are stored under `XDG_DATA_HOME`; `listAllSessions` now scans the active `getSessionsDir()` root instead of hardcoding `~/.omp/agent/sessions`.
+- Fixed the Nerd Font context icon showing a Windows logo instead of a generic window ([#10476](https://github.com/can1357/oh-my-pi/pull/10476) by [@erickmazer](https://github.com/erickmazer)).
+- The debug terminal snapshot now reports Herdr (and CMUX) as the multiplexer wrapping the session, matching the TUI's pane-identity detection instead of only tmux/screen/zellij.
+- Fixed vibe mode becoming un-exitable after branching a session (including via `/btw`), which previously failed with "Vibe parent session changed before mode exit could be persisted." ([#10468](https://github.com/can1357/oh-my-pi/issues/10468)).
+- Fixed HTML session exports reordering interleaved assistant text, thinking, images, and tool calls in the transcript, and split matching text/tool sidebar rows with block-accurate navigation. ([#10253](https://github.com/can1357/oh-my-pi/pull/10253) by [@realcoderandom](https://github.com/realcoderandom))
+- Fixed the built-in `grep` and `sed` treating a basic regular expression as an extended one: a bare `+` is now the literal and `\+` the operator, patterns like `^+` or `s/^\+/` no longer match every line, `^` anchors inside `\(…\)` and after `\|`, and a repetition operator with nothing to repeat is reported instead of silently selecting the whole file ([#10298](https://github.com/can1357/oh-my-pi/pull/10298) by [@mruangutai](https://github.com/mruangutai)).
+- Fixed RPC `prompt` responses for `/skill:*` commands arriving only after the entire prompt-dispatch pipeline finished (usage preflight, compaction, provider calls): under provider stress that outlasts any client prompt timeout, so hosts reported the prompt as rejected while the turn was in fact running. The skill branch now builds the skill prompt eagerly (preserving the immediate error for an unreadable skill file) and dispatches the expensive pipeline asynchronously after answering, matching plain prompts; when the dispatch is cancelled before a turn starts (e.g. an abort overtakes usage preflight), the session now reports it through the non-invoked  completion frame instead of leaving hosts waiting for an  that never comes ([#10249](https://github.com/can1357/oh-my-pi/pull/10249) by [@cwr250](https://github.com/cwr250)).
+- Fixed stale `omp-plugins.lock.json` entries loading leftover `node_modules` trees for plugins no longer declared in an existing `package.json` — the orphaned copy double-loaded its extensions. Lockfile-only plugins remain supported for manifest-less roots and symlinked packages (`omp plugin link`, marketplace runtime packages); stale entries are skipped with a warning.
+
+## [18.1.2] - 2026-09-01
+
+### Added
+
+- Recover stray <SM:EDIT> payloads emitted as plain text into real edit tool calls, with support for disabling this behavior through the edit.recoverInlineEdits setting.
+- Advisors now receive context from the active memory backend, including project decisions and recalled instructions; advisors also gain the recall tool when supported by the backend.
+
+### Changed
+
+- Replaced the sloppy edit format's symbolic markers with a clearer XML-based format using <SM:EDIT>, <SM:FIND>, and <SM:PUT> tags. Edit errors now include copy-ready XML payloads.
+- Increased the default input delay for the trace CLI to 3 seconds.
+
+### Fixed
+
+- Improved chat history stability in long-running sessions by avoiding unnecessary updates when date or directory context changes.
+- Fixed the trace CLI hanging during proxy connections and added support for forward HTTP proxies.
+- Fixed newly started sessions using stale model context-window limits after background model discovery completes; the active model now refreshes automatically so context usage and compaction thresholds match the model catalog.
+
+## [18.1.1] - 2026-09-01
+
+### Fixed
+
+- Fixed a native crash (and multi-gigabyte committed-memory growth held until exit) when git status ran over worktrees with tens of thousands of untracked files: whole-worktree porcelain status now runs through the git CLI with bounded output capture, falling back to the in-process gitoxide walk only when git is not installed, and any panic escaping a native VCS operation now surfaces as a structured `VcsError` instead of a process-level failure.
+
+## [18.1.0] - 2026-09-01
+
 ### Added
 
 - `/feedback <text>` records your feedback about the current session locally (optionally prefixed with `+1`/`-1`), `/feedback rate <1-5> [text]` scores it, `/feedback list` reviews it and `/feedback export [path]` bundles the session transcript and feedback into a `.zip` for later evaluation. Nothing is sent to a server.
@@ -29,6 +86,65 @@
 - Added `CLINE_API_KEY` to the CLI environment help for native ClinePass subscription inference ([#7863](https://github.com/can1357/oh-my-pi/pull/7863) by [@will-bogusz](https://github.com/will-bogusz)).
 - Devin model selectors now accept the native CLI's short aliases (`devin/opus`, `devin/swe`), dotted upstream spellings (`devin/gemini-3.7-flash`), and raw effort-route wire uids for dynamically collapsed families ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
 - Added provider-supplied model metadata to the `/models` detail line: `new`, `beta`, and `recommended` badges beside the model name, and the upstream description after the context, cost, and perf facts ([#8590](https://github.com/can1357/oh-my-pi/pull/8590) by [@will-bogusz](https://github.com/will-bogusz)).
+- Added the `/trace` slash command to display session trace URLs in the stats dashboard.
+- Added support for OpenAI-compatible gateways whose model-list endpoint is rooted at a versioned URL, with an `injectV1: false` discovery option to request `{baseUrl}/models` directly.
+- Added provider-reported credits and concrete routed-model counts to `/session` statistics.
+- Added `CLINE_API_KEY` to CLI environment help for native ClinePass subscription inference.
+- Expanded Devin model selection to support native CLI aliases, dotted upstream model names, and raw effort-route identifiers.
+- Added provider-supplied model metadata to `/models`, including new, beta, and recommended badges plus model descriptions.
+- Standalone `CLAUDE.md` files in project and ancestor directories are now loaded as context alongside `AGENTS.md`, while preserving config-directory precedence.
+- Added an Activity view to Agent Hub with searchable and filterable timelines spanning live progress and persisted transcripts; `/hub` is now the live-operations entry point while `/agents` retains Control Center behavior.
+- Added an `icon.advisorClosed` symbol-theme token: the advisor eye in the status line now closes once the advisor has finished reviewing and will not add further comments.
+
+### Changed
+
+- Disabled hashline editing for Kimi, Mimo, DeepSeek Flash, and Stepfun models for improved stability.
+- Reworked `/usage` into a fullscreen dashboard overlay (no transcript output): a compact per-provider subscriptions grid with untouched providers collapsed into one line, a GitHub-style daily activity heatmap fed by local stats, and the classic full report one keypress away.
+- Reworked transcript navigation with a fullscreen rewind selector opened by double-Escape, supporting rendered-item navigation, user-turn jumps, branching rewinds, and alternate session-tree branch selection.
+- Updated `/copy` to use the fullscreen transcript selector, allowing users to copy a turn or navigate into nested content such as code, quotes, commands, and tool output.
+
+### Fixed
+
+- Improved edit-tool error guidance for operations missing the `»` separator, identifying redundant context-only operations
+- Fixed OAuth provider `modifyModels` projections being silently dropped after a discovery refresh introduced live-config headers.
+- Edit-tool `＋`/`－` line operations now match their anchors leniently across whitespace drift (indentation, blank-line miscounts) instead of failing with a byte-for-byte error; a note reports the lenient match.
+- Fixed an edit-tool REWRITE consisting only of `＋` add lines silently replacing (deleting) the matched text; it now inserts after the kept MATCH.
+- Edit-tool no-match errors now name MATCH lines that exist nowhere in the file and suggest marking them with `＋`, and errors without a located region no longer append a misleading file-head "closest match" preview.
+- Fixed ordinary CLI startup eagerly loading the computer worker graph (native desktop addon and early environment), restoring lazy startup and profile `.env` ordering.
+- Fixed online auto-thinking classifier usage being omitted from session token and cost totals.
+- Fixed image generation with custom provider endpoints when using `openai-codex` credentials and a non-OpenAI chat model.
+- Fixed custom hook UI factories not receiving the documented `keybindings` argument.
+- Fixed MCP OAuth token exchange for authorization endpoints that use a different resource indicator.
+- Fixed custom extension `web_search` tools being shadowed by the built-in search tool.
+- Fixed Agent Hub task boards collapsing to summary rows after returning from a focused session.
+- Improved Linux ARM64 browser startup messaging when managed Chrome for Testing builds are unavailable, with guidance for using system Chromium or `PUPPETEER_EXECUTABLE_PATH`.
+- Fixed resuming image-heavy sessions that previously terminated while replaying transcripts.
+- Fixed custom agents declaring `hub` being incorrectly treated as read-only.
+- Restored compatibility for legacy Pi extensions that import `calculateContextTokens` or use the synchronous `SettingsManager.create()` API.
+- Fixed custom model overrides being lost during configuration updates.
+- Clarified that the default task-delegation setting follows the selected model's policy.
+- Fixed `/rename` without a title interrupting active session activity.
+- Fixed the Nerd Font notification persisting incorrectly after theme configuration.
+- Fixed sampling parameter errors with newer Anthropic models.
+- Long OpenCode Go usage-limit waits now switch replay-safe turns to a configured alternate provider when the delay exceeds `retry.maxDelayMs`.
+- Fixed OpenAI Codex Responses tool results being lost when composite and plain tool-call identifiers did not match.
+- Fixed `/tan` background agents failing to resolve credentials for providers supplied by extensions.
+- Fixed Mnemopi saving session transcripts on exit when automatic retention is disabled.
+- Fixed configuration writes through chained symlinks so the final target and intermediate links are preserved.
+- Fixed direct tool calls using full `xd://` device URLs.
+- Fixed command-backed headers in custom discovery providers being resolved for discovered models.
+- Fixed Windows drive paths pasted under WSL being resolved through their `/mnt/<drive>` mounts for images and file reads.
+- Improved sloppy/SPARSE edit no-match guidance so low-confidence matches are clearly presented without unsafe copy-ready operations.
+- Fixed agents in Hub wait loops failing to respond to user steering messages.
+- Fixed `/tan` sessions inheriting parent costs and overstating subagent totals.
+- Fixed prompt action labels being truncated.
+- Fixed assistant text being truncated when a tool call begins during streaming.
+- Fixed the advisor dropping concerns when catching up on multiple turns and improved review context with bounded tool-result excerpts plus complete `ask` exchanges.
+- Fixed bash command timeouts being delayed by child processes holding output pipes open, while improving timeout reporting and cleanup.
+- Fixed retry countdowns and capped-wait errors displaying floating-point noise in millisecond durations.
+- Prevented browser `app.path` from terminating existing same-executable applications when no reusable CDP endpoint is available.
+- Fixed top-level errors overwriting the active composer before terminal restoration.
+- Fixed Enter being ignored during the first turn when omp starts with an initial prompt.
 
 ## [18.0.11] - 2026-08-29
 
@@ -1955,3 +2071,5 @@
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@a48c88854e1a](https://github.com/can1357/oh-my-pi/blob/a48c88854e1ab2f8ecc4ad90a8bd7f721eeb8320/packages/coding-agent/CHANGELOG.md).
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@9f06f7133fbe](https://github.com/can1357/oh-my-pi/blob/9f06f7133fbe877f89fc04cb4843472dc06988e9/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@0045e59216f5](https://github.com/can1357/oh-my-pi/blob/0045e59216f5911ea4ebeb960c3bc0b96f254f8c/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@95fc652ddfbd](https://github.com/can1357/oh-my-pi/blob/95fc652ddfbd1bf899f6220bdad4117df4ae75a6/packages/coding-agent/CHANGELOG.md).

@@ -229,6 +229,7 @@ describe("browser run cancellation", () => {
 				owner,
 				reason => floatingRejections.push(reason),
 				async () => {
+					// oxlint-disable unicorn/no-single-promise-in-promise-methods -- the combinators themselves are under test
 					const combined =
 						name === "all"
 							? Promise.all([facade.fail()])
@@ -243,6 +244,7 @@ describe("browser run cancellation", () => {
 					void combined.catch(reason => {
 						throw reason;
 					});
+					// oxlint-enable unicorn/no-single-promise-in-promise-methods
 					await Bun.sleep(20);
 				},
 			);

@@ -830,16 +830,17 @@ describe("SecretObfuscator friendlyName placeholders", () => {
 				{ type: "plain", content: "abcdefgh" },
 				{ type: "regex", content: "api_key=[A-Za-z0-9]{11}", friendlyName: "api-key" },
 			],
-			"Q".repeat(43),
+			"collision-6422",
 		);
 		const token = obfuscator.obfuscate("abcdefgh");
+		expect(token).toContain("XYZ");
 
 		const obfuscated = obfuscator.obfuscate(`api_key=${token}XYZ`);
 
 		expect(obfuscated).not.toContain("api_key=");
-		expect(obfuscated).not.toContain("XYZ");
-		expect(obfuscated).toContain(token);
+		expect(obfuscated.replaceAll(token, "")).not.toContain("XYZ");
 		expect(obfuscator.deobfuscate(obfuscated)).toBe("api_key=abcdefghXYZ");
+		expect(obfuscated).toContain(token);
 		expect(obfuscator.obfuscate(obfuscated)).toBe(obfuscated);
 	});
 
