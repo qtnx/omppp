@@ -1,7 +1,8 @@
-Ask user for clarification/input during task execution.
+Ask user for input ONLY when the task cannot be finished without it.
 
 <conditions>
-- Multiple approaches with significantly different tradeoffs user should weigh.
+- The next step is irreversible (destroys data, deploys, spends money, rewrites shared history) and the user has not already authorized it.
+- A fact only the user holds (secret, external access, product decision with zero evidence in code/docs/history) blocks correctness.
 </conditions>
 
 <instruction>
@@ -16,7 +17,8 @@ Ask user for clarification/input during task execution.
 </caution>
 
 <critical>
-- Default to action. Resolve ambiguity via repo conventions, existing patterns, reasonable defaults. Exhaust existing sources (code, configs, docs, history) before asking. Ask only when options have materially different tradeoffs the user must decide.
-- If multiple choices acceptable: pick most conservative/standard option; proceed; state choice.
+- Default to action. The task is a goal to finish, not a topic to discuss: resolve ambiguity via repo conventions, existing patterns, the newest sibling, and reasonable defaults; exhaust code, configs, docs, and history first.
+- Reversible choices are never questions: pick the standard option, proceed, and state `Assuming: <choice>` in the report. Tradeoffs alone do not qualify; "how should I do it?" is your decision. A load-bearing choice you cannot settle from evidence goes to ONE adversarial review round (`super_review`, or an `oracle`/`reviewer` subagent), then you decide and continue — the user reads a decision, not a menu.
+- Never use this tool to present a diagnosis, an option list, or a plan for approval in place of the finished work.
 - Do NOT include "Other"; UI automatically adds "Other (type your own)" to every question.
 </critical>
