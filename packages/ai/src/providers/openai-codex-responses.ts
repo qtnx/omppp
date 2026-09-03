@@ -5,6 +5,7 @@ import {
 	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
 	CODEX_CLIENT_VERSION,
+	codexRoutingHint,
 	getCodexAccountId,
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
@@ -2045,6 +2046,7 @@ async function openCodexWebSocketTransport(
 		requestContext.responsesLite,
 		requestContext.requestMetadata,
 		await getCodexAttestationHeader(requestContext.accountId),
+		requestContext.transformedBody,
 	);
 	const requestBodyForState = structuredCloneJSON(requestContext.transformedBody);
 	// `onPayload` may rewrite the outgoing frame (e.g. drop `stream_options`);
@@ -5185,6 +5187,7 @@ async function openCodexSseEventStream(
 		responsesLite,
 		requestMetadata,
 		await getCodexAttestationHeader(accountId),
+		body,
 	);
 	if (state) {
 		state.stats.sseRequests += 1;
@@ -5351,11 +5354,19 @@ function createCodexHeaders(
 	responsesLite = false,
 	requestMetadata?: CodexCompatibilityIdentity,
 	attestation?: string,
+	routedRequest?: Pick<RequestBody, "model" | "service_tier">,
 ): Headers {
 	const headers = new Headers(initHeaders ?? {});
 	headers.delete("x-api-key");
 	headers.set("Authorization", `Bearer ${accessToken}`);
 	if (accountId) headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
+	// codex-rs sends the hint on every ChatGPT-OAuth request and WebSocket
+	// handshake; this provider only ever speaks to the Codex backend.
+	if (routedRequest) {
+		headers.set(OPENAI_HEADERS.ROUTING_HINT, codexRoutingHint(routedRequest.model, routedRequest.service_tier));
+	} else {
+		headers.delete(OPENAI_HEADERS.ROUTING_HINT);
+	}
 	// Region-pinned enterprise workspaces answer 401 `Workspace is not authorized
 	// in this region.` when the request's egress region does not match them and
 	// the client did not declare the workspace's residency. The access token

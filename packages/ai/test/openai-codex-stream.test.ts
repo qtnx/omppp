@@ -2255,7 +2255,7 @@ describe.serial("openai-codex streaming", () => {
 		expect(sawDone).toBe(true);
 	});
 
-	it("includes the default service_tier in SSE payloads when requested", async () => {
+	it("includes the default service_tier in SSE payloads and the routing hint header when requested", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
 		setAgentDir(tempDir.path());
 
@@ -2265,6 +2265,7 @@ describe.serial("openai-codex streaming", () => {
 		).toBase64();
 		const token = `aaa.${payload}.bbb`;
 		let capturedBody: Record<string, unknown> | undefined;
+		let capturedHeaders: Headers | undefined;
 
 		const sse = `${[
 			`data: ${JSON.stringify({ type: "response.output_item.added", item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] } })}`,
@@ -2275,6 +2276,7 @@ describe.serial("openai-codex streaming", () => {
 		].join("\n\n")}\n\n`;
 		const fetchMock = vi.fn(async (_input: string | URL, init?: RequestInit) => {
 			capturedBody = JSON.parse(decodeCodexRequestBody(init?.body)) as Record<string, unknown>;
+			capturedHeaders = new Headers(init?.headers);
 			return new Response(sse, {
 				status: 200,
 				headers: { "content-type": "text/event-stream" },
@@ -2306,6 +2308,8 @@ describe.serial("openai-codex streaming", () => {
 		}).result();
 		expect(result.stopReason).toBe("stop");
 		expect(capturedBody?.service_tier).toBe("default");
+		// codex-rs `x-codex-routing-hint`: model plus the explicit tier.
+		expect(capturedHeaders?.get("x-codex-routing-hint")).toBe("model=gpt-5.1-codex;tier=default");
 		expect(result.usage.cost.input).toBeCloseTo(0.00001);
 		expect(result.usage.cost.output).toBeCloseTo(0.000012);
 		expect(result.usage.cost.total).toBeCloseTo(0.000022);

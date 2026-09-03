@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped the pinned Codex client version to 0.153.0 so version-gated OpenAI Codex models (e.g. `gpt-6-astra`) appear in discovery and accept requests.
+
+### Fixed
+
+- Fixed Codex model refresh silently keeping a stale catalog when one stored ChatGPT account's token had been revoked; the rejected account is now skipped and remaining accounts are unioned.
+
 ## [18.1.4] - 2026-09-02
 
 ### Changed
