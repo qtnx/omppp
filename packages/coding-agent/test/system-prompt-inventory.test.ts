@@ -1066,10 +1066,14 @@ describe("system prompt tool inventory", () => {
 
 		// Verb matrix: the user's verb selects the artifact; a requested plan is delivered as a plan, not code.
 		expect(text).toMatch(/\|verb\|deliverable\|done when\|/);
-		expect(text).toMatch(/\|plan \/ design \/ spec\|the plan document, complete\|[^\n]*existing-code inventory[^\n]*NO code, NO approval gate/);
+		expect(text).toMatch(
+			/\|plan \/ design \/ spec\|the plan document, complete\|[^\n]*existing-code inventory[^\n]*NO code, NO approval gate/,
+		);
 		expect(text).toMatch(/\|fix \/ debug[^\n]*\|the fix\|bug no longer reproduces/);
 		// Asking is gated to irreversible actions or user-only facts; everything else is decided and recorded.
-		expect(text).toMatch(/ask\(q\) allowed := \(tools ∧ code ∧ history cannot answer q\) ∧ \(irreversible\(q\) ∨ user-only-fact\(q\)/);
+		expect(text).toMatch(
+			/ask\(q\) allowed := \(tools ∧ code ∧ history cannot answer q\) ∧ \(irreversible\(q\) ∨ user-only-fact\(q\)/,
+		);
 		expect(text).toMatch(/Decision defaults \(apply, do not ask\)/);
 		expect(text).toMatch(/Decision refinement — the substitute for asking the user/);
 		expect(text).toMatch(/"shall I continue\?", "want me to…\?"/);
