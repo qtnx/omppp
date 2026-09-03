@@ -76,11 +76,17 @@ import {
 	type CodexReasoningContext,
 	type CodexRequestOptions,
 	type InputItem,
+	type ReasoningConfig,
 	type RequestBody,
 	resolveCodexResponsesLite,
 	transformRequestBody,
 } from "./openai-codex/request-transformer";
 import { CodexApiError } from "./openai-codex/response-handler";
+import {
+	getOpenAIEffortControlState,
+	type OpenAIEffortControlState,
+	planStableOpenAIEffort,
+} from "./openai-configuration-update";
 import type {
 	ResponseComputerToolCall,
 	ResponseCustomToolCall,
@@ -545,6 +551,8 @@ interface CodexProviderSessionState extends ProviderSessionState {
 	webSocketSessions: Map<string, CodexWebSocketSessionState>;
 	webSocketPublicToPrivate: Map<string, string>;
 	metadataSessions: Map<string, CodexMetadataSessionState>;
+	/** `configuration_update` effort baselines, keyed by model + session. */
+	effortControls: Map<string, OpenAIEffortControlState<ReasoningConfig["effort"]>>;
 }
 
 /** Request classification encoded in Codex turn metadata. */
@@ -1212,6 +1220,7 @@ function createCodexProviderSessionState(): CodexProviderSessionState {
 		webSocketSessions: new Map(),
 		webSocketPublicToPrivate: new Map(),
 		metadataSessions: new Map(),
+		effortControls: new Map(),
 		close: () => {
 			for (const session of state.webSocketSessions.values()) {
 				session.connection?.close("session_disposed");
@@ -1219,6 +1228,7 @@ function createCodexProviderSessionState(): CodexProviderSessionState {
 			state.webSocketSessions.clear();
 			state.webSocketPublicToPrivate.clear();
 			state.metadataSessions.clear();
+			state.effortControls.clear();
 		},
 	};
 	return state;
@@ -1232,7 +1242,9 @@ function isCodexProviderSessionState(state: ProviderSessionState | undefined): s
 		"webSocketPublicToPrivate" in state &&
 		state.webSocketPublicToPrivate instanceof Map &&
 		"metadataSessions" in state &&
-		state.metadataSessions instanceof Map
+		state.metadataSessions instanceof Map &&
+		"effortControls" in state &&
+		state.effortControls instanceof Map
 	);
 }
 
@@ -1775,7 +1787,30 @@ export async function buildTransformedCodexRequestBody(
 		responsesLite: options?.responsesLite,
 	};
 
-	return transformRequestBody(params, model, codexOptions, { developerMessages });
+	const body = await transformRequestBody(params, model, codexOptions, { developerMessages });
+	applyCodexStableEffort(model, body, options);
+	return body;
+}
+
+/**
+ * Keep the request-level effort byte-stable across a conversation and carry
+ * later changes as `configuration_update` items (GPT-6 Astra). Requires a
+ * session id and provider session state to remember the baseline; without
+ * them every request stands alone and sends its own effort.
+ */
+function applyCodexStableEffort(
+	model: Model<"openai-codex-responses">,
+	body: RequestBody,
+	options: OpenAICodexResponsesOptions | undefined,
+): void {
+	if (!model.compat.supportsConfigurationUpdate || options?.codexCompaction) return;
+	const effort = body.reasoning?.effort;
+	if (effort === undefined || effort === "none" || !body.input) return;
+	const providerState = getCodexProviderSessionState(options?.providerSessionState);
+	const sessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
+	if (!providerState || !sessionId) return;
+	const state = getOpenAIEffortControlState(providerState.effortControls, `${model.id}\u0000${sessionId}`);
+	body.reasoning = { ...body.reasoning, effort: planStableOpenAIEffort(state, body.input, effort) };
 }
 
 async function openInitialCodexEventStream(

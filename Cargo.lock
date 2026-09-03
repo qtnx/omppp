@@ -6261,6 +6261,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "tiktoken-rs",
+ "tinyvec",
  "tokio",
  "tokio-util",
  "toml",

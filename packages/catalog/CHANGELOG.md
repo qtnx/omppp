@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added GPT-6 Astra to the OpenAI Codex model catalog, including support for configuration updates and requests using the freeform `apply_patch` tool.
+
 ### Changed
 
 - Bumped the pinned Codex client version to 0.153.0 so version-gated OpenAI Codex models (e.g. `gpt-6-astra`) appear in discovery and accept requests.
