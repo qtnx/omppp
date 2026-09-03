@@ -115,6 +115,7 @@ describe("issue #10510: prewalk + eager-todo conflict", () => {
 				"todo.enabled": true,
 				"todo.eager": "always",
 				"todo.reminders": false,
+				"advisor.enabled": false,
 			}),
 			modelRegistry,
 			toolRegistry,
