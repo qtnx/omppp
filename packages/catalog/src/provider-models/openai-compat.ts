@@ -1621,7 +1621,7 @@ export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
 // strings; the chat picker MUST exclude these prefixes or selecting them 400s.
 function withXaiOAuthCompatDefaults(model: ModelSpec<"openai-responses">): ModelSpec<"openai-responses"> {
 	const compat = {
-		...(model.compat ?? {}),
+		...model.compat,
 		includeEncryptedReasoning: model.compat?.includeEncryptedReasoning ?? true,
 		filterReasoningHistory: model.compat?.filterReasoningHistory ?? false,
 		supportsImageDetailOriginal: model.compat?.supportsImageDetailOriginal ?? false,
@@ -1653,7 +1653,7 @@ export function applyXaiResponsesThinkingPolicy(model: ModelSpec<"openai-respons
 	const effortCapable =
 		model.compat?.supportsReasoningEffort ?? resolveModelPolicy(model).compat.supportsReasoningEffort;
 	const compat = {
-		...(model.compat ?? {}),
+		...model.compat,
 		supportsReasoningEffort: effortCapable,
 		omitReasoningEffort: model.compat?.omitReasoningEffort ?? !effortCapable,
 	};
@@ -2983,6 +2983,7 @@ function openCodeBaseUrlForApi(api: Api, basePath: string): string {
 // Runtime-discovered rows cached before model-identity corrections retain
 // stale capability metadata until the authoritative catalog TTL expires.
 const OPENCODE_CACHE_MIGRATION_MODEL_IDS = ["glm-5.3-flash"] as const;
+const OPENCODE_ZEN_CACHE_MIGRATION_MODEL_IDS = ["gemini-3.7-flash"] as const;
 
 // Billing-variant suffixes the OpenCode gateways append to a base model id
 // without changing its transport (`deepseek-v4-flash-free`,
@@ -3051,8 +3052,12 @@ function openCodeModelManagerOptions(
 		dynamicModelsAuthoritative: true,
 		// Per-id route pins and capability migrations are cache identity:
 		// without this, rows cached before a correction keep the stale route or
-		// thinking surface until TTL expiry (#8957, #9960).
-		dropCachedModelIdsOnStaticMismatch: [...apiRouteExactModelIds(providerId), ...OPENCODE_CACHE_MIGRATION_MODEL_IDS],
+		// thinking surface until TTL expiry (#8957, #9960, #10543).
+		dropCachedModelIdsOnStaticMismatch: [
+			...apiRouteExactModelIds(providerId),
+			...OPENCODE_CACHE_MIGRATION_MODEL_IDS,
+			...(providerId === "opencode-zen" ? OPENCODE_ZEN_CACHE_MIGRATION_MODEL_IDS : []),
+		],
 		modelsDev: {
 			fetch: () => fetchRevalidatedWellKnownModelsWithTimeout(config?.fetch),
 			map: payload => {
@@ -3277,7 +3282,7 @@ export function openrouterModelManagerOptions(
 								? topProvider.max_completion_tokens
 								: baseModel.maxTokens,
 						...(!supportsToolChoice && {
-							compat: { ...(baseModel.compat ?? {}), supportsToolChoice: false },
+							compat: { ...baseModel.compat, supportsToolChoice: false },
 						}),
 					};
 				},
@@ -3511,6 +3516,20 @@ export const ALIBABA_TOKEN_PLAN_STATIC_MODELS: readonly ModelSpec<"openai-comple
 			defaultLevel: Effort.XHigh,
 		},
 		compat: ALIBABA_TOKEN_PLAN_QWEN_EFFORT_COMPAT,
+	},
+	{
+		id: "qwen3.8-flash",
+		name: "Qwen3.8 Flash",
+		api: "openai-completions",
+		provider: "alibaba-token-plan",
+		baseUrl: ALIBABA_TOKEN_PLAN_BASE_URL,
+		reasoning: true,
+		input: ["text", "image"],
+		cost: ALIBABA_TOKEN_PLAN_COST,
+		contextWindow: 1_000_000,
+		maxTokens: 131_072,
+		thinking: ALIBABA_TOKEN_PLAN_REASONING,
+		compat: ALIBABA_TOKEN_PLAN_COMPAT,
 	},
 	{
 		id: "qwen3.7-max",
@@ -3929,7 +3948,7 @@ export async function fetchLmStudioNativeModelMetadata(
 		try {
 			const response = await fetchImpl(`${nativeBaseUrl}/api/v0/models`, {
 				method: "GET",
-				headers: { Accept: "application/json", ...(options?.headers ?? {}) },
+				headers: { Accept: "application/json", ...options?.headers },
 				signal,
 			});
 			if (!response.ok) {
@@ -6223,7 +6242,7 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 									maxTokens,
 									headers: {
 										...COPILOT_API_HEADERS,
-										...(getProviderReferences().get(defaults.id)?.headers ?? {}),
+										...getProviderReferences().get(defaults.id)?.headers,
 									},
 									...(api === "openai-completions"
 										? {
@@ -6579,6 +6598,26 @@ const OPENCODE_GO_API_RESOLUTION = createOpenCodeApiResolution("https://opencode
 
 const COPILOT_BASE_URL = "https://api.githubcopilot.com";
 
+const ZAI_ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic";
+// The `zai` catalog provider is the GLM Coding Plan: `/login zai` validates and
+// stores credentials against the coding-plan endpoint (see registry/zai.ts), so
+// the native OpenAI transport must ride the coding-plan base rather than the
+// general PAYG `/api/paas/v4`, which would bypass plan quota or fail auth.
+const ZAI_OPENAI_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
+
+/** Resolves the transport and endpoint for one Z.AI model catalog entry. */
+export function resolveZaiApi(modelId: string): { api: "anthropic-messages" | "openai-completions"; baseUrl: string } {
+	const api = apiRouteFor("zai", modelId)?.api ?? "anthropic-messages";
+	switch (api) {
+		case "anthropic-messages":
+			return { api, baseUrl: ZAI_ANTHROPIC_BASE_URL };
+		case "openai-completions":
+			return { api, baseUrl: ZAI_OPENAI_BASE_URL };
+		default:
+			throw new Error(`Unsupported Z.AI API route: ${api}`);
+	}
+}
+
 const COPILOT_DEFAULT_RESOLUTION = {
 	api: "openai-completions",
 	baseUrl: COPILOT_BASE_URL,
@@ -6862,7 +6901,9 @@ const MODELS_DEV_PROVIDER_DESCRIPTORS_CODING_PLANS: readonly ModelsDevProviderDe
 	// SKU as "Free" in `/models`. The PAYG key carries the real per-token rates for
 	// the identical model ids, so the enumerated token costs line up with the other
 	// subscription providers for comparison (issue #5598).
-	anthropicMessagesDescriptor("zai", "zai", "https://api.z.ai/api/anthropic"),
+	anthropicMessagesDescriptor("zai", "zai", ZAI_ANTHROPIC_BASE_URL, {
+		resolveApi: modelId => resolveZaiApi(modelId),
+	}),
 	// --- Umans AI ---
 	// Source the pay-as-you-go catalog: the coding-plan key publishes subscription
 	// costs as zero, while `/models/info` omits pricing entirely. The generator

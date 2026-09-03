@@ -146,7 +146,7 @@ function resolveEscapeEnd(buffer: string, pos: number, length: number, resumeSea
 					return -1;
 				}
 				const capEnd = Math.min(length, pos + MAX_CSI_BYTES);
-				const isSgrMouse = buffer.charCodeAt(pos + 2) === 0x3c /* < */;
+				const isSgrMouse = buffer.charCodeAt(pos + 2) === 0x3c; /* < */
 				// No resume hint for CSI: `extractCompleteSequences` records
 				// hints only for OSC/DCS/APC. A partial CSI rescans from its
 				// head, bounded by the tight MAX_CSI_BYTES cap.

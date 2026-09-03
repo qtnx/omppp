@@ -478,7 +478,7 @@ export function withThinkingLoopGuard<
 	const controller = new AbortController();
 	const caller = options?.signal;
 	const signal = caller ? AbortSignal.any([caller, controller.signal]) : controller.signal;
-	const merged = { ...(options ?? {}), signal } as O;
+	const merged = { ...options, signal } as O;
 	return guardThinkingLoopStream(dispatch(merged), model, controller, options);
 }
 

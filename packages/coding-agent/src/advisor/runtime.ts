@@ -784,7 +784,6 @@ export class AdvisorRuntime {
 		)
 			return Promise.resolve(this.#backlog < threshold);
 		const { promise, resolve } = Promise.withResolvers<boolean>();
-		let waiter!: CatchupWaiter;
 		const finish = (caughtUp: boolean): void => {
 			const idx = this.#waiters.indexOf(waiter);
 			if (idx >= 0) this.#waiters.splice(idx, 1);
@@ -793,7 +792,7 @@ export class AdvisorRuntime {
 			resolve(caughtUp);
 		};
 		const abort = (): void => finish(false);
-		waiter = {
+		const waiter = {
 			threshold,
 			finish,
 			timer: setTimeout(abort, maxMs),
@@ -1184,7 +1183,7 @@ export class AdvisorRuntime {
 	}
 
 	#wakeAllWaiters(): void {
-		for (const w of [...this.#waiters]) {
+		for (const w of Array.from(this.#waiters)) {
 			w.finish(false);
 		}
 	}

@@ -89,7 +89,7 @@ import type { FileSlashCommand } from "../extensibility/slash-commands";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState, GoalStatus } from "../goals/state";
 import { copyLocalArtifacts, resolveLocalUrlToPath } from "../internal-urls";
-import { setKanbanBoardForker } from "../kanban";
+import { type KanbanBoardOwner, setKanbanBoardForker } from "../kanban";
 import type { KanbanForkedAgent, KanbanForkRequest } from "../kanban/runtime";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
 import type { MCPManager } from "../mcp";
@@ -1120,7 +1120,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
 		this.#tanCommandController = new TanCommandController(this);
-		setKanbanBoardForker(this.session, request => this.handleKanbanBoardAgent(request));
+		setKanbanBoardForker(this.session as unknown as KanbanBoardOwner, request =>
+			this.handleKanbanBoardAgent(request),
+		);
 		this.#omfgController = new OmfgController(this);
 		this.#cleanseController = new CleanseCommandController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
@@ -6378,6 +6380,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	// Selector handling
 	showSettingsSelector(): void {
 		this.#selectorController.showSettingsSelector();
+	}
+
+	showUsageDashboard(reports: UsageReport[]): void {
+		this.#selectorController.showUsageDashboard(reports);
 	}
 
 	showAdvisorConfigure(): void {

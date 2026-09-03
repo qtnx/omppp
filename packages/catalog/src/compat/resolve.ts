@@ -248,8 +248,8 @@ function hasLocalLoopbackBaseUrl(baseUrl: string | undefined): boolean {
 	) {
 		return true;
 	}
-	if (/^10\./.test(hostname)) return true;
-	if (/^192\.168\./.test(hostname)) return true;
+	if (hostname.startsWith("10.")) return true;
+	if (hostname.startsWith("192.168.")) return true;
 	if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(hostname)) return true;
 	if (hostname.endsWith(".local")) return true;
 	return false;
@@ -836,22 +836,23 @@ function resolveAnthropicPolicy(
 	const requiresThinkingEnabled = modelMatchesHost(spec, "moonshotNative") && facts.kimiMandatoryThinking;
 	const isAzure = isAzureAnthropicRoute(baseUrl);
 	const signingEndpoint = official || isCopilot || isZenmux || isAnthropicSigningProxyUrl(baseUrl);
+	// biome-ignore lint/correctness/noUnusedVariables: kept for symmetry with sibling helpers
 	const supportsFable51Controls = official && facts.family("fable", "mythos") && facts.revGte("5.1");
 	const compat: ResolvedAnthropicCompat = {
 		officialEndpoint: official,
 		signingEndpoint,
 		supportsContextManagement: true,
 		supportsOutputEffort: true,
-		supportsTurnScopedSystem: supportsFable51Controls,
-		supportsMidConversationToolChanges: supportsFable51Controls,
-		supportsPerMessageEffort: supportsFable51Controls,
-		supportsThinkingBindingControls: supportsFable51Controls,
 		disableStrictTools: isAzure,
 		disableAdaptiveThinking: false,
 		allowAnthropicHeaderOverrides: false,
 		supportsEagerToolInputStreaming: official,
 		supportsLongCacheRetention: official,
-		supportsMidConversationSystem: official && facts.anthropicAdaptiveGenAtLeast("4.8"),
+		supportsMidConversationSystem: official && !facts.family("sonnet") && facts.anthropicAdaptiveGenAtLeast("4.8"),
+		supportsTurnScopedSystem: false,
+		supportsMidConversationToolChanges: false,
+		supportsPerMessageEffort: false,
+		supportsThinkingBindingControls: false,
 		supportsForcedToolChoice: !requiresThinkingEnabled && !facts.family("fable", "mythos"),
 		supportsSamplingParams: !facts.anthropicAdaptiveGenAtLeast("4.7"),
 		requiresToolResultId: false,
@@ -1017,6 +1018,7 @@ interface RuleThinking {
 	requiresEffort?: boolean;
 	suppressWhenOff?: boolean;
 	supportsDisplay?: boolean;
+	prefixBinding?: boolean;
 }
 
 function readRuleThinking(axes: ResolvedAxes): RuleThinking {
@@ -1035,6 +1037,7 @@ function readRuleThinking(axes: ResolvedAxes): RuleThinking {
 	if (typeof raw.requiresEffort === "boolean") out.requiresEffort = raw.requiresEffort;
 	if (typeof raw.suppressWhenOff === "boolean") out.suppressWhenOff = raw.suppressWhenOff;
 	if (typeof raw.supportsDisplay === "boolean") out.supportsDisplay = raw.supportsDisplay;
+	if (typeof raw.prefixBinding === "boolean") out.prefixBinding = raw.prefixBinding;
 	return out;
 }
 
@@ -1090,6 +1093,7 @@ function resolveThinkingPolicy<TApi extends Api>(
 	if (rule.effortBudgets !== undefined) config.effortBudgets = rule.effortBudgets;
 	const supportsDisplay = rule.supportsDisplay ?? defaultSupportsDisplay(spec, facts);
 	if (supportsDisplay) config.supportsDisplay = true;
+	if (rule.prefixBinding) config.prefixBinding = true;
 	const requiresEffort =
 		rule.requiresEffort ?? (impliesMandatoryReasoning(facts, spec.id) || isQwenTemplateReasoningEffortCompat(compat));
 	if (requiresEffort) config.requiresEffort = true;
@@ -1149,7 +1153,8 @@ function fillExplicitThinking<TApi extends Api>(
 		(rule.requiresEffort ??
 			(impliesMandatoryReasoning(facts, spec.id) || isQwenTemplateReasoningEffortCompat(compat)));
 	const needsDefaultLevel = thinking.defaultLevel === undefined && rule.defaultLevel !== undefined;
-	if (effortMap === undefined && !needsDisplay && !needsRequiresEffort && !needsDefaultLevel) {
+	const needsPrefixBinding = thinking.prefixBinding === undefined && rule.prefixBinding === true;
+	if (effortMap === undefined && !needsDisplay && !needsRequiresEffort && !needsDefaultLevel && !needsPrefixBinding) {
 		return thinking;
 	}
 	const filled: ThinkingConfig = { ...thinking };
@@ -1157,6 +1162,7 @@ function fillExplicitThinking<TApi extends Api>(
 	if (needsDisplay) filled.supportsDisplay = true;
 	if (needsDefaultLevel && rule.defaultLevel !== undefined) filled.defaultLevel = rule.defaultLevel;
 	if (needsRequiresEffort) filled.requiresEffort = true;
+	if (needsPrefixBinding) filled.prefixBinding = true;
 	return filled;
 }
 

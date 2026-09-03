@@ -174,7 +174,7 @@ function observeBrowserRunPromiseWithState<T>(
 	});
 	Object.defineProperties(promise, {
 		constructor: { configurable: true, value: observedPromiseConstructor },
-		// biome-ignore lint/suspicious/noThenProperty: native Promise continuations must remain thenable.
+		// biome-ignore lint/suspicious/noThenProperty: schema keyword, not a thenable
 		then: {
 			configurable: true,
 			value: <TResult1 = T, TResult2 = never>(

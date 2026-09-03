@@ -40,7 +40,7 @@ export interface KanbanSessionPort {
 	readonly sessionId: string;
 	readonly isStreaming: boolean;
 	readonly yieldQueue: Pick<YieldQueue, "register" | "enqueue">;
-	promptCustomMessage(message: KanbanCustomMessagePayload, options: KanbanPromptOptions): Promise<void>;
+	promptCustomMessage(message: KanbanCustomMessagePayload, options: KanbanPromptOptions): Promise<unknown>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	/**
 	 * Starts a background worker for board work. Missing in SDK and

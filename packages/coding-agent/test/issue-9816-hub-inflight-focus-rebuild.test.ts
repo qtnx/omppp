@@ -273,9 +273,6 @@ function createFixture(main = makeSession([danglingHubWait], true)) {
 		status: "running",
 	});
 	const lifecycle = new AgentLifecycleManager(registry);
-	let helpers!: UiHelpers;
-	let focus!: SessionFocusController;
-	let eventController!: EventController;
 	const pendingMessagesContainer = new TranscriptContainer();
 	const pendingTools = new Map();
 	const ctx = {
@@ -321,11 +318,11 @@ function createFixture(main = makeSession([danglingHubWait], true)) {
 		ensureLoadingAnimation: vi.fn(),
 	} as unknown as InteractiveModeContext;
 
-	helpers = new UiHelpers(ctx);
-	eventController = new EventController(ctx);
+	const helpers = new UiHelpers(ctx);
+	const eventController = new EventController(ctx);
 	ctx.eventController = eventController;
 	ctx.renderInitialMessages = options => helpers.renderInitialMessages(options);
-	focus = new SessionFocusController(ctx, registry, () => lifecycle);
+	const focus = new SessionFocusController(ctx, registry, () => lifecycle);
 	ctx.unsubscribe = main.session.subscribe(event => eventController.handleEvent(event));
 	return { ctx, focus, main };
 }

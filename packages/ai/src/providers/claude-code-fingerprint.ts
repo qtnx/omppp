@@ -14,8 +14,6 @@ export const claudeCodeVersion = "2.1.257";
 export const claudeCodeSdkVersion = "0.112.1";
 /** User-Agent emitted by Claude Code's CLI inference entrypoint. */
 export const claudeCodeUserAgent = `claude-cli/${claudeCodeVersion} (external, cli)`;
-/** User-Agent emitted by Cowork's `claude-desktop` inference entrypoint. */
-export const coworkUserAgent = `claude-cli/${claudeCodeVersion} (external, claude-desktop)`;
 /** Prefix used to isolate custom Anthropic OAuth tools from built-in tools. */
 export const claudeToolPrefix: string = "_";
 /** Identity block prepended by Claude Code's CLI runtime. */

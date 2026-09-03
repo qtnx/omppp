@@ -57,7 +57,7 @@ export function streamOpenAIAnthropicShim(
 	(async () => {
 		try {
 			const mergedHeaders = {
-				...(config.extraHeaders?.() ?? {}),
+				...config.extraHeaders?.(),
 				...options?.headers,
 			};
 

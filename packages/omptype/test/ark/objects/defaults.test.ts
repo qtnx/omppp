@@ -678,7 +678,7 @@ describe("functions", () => {
 			}),
 		});
 
-		// biome-ignore lint/complexity/noBannedTypes: Function default test
+		// biome-ignore lint/complexity/noBannedTypes: Type second generic parameter test
 		const _typeFunctionFactory: Eq<typeof T.t, { bar: Default<Function, () => number> }> = true;
 		expect(T.assert({}).bar()).toEqual(3);
 		expect(T.assert({}).bar()).toEqual(4);

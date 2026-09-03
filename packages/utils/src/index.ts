@@ -15,6 +15,7 @@ export * from "./json";
 export * from "./json-parse";
 export * as logger from "./logger";
 export * from "./loop-phase";
+export * from "./materialize-string";
 export * from "./math-delimiters";
 export * from "./mermaid-ascii";
 export * from "./mime";

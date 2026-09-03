@@ -24,7 +24,9 @@ type FakeKernelShutdownOptions = { timeoutMs?: number };
 class FakeKernel {
 	execute = vi.fn(async () => OK_RESULT);
 	shutdown = vi.fn(
-		async (_options?: FakeKernelShutdownOptions): Promise<KernelShutdownResult> => ({ confirmed: true }),
+		async (_options?: FakeKernelShutdownOptions): Promise<KernelShutdownResult> => ({
+			confirmed: true,
+		}),
 	);
 	ping = vi.fn(async () => true);
 	alive = true;

@@ -407,13 +407,17 @@ export class InputController {
 			// Esc must not destroy an in-progress draft.
 			this.ctx.lastEscapeTime = 0;
 		} else {
-			// Double-interrupt with an empty editor opens the transcript rewind
-			// selector unless disabled.
-			if (settings.get("doubleEscapeAction") !== "none") {
+			// Double-interrupt with an empty editor runs the configured action:
+			// the transcript rewind selector (default), the session tree, or nothing.
+			const doubleEscapeAction = settings.get("doubleEscapeAction");
+			if (doubleEscapeAction !== "none") {
 				const now = Date.now();
 				if (now - this.ctx.lastEscapeTime < 500) {
-					this.ctx.showUserMessageSelector();
-					// Forced viewport repaint only: `resetDisplay()` replays the whole
+					if (doubleEscapeAction === "tree") {
+						this.ctx.showTreeSelector();
+					} else {
+						this.ctx.showUserMessageSelector();
+					}
 					// committed transcript (and clears native scrollback on direct
 					// terminals), which blocks on PTY backpressure for tens of seconds
 					// on long sessions — the selector opens invisibly and double-Esc

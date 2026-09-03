@@ -45,7 +45,7 @@ export function upsertArchiveEntry(
  */
 export function ensureParentDirectories(map: Map<string, ArchiveIndexEntry>, limits: ArchiveLimits): void {
 	assertEntryCount(map.size, limits);
-	for (const entry of [...map.values()]) {
+	for (const entry of Array.from(map.values())) {
 		const parts = entry.path.split("/");
 		const stop = parts.length - 1;
 		for (let index = 1; index <= stop; index++) {

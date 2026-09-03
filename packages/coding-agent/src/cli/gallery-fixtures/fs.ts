@@ -1,4 +1,4 @@
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: sample source-code strings (read fixtures) intentionally contain literal ${...}.
+// oxlint-disable no-template-curly-in-string -- sample source-code strings intentionally contain literal placeholders.
 // Gallery fixtures for the filesystem tools (read, write, glob).
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
@@ -9,6 +9,7 @@ const readSnippet = [
 	"\tinline: true,",
 	"\trenderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {",
 	"\t\tconst meta: string[] = [];",
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder text
 	"\t\tif (args.limit !== undefined) meta.push(`limit:${args.limit}`);",
 	"",
 	"\t\tconst text = renderStatusLine(",
@@ -136,6 +137,7 @@ export const fsFixtures: Record<string, GalleryFixture> = {
 						"438:\tinline: true,",
 						"439:\trenderCall(args: GlobRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {",
 						"440:\t\tconst meta: string[] = [];",
+						// biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder text
 						"441:\t\tif (args.limit !== undefined) meta.push(`limit:${args.limit}`);",
 						"442:",
 						"443:\t\tconst text = renderStatusLine(",

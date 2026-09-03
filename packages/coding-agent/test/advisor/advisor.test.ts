@@ -2278,7 +2278,6 @@ describe("advisor", () => {
 			const promptInputs: Array<string | AgentMessage[]> = [];
 			const { promise: promptStarted, resolve: startPrompt } = Promise.withResolvers<void>();
 			let maintainCalls = 0;
-			let runtime!: AdvisorRuntime;
 			const messages: AgentMessage[] = [{ role: "user", content: "t0", timestamp: 0 } as AgentMessage];
 			const host: AdvisorRuntimeHost = {
 				snapshotMessages: () => messages,
@@ -2307,7 +2306,7 @@ describe("advisor", () => {
 				reset: () => {},
 				state: { messages: [] },
 			};
-			runtime = new AdvisorRuntime(agent, host);
+			const runtime = new AdvisorRuntime(agent, host);
 
 			runtime.onTurnEnd(messages);
 			await promptStarted;
@@ -6043,7 +6042,6 @@ describe("advisor", () => {
 			const maintenancePaused = Promise.withResolvers<void>();
 			const prompted = Promise.withResolvers<void>();
 			let maintenanceCalls = 0;
-			let runtime: AdvisorRuntime;
 			const agent: AdvisorAgent = {
 				prompt: async input => {
 					promptInputs.push(promptText(input));
@@ -6063,7 +6061,7 @@ describe("advisor", () => {
 					timestamp: 2,
 				} as AgentMessage,
 			];
-			runtime = new AdvisorRuntime(agent, {
+			const runtime = new AdvisorRuntime(agent, {
 				snapshotMessages: () => messages,
 				enqueueAdvice: () => {},
 				maintainContext: async () => {

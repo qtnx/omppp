@@ -89,6 +89,7 @@ interface FakeSessionEntry {
 	data?: unknown;
 }
 
+// biome-ignore lint/correctness/noUnusedVariables: kept for symmetry with sibling helpers
 interface FakeAcpBuiltinSessionManager {
 	_sessionFile: string | undefined;
 	_cwd: string;
@@ -113,11 +114,9 @@ interface FakeAcpBuiltinSessionManager {
 	getCwd(): string;
 	setSessionName(name: string, source: string): Promise<boolean>;
 }
-
 function createRuntime() {
 	const settings = Settings.isolated();
 	const output: string[] = [];
-	let fakeSessionManager: FakeAcpBuiltinSessionManager | undefined;
 	const session: FakeAcpBuiltinSession = {
 		fastMode: false,
 		forcedToolChoice: undefined as string | undefined,
@@ -206,7 +205,7 @@ function createRuntime() {
 		async setModel(_model: unknown) {},
 	};
 	const typedSession = session as unknown as AgentSession & FakeAcpBuiltinSession;
-	fakeSessionManager = {
+	const fakeSessionManager = {
 		_sessionFile: undefined as string | undefined,
 		_cwd: "/tmp/project",
 		_entries: [] as FakeSessionEntry[],

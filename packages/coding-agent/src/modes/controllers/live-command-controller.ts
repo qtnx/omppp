@@ -140,8 +140,6 @@ export class LiveCommandController {
 			visualizer.setInputLevel(input);
 			this.#ctx.ui.requestComponentRender(visualizer);
 		});
-
-		let session: LiveSessionController;
 		const options: LiveSessionControllerOptions = {
 			media,
 			agent: new LocalAgentEndpoint(this.#ctx.session, message => this.#ctx.extractAssistantText(message)),
@@ -169,7 +167,7 @@ export class LiveCommandController {
 				onTerminal: error => this.#finish(session, error),
 			},
 		};
-		session = this.#createSession ? this.#createSession(options) : new LiveSessionController(options);
+		const session = this.#createSession ? this.#createSession(options) : new LiveSessionController(options);
 		this.#session = session;
 
 		try {
