@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Herdr notifications are now on by default: a turn that ran at least `herdr.notify.minWorkMs` toasts on completion, and a question or approval wait toasts immediately with herdr's `request` sound and the question text as the title.
+
+### Fixed
+
+- Fixed Herdr panes sticking on `working` after the agent went idle: a prompt that never became a run (Esc during setup, generation bail-out) held the pane on working forever, and a state report that timed out on the herdr socket was never retried. The working hold now expires against the session's real idle state, run bookkeeping is cleared at every run boundary and re-validated on a periodic tick, background subagents/jobs are read from the owner-scoped job snapshot instead of a private set, and lost reports are retried once and re-asserted periodically.
+- Herdr notifications get a 2s socket budget instead of 500ms, so a busy herdr server no longer drops them.
+
 ## [18.1.3] - 2026-09-02
 
 ### Changed
