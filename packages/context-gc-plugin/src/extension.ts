@@ -85,6 +85,9 @@ const REMINDER_CONTEXT_USAGE_THRESHOLD_PERCENT = 50;
 /** From this usage the model is told its context percentage every turn so it can apply the
  * phase-boundary compaction rule (system prompt: compact_now ⇔ boundary ∧ usage ≥ 40%). */
 const COMPACT_HINT_CONTEXT_USAGE_PERCENT = 40;
+/** The hint is a persisted hidden message; emit it once per band (40/60/80) so a long turn stream
+ * neither bloats history nor nags. The band resets once usage falls back below it (compaction ran). */
+const COMPACT_HINT_BAND_PERCENT = 20;
 
 type ContextMessage = ContextEvent["messages"][number];
 
@@ -481,6 +484,19 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 	}
 
 	const activeSnapshots = new Map<string, ActiveSnapshot>();
+	const compactHintBands = new Map<string, number>();
+
+	function usageHintDue(sessionId: string, percent: number | null | undefined): boolean {
+		if (percent === null || percent === undefined || percent < COMPACT_HINT_CONTEXT_USAGE_PERCENT) {
+			compactHintBands.delete(sessionId);
+			return false;
+		}
+		const band = Math.floor((percent - COMPACT_HINT_CONTEXT_USAGE_PERCENT) / COMPACT_HINT_BAND_PERCENT);
+		const last = compactHintBands.get(sessionId);
+		if (last !== undefined && band <= last) return false;
+		compactHintBands.set(sessionId, band);
+		return true;
+	}
 	const getActiveSnapshot = (ctx: ExtensionContext): ActiveSnapshot | undefined => {
 		const state = readContextGcSessionState(ctx);
 		const snapshot = activeSnapshots.get(state.sessionId);
@@ -526,7 +542,10 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 				thresholdTokens: REMINDER_THRESHOLD_TOKENS,
 				contextUsage,
 				minContextUsagePercent: REMINDER_CONTEXT_USAGE_THRESHOLD_PERCENT,
-			}) ?? buildContextUsageReminder(contextUsage, COMPACT_HINT_CONTEXT_USAGE_PERCENT);
+			}) ??
+			(usageHintDue(state.sessionId, contextUsage?.percent)
+				? buildContextUsageReminder(contextUsage, COMPACT_HINT_CONTEXT_USAGE_PERCENT)
+				: undefined);
 		if (!reminder && !systemPrompt) return undefined;
 		return {
 			...(reminder ? { message: contextGcReminderMessage(reminder) } : {}),
@@ -536,6 +555,7 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 
 	pi.on("session_shutdown", () => {
 		activeSnapshots.clear();
+		compactHintBands.clear();
 		store.close();
 	});
 }
