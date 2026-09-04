@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Anthropic prompt-cache rewrites after a conversation prefix change: thinking blocks the API drops with `prefix_mismatch_behavior: drop_block` are now kept on the wire unchanged (the API discards them for free), instead of being omitted from the next request, which changed the bytes at that message and rewrote the entire cached conversation behind it.
+- Fixed Anthropic advisor and side requests contaminating the main conversation: a signature rejected under a side request's different system prompt is now remembered per prompt prefix, so the main conversation keeps its preserved thinking and its prompt cache.
+
+### Changed
+
+- Anthropic prompt-cache diagnostics now also report partial misses (a request that read back less than the previous prompt), attribute the change to the first differing system block, tool, or previously-sent message, and no longer count appended messages as a history change.
+- The per-block "dropped thinking block after conversation prefix changed" warning is now one debug line per request with a count.
+
 ## [18.1.0] - 2026-09-01
 
 ### Added
