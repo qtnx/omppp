@@ -227,6 +227,6 @@ herdr pane process-info --pane "$HERDR_PANE_ID"
 
 - Control through herdr's existing `omp` kind requires the `omp` entrypoint (`ompx herdr install`) and no shadowing shell alias, until herdr ships a native `ompx` kind.
 - `herdr agent prompt` still uses keystrokes on the Herdr side until it adopts `session.prompt`.
-- Notifications are off by default (`herdr.notify.done` / `herdr.notify.blocked`), and herdr itself must have toast delivery enabled: `[ui.toast] delivery = "herdr"` in `~/.config/herdr/config.toml`, then `herdr server reload-config`. Without it `notification.show` answers `{"shown":false,"reason":"disabled"}`.
+- Notifications are on by default (`herdr.notify.done` / `herdr.notify.blocked`): a turn that ran at least `herdr.notify.minWorkMs` toasts on completion with the `herdr.notify.sound` cue, and a question or approval wait toasts immediately with the `request` cue. herdr itself must have toast delivery enabled: `[ui.toast] delivery = "herdr"` in `~/.config/herdr/config.toml`, then `herdr server reload-config`. Without it `notification.show` answers `{"shown":false,"reason":"disabled"}`.
 - `pane.report_agent_session` is accepted (`{"type":"ok"}`) but herdr surfaces `agent_session` on the **agent** view, not the pane view, so the session id/transcript path only becomes visible once the pane is a named agent (`herdr agent start`). The same ids also ride on every `pane.report_agent` state report.
 - Set `HERDR_CONTROL_SOCKET=0` to disable the per-session control socket (no external prompt delivery for that session).

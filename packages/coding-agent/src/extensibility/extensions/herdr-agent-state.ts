@@ -25,6 +25,16 @@ const AGENT = "omp";
 const DEFAULT_IDLE_DEBOUNCE_MS = 250;
 const DEFAULT_RETRY_GRACE_MS = 2_500;
 const SOCKET_TIMEOUT_MS = 500;
+/** A report that got no reply in {@link SOCKET_TIMEOUT_MS} is retried once with this budget. */
+const SOCKET_RETRY_TIMEOUT_MS = 1_500;
+/**
+ * `input` / `before_agent_start` flip the pane to working before the run
+ * exists. If no `agent_start` follows within this window (prompt aborted
+ * during setup, generation bail-out, rejected prompt) the hold expires and
+ * the pane follows the session's real idle state instead of sticking on
+ * working forever.
+ */
+const PROMPT_PENDING_GRACE_MS = 2_000;
 /** Display-only label: the functional agent kind stays `omp` (herdr's kind id), but a
  *  70-workspace sidebar should say which fork is actually running. */
 const DISPLAY_AGENT = "ompx";
@@ -112,50 +122,67 @@ export function markNativeHerdrAgentStateEnabled(env: NodeJS.ProcessEnv = proces
 	return true;
 }
 
-function createSocketTransport(env: NodeJS.ProcessEnv): HerdrAgentStateTransport {
+function sendReportAttempt(socketPath: string, request: HerdrRequest, timeoutMs: number): Promise<boolean> {
+	const deferred = Promise.withResolvers<boolean>();
+	let done = false;
+	let timeout: NodeJS.Timeout | undefined;
+	let socket: net.Socket | undefined;
+	const finish = (delivered: boolean): void => {
+		if (done) return;
+		done = true;
+		clearTimeout(timeout);
+		socket?.destroy();
+		deferred.resolve(delivered);
+	};
+
+	try {
+		socket = net.createConnection(socketPath);
+	} catch (err) {
+		logger.debug("herdr-agent-state: transport connect failed", { error: String(err) });
+		return Promise.resolve(false);
+	}
+
+	socket.on("error", err => {
+		logger.debug("herdr-agent-state: transport error", { error: String(err) });
+		finish(false);
+	});
+	socket.on("connect", () => socket?.write(`${JSON.stringify(request)}\n`));
+	socket.on("data", () => finish(true));
+	socket.on("end", () => finish(false));
+	timeout = setTimeout(() => {
+		logger.debug("herdr-agent-state: transport timeout", { timeoutMs, method: request.method });
+		finish(false);
+	}, timeoutMs);
+	timeout.unref?.();
+	return deferred.promise;
+}
+
+/** Exported for socket-level tests; production wiring goes through {@link createHerdrAgentStateExtension}. */
+export function createSocketTransport(env: NodeJS.ProcessEnv): HerdrAgentStateTransport {
 	let firstReportDelivered = false;
 	return async request => {
 		const socketPath = env.HERDR_SOCKET_PATH;
 		if (!socketPath) return;
 
-		const deferred = Promise.withResolvers<void>();
-		let done = false;
-		let timedOut = false;
-		let timeout: NodeJS.Timeout | undefined;
-		let socket: net.Socket | undefined;
-		const finish = (delivered = false): void => {
-			if (done) return;
-			done = true;
-			clearTimeout(timeout);
-			if (timedOut) {
-				logger.debug("herdr-agent-state: transport timeout", { paneId: env.HERDR_PANE_ID });
-			} else if (delivered && !firstReportDelivered && request.method === "pane.report_agent") {
-				firstReportDelivered = true;
-				logger.debug("herdr-agent-state: first report delivered");
-			}
-			socket?.destroy();
-			deferred.resolve();
-		};
-
-		try {
-			socket = net.createConnection(socketPath);
-		} catch {
+		// A lost report is a stuck sidebar: herdr keeps the last state it saw, and
+		// the queue above already coalesced this one as "sent". Reports are
+		// idempotent (per-source seq, stale ones ignored), so retry once with a
+		// wider budget before giving up.
+		let delivered = await sendReportAttempt(socketPath, request, SOCKET_TIMEOUT_MS);
+		if (!delivered) {
+			delivered = await sendReportAttempt(socketPath, request, SOCKET_RETRY_TIMEOUT_MS);
+		}
+		if (!delivered) {
+			logger.warn("herdr-agent-state: report dropped after retry", {
+				paneId: env.HERDR_PANE_ID,
+				state: request.params.state,
+			});
 			return;
 		}
-
-		socket.on("error", err => {
-			logger.debug("herdr-agent-state: transport error", { error: String(err) });
-			finish();
-		});
-		socket.on("connect", () => socket?.write(`${JSON.stringify(request)}\n`));
-		socket.on("data", () => finish(true));
-		socket.on("end", () => finish(true));
-		timeout = setTimeout(() => {
-			timedOut = true;
-			finish();
-		}, SOCKET_TIMEOUT_MS);
-		timeout.unref?.();
-		await deferred.promise;
+		if (!firstReportDelivered) {
+			firstReportDelivered = true;
+			logger.debug("herdr-agent-state: first report delivered");
+		}
 	};
 }
 
@@ -194,6 +221,16 @@ function blockedPayload(data: unknown): { active: boolean; label?: string } | un
 	const active = boolValue(data.active);
 	if (active === undefined) return undefined;
 	return { active, label: readString(data.label) };
+}
+
+/** First question of an `ask` call: the text a supervisor needs to answer it, ahead of the tool's intent. */
+function askQuestionText(args: unknown): string | undefined {
+	if (!isRecord(args) || !Array.isArray(args.questions)) return undefined;
+	for (const question of args.questions) {
+		const text = isRecord(question) ? readString(question.question) : undefined;
+		if (text) return text;
+	}
+	return undefined;
 }
 
 export function createHerdrAgentStateExtension(options: HerdrAgentStateExtensionOptions = {}): ExtensionFactory {
@@ -238,6 +275,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		let lastCustomStatus: string | undefined;
 		let idleTimer: NodeJS.Timeout | undefined;
 		let retryTimer: NodeJS.Timeout | undefined;
+		let promptPendingTimer: NodeJS.Timeout | undefined;
 		let queuedState: QueuedState | undefined;
 		let drainPromise: Promise<void> | undefined;
 		let lastContext: ExtensionContext | undefined;
@@ -246,9 +284,14 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		let promptPending = false;
 		const reviewWaits = new Map<string, string | undefined>();
 		let closed = false;
+		// Run-scoped bookkeeping. The session itself (`ctx.isIdle()`, the async
+		// job snapshot) is the source of truth; these only bridge event gaps
+		// (agent_end fires before the prompt is marked settled) and are cleared
+		// at every run boundary plus on the periodic reconcile. Background
+		// subagents and async jobs are deliberately NOT tracked here: they live
+		// in the owner-scoped job snapshot, and a local set that misses one
+		// terminal lifecycle event pins the pane on working forever.
 		const activeTools = new Set<string>();
-		const activeSubagents = new Set<string>();
-		const activeAsyncJobs = new Set<string>();
 
 		// Coordination surface (control socket, pane metadata, notifications).
 		// Status above is sequenced and coalesced through `transport`, which the
@@ -277,6 +320,12 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			retryTimer = undefined;
 		};
 
+		const releasePromptPending = (): void => {
+			promptPending = false;
+			clearTimeout(promptPendingTimer);
+			promptPendingTimer = undefined;
+		};
+
 		const clearPendingTimers = (): void => {
 			clearIdleTimer();
 			clearRetryTimer();
@@ -290,14 +339,20 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		};
 
 		const hasTrackedWork = (): boolean =>
-			agentActive ||
-			turnActive ||
-			promptPending ||
-			compactionDepth > 0 ||
-			retryHoldActive ||
-			activeTools.size > 0 ||
-			activeSubagents.size > 0 ||
-			activeAsyncJobs.size > 0;
+			agentActive || turnActive || promptPending || compactionDepth > 0 || retryHoldActive || activeTools.size > 0;
+
+		/**
+		 * Drop run-scoped flags that cannot be true while the session reports
+		 * idle. Every flag here mirrors a paired event (tool start/end, turn
+		 * start/end, agent start/end); a missed pair must never outlive the run.
+		 */
+		const clearRunScopedWork = (): void => {
+			agentActive = false;
+			turnActive = false;
+			releasePromptPending();
+			activeTools.clear();
+			reviewWaits.clear();
+		};
 
 		// Official Herdr OMP v8 only reports from a UI session. Headless children
 		// (bun test, print/RPC, workers) inherit HERDR_ENV/HERDR_PANE_ID from the
@@ -393,7 +448,9 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 				// one toast per wait inside the same stall.
 				if (!notifiedBlocked) {
 					notifiedBlocked = true;
-					notifyHerdr("blocked", next.customStatus ?? "needs review", next.message);
+					// The question/approval reason is what the user acts on; the task
+					// title says which pane is asking.
+					notifyHerdr("blocked", next.message ?? next.customStatus ?? "needs review", currentTaskTitle);
 				}
 			} else {
 				notifiedBlocked = false;
@@ -409,17 +466,19 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 				return;
 			}
 			if (kind === "done" ? !config.done : !config.blocked) return;
-			void showHerdrNotification({ title, body, sound: config.sound, position: config.position }, env).then(
-				result => {
-					logger.debug("herdr-notify: dispatched", {
-						kind,
-						title,
-						sent: result.sent,
-						shown: result.shown,
-						reason: result.reason,
-					});
-				},
-			);
+			// Herdr ships two cues: `done` for finished work, `request` for input
+			// needed. A blocked pane is a request regardless of the done sound,
+			// unless sounds are off entirely.
+			const sound = kind === "blocked" && config.sound !== "none" ? "request" : config.sound;
+			void showHerdrNotification({ title, body, sound, position: config.position }, env).then(result => {
+				logger.debug("herdr-notify: dispatched", {
+					kind,
+					title,
+					sent: result.sent,
+					shown: result.shown,
+					reason: result.reason,
+				});
+			});
 		};
 
 		// Resolved once per session: a host that never initialized `settings`
@@ -592,6 +651,52 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			publishState(ctx);
 		};
 
+		// Flip to working the moment a prompt is submitted (Herdr 0.8.0 has no
+		// omp screen fallback, so waiting for agent_start flashes idle), but only
+		// as a bounded hold: once the grace window passes the pane follows the
+		// session's own idle state, so a prompt that never became a run cannot
+		// leave the pane on working.
+		const holdPromptPending = (ctx?: ExtensionContext): void => {
+			if (ctx) lastContext = ctx;
+			promptPending = true;
+			clearTimeout(promptPendingTimer);
+			promptPendingTimer = setTimeout(() => {
+				promptPendingTimer = undefined;
+				if (!promptPending) return;
+				promptPending = false;
+				publishState(undefined, { includePromptState: true });
+			}, PROMPT_PENDING_GRACE_MS);
+			promptPendingTimer.unref?.();
+		};
+
+		// Periodic self-check: a run-scoped flag that survived its terminal event
+		// (missed pair, aborted setup, evicted job) must not pin the pane. When
+		// the session says idle, run bookkeeping is stale by definition.
+		const reconcileState = (): void => {
+			if (closed || !uiSession) return;
+			const ctx = lastContext;
+			if (!ctx) return;
+			const stale = agentActive || turnActive || promptPending || activeTools.size > 0 || reviewWaits.size > 0;
+			if (stale && ctx.isIdle()) {
+				logger.debug("herdr-agent-state: cleared stale run flags", {
+					agentActive,
+					turnActive,
+					promptPending,
+					activeTools: activeTools.size,
+					reviewWaits: reviewWaits.size,
+				});
+				clearRunScopedWork();
+			}
+			const seqBefore = reportSeq;
+			publishState(undefined, { includePromptState: true });
+			// Re-assert the current state even when unchanged: a report lost on
+			// the socket leaves herdr on the previous state with nothing else
+			// scheduled to correct it. Same-state reports are no-ops on herdr.
+			if (reportSeq === seqBefore && lastState !== undefined) {
+				queueState(lastState, lastMessage, lastCustomStatus);
+			}
+		};
+
 		const completeMaybeIdle = (ctx?: ExtensionContext): void => {
 			const next = desiredState(ctx, { includePromptState: false });
 			if (next.state === "idle") {
@@ -621,63 +726,59 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			publishState();
 		});
 
+		// Background subagents and async jobs are reported through the owner-scoped
+		// job snapshot (`hasSnapshotWork`); lifecycle events only prompt a re-read.
 		pi.events.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
 			if (!uiSession) return;
-			const id = payloadId(data);
 			const status = payloadStatus(data);
-			if (!id || !status) return;
+			if (!payloadId(data) || !status) return;
 			if (status === "started") {
-				activeSubagents.add(id);
 				markWorkStarted();
 				return;
 			}
 			if (status === "completed" || status === "failed" || status === "aborted") {
-				activeSubagents.delete(id);
 				completeMaybeIdle();
 			}
 		});
 
 		pi.events.on(ASYNC_JOB_LIFECYCLE_CHANNEL, data => {
 			if (!uiSession) return;
-			const id = payloadId(data);
 			const status = payloadStatus(data);
-			if (!id || !status) return;
+			if (!payloadId(data) || !status) return;
 			if (status === "running") {
-				activeAsyncJobs.add(id);
 				markWorkStarted();
 				return;
 			}
 			if (status === "completed" || status === "failed" || status === "cancelled") {
-				activeAsyncJobs.delete(id);
 				completeMaybeIdle();
 			}
 		});
 
 		pi.on("session_start", (_event, ctx) => {
 			if (!activate(ctx)) return;
-			promptPending = false;
+			releasePromptPending();
 			runCompleted = false;
 			publishState(ctx);
 			void startControlServer(ctx);
 			publishSessionIdentity(ctx);
 			publishMetadata(ctx);
 			// Herdr expires metadata after `ttl_ms` so a killed session stops
-			// advertising a stale task; refresh well inside that window.
-			ctx.setInterval(() => publishMetadata(), METADATA_REFRESH_MS);
+			// advertising a stale task; refresh well inside that window. The same
+			// tick re-validates the reported state against the live session.
+			ctx.setInterval(() => {
+				reconcileState();
+				publishMetadata();
+			}, METADATA_REFRESH_MS);
 		});
 
 		pi.on("session_switch", async (_event, ctx) => {
 			if (!activate(ctx)) return;
 			// Run-scoped state: guaranteed re-established by start events on the next run.
-			// Subagent/async-job sets stay — jobs survive session switches and drain via
-			// their lifecycle events.
-			agentActive = false;
-			turnActive = false;
-			promptPending = false;
+			// Background jobs survive session switches and stay visible through the
+			// job snapshot.
+			clearRunScopedWork();
 			compactionDepth = 0;
-			activeTools.clear();
 			runCompleted = false;
-			reviewWaits.clear();
 			clearFailureState();
 			clearIdleTimer();
 			publishState(ctx, { includePromptState: false });
@@ -703,18 +804,18 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			// Herdr to working immediately — waiting for before_agent_start flashes
 			// idle, and Herdr 0.8.0 has no omp screen-manifest fallback.
 			if (event.text.trimStart().startsWith("/")) {
-				promptPending = false;
+				releasePromptPending();
 				scheduleIdle(ctx);
 				return;
 			}
-			promptPending = true;
+			holdPromptPending(ctx);
 			markWorkStarted(ctx);
 		});
 
 		pi.on("before_agent_start", (_event, ctx) => {
 			if (!activate(ctx)) return;
 			runCompleted = false;
-			promptPending = true;
+			holdPromptPending(ctx);
 			turnStartedAt = Date.now();
 			markWorkStarted(ctx, { clearFailure: true });
 		});
@@ -722,14 +823,14 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		pi.on("agent_start", (_event, ctx) => {
 			if (!activate(ctx)) return;
 			runCompleted = false;
-			promptPending = false;
+			releasePromptPending();
 			agentActive = true;
 			markWorkStarted(ctx, { clearFailure: true });
 		});
 
 		pi.on("turn_start", (_event, ctx) => {
 			if (!activate(ctx)) return;
-			promptPending = false;
+			releasePromptPending();
 			turnActive = true;
 			markWorkStarted(ctx, { clearFailure: true });
 		});
@@ -738,7 +839,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			if (!activate(ctx)) return;
 			activeTools.add(event.toolCallId);
 			if (event.toolName === "ask") {
-				reviewWaits.set(event.toolCallId, event.intent);
+				reviewWaits.set(event.toolCallId, askQuestionText(event.args) ?? event.intent);
 			}
 			markWorkStarted(ctx);
 		});
@@ -811,13 +912,9 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 
 		pi.on("agent_end", (event, ctx) => {
 			if (!activate(ctx)) return;
-			promptPending = false;
-			const reviewWaitToolCallIds = Array.from(reviewWaits.keys());
-			reviewWaits.clear();
-			for (const toolCallId of reviewWaitToolCallIds) {
-				activeTools.delete(toolCallId);
-			}
-			agentActive = false;
+			// The run is over: every tool, review wait and prompt hold belonging to
+			// it is finished, whether or not its terminal event arrived.
+			clearRunScopedWork();
 
 			const assistant = lastAssistantMessage(event.messages);
 			if (assistant?.stopReason === "error") {
@@ -861,6 +958,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		pi.on("session_shutdown", async () => {
 			closed = true;
 			clearPendingTimers();
+			releasePromptPending();
 			queuedState = undefined;
 			const server = controlServer;
 			controlServer = undefined;

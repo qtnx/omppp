@@ -1,6 +1,8 @@
 import { settings } from "../config/settings";
 import { type HerdrJsonRequest, herdrSocketPath, isHerdrPane, sendHerdrRequest } from "./socket";
 
+/** A toast is one-shot; give a busy herdr server more than the state channel's 500ms before giving up. */
+const NOTIFICATION_TIMEOUT_MS = 2_000;
 export type HerdrNotifySound = "none" | "done" | "request";
 export type HerdrNotifyPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
@@ -55,7 +57,7 @@ export async function showHerdrNotification(
 
 	const socketPath = herdrSocketPath(env);
 	if (!socketPath) return { sent: false, reason: "not_in_herdr" };
-	const response = await sendHerdrRequest(socketPath, buildNotificationRequest(options));
+	const response = await sendHerdrRequest(socketPath, buildNotificationRequest(options), NOTIFICATION_TIMEOUT_MS);
 	if (!response) return { sent: false, reason: "request_failed" };
 
 	const shown = typeof response.result?.shown === "boolean" ? response.result.shown : undefined;

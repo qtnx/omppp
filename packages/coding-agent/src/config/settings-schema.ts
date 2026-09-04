@@ -4130,22 +4130,22 @@ export const SETTINGS_SCHEMA = {
 	// Herdr
 	"herdr.notify.done": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "interaction",
 			group: "Herdr",
 			label: "Notify When Done",
-			description: "Show a herdr notification when a turn settles after unseen background work",
+			description: "Show a herdr notification when a turn finishes after unseen background work",
 		},
 	},
 	"herdr.notify.blocked": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "interaction",
 			group: "Herdr",
 			label: "Notify When Blocked",
-			description: "Show a herdr notification when the agent needs review or is blocked",
+			description: "Show a herdr notification when the agent asks a question or waits for approval",
 		},
 	},
 	"herdr.notify.sound": {
