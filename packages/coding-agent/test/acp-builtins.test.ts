@@ -46,6 +46,7 @@ interface FakeAcpBuiltinSession {
 	isFastModeEnabled(): boolean;
 	setForcedToolChoice(toolName: string): void;
 	setCavemanEnabled(enabled: boolean): Promise<void>;
+	setPonytailEnabled(enabled: boolean): Promise<void>;
 	fetchUsageReports?: () => Promise<unknown>;
 	getAsyncJobSnapshot: (opts?: { recentLimit?: number }) => { running: unknown[]; recent: unknown[] } | null;
 	formatSessionAsText: () => string;
@@ -190,6 +191,9 @@ function createRuntime() {
 		async refreshBaseSystemPrompt() {},
 		async setCavemanEnabled(enabled: boolean) {
 			settings.override("caveman.enabled", enabled);
+		},
+		async setPonytailEnabled(enabled: boolean) {
+			settings.override("ponytail.enabled", enabled);
 		},
 		getAsyncJobSnapshot: () => null,
 		formatSessionAsText: () => "",
@@ -511,6 +515,33 @@ describe("ACP builtin slash commands", () => {
 		expect(await executeAcpBuiltinSlashCommand("/caveman nope", runtime)).toEqual({ consumed: true });
 		expect(output.at(-1)).toBe("Usage: /caveman [on|off|status]");
 		expect(Settings.isolated().get("caveman.enabled")).toBe(true);
+	});
+
+	it("toggles Ponytail mode for this runtime without persisting the setting", async () => {
+		const { output, runtime } = createRuntime();
+		const explicitSkill = "Explicit /skill:ponytail remains available.";
+
+		expect(await executeAcpBuiltinSlashCommand("/ponytail", runtime)).toEqual({ consumed: true });
+		expect(output).toEqual(["Ponytail mode is on for this session and implementer subagents."]);
+
+		expect(await executeAcpBuiltinSlashCommand("/ponytail off", runtime)).toEqual({ consumed: true });
+		expect(runtime.settings.get("ponytail.enabled")).toBe(false);
+		expect(output.at(-1)).toBe(
+			["Ponytail mode is off: skill removed from this session and implementer subagents.", explicitSkill].join("\n"),
+		);
+
+		expect(await executeAcpBuiltinSlashCommand("/ponytail status", runtime)).toEqual({ consumed: true });
+		expect(output.at(-1)).toBe(
+			["Ponytail mode is off for this session and implementer subagents.", explicitSkill].join("\n"),
+		);
+
+		expect(await executeAcpBuiltinSlashCommand("/ponytail on", runtime)).toEqual({ consumed: true });
+		expect(runtime.settings.get("ponytail.enabled")).toBe(true);
+		expect(output.at(-1)).toBe("Ponytail mode is on: skill loaded for this session and implementer subagents.");
+
+		expect(await executeAcpBuiltinSlashCommand("/ponytail nope", runtime)).toEqual({ consumed: true });
+		expect(output.at(-1)).toBe("Usage: /ponytail [on|off|status]");
+		expect(Settings.isolated().get("ponytail.enabled")).toBe(true);
 	});
 
 	it("forces a tool and returns remaining prompt text", async () => {

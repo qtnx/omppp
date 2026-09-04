@@ -16,8 +16,10 @@ import { buildSystemPrompt } from "../src/system-prompt";
 
 const CAVEMAN_HEADER = "# Caveman Mode (active)";
 const CAVEMAN_BODY = "Respond terse like smart caveman.";
+const PONYTAIL_HEADER = "# Ponytail Mode (active)";
+const PONYTAIL_BODY = "The seven-rung ladder";
 
-async function renderPrompt(cavemanEnabled: boolean): Promise<string> {
+async function renderPrompt(cavemanEnabled: boolean, ponytailEnabled = false): Promise<string> {
 	const { systemPrompt } = await buildSystemPrompt({
 		cwd: import.meta.dir,
 		toolNames: ["read", "bash", "edit"],
@@ -28,6 +30,7 @@ async function renderPrompt(cavemanEnabled: boolean): Promise<string> {
 		activeRepoContext: null,
 		personality: "none",
 		cavemanEnabled,
+		ponytailEnabled,
 	});
 	return systemPrompt[0] ?? "";
 }
@@ -42,6 +45,20 @@ describe("caveman mode in the system prompt", () => {
 		const off = await renderPrompt(false);
 		expect(off).not.toContain(CAVEMAN_HEADER);
 		expect(off).not.toContain(CAVEMAN_BODY);
+	});
+});
+
+describe("ponytail mode in the system prompt", () => {
+	it("injects the skill body (frontmatter stripped) only when enabled, after the caveman block", async () => {
+		const on = await renderPrompt(true, true);
+		expect(on).toContain(PONYTAIL_HEADER);
+		expect(on).toContain(PONYTAIL_BODY);
+		expect(on).not.toContain("license: MIT");
+		expect(on.indexOf(PONYTAIL_HEADER)).toBeGreaterThan(on.indexOf(CAVEMAN_HEADER));
+
+		const off = await renderPrompt(true, false);
+		expect(off).not.toContain(PONYTAIL_HEADER);
+		expect(off).not.toContain(PONYTAIL_BODY);
 	});
 });
 

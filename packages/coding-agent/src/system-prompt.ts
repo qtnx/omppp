@@ -25,6 +25,7 @@ import type { Personality, SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { expandAtImports } from "./discovery/at-imports";
 import cavemanSkill from "./discovery/bundled-skills/caveman.md" with { type: "text" };
+import ponytailSkill from "./discovery/bundled-skills/ponytail.md" with { type: "text" };
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
@@ -34,6 +35,7 @@ import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
+import ponytailModeActiveTemplate from "./prompts/system/ponytail-mode-active.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
@@ -173,6 +175,12 @@ function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | nu
 function renderCavemanModeBlock(): string {
 	const skill = parseFrontmatter(cavemanSkill, { level: "off" }).body.trim();
 	return prompt.render(cavemanModeActiveTemplate, { skill }).trim();
+}
+
+/** Bundled ponytail skill body (frontmatter stripped) wrapped in the ponytail-mode block. */
+function renderPonytailModeBlock(): string {
+	const skill = parseFrontmatter(ponytailSkill, { level: "off" }).body.trim();
+	return prompt.render(ponytailModeActiveTemplate, { skill }).trim();
 }
 
 function parseWindowsGpuModel(output: string): string | null {
@@ -714,6 +722,8 @@ export interface BuildSystemPromptOptions {
 	personality?: Personality;
 	/** Whether the bundled caveman skill is injected into the prompt so the main agent runs compressed from turn one. Default: false */
 	cavemanEnabled?: boolean;
+	/** Whether the bundled ponytail skill is injected into the prompt so the main agent plans and codes minimally from turn one. Default: false */
+	ponytailEnabled?: boolean;
 	/** Whether to include the workspace directory tree in the system prompt. Default: false */
 	includeWorkspaceTree?: boolean;
 	/** Whether Mermaid fenced blocks render as terminal ASCII diagrams. Default: true */
@@ -801,6 +811,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		includeModelInPrompt = true,
 		personality = "default",
 		cavemanEnabled = false,
+		ponytailEnabled = false,
 		includeWorkspaceTree = false,
 		renderMermaid = true,
 		xdevTools = [],
@@ -1109,6 +1120,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
 		personality: personalityBlock,
 		cavemanMode: cavemanEnabled ? renderCavemanModeBlock() : "",
+		ponytailMode: ponytailEnabled ? renderPonytailModeBlock() : "",
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
 		mcpDiscoveryMode,

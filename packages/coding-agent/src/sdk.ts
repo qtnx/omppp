@@ -3766,8 +3766,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				model: getActiveModelString(),
 				includeModelInPrompt: settings.get("includeModelInPrompt"),
 				personality: agentKind === "sub" ? "none" : settings.get("personality"),
-				// Subagents get caveman via their autoload skill message instead.
+				// Subagents get caveman/ponytail via their autoload skill message instead.
 				cavemanEnabled: agentKind === "main" && settings.get("caveman.enabled"),
+				ponytailEnabled: agentKind === "main" && settings.get("ponytail.enabled"),
 				renderMermaid: settings.get("tui.renderMermaid"),
 				activeRepoContext,
 			});

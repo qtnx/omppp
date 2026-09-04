@@ -67,7 +67,7 @@ afterEach(async () => {
 });
 
 describe("config CLI schema coverage", () => {
-	const executionCompressionSettings: string[] = ["rtk.enabled", "caveman.enabled"];
+	const executionCompressionSettings: string[] = ["rtk.enabled", "caveman.enabled", "ponytail.enabled"];
 
 	it.each(executionCompressionSettings)(
 		"reports %s as a default-on boolean and persists an explicit false override",
