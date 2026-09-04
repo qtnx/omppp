@@ -1061,6 +1061,28 @@ describe("system prompt tool inventory", () => {
 		expect(text).toMatch(/done-scorecard is complete[\s\S]{0,120}NOT VERIFIED/i);
 	});
 
+	it("renders the goal-completion contract: verb matrix, decide-not-ask, delegation gate, no yield on delegated work", async () => {
+		const text = await renderOrchestratorPrompt();
+
+		// Verb matrix: the user's verb selects the artifact; a requested plan is delivered as a plan, not code.
+		expect(text).toMatch(/\|verb\|deliverable\|done when\|/);
+		expect(text).toMatch(
+			/\|plan \/ design \/ spec\|the plan document, complete\|[^\n]*existing-code inventory[^\n]*NO code, NO approval gate/,
+		);
+		expect(text).toMatch(/\|fix \/ debug[^\n]*\|the fix\|bug no longer reproduces/);
+		// Asking is gated to irreversible actions or user-only facts; everything else is decided and recorded.
+		expect(text).toMatch(
+			/ask\(q\) allowed := \(tools ∧ code ∧ history cannot answer q\) ∧ \(irreversible\(q\) ∨ user-only-fact\(q\)/,
+		);
+		expect(text).toMatch(/Decision defaults \(apply, do not ask\)/);
+		expect(text).toMatch(/Decision refinement — the substitute for asking the user/);
+		expect(text).toMatch(/"shall I continue\?", "want me to…\?"/);
+		// Delegation is a concurrency tool, never diligence: L1 work is done directly.
+		expect(text).toMatch(/delegate ⇔ ≥2 slices can run at the same time/);
+		// Delegated work is still the agent's work: a running workflow never ends the turn.
+		expect(text).toMatch(/a running workflow, subagent, or background job is never a reason to end the turn/);
+	});
+
 	it("renders concise report guidance", async () => {
 		const text = await renderOrchestratorPrompt();
 		const report = reportSectionFrom(text);
