@@ -403,7 +403,8 @@ describe("contextGcExtension", () => {
 			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
 			createFakeContext({ tokens: 75_000, contextWindow: 100_000, percent: 75 }),
 		);
-		expect(result?.message).toBeUndefined();
+		// Inspection output never becomes an unload candidate; only the usage-only compaction hint remains.
+		expect(reminderContent(result) ?? "").not.toContain("eligible to unload");
 		expect(result?.systemPrompt).toEqual(["base", expect.stringContaining("context_unload")]);
 		shutdown(fakePi);
 	});
@@ -676,13 +677,17 @@ describe("contextGcExtension", () => {
 			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
 			createFakeContext({ tokens: 49_900, contextWindow: 100_000, percent: 49.9 }),
 		);
-		expect(below?.message).toBeUndefined();
+		// Between 40% and 50% the unload reminder stays quiet, but the usage-only compaction hint
+		// still tells the model its percentage (it has no other source for it).
+		expect(reminderContent(below)).toContain("Context usage: 49900/100000 tokens (49.9%).");
+		expect(reminderContent(below)).not.toContain("eligible to unload");
 		expect(below?.systemPrompt).toEqual(["base", expect.stringContaining("context_unload")]);
 
 		const atThreshold = beforeHandler(
 			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
 			createFakeContext({ tokens: 50_000, contextWindow: 100_000, percent: 50 }),
 		);
+		// Same 40–60 band as the previous turn: the usage hint is not repeated.
 		expect(atThreshold?.message).toBeUndefined();
 		expect(atThreshold?.systemPrompt).toEqual(["base", expect.stringContaining("context_unload")]);
 
@@ -718,6 +723,64 @@ describe("contextGcExtension", () => {
 		});
 		expect(reminderContent(missingUsage) ?? "").not.toContain("Context usage:");
 		expect(above?.systemPrompt).toEqual(["base", expect.stringContaining("context_unload")]);
+		shutdown(fakePi);
+	});
+
+	it("tells the model its context percentage from forty percent even with no unload candidates", () => {
+		const fakePi = createFakePi();
+		contextGcExtension(fakePi as unknown as ExtensionAPI);
+		const beforeHandler = getHandler<BeforeAgentStartHandler>(fakePi, "before_agent_start");
+		expect(beforeHandler).toBeDefined();
+		if (!beforeHandler) return;
+
+		const quiet = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 39_900, contextWindow: 100_000, percent: 39.9 }),
+		);
+		expect(quiet?.message).toBeUndefined();
+
+		const hinted = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 40_000, contextWindow: 100_000, percent: 40 }),
+		);
+		expect(hinted?.message).toMatchObject({
+			customType: "context-gc",
+			display: false,
+			details: { kind: "reminder" },
+		});
+		const content = reminderContent(hinted) ?? "";
+		expect(content).toContain("Context usage: 40000/100000 tokens (40%).");
+		expect(content).toMatch(/call `compact` as the LAST action of the turn/);
+		expect(content).not.toContain("eligible to unload");
+
+		// Same band on the next turn: silent (no per-turn nagging, no history bloat).
+		const sameBand = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 47_000, contextWindow: 100_000, percent: 47 }),
+		);
+		expect(sameBand?.message).toBeUndefined();
+		// Next band (60%) re-arms the hint once.
+		const nextBand = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 61_000, contextWindow: 100_000, percent: 61 }),
+		);
+		expect(reminderContent(nextBand) ?? "").toContain("Context usage: 61000/100000 tokens (61%).");
+		// Usage dropped (compaction ran): the 40% band fires again when re-crossed.
+		beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 12_000, contextWindow: 100_000, percent: 12 }),
+		);
+		const rearmed = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 41_000, contextWindow: 100_000, percent: 41 }),
+		);
+		expect(reminderContent(rearmed) ?? "").toContain("Context usage: 41000/100000 tokens (41%).");
+
+		const unknown = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: null, contextWindow: 100_000, percent: null }),
+		);
+		expect(unknown?.message).toBeUndefined();
 		shutdown(fakePi);
 	});
 

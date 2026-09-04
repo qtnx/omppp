@@ -1,5 +1,6 @@
 import { prompt } from "@oh-my-pi/pi-utils";
 import reminderPrompt from "./context-gc-reminder.md" with { type: "text" };
+import usageReminderPrompt from "./context-usage-reminder.md" with { type: "text" };
 import type { ContextRecord } from "./schema";
 
 export interface ContextGcReminderUsage {
@@ -25,6 +26,18 @@ function formatContextUsage(usage: ContextGcReminderUsage | undefined): string |
 	if (!usage || usage.tokens === null || usage.percent === null) return undefined;
 	const percent = Number.isInteger(usage.percent) ? String(usage.percent) : usage.percent.toFixed(1);
 	return `Context usage: ${usage.tokens}/${usage.contextWindow} tokens (${percent}%).`;
+}
+
+/** Usage-only nudge for the phase-boundary compaction rule. Independent of unload
+ * candidates: the model has no other way to learn its context percentage. */
+export function buildContextUsageReminder(
+	usage: ContextGcReminderUsage | undefined,
+	minPercent: number,
+): string | undefined {
+	if (!usage || usage.percent === null || usage.percent < minPercent) return undefined;
+	const line = formatContextUsage(usage);
+	if (!line) return undefined;
+	return prompt.render(usageReminderPrompt, { context_usage_line: line }).trim();
 }
 
 export function buildContextGcReminder(

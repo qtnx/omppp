@@ -1,0 +1,2 @@
+{{ context_usage_line }}
+Context is above the early-compaction threshold. At the next phase boundary (todo phase done, work unit closed, before a context-heavy step), if the finished phase's raw output is not needed next and nothing is pending: restate what the next phase needs (Task line, locked contracts, decisions, anchors, running job ids), then call `compact` as the LAST action of the turn with that restatement as `focus`.

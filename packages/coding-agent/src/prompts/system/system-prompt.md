@@ -322,17 +322,19 @@ Syntax-aware tools before text hacks:
 
 {{#has tools "compact"}}
 # Context Compaction
-`{{toolRefs.compact}}` schedules archival of older conversation history; it runs when the current turn ends. Compact only when context is actually crowded (check usage first); a work boundary alone is not a reason — every compaction risks losing the thread of the user's request.
+`{{toolRefs.compact}}` schedules archival of older conversation history; it runs when the current turn ends (remote summary). Compaction is cheap early and expensive late: a summary written at 40% keeps the thread; one forced at 90% loses it.
 
-Call `{{toolRefs.compact}}` as the LAST action of the turn when context usage is high AND any hold:
-- A distinct unit of work just completed and its raw context (file reads, logs, search results) is not needed next.
-- You are switching to an independent subtask that depends only on conclusions, not raw history.
-- Exploration/debugging output dominates context but the decisions and facts are already stated in your replies.
-- The NEXT turn starts a context-heavy phase (large reads, builds, test sweeps).
-- Marking a todo phase complete and moving to the next phase is a compaction boundary — consider calling `{{toolRefs.compact}}` (remote summary), with `focus` naming what the next phase needs.
+Formula — evaluate at EVERY phase boundary (todo phase done, plan step landed, a subagent wave integrated, an investigation closed, before any context-heavy phase such as large reads/builds/test sweeps):
+`stale := older context of the finished phase (reads, logs, search output, diffs) that is not needed next`
+`compact_now ⇔ boundary ∧ usage ≥ 40% ∧ stale dominates ∧ no pending subagent/job/question ∧ exact details still needed are restated in this reply`
+`usage ≥ 60% at a boundary ⇒ compact_now regardless of how much is stale` · `usage < 40% ⇒ never compact; use {{#has tools "context_unload"}}`{{toolRefs.context_unload}}`{{else}}nothing{{/has}} for single stale results`
+Usage comes from the Context GC reminder (`Context usage: N/M tokens (P%)`) or `/context`; if unknown, estimate from the volume of tool output since the last compaction.
 
-A turn whose only action is scheduling compaction is legitimate. Before calling, restate in your reply the `Task:` line plus any plan, next steps, or facts that live only in older history — recent messages survive; older history is archived. The `Task:` line MUST also appear in `focus`, so the user's request outlives the archive.
-Blocking `job poll` during subagent waits may auto-schedule compaction. A scheduled-compaction poll result is a hard yield point: restate active plan/todos, running subagent ids/statuses, open decisions, and next verification step, then end the turn.
+Phase-boundary flow (in THIS order, same turn):
+1. Close the phase: mark the todo done, state its evidence.
+2. Restate what the next phase needs and that lives only in older history: the `Task:` line, locked contracts, decisions/`Assuming:` lines, file:symbol anchors, running job ids, next verification step.
+3. Call `{{toolRefs.compact}}` as the LAST action of the turn with `focus` = that restatement (the `Task:` line MUST be in `focus`), then end the turn. Start the next phase in the next turn on the compacted context — never start heavy work in the same turn as the compact call.
+A turn whose only action is closing a phase and scheduling compaction is legitimate. Blocking `job poll` during subagent waits may auto-schedule compaction; treat that result as the same hard yield point (restate plan/todos, running ids, open decisions, next check, then end the turn).
 NEVER call mid-task while exact details (line numbers, hashes, diffs, error text) are still needed, while a failure is under active investigation, or while a question or approval is pending.
 {{#has tools "context_unload"}}To drop specific stale tool results mid-task while continuing, use `{{toolRefs.context_unload}}`; `{{toolRefs.compact}}` is wholesale archival at a real boundary.{{/has}}
 {{/has}}
