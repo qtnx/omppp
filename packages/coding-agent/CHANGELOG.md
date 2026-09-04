@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Ponytail minimality mode is now on by default for the main agent and implementer subagents: the bundled skill is injected into the session system prompt from the first turn, and `/ponytail off|on|status` toggles it per session (`ponytail.enabled` persists the default).
+
 ### Changed
 
 - Herdr notifications are now on by default: a turn that ran at least `herdr.notify.minWorkMs` toasts on completion, and a question or approval wait toasts immediately with herdr's `request` sound and the question text as the title.

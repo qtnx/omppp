@@ -2555,6 +2555,17 @@ export class AgentSession {
 		await this.refreshBaseSystemPrompt();
 	}
 
+	/**
+	 * Toggles ponytail mode for this session and its implementer subagents. The
+	 * base system prompt is rebuilt so the ponytail block is injected or removed
+	 * before the next turn.
+	 */
+	async setPonytailEnabled(enabled: boolean): Promise<void> {
+		if (this.settings.get("ponytail.enabled") === enabled) return;
+		this.settings.override("ponytail.enabled", enabled);
+		await this.refreshBaseSystemPrompt();
+	}
+
 	onKanbanEventsDurable(listener: (eventIds: readonly string[]) => void): () => void {
 		this.#kanbanDurableListeners.add(listener);
 		return () => this.#kanbanDurableListeners.delete(listener);

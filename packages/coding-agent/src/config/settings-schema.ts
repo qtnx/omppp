@@ -3392,6 +3392,17 @@ export const SETTINGS_SCHEMA = {
 			description: "Load the bundled Caveman skill into the session system prompt and implementer subagents",
 		},
 	},
+	"ponytail.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Agent",
+			label: "Ponytail Mode",
+			description:
+				"Load the bundled Ponytail minimality skill into the session system prompt and implementer subagents",
+		},
+	},
 	// Live learning (separate from memory backends): learns only from explicit
 	// user complain/reminder/guideline messages after each completed turn.
 	"learning.enabled": {

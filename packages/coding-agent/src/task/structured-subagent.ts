@@ -484,6 +484,7 @@ function resolveAutoloadSkills(session: ToolSession, agent: AgentDefinition) {
 	const seen = new Set<string>();
 	for (const name of agent.autoloadSkills ?? []) {
 		if (name === "caveman" && !session.settings.get("caveman.enabled")) continue;
+		if (name === "ponytail" && !session.settings.get("ponytail.enabled")) continue;
 		if (name === "rtk" && !session.settings.get("rtk.enabled")) continue;
 		const skill = availableSkills.find(candidate => candidate.name === name);
 		if (!skill || seen.has(skill.name)) continue;

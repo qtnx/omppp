@@ -340,6 +340,44 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "ponytail",
+		description: "Control Ponytail minimality mode for this session and implementer subagents",
+		acpInputHint: "[on|off|status]",
+		subcommands: [
+			{ name: "on", description: "Load the Ponytail skill into the session and implementer subagents" },
+			{ name: "off", description: "Remove the Ponytail skill from the session and implementer subagents" },
+			{ name: "status", description: "Show Ponytail mode status" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime =>
+			`Ponytail: ${runtime.ctx.session.settings.get("ponytail.enabled") ? "on" : "off"}`,
+		handle: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (!arg || arg === "status") {
+				const enabled = runtime.settings.get("ponytail.enabled");
+				const status = `Ponytail mode is ${enabled ? "on" : "off"} for this session and implementer subagents.`;
+				await runtime.output(enabled ? status : [status, "Explicit /skill:ponytail remains available."].join("\n"));
+				return commandConsumed();
+			}
+			if (arg === "on") {
+				await runtime.session.setPonytailEnabled(true);
+				await runtime.output("Ponytail mode is on: skill loaded for this session and implementer subagents.");
+				return commandConsumed();
+			}
+			if (arg === "off") {
+				await runtime.session.setPonytailEnabled(false);
+				await runtime.output(
+					[
+						"Ponytail mode is off: skill removed from this session and implementer subagents.",
+						"Explicit /skill:ponytail remains available.",
+					].join("\n"),
+				);
+				return commandConsumed();
+			}
+			return usage("Usage: /ponytail [on|off|status]", runtime);
+		},
+	},
+	{
 		name: "herdr-notify",
 		description: "Receive notifications when other Herdr agents finish (off by default)",
 		acpInputHint: "[on|off|status]",

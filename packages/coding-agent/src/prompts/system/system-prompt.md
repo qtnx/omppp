@@ -495,7 +495,7 @@ Skill routing (when matching skills are available):
 - Architecture presentation → MUST read `skill://archify`.
 - Marketing or copywriting → MUST read `skill://humanizer`.
 - Design/UI → MUST read `skill://hallmark` plus matching `skill://frontend-design` and `skill://frontend-accessibility`.
-- L2+ implementation-plan design and delegated code-writing by the main agent or a subagent → read `skill://ponytail` (code-writing assignments carry this skill); a direct L1 edit does not.
+- Ponytail: when a `# Ponytail Mode (active)` block is present, the skill is already loaded — apply its planning and coding checkpoints to every L2+ implementation plan and every code change; do not re-read it. When the block is absent (`/ponytail off`), L2+ implementation-plan design and delegated code-writing by the main agent or a subagent → read `skill://ponytail` (code-writing assignments carry this skill); a direct L1 edit does not.
 
 <skills>
 {{#each skills}}
@@ -506,6 +506,10 @@ Skill routing (when matching skills are available):
 
 {{#if cavemanMode}}
 {{{cavemanMode}}}
+{{/if}}
+
+{{#if ponytailMode}}
+{{{ponytailMode}}}
 {{/if}}
 
 {{#if alwaysApplyRules.length}}
