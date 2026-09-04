@@ -687,7 +687,8 @@ describe("contextGcExtension", () => {
 			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
 			createFakeContext({ tokens: 50_000, contextWindow: 100_000, percent: 50 }),
 		);
-		expect(reminderContent(atThreshold)).not.toContain("eligible to unload");
+		// Same 40–60 band as the previous turn: the usage hint is not repeated.
+		expect(atThreshold?.message).toBeUndefined();
 		expect(atThreshold?.systemPrompt).toEqual(["base", expect.stringContaining("context_unload")]);
 
 		const above = beforeHandler(
@@ -751,6 +752,29 @@ describe("contextGcExtension", () => {
 		expect(content).toContain("Context usage: 40000/100000 tokens (40%).");
 		expect(content).toMatch(/call `compact` as the LAST action of the turn/);
 		expect(content).not.toContain("eligible to unload");
+
+		// Same band on the next turn: silent (no per-turn nagging, no history bloat).
+		const sameBand = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 47_000, contextWindow: 100_000, percent: 47 }),
+		);
+		expect(sameBand?.message).toBeUndefined();
+		// Next band (60%) re-arms the hint once.
+		const nextBand = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 61_000, contextWindow: 100_000, percent: 61 }),
+		);
+		expect(reminderContent(nextBand) ?? "").toContain("Context usage: 61000/100000 tokens (61%).");
+		// Usage dropped (compaction ran): the 40% band fires again when re-crossed.
+		beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 12_000, contextWindow: 100_000, percent: 12 }),
+		);
+		const rearmed = beforeHandler(
+			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
+			createFakeContext({ tokens: 41_000, contextWindow: 100_000, percent: 41 }),
+		);
+		expect(reminderContent(rearmed) ?? "").toContain("Context usage: 41000/100000 tokens (41%).");
 
 		const unknown = beforeHandler(
 			{ type: "before_agent_start", prompt: "continue", systemPrompt: ["base"] },
