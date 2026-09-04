@@ -24,7 +24,7 @@ After each successful state-changing op: if nothing is `in_progress`, the earlie
 
 ## Rules
 
-- Mark tasks done immediately after finishing; complete phases in order.
+- Mark tasks done immediately after finishing; complete phases in order. Completing a phase is a context-compaction boundary: if context usage is ≥ 40% and the finished phase's raw output is not needed next, restate what the next phase needs and schedule `compact` as the last call of the turn.
 - NEVER make a todo call the turn's only tool call. Batch with real work: `init` with first reads/edits; each `done`/`start` with next action. Solo todo turns waste a round trip.
 - Waiting on something you can't act on—a user decision, another agent, external service: `block` task (optional `reason`); remains tracked but avoids stop reminder. Blocking the active task hands `in_progress` to the next `pending` task, never back to the blocked one. `unblock` when actionable. If blocker agent-actionable, `append` an unblocking task instead.
 - Keep introduced `task`/`phase` strings stable.
