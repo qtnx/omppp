@@ -90,7 +90,11 @@ describe("GlobTool.execute", () => {
 					throw new Error("Missing native cancellation signal");
 				}
 				const nativeSignal = options.signal;
-				nativeSignal.addEventListener("abort", () => timeoutObserved.resolve(), { once: true });
+				if (nativeSignal.aborted) {
+					timeoutObserved.resolve();
+				} else {
+					nativeSignal.addEventListener("abort", () => timeoutObserved.resolve(), { once: true });
+				}
 				started.resolve();
 				await timeoutObserved.promise;
 				await release.promise;
