@@ -16,7 +16,7 @@ import {
 import contextGcSystemPrompt from "./context-gc-system-prompt.md" with { type: "text" };
 import { isContextGcInspectionTool, projectUnloadedContext } from "./context-transform";
 import { extractMessagePayload, payloadForMessage, payloadFromContent } from "./extract";
-import { buildContextGcReminder } from "./reminder";
+import { buildContextGcReminder, buildContextUsageReminder } from "./reminder";
 import {
 	CONTEXT_GC_CUSTOM_TYPE,
 	CONTEXT_GC_PROJECTED_TYPE,
@@ -82,6 +82,9 @@ const REMINDER_THRESHOLD_TOKENS = 8_000;
 export const CONTEXT_GC_SYSTEM_PROMPT = contextGcSystemPrompt.trim();
 
 const REMINDER_CONTEXT_USAGE_THRESHOLD_PERCENT = 50;
+/** From this usage the model is told its context percentage every turn so it can apply the
+ * phase-boundary compaction rule (system prompt: compact_now ⇔ boundary ∧ usage ≥ 40%). */
+const COMPACT_HINT_CONTEXT_USAGE_PERCENT = 40;
 
 type ContextMessage = ContextEvent["messages"][number];
 
@@ -517,11 +520,13 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 		const snapshot = getActiveSnapshot(ctx);
 		const records = branchRecords(store, state);
 		const activeRecords = snapshot ? records.filter(record => snapshot.activeRecordIds.includes(record.id)) : records;
-		const reminder = buildContextGcReminder(activeRecords, {
-			thresholdTokens: REMINDER_THRESHOLD_TOKENS,
-			contextUsage: ctx.getContextUsage(),
-			minContextUsagePercent: REMINDER_CONTEXT_USAGE_THRESHOLD_PERCENT,
-		});
+		const contextUsage = ctx.getContextUsage();
+		const reminder =
+			buildContextGcReminder(activeRecords, {
+				thresholdTokens: REMINDER_THRESHOLD_TOKENS,
+				contextUsage,
+				minContextUsagePercent: REMINDER_CONTEXT_USAGE_THRESHOLD_PERCENT,
+			}) ?? buildContextUsageReminder(contextUsage, COMPACT_HINT_CONTEXT_USAGE_PERCENT);
 		if (!reminder && !systemPrompt) return undefined;
 		return {
 			...(reminder ? { message: contextGcReminderMessage(reminder) } : {}),
