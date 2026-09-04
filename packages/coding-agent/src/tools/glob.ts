@@ -304,8 +304,6 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 			const includeHidden = hidden ?? true;
 			const useGitignore = gitignore ?? true;
 			const timeoutMs = this.#timeoutMs;
-			const timeoutSignal = AbortSignal.timeout(timeoutMs);
-			const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 			const formatMatchPath = (matchPath: string, base: string, fileType?: natives.FileType): string => {
 				const hadTrailingSlash = matchPath.endsWith("/") || matchPath.endsWith("\\");
 				const absolutePath = path.isAbsolute(matchPath) ? matchPath : path.resolve(base, matchPath);
@@ -443,6 +441,11 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 			}
 			throwIfAborted(signal);
 
+			// Arm the timeout at native-scan start, not during path prep. A slow
+			// stat on a huge tree would otherwise abort combinedSignal before
+			// nativeGlob runs; abort listeners attached there never fire.
+			const timeoutSignal = AbortSignal.timeout(timeoutMs);
+			const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 			const onUpdateMatches: string[] = [];
 			const onUpdateMtimes: number[] = [];
 			const updateIntervalMs = 200;
