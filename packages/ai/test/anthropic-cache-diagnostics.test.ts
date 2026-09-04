@@ -182,16 +182,22 @@ describe("Anthropic cache diagnostics", () => {
 		expect(evicted?.reasonCodes).toEqual(["ttl_or_provider_eviction"]);
 	});
 
-	it("does not emit for first, cold-only, partial-cache, or failed transitions", () => {
+	it("classifies partial misses and preserves baseline behavior", () => {
 		const current = { fingerprint: fingerprintAnthropicRequest(request()), usage: usage(0, 5000, 6000) };
 		expect(diagnoseAnthropicCacheTransition(undefined, current)).toBeUndefined();
 		expect(diagnoseAnthropicCacheTransition({ ...warmState(), usage: usage(0, 5000) }, current)).toBeUndefined();
-		expect(
-			diagnoseAnthropicCacheTransition(warmState(), {
-				fingerprint: fingerprintAnthropicRequest(request()),
-				usage: usage(100, 5000),
-			}),
-		).toBeUndefined();
+
+		const partial = diagnoseAnthropicCacheTransition(warmState(), {
+			fingerprint: fingerprintAnthropicRequest(request()),
+			usage: usage(100, 5000),
+		});
+		expect(partial).toMatchObject({
+			kind: "partial",
+			reasonCodes: ["ttl_or_provider_eviction"],
+			expectedCacheRead: 5000,
+			currentCacheRead: 100,
+			lostCacheTokens: 4900,
+		});
 
 		const state = warmState();
 		expect(recordAnthropicCacheDiagnostics(state, request(), usage(0, 5000, 6000), true)?.reasonCodes).toEqual([
@@ -202,6 +208,103 @@ describe("Anthropic cache diagnostics", () => {
 		const failedBaseline = warmState();
 		recordAnthropicCacheDiagnostics(failedBaseline, request(), usage(0, 5000), false);
 		expect(failedBaseline).toEqual(warmState());
+	});
+
+	it("does not treat appended messages as history changes but detects truncation", () => {
+		const baseline = warmState();
+		const appended = diagnoseAnthropicCacheTransition(baseline, {
+			fingerprint: fingerprintAnthropicRequest(
+				request({ messages: [...request().messages, { role: "assistant", content: "appended" }] }),
+			),
+			usage: usage(100, 5000),
+		});
+		expect(appended).toMatchObject({
+			kind: "partial",
+			reasonCodes: ["ttl_or_provider_eviction"],
+		});
+		expect(appended?.firstChangedMessageIndex).toBeUndefined();
+
+		const shortened = diagnoseAnthropicCacheTransition(baseline, {
+			fingerprint: fingerprintAnthropicRequest(request({ messages: [request().messages[0]] })),
+			usage: usage(100, 5000),
+		});
+		expect(shortened?.reasonCodes).toContain("message_history_changed");
+		expect(shortened?.firstChangedMessageIndex).toBe(1);
+	});
+
+	it("ignores normal reads and shortfalls within the accounting tolerance", () => {
+		expect(
+			diagnoseAnthropicCacheTransition(warmState(), {
+				fingerprint: fingerprintAnthropicRequest(request()),
+				usage: usage(5000, 300),
+			}),
+		).toBeUndefined();
+		const previous = {
+			fingerprint: fingerprintAnthropicRequest(request()),
+			usage: usage(4000, 1000),
+		};
+		expect(
+			diagnoseAnthropicCacheTransition(previous, {
+				fingerprint: fingerprintAnthropicRequest(request()),
+				usage: usage(4500, 500),
+			}),
+		).toBeUndefined();
+	});
+
+	it("attributes system and tool changes to their first changed item without prompt values", () => {
+		const previousRequest = request({
+			system: [
+				{ type: "text", text: "private system 0" },
+				{ type: "text", text: "private system 1" },
+				{ type: "text", text: "private system 2" },
+			],
+			tools: [
+				{ name: "private tool 0", input_schema: { type: "object" } },
+				{ name: "private tool 1", input_schema: { type: "object" } },
+			],
+		});
+		const previous = {
+			fingerprint: fingerprintAnthropicRequest(previousRequest),
+			usage: usage(5000, 0),
+		};
+		const changedSystem = diagnoseAnthropicCacheTransition(previous, {
+			fingerprint: fingerprintAnthropicRequest({
+				...previousRequest,
+				system: [
+					{ type: "text", text: "private system 0" },
+					{ type: "text", text: "changed private system 1" },
+					{ type: "text", text: "private system 2" },
+				],
+			}),
+			usage: usage(0, 5000),
+		});
+		expect(changedSystem?.reasonCodes).toContain("system_changed");
+		expect(changedSystem?.firstChangedSystemBlockIndex).toBe(1);
+		expect(JSON.stringify(changedSystem)).not.toContain("private");
+
+		const changedStringSystem = diagnoseAnthropicCacheTransition(
+			{ fingerprint: fingerprintAnthropicRequest(request({ system: "private system" })), usage: usage(5000, 0) },
+			{
+				fingerprint: fingerprintAnthropicRequest(request({ system: "changed private system" })),
+				usage: usage(0, 5000),
+			},
+		);
+		expect(changedStringSystem?.firstChangedSystemBlockIndex).toBe(0);
+		expect(JSON.stringify(changedStringSystem)).not.toContain("private");
+
+		const changedTool = diagnoseAnthropicCacheTransition(previous, {
+			fingerprint: fingerprintAnthropicRequest({
+				...previousRequest,
+				tools: [
+					{ name: "private tool 0", input_schema: { type: "object" } },
+					{ name: "changed private tool 1", input_schema: { type: "object" } },
+				],
+			}),
+			usage: usage(0, 5000),
+		});
+		expect(changedTool?.reasonCodes).toContain("tools_changed");
+		expect(changedTool?.firstChangedToolIndex).toBe(1);
+		expect(JSON.stringify(changedTool)).not.toContain("private");
 	});
 
 	it("stores only fixed-size digests and allowlisted feature names", () => {
@@ -244,8 +347,12 @@ describe("Anthropic cache diagnostics", () => {
 		expect(diagnosticEvents[0]?.context).toMatchObject({
 			endpointHost: "api.anthropic.com",
 			model: "claude-sonnet-4-6",
+			kind: "cold",
 			reasonCodes: ["ttl_or_provider_eviction"],
 			previousCacheRead: 5000,
+			expectedCacheRead: 5000,
+			currentCacheRead: 0,
+			lostCacheTokens: 5000,
 			currentCacheWrite: 5000,
 			currentInput: 6000,
 		});

@@ -456,6 +456,7 @@ type AnthropicControlState = {
 	baseEffort: AnthropicOutputEffort | undefined;
 	baseEffortWire: AnthropicOutputEffort | undefined;
 	currentEffort: AnthropicOutputEffort | undefined;
+	cacheDiagnostics: AnthropicCacheDiagnosticState | undefined;
 };
 type AnthropicProviderSessionState = ProviderSessionState & {
 	/**
@@ -468,11 +469,20 @@ type AnthropicProviderSessionState = ProviderSessionState & {
 	replayUnsignedThinkingDisabled: boolean;
 	strictToolsDisabled: boolean;
 	fastModeDisabled: boolean;
-	cacheDiagnostics?: AnthropicCacheDiagnosticState;
-	/** Thinking blocks the API permanently dropped after a prefix mismatch. */
-	prefixDroppedThinkingBlocks: Set<string>;
-	/** Conversation-scoped control baselines, isolated from side requests and advisors. */
+	/**
+	 * Conversation-scoped control baselines and prompt-cache diagnostics,
+	 * isolated from side requests and advisors.
+	 */
 	controlStates: Map<string, AnthropicControlState>;
+	/**
+	 * Thinking blocks the API permanently dropped, keyed by the prompt prefix
+	 * (system + root message) they were bound to. A signature is only invalid
+	 * under the prefix that rejected it: an advisor or side request replaying
+	 * the main history under a different system prompt gets its blocks dropped
+	 * for that prefix only, and remembering the drop session-wide would strip
+	 * the blocks from the main conversation — rewriting its whole cached prefix.
+	 */
+	prefixDroppedThinking: Map<string, Set<string>>;
 };
 
 function createAnthropicControlState(): AnthropicControlState {
@@ -485,6 +495,7 @@ function createAnthropicControlState(): AnthropicControlState {
 		baseEffort: undefined,
 		baseEffortWire: undefined,
 		currentEffort: undefined,
+		cacheDiagnostics: undefined,
 	};
 }
 
@@ -493,15 +504,14 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 		strictToolsDisabled: false,
 		fastModeDisabled: false,
 		replayUnsignedThinkingDisabled: false,
-		prefixDroppedThinkingBlocks: new Set(),
 		controlStates: new Map(),
+		prefixDroppedThinking: new Map(),
 		close: () => {
 			state.strictToolsDisabled = false;
 			state.fastModeDisabled = false;
 			state.replayUnsignedThinkingDisabled = false;
-			state.cacheDiagnostics = undefined;
-			state.prefixDroppedThinkingBlocks.clear();
 			state.controlStates.clear();
+			state.prefixDroppedThinking.clear();
 		},
 	};
 	return state;
@@ -531,7 +541,7 @@ function diagnosticRequestFromParams(
 }
 
 function updateAnthropicCacheDiagnostics(
-	state: AnthropicProviderSessionState | undefined,
+	state: AnthropicControlState | undefined,
 	baseUrl: string,
 	params: MessageCreateParamsStreaming,
 	featureNames: readonly string[],
@@ -561,13 +571,23 @@ function updateAnthropicCacheDiagnostics(
 	logger.debug("anthropic: prompt cache invalidation", {
 		endpointHost,
 		model: params.model,
+		kind: transition.kind,
 		reasonCodes: transition.reasonCodes,
 		...(transition.firstChangedMessageIndex === undefined
 			? {}
 			: { firstChangedMessageIndex: transition.firstChangedMessageIndex }),
+		...(transition.firstChangedSystemBlockIndex === undefined
+			? {}
+			: { firstChangedSystemBlockIndex: transition.firstChangedSystemBlockIndex }),
+		...(transition.firstChangedToolIndex === undefined
+			? {}
+			: { firstChangedToolIndex: transition.firstChangedToolIndex }),
 		previousCacheRead: transition.previousCacheRead,
+		expectedCacheRead: transition.expectedCacheRead,
+		currentCacheRead: transition.currentCacheRead,
 		currentCacheWrite: transition.currentCacheWrite,
 		currentInput: transition.currentInput,
+		lostCacheTokens: transition.lostCacheTokens,
 	});
 }
 
@@ -592,8 +612,8 @@ function getAnthropicProviderSessionState(
 	const key = anthropicProviderSessionStateKey(baseUrl, modelId);
 	const existing = providerSessionState.get(key) as AnthropicProviderSessionState | undefined;
 	if (existing) {
-		existing.prefixDroppedThinkingBlocks ??= new Set();
 		existing.controlStates ??= new Map();
+		existing.prefixDroppedThinking ??= new Map();
 		return existing;
 	}
 	const created = createAnthropicProviderSessionState();
@@ -2007,9 +2027,9 @@ function thinkingReplayKey(block: ContentBlockParam): string | undefined {
 function rememberPrefixDroppedThinking(
 	params: MessageCreateParamsStreaming,
 	transformations: readonly ProviderInputTransformation[],
-	state: AnthropicProviderSessionState | undefined,
+	dropped: Set<string> | undefined,
 ): void {
-	if (!state) return;
+	if (!dropped) return;
 	let firstMessageIndex: number | undefined;
 	let firstBlockIndex: number | undefined;
 	for (const transformation of transformations) {
@@ -2034,7 +2054,7 @@ function rememberPrefixDroppedThinking(
 		const blockStart = messageIndex === firstMessageIndex ? firstBlockIndex : 0;
 		for (let blockIndex = blockStart; blockIndex < message.content.length; blockIndex++) {
 			const key = thinkingReplayKey(message.content[blockIndex]!);
-			if (key) state.prefixDroppedThinkingBlocks.add(key);
+			if (key) dropped.add(key);
 		}
 	}
 }
@@ -2042,9 +2062,9 @@ function rememberPrefixDroppedThinking(
 function rememberPrefixBindingFailure(
 	params: MessageCreateParamsStreaming,
 	message: string,
-	state: AnthropicProviderSessionState | undefined,
+	dropped: Set<string> | undefined,
 ): boolean {
-	if (!state) return false;
+	if (!dropped) return false;
 	const match = PREFIX_BINDING_ERROR_PATH_PATTERN.exec(message);
 	let path = match ? `messages.${match[1]}.content.${match[2]}` : undefined;
 	if (!path) {
@@ -2059,15 +2079,23 @@ function rememberPrefixBindingFailure(
 	rememberPrefixDroppedThinking(
 		params,
 		[{ type: "thinking_dropped", reason: "prefix_binding_mismatch", path }],
-		state,
+		dropped,
 	);
 	return true;
 }
 
+/**
+ * Record the API's reported input transformations on the output.
+ *
+ * A `prefix_binding_mismatch` drop is deliberately NOT remembered here: with
+ * `prefix_mismatch_behavior: "drop_block"` the API already discards the block
+ * for free on every request, and the request bytes stay identical to the
+ * cached prefix. Omitting the block client-side instead changes the bytes at
+ * that message and rewrites the whole conversation cache behind it. Only a
+ * hard rejection (the retry path in `streamAnthropicOnce`) needs the omission.
+ */
 function applyReportedInputTransformations(
 	output: AssistantMessage,
-	params: MessageCreateParamsStreaming,
-	state: AnthropicProviderSessionState | undefined,
 	value: unknown,
 	seen: Set<string>,
 	replace = false,
@@ -2086,12 +2114,14 @@ function applyReportedInputTransformations(
 	}
 	if (fresh.length === 0) return;
 	output.inputTransformations = [...(output.inputTransformations ?? []), ...fresh];
-	rememberPrefixDroppedThinking(params, fresh, state);
-	for (const transformation of fresh) {
-		if (transformation.reason !== "prefix_binding_mismatch") continue;
-		logger.warn("anthropic: dropped thinking block after conversation prefix changed", {
+	const droppedPaths = fresh
+		.filter(transformation => transformation.reason === "prefix_binding_mismatch")
+		.map(transformation => transformation.path);
+	if (droppedPaths.length > 0) {
+		logger.debug("anthropic: API dropped replayed thinking blocks bound to an earlier prefix", {
 			model: output.model,
-			path: transformation.path,
+			count: droppedPaths.length,
+			firstPath: droppedPaths[0],
 		});
 	}
 }
@@ -2321,8 +2351,10 @@ const streamAnthropicOnce = (
 				diagnosticFeatureNames = created.featureNames;
 			}
 			const preparedContext = await prepareAnthropicManyImageContext(context, model.input.includes("image"));
+			let controlState: AnthropicControlState | undefined;
+			let prefixDroppedThinking: Set<string> | undefined;
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
-				let nextParams = buildParams(model, preparedContext, isOAuthToken, options, {
+				const built = buildParams(model, preparedContext, isOAuthToken, options, {
 					disableStrictTools,
 					useUmansGatewayWebSearch: umansGatewayWebSearchHeader !== undefined,
 					forceDemoteUnsignedThinking,
@@ -2330,10 +2362,12 @@ const streamAnthropicOnce = (
 					baseUrl,
 					prefixMismatchBehavior,
 					dropAllThinking,
-					droppedThinkingBlocks: providerSessionState?.prefixDroppedThinkingBlocks,
 					providerSessionState,
 					fallbacks,
 				});
+				controlState = built.controlState;
+				prefixDroppedThinking = built.prefixDroppedThinking;
+				let nextParams = built.params;
 				if (disableStrictTools) {
 					dropAnthropicStrictTools(nextParams);
 				}
@@ -2397,13 +2431,7 @@ const streamAnthropicOnce = (
 					throw new AIError.AnthropicStreamEnvelopeError("Anthropic cache refresh response omitted usage");
 				}
 				if (typeof body.id === "string") output.responseId = body.id;
-				applyReportedInputTransformations(
-					output,
-					params,
-					providerSessionState,
-					body.input_transformations,
-					seenInputTransformations,
-				);
+				applyReportedInputTransformations(output, body.input_transformations, seenInputTransformations);
 				output.usage.input = wireUsage.input_tokens ?? 0;
 				output.usage.output = wireUsage.output_tokens ?? 0;
 				output.usage.cacheRead = wireUsage.cache_read_input_tokens ?? 0;
@@ -2662,8 +2690,6 @@ const streamAnthropicOnce = (
 							if (startMessage?.id) output.responseId = startMessage.id;
 							applyReportedInputTransformations(
 								output,
-								params,
-								providerSessionState,
 								startMessage?.input_transformations,
 								seenInputTransformations,
 							);
@@ -2960,8 +2986,6 @@ const streamAnthropicOnce = (
 							const delta = event.delta;
 							applyReportedInputTransformations(
 								output,
-								params,
-								providerSessionState,
 								event.input_transformations,
 								seenInputTransformations,
 								true,
@@ -3121,7 +3145,7 @@ const streamAnthropicOnce = (
 						});
 						prefixBindingRetryAttempted = true;
 						prefixMismatchBehavior = undefined;
-						dropAllThinking = !rememberPrefixBindingFailure(params, streamFailureMessage, providerSessionState);
+						dropAllThinking = !rememberPrefixBindingFailure(params, streamFailureMessage, prefixDroppedThinking);
 						params = await prepareParams();
 						providerRetryAttempt = 0;
 						output.content.length = 0;
@@ -3247,7 +3271,7 @@ const streamAnthropicOnce = (
 					firstTokenTime = undefined;
 				}
 			}
-			updateAnthropicCacheDiagnostics(providerSessionState, baseUrl, params, diagnosticFeatureNames, output);
+			updateAnthropicCacheDiagnostics(controlState, baseUrl, params, diagnosticFeatureNames, output);
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 			if (dropFastMode && model.provider === "anthropic" && options?.serviceTier === "priority") {
@@ -3981,36 +4005,66 @@ function anthropicControlMessageProjection(message: MessageParam): MessageParam 
 	};
 }
 
+/** Source-message twin of {@link anthropicControlMessageProjection} for the conversation key. */
+function anthropicControlRootProjection(message: Message | undefined): unknown {
+	if (!message) return null;
+	if (message.role !== "assistant") return message;
+	return {
+		...message,
+		content: message.content.filter(block => block.type !== "thinking" && block.type !== "redactedThinking"),
+	};
+}
+
+/** Insert-or-touch `key` in an insertion-ordered map, evicting the least recently used entry past `limit`. */
+function touchLruEntry<T>(map: Map<string, T>, key: string, create: () => T, limit: number): T {
+	const existing = map.get(key);
+	if (existing) {
+		map.delete(key);
+		map.set(key, existing);
+		return existing;
+	}
+	const created = create();
+	map.set(key, created);
+	if (map.size > limit) {
+		const oldest = map.keys().next().value;
+		if (oldest !== undefined) map.delete(oldest);
+	}
+	return created;
+}
+
+function anthropicPrefixFingerprint(
+	system: readonly AnthropicSystemBlock[] | undefined,
+	root: Message | undefined,
+): string {
+	return String(
+		Bun.hash(JSON.stringify([system?.map(block => block.text) ?? null, anthropicControlRootProjection(root)])),
+	);
+}
+
 function getAnthropicControlState(
 	state: AnthropicProviderSessionState | undefined,
 	sessionId: string | undefined,
 	system: readonly AnthropicSystemBlock[] | undefined,
-	messages: readonly MessageParam[],
+	root: Message | undefined,
 ): AnthropicControlState | undefined {
 	if (!state) return undefined;
-	const root = messages[0];
-	const fingerprint = String(
-		Bun.hash(
-			JSON.stringify([
-				sessionId ?? "",
-				system?.map(block => block.text) ?? null,
-				root ? anthropicControlMessageProjection(root) : null,
-			]),
-		),
+	const fingerprint = `${sessionId ?? ""}\u0000${anthropicPrefixFingerprint(system, root)}`;
+	return touchLruEntry(state.controlStates, fingerprint, createAnthropicControlState, MAX_ANTHROPIC_CONTROL_STATES);
+}
+
+/** Dropped-thinking memory shared by every request that replays the same prompt prefix. */
+function getAnthropicPrefixDroppedThinking(
+	state: AnthropicProviderSessionState | undefined,
+	system: readonly AnthropicSystemBlock[] | undefined,
+	root: Message | undefined,
+): Set<string> | undefined {
+	if (!state) return undefined;
+	return touchLruEntry(
+		state.prefixDroppedThinking,
+		anthropicPrefixFingerprint(system, root),
+		() => new Set<string>(),
+		MAX_ANTHROPIC_CONTROL_STATES,
 	);
-	const existing = state.controlStates.get(fingerprint);
-	if (existing) {
-		state.controlStates.delete(fingerprint);
-		state.controlStates.set(fingerprint, existing);
-		return existing;
-	}
-	const created = createAnthropicControlState();
-	state.controlStates.set(fingerprint, created);
-	if (state.controlStates.size > MAX_ANTHROPIC_CONTROL_STATES) {
-		const oldest = state.controlStates.keys().next().value;
-		if (oldest !== undefined) state.controlStates.delete(oldest);
-	}
-	return created;
 }
 
 /** Fingerprint of the wire message a control transition is attached after. */
@@ -4226,7 +4280,6 @@ type AnthropicParamBuildOptions = {
 	baseUrl: string;
 	prefixMismatchBehavior?: "drop_block" | "error";
 	dropAllThinking: boolean;
-	droppedThinkingBlocks?: ReadonlySet<string>;
 	providerSessionState?: AnthropicProviderSessionState;
 	/** Sanitized server-side fallback entries; defaults to `options?.fallbacks` when omitted. */
 	fallbacks?: AnthropicOptions["fallbacks"];
@@ -4238,7 +4291,11 @@ function buildParams(
 	isOAuthToken: boolean,
 	options: AnthropicOptions | undefined,
 	buildOptions: AnthropicParamBuildOptions,
-): MessageCreateParamsStreaming {
+): {
+	params: MessageCreateParamsStreaming;
+	controlState: AnthropicControlState | undefined;
+	prefixDroppedThinking: Set<string> | undefined;
+} {
 	const {
 		disableStrictTools,
 		useUmansGatewayWebSearch,
@@ -4247,7 +4304,6 @@ function buildParams(
 		baseUrl,
 		prefixMismatchBehavior,
 		dropAllThinking,
-		droppedThinkingBlocks,
 		providerSessionState,
 		fallbacks = options?.fallbacks,
 	} = buildOptions;
@@ -4390,12 +4446,25 @@ function buildParams(
 	// the `effort-2025-11-24` beta, which that adapter can only accept in the body
 	// (`anthropic_beta`), never as the `anthropic-beta` HTTP header this path sets
 	// — so the field is dropped alongside the beta to avoid a 400 (#5614).
+	// Both lookups key on the source root message (thinking stripped), so they
+	// resolve before conversion: conversion needs this prefix's dropped-thinking
+	// memory.
+	const controlState = getAnthropicControlState(
+		providerSessionState,
+		options?.sessionId,
+		systemBlocks,
+		context.messages[0],
+	);
+	const prefixDroppedThinking = getAnthropicPrefixDroppedThinking(
+		providerSessionState,
+		systemBlocks,
+		context.messages[0],
+	);
 	let wireMessages = convertAnthropicMessages(context.messages, effectiveModel, isOAuthToken, {
 		serverSideFallbackEnabled: !!fallbacks?.length,
 		dropAllThinking,
-		droppedThinkingBlocks,
+		droppedThinkingBlocks: prefixDroppedThinking,
 	});
-	const controlState = getAnthropicControlState(providerSessionState, options?.sessionId, systemBlocks, wireMessages);
 	if (controlState) syncAnthropicControlState(controlState, wireMessages);
 	systemBlocks = planStableAnthropicSystem(systemBlocks, controlState, model.compat.supportsMidConversationSystem);
 	tools = planStableAnthropicTools(tools, wireMessages, controlState, model.compat.supportsMidConversationToolChanges);
@@ -4498,7 +4567,7 @@ function buildParams(
 	enforceCacheControlLimit(params, MAX_CACHE_BREAKPOINTS);
 	normalizeCacheControlTtlOrdering(params);
 
-	return params;
+	return { params, controlState, prefixDroppedThinking };
 }
 
 const EMPTY_ERROR_TOOL_RESULT_TEXT = "Tool failed with no output.";

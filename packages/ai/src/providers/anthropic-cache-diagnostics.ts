@@ -31,7 +31,11 @@ export type AnthropicCacheDiagnosticReason =
 export interface AnthropicDiagnosticFingerprint {
 	modelHash: string;
 	systemHash: string;
+	/** Per-block digests of `system` (one entry for a string system prompt). */
+	systemBlockHashes: readonly string[];
 	toolsHash: string;
+	/** Per-tool digests in wire order. */
+	toolHashes: readonly string[];
 	thinkingOrEffortHash: string;
 	cacheControlsHash: string;
 	messageHashes: readonly string[];
@@ -44,13 +48,39 @@ export interface AnthropicCacheDiagnosticState {
 	usage: AnthropicDiagnosticUsage;
 }
 
+/**
+ * `cold`: a warm prefix read nothing back. `partial`: the request read less
+ * than the previous request's whole prompt (`previousCacheRead +
+ * previousCacheWrite`) even though that prompt should have been an append-only
+ * prefix of this one — the conversation tail was rewritten.
+ */
+export type AnthropicCacheDiagnosticKind = "cold" | "partial";
+
 export interface AnthropicCacheDiagnosticTransition {
+	kind: AnthropicCacheDiagnosticKind;
 	reasonCodes: readonly AnthropicCacheDiagnosticReason[];
+	/** First previously-sent message whose bytes changed; absent for pure appends. */
 	firstChangedMessageIndex?: number;
+	/** First `system` block whose bytes changed. */
+	firstChangedSystemBlockIndex?: number;
+	/** First tool definition whose bytes changed. */
+	firstChangedToolIndex?: number;
 	previousCacheRead: number;
+	/** Tokens the previous request proved cacheable: its read plus its write. */
+	expectedCacheRead: number;
+	currentCacheRead: number;
 	currentCacheWrite: number;
 	currentInput: number;
+	/** Cached tokens the provider had to rewrite instead of read. */
+	lostCacheTokens: number;
 }
+
+/**
+ * Slack between the previous prompt size and the current read before a
+ * shortfall counts as a partial miss. Successful append-only turns read the
+ * previous prompt back exactly, so this only absorbs provider accounting jitter.
+ */
+const PARTIAL_MISS_TOLERANCE_TOKENS = 1024;
 
 /** Beta/header feature names that are safe to retain in diagnostics. */
 const ALLOWED_FEATURE_NAMES: Record<string, true> = {
@@ -138,6 +168,12 @@ function collectCacheControls(value: unknown, found: unknown[] = []): unknown[] 
 	return found;
 }
 
+function digestEach(value: unknown): string[] {
+	if (value === undefined || value === null) return [];
+	if (Array.isArray(value)) return value.map(item => digestSerialized(item, true));
+	return [digestSerialized(value, true)];
+}
+
 export function fingerprintAnthropicRequest(input: AnthropicDiagnosticRequest): AnthropicDiagnosticFingerprint {
 	const model = digestSerialized(input.model);
 	const system = digestSerialized(input.system, true);
@@ -161,7 +197,9 @@ export function fingerprintAnthropicRequest(input: AnthropicDiagnosticRequest): 
 	return {
 		modelHash: model,
 		systemHash: system,
+		systemBlockHashes: digestEach(input.system),
 		toolsHash: tools,
+		toolHashes: digestEach(input.tools),
 		thinkingOrEffortHash: thinkingOrEffort,
 		cacheControlsHash,
 		messageHashes,
@@ -170,7 +208,8 @@ export function fingerprintAnthropicRequest(input: AnthropicDiagnosticRequest): 
 	};
 }
 
-function firstChangedMessageIndex(previous: readonly string[], current: readonly string[]): number | undefined {
+/** First index where two digest lists differ, including a shorter/longer tail. */
+function firstChangedIndex(previous: readonly string[], current: readonly string[]): number | undefined {
 	const limit = Math.max(previous.length, current.length);
 	for (let index = 0; index < limit; index++) {
 		if (previous[index] !== current[index]) return index;
@@ -178,18 +217,49 @@ function firstChangedMessageIndex(previous: readonly string[], current: readonly
 	return undefined;
 }
 
-/** Diagnose only a proven warm-to-cold explicit-cache transition. */
+/**
+ * First previously-sent message whose bytes changed. Messages appended after
+ * the previous prompt extend the cached prefix and are never reported.
+ */
+function firstChangedMessageIndex(previous: readonly string[], current: readonly string[]): number | undefined {
+	for (let index = 0; index < previous.length; index++) {
+		if (previous[index] !== current[index]) return index;
+	}
+	return undefined;
+}
+
+/**
+ * Diagnose a proven explicit-cache loss between two settled requests: a warm
+ * prefix that read nothing back (`cold`), or a request that read less than the
+ * whole previous prompt (`partial`).
+ */
 export function diagnoseAnthropicCacheTransition(
 	previous: AnthropicCacheDiagnosticState | undefined,
 	current: AnthropicCacheDiagnosticState,
 ): AnthropicCacheDiagnosticTransition | undefined {
-	if (!previous || previous.usage.cacheRead <= 0 || current.usage.cacheRead > 0 || current.usage.cacheWrite <= 0) {
+	if (!previous || current.usage.cacheWrite <= 0) return undefined;
+	const expectedCacheRead = previous.usage.cacheRead + previous.usage.cacheWrite;
+	let kind: AnthropicCacheDiagnosticKind;
+	if (current.usage.cacheRead <= 0) {
+		if (previous.usage.cacheRead <= 0) return undefined;
+		kind = "cold";
+	} else if (current.usage.cacheRead + PARTIAL_MISS_TOLERANCE_TOKENS < expectedCacheRead) {
+		kind = "partial";
+	} else {
 		return undefined;
 	}
 	const reasonCodes: AnthropicCacheDiagnosticReason[] = [];
 	if (previous.fingerprint.modelHash !== current.fingerprint.modelHash) reasonCodes.push("model_changed");
-	if (previous.fingerprint.systemHash !== current.fingerprint.systemHash) reasonCodes.push("system_changed");
-	if (previous.fingerprint.toolsHash !== current.fingerprint.toolsHash) reasonCodes.push("tools_changed");
+	const changedSystemBlockIndex =
+		previous.fingerprint.systemHash === current.fingerprint.systemHash
+			? undefined
+			: (firstChangedIndex(previous.fingerprint.systemBlockHashes, current.fingerprint.systemBlockHashes) ?? 0);
+	if (changedSystemBlockIndex !== undefined) reasonCodes.push("system_changed");
+	const changedToolIndex =
+		previous.fingerprint.toolsHash === current.fingerprint.toolsHash
+			? undefined
+			: (firstChangedIndex(previous.fingerprint.toolHashes, current.fingerprint.toolHashes) ?? 0);
+	if (changedToolIndex !== undefined) reasonCodes.push("tools_changed");
 	if (previous.fingerprint.thinkingOrEffortHash !== current.fingerprint.thinkingOrEffortHash) {
 		reasonCodes.push("thinking_or_effort_changed");
 	}
@@ -204,11 +274,17 @@ export function diagnoseAnthropicCacheTransition(
 	if (previous.fingerprint.featureHash !== current.fingerprint.featureHash) reasonCodes.push("beta_features_changed");
 	if (reasonCodes.length === 0) reasonCodes.push("ttl_or_provider_eviction");
 	return {
+		kind,
 		reasonCodes,
 		...(changedMessageIndex === undefined ? {} : { firstChangedMessageIndex: changedMessageIndex }),
+		...(changedSystemBlockIndex === undefined ? {} : { firstChangedSystemBlockIndex: changedSystemBlockIndex }),
+		...(changedToolIndex === undefined ? {} : { firstChangedToolIndex: changedToolIndex }),
 		previousCacheRead: previous.usage.cacheRead,
+		expectedCacheRead,
+		currentCacheRead: current.usage.cacheRead,
 		currentCacheWrite: current.usage.cacheWrite,
 		currentInput: current.usage.input,
+		lostCacheTokens: Math.max(0, expectedCacheRead - current.usage.cacheRead),
 	};
 }
 
