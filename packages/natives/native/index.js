@@ -36,7 +36,7 @@ export const VcsRepo = nativeBindings.VcsRepo;
 
 // functions
 export const __ompInstallTokioRuntime = nativeBindings.__ompInstallTokioRuntime;
-export const __piNativesV1_7_10 = nativeBindings.__piNativesV1_7_10;
+export const __piNativesV1_7_11 = nativeBindings.__piNativesV1_7_11;
 export const astEdit = nativeBindings.astEdit;
 export const astGrep = nativeBindings.astGrep;
 export const astMatch = nativeBindings.astMatch;

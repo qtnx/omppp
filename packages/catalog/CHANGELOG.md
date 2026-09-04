@@ -2,39 +2,6 @@
 
 ## [Unreleased]
 
-## [18.1.0] - 2026-09-01
-
-### Added
-
-- Added GitLab Duo model support.
-- Added provider support for Llama.cpp, LM Studio, and Minimax.
-- Added catalog entries for Qwen 3.8 27B, Granite 4.2 8B, Abliterated variants, GLM 5.3, and Qwen 3.8 Flash Next.
-- Added compatibility metadata for context management and reasoning summaries on supported provider-compatible model endpoints.
-- Added the native ClinePass provider with live model discovery, subscription and free-tier model listings, current limits and pricing, model modalities, and per-model reasoning controls. Subscription models display API-equivalent pricing while free-tier models display as free.
-- Added native Devin provider discovery with current Cascade model capabilities, pricing, limits, reasoning controls, selector aliases, and model descriptions and recommendation/beta metadata. Added static SWE-1.6 defaults so the provider can resolve a default model before account-scoped discovery completes.
-- Added per-tier model pricing and long-context pricing support, along with expanded catalog metadata for model limits, API routes, input modalities, and provider-specific model aliases.
-
-### Changed
-
-- Updated pricing data across the catalog to reflect current provider rates.
-- Standardized model display names for greater consistency.
-- Improved model compatibility classification and variant selection using structured model identities, providing more reliable detection of model families, revisions, reasoning variants, and provider-specific capabilities.
-
-### Fixed
-
-- Fixed compatibility detection for vendor-prefixed GLM models on Mistral and Cerebras, restoring the appropriate tokenizer and reasoning-history behavior.
-- Removed an obsolete OpenCode provider entry that exposed unavailable Zen models in the model picker.
-- Fixed model revision detection for parameterized model IDs, including correct classification of Qwen, Fireworks Kimi, and Cursor-wrapped Grok models.
-- Fixed Kimi K3 reasoning-effort handling on OpenAI-compatible hosts such as LiteLLM and vLLM.
-- Fixed pricing for Codex Daybreak aliases, including worker variants.
-- Fixed reasoning-effort variants for local Ollama models and DeepSeek V4, and corrected prompt-cache support for applicable Bedrock Nova deployments.
-- Fixed Devin model variants with separate thinking and context-size options so all supported routing combinations and context limits are preserved.
-- Corrected Devin SWE-1.6 and SWE-1.6 Fast capability metadata so image attachments use the appropriate text-only fallback instead of being silently discarded.
-- Devin discovery now warns when the service returns an empty native model catalog, helping identify stale or incompatible CLI credentials.
-
-### Removed
-
-- Removed legacy DeepSeek V3 variants from the Novita catalog.
 ## [18.1.4] - 2026-09-02
 
 ### Changed
@@ -74,6 +41,40 @@
 ### Changed
 
 - Updated model pricing and context-window limits.
+
+## [18.1.0] - 2026-09-01
+
+### Added
+
+- Added GitLab Duo model support.
+- Added provider support for Llama.cpp, LM Studio, and Minimax.
+- Added catalog entries for Qwen 3.8 27B, Granite 4.2 8B, Abliterated variants, GLM 5.3, and Qwen 3.8 Flash Next.
+- Added compatibility metadata for context management and reasoning summaries on supported provider-compatible model endpoints.
+- Added the native ClinePass provider with live model discovery, subscription and free-tier model listings, current limits and pricing, model modalities, and per-model reasoning controls. Subscription models display API-equivalent pricing while free-tier models display as free.
+- Added native Devin provider discovery with current Cascade model capabilities, pricing, limits, reasoning controls, selector aliases, and model descriptions and recommendation/beta metadata. Added static SWE-1.6 defaults so the provider can resolve a default model before account-scoped discovery completes.
+- Added per-tier model pricing and long-context pricing support, along with expanded catalog metadata for model limits, API routes, input modalities, and provider-specific model aliases.
+
+### Changed
+
+- Updated pricing data across the catalog to reflect current provider rates.
+- Standardized model display names for greater consistency.
+- Improved model compatibility classification and variant selection using structured model identities, providing more reliable detection of model families, revisions, reasoning variants, and provider-specific capabilities.
+
+### Fixed
+
+- Fixed compatibility detection for vendor-prefixed GLM models on Mistral and Cerebras, restoring the appropriate tokenizer and reasoning-history behavior.
+- Removed an obsolete OpenCode provider entry that exposed unavailable Zen models in the model picker.
+- Fixed model revision detection for parameterized model IDs, including correct classification of Qwen, Fireworks Kimi, and Cursor-wrapped Grok models.
+- Fixed Kimi K3 reasoning-effort handling on OpenAI-compatible hosts such as LiteLLM and vLLM.
+- Fixed pricing for Codex Daybreak aliases, including worker variants.
+- Fixed reasoning-effort variants for local Ollama models and DeepSeek V4, and corrected prompt-cache support for applicable Bedrock Nova deployments.
+- Fixed Devin model variants with separate thinking and context-size options so all supported routing combinations and context limits are preserved.
+- Corrected Devin SWE-1.6 and SWE-1.6 Fast capability metadata so image attachments use the appropriate text-only fallback instead of being silently discarded.
+- Devin discovery now warns when the service returns an empty native model catalog, helping identify stale or incompatible CLI credentials.
+
+### Removed
+
+- Removed legacy DeepSeek V3 variants from the Novita catalog.
 
 ## [18.1.0] - 2026-09-01
 
