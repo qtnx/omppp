@@ -5,14 +5,14 @@ Calling this tool only SCHEDULES compaction: it runs automatically right after t
 Scope: compact is coarse, turn-boundary archival of the whole older history. If `context_unload`/`context_pin`/`context_recall` are available and you only need to drop specific stale tool results while continuing the same task, use those instead; reach for compact at a real boundary where broad older history can be archived wholesale.
 
 <when>
-Call when ANY hold:
+Rule: `compact_now ⇔ phase boundary ∧ context usage ≥ 40% ∧ the finished phase's raw context is not needed next ∧ nothing pending (subagent, job, question)`; at ≥ 60% usage any boundary compacts. Below 40%, prefer `context_unload` for single stale results. Boundaries — call when ANY hold:
 - You just completed a distinct unit of work (task, phase, milestone, investigation, debug cycle) AND its raw context (file reads, logs, search results, tool output) is not needed for the next steps.
 - You are about to switch to a new topic or independent subtask that depends only on conclusions, not raw history.
 - Exploration/debugging output dominates context but the decisions/facts are already stated in your replies.
 - A long session has accumulated many stale tool results.
 - The NEXT turn will start a context-heavy phase (large reads, builds, test sweeps). Call only as the last action of this turn, right before yielding — never call and then continue heavy work in the same turn, since compaction has not run yet.
 - The PREVIOUS turn already completed its work and any condition above holds — call immediately; a turn whose only action is scheduling compaction is legitimate.
-- Marking a todo phase complete and moving to the next phase is a compaction boundary — consider calling this tool with `focus` naming what the next phase needs.
+- Marking a todo phase complete and moving to the next phase IS the canonical boundary: close the phase, restate in your reply what the next phase needs (Task line, locked contracts, decisions, anchors, running job ids), then call this tool LAST with `focus` = that restatement and end the turn; start the next phase on the compacted context.
 </when>
 
 <when_not>

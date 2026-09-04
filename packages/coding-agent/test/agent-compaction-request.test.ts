@@ -374,7 +374,10 @@ describe("system prompt compaction guidance", () => {
 		const withCompact = await buildSystemPrompt({ ...base, toolNames: ["read", "compact", "context_unload"] });
 		const withCompactText = withCompact.systemPrompt.join("\n\n");
 		expect(withCompactText).toContain("# Context Compaction");
-		expect(withCompactText).toContain("LAST action of the turn");
+		// Phase-boundary early-compaction formula: threshold + ordered flow, compact is the LAST call.
+		expect(withCompactText).toMatch(/compact_now ⇔ boundary ∧ usage ≥ 40%/);
+		expect(withCompactText).toMatch(/usage ≥ 60% at a boundary ⇒ compact_now/);
+		expect(withCompactText).toMatch(/Call `compact` as the LAST action of the turn with `focus`/);
 		// Mid-task scope split is rendered when context GC tools coexist.
 		expect(withCompactText).toContain("use `context_unload`");
 
