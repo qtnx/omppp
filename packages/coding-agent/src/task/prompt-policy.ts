@@ -25,14 +25,18 @@ export function usesCodexTaskPrompt(modelId: string | undefined): boolean {
 	return revision !== undefined && target !== undefined && compareRevision(revision, target) === 0;
 }
 
+/** Whether the model is an OpenAI GPT at or above `floor` (e.g. `"6.0"`). */
+export function isOpenAIRevisionAtLeast(modelId: string | undefined, floor: string): boolean {
+	const revision = openAIRevision(modelId);
+	const target = parseRevision(floor);
+	return revision !== undefined && target !== undefined && compareRevision(revision, target) >= 0;
+}
+
 /**
  * GPT-5.6 and later (GPT-6 Astra …) get the OpenAI model notes block: they
  * reason briefly by default, treat mid-turn text as delivery, stop to ask after
  * authorization, and drop plan sections under context pressure.
  */
 export function modelPromptProfile(modelId: string | undefined): ModelPromptProfile | undefined {
-	const revision = openAIRevision(modelId);
-	const floor = parseRevision("5.6");
-	if (revision === undefined || floor === undefined) return undefined;
-	return compareRevision(revision, floor) >= 0 ? "openai-gpt" : undefined;
+	return isOpenAIRevisionAtLeast(modelId, "5.6") ? "openai-gpt" : undefined;
 }

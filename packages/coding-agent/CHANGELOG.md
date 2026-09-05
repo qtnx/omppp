@@ -9,6 +9,7 @@
 
 ### Added
 
+- `plan` and `slow` roles assigned a GPT-6 model (e.g. `gpt-6-astra`) without a `:level` suffix now run at `xhigh` thinking; execution roles keep the configured default. An explicit suffix still wins.
 - OpenAI GPT-5.6/GPT-6 models (e.g. `gpt-6-astra`) now get a model-notes block in the system prompt: deliver documents in the final message, inventory and cite only lines actually read, stop widening noisy searches, read mandatory skills before designing, and keep authorization across turns instead of re-asking.
 
 ## [1.7.12] - 2026-09-05

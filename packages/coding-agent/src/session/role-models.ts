@@ -1,5 +1,5 @@
-import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import type { Model } from "@oh-my-pi/pi-ai";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../config/model-registry";
 import {
 	extractExplicitThinkingSelector,
@@ -10,6 +10,8 @@ import {
 	resolveModelRoleValue,
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
+import { isOpenAIRevisionAtLeast } from "../task/prompt-policy";
+import type { ConfiguredThinkingLevel } from "../thinking";
 
 /** Formats a role assignment while preserving its explicit thinking selector. */
 export function formatRoleModelValue(
@@ -64,6 +66,24 @@ export function resolveCompactionConfiguredTarget(currentModel: Model, available
 }
 
 /** Resolves a model role and its explicit thinking selection. */
+/** Roles whose work is pure reasoning: planning documents and the `slow` deep-reasoning role. */
+const PLANNING_ROLES: ReadonlySet<string> = new Set(["plan", "slow"]);
+
+/**
+ * Model-family thinking floor for a role that carries no `:level` suffix.
+ * GPT-6 (Astra) reasons briefly at `high` (~30 reasoning tokens per call in
+ * the xlords plan suite, scoring 0.83 vs 0.94 at `xhigh` for the same cost
+ * order); Codex itself ships it at `low`. Planning roles therefore pin `xhigh`
+ * when the model supports it; execution roles keep the configured default.
+ */
+export function roleThinkingDefault(model: Model, role: string): ConfiguredThinkingLevel | undefined {
+	if (!PLANNING_ROLES.has(role)) return undefined;
+	if (!isOpenAIRevisionAtLeast(model.id, "6.0")) return undefined;
+	const efforts = model.thinking?.efforts;
+	if (!efforts?.includes(Effort.XHigh)) return undefined;
+	return ThinkingLevel.XHigh;
+}
+
 export function resolveRoleModelFull(
 	settings: Settings,
 	role: string,
@@ -78,8 +98,11 @@ export function resolveRoleModelFull(
 	if (!roleModelStr) {
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
 	}
-	return resolveModelRoleValue(roleModelStr, availableModels, {
+	const resolved = resolveModelRoleValue(roleModelStr, availableModels, {
 		settings,
 		matchPreferences: getModelMatchPreferences(settings),
 	});
+	if (resolved.explicitThinkingLevel || !resolved.model) return resolved;
+	const pinned = roleThinkingDefault(resolved.model, role);
+	return pinned === undefined ? resolved : { ...resolved, thinkingLevel: pinned, explicitThinkingLevel: true };
 }
