@@ -32,6 +32,7 @@ import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" 
 import cavemanModeActiveTemplate from "./prompts/system/caveman-mode-active.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
+import openAIGptModelNotes from "./prompts/system/model-notes/openai-gpt.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
@@ -39,7 +40,7 @@ import ponytailModeActiveTemplate from "./prompts/system/ponytail-mode-active.md
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
-import { usesCodexTaskPrompt } from "./task/prompt-policy";
+import { modelPromptProfile, usesCodexTaskPrompt } from "./task/prompt-policy";
 import { shortenPath } from "./tools/render-utils";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
@@ -172,6 +173,11 @@ function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | nu
 }
 
 /** Bundled caveman skill body (frontmatter stripped) wrapped in the caveman-mode block. */
+/** Model-family guidance block; empty for models without a profile (see `modelPromptProfile`). */
+function renderModelNotesBlock(model: string | undefined): string {
+	return modelPromptProfile(model) === "openai-gpt" ? openAIGptModelNotes.trim() : "";
+}
+
 function renderCavemanModeBlock(): string {
 	const skill = parseFrontmatter(cavemanSkill, { level: "off" }).body.trim();
 	return prompt.render(cavemanModeActiveTemplate, { skill }).trim();
@@ -1118,6 +1124,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
+		modelNotes: renderModelNotesBlock(model),
 		personality: personalityBlock,
 		cavemanMode: cavemanEnabled ? renderCavemanModeBlock() : "",
 		ponytailMode: ponytailEnabled ? renderPonytailModeBlock() : "",

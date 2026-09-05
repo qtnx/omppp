@@ -25,7 +25,7 @@ import orchestratorModeOverlayTemplate from "../prompts/system/orchestrator-mode
 import toolRosterNoticePrompt from "../prompts/system/tool-roster-notice.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import type { SecretVaultLike } from "../secrets/vault";
-import { usesCodexTaskPrompt } from "../task/prompt-policy";
+import { modelPromptProfile, usesCodexTaskPrompt } from "../task/prompt-policy";
 import { countToolsForAutoDiscovery, type EffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import {
 	buildDiscoverableToolSearchIndex,
@@ -926,7 +926,8 @@ export class SessionTools {
 		const activeModel = this.#host.model();
 		const model = activeModel ? formatModelString(activeModel) : undefined;
 		if (!model || this.#host.settings.get("includeModelInPrompt")) return model;
-		return usesCodexTaskPrompt(model) ? "task-policy:gpt-5.6" : "task-policy:default";
+		const taskPolicy = usesCodexTaskPrompt(model) ? "gpt-5.6" : "default";
+		return `task-policy:${taskPolicy}|model-notes:${modelPromptProfile(model) ?? "default"}`;
 	}
 
 	/** Reconciles the model-dependent discovery surface after a model change. */

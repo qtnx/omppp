@@ -514,6 +514,10 @@ Skill routing (when matching skills are available):
 {{{ponytailMode}}}
 {{/if}}
 
+{{#if modelNotes}}
+{{{modelNotes}}}
+{{/if}}
+
 {{#if alwaysApplyRules.length}}
 <generic-rules>
 {{#each alwaysApplyRules}}
