@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.7.12] - 2026-09-05
+
+### Added
+
+- OpenAI Codex now supports GPT-6 Astra, including mid-conversation thinking-level changes without breaking prompt cache.
+
 ## [18.1.3] - 2026-09-02
 
 ### Changed
