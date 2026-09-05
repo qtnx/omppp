@@ -2,22 +2,6 @@
 
 ## [Unreleased]
 
-## [1.7.11] - 2026-09-04
-
-### Added
-
-- Ponytail minimality mode is now on by default for the main agent and implementer subagents: the bundled skill is injected into the session system prompt from the first turn, and `/ponytail off|on|status` toggles it per session (`ponytail.enabled` persists the default).
-
-### Changed
-
-- Herdr notifications are now on by default: a turn that ran at least `herdr.notify.minWorkMs` toasts on completion, and a question or approval wait toasts immediately with herdr's `request` sound and the question text as the title.
-
-### Fixed
-
-- Glob's scan timeout now starts when the native walk begins, not during path preparation, so a slow stat cannot consume the budget and leave the timeout abort unobserved.
-- Fixed Herdr panes sticking on `working` after the agent went idle: a prompt that never became a run (Esc during setup, generation bail-out) held the pane on working forever, and a state report that timed out on the herdr socket was never retried. The working hold now expires against the session's real idle state, run bookkeeping is cleared at every run boundary and re-validated on a periodic tick, background subagents/jobs are read from the owner-scoped job snapshot instead of a private set, and lost reports are retried once and re-asserted periodically.
-- Herdr notifications get a 2s socket budget instead of 500ms, so a busy herdr server no longer drops them.
-
 ## [18.1.3] - 2026-09-02
 
 ### Changed
@@ -1704,5 +1688,21 @@
 - Fixed `ast_edit` erroring with "`lang` is required" — an argument that no longer exists in the tool schema — when `paths` resolved to files of multiple languages (e.g. a crate directory with `.rs` + `.toml`). Mixed-language paths now rewrite per file: each file is parsed in its own inferred language, patterns are compiled per language, and a pattern that doesn't parse in some matched language simply skips those files.
 - Fixed the `retain` tool's TUI renderer crashing when streaming arguments temporarily expose a non-array `items` value ([#6528](https://github.com/can1357/oh-my-pi/issues/6528)).
 - Fixed Edit and Write tools failing with `Settings not initialized` in isolated sessions by using each tool session's settings for generated-file guards, with safe schema defaults for standalone guards and inline-image rendering ([#6549](https://github.com/can1357/oh-my-pi/issues/6549)).
+
+## [1.7.11] - 2026-09-04
+
+### Added
+
+- Ponytail minimality mode is now on by default for the main agent and implementer subagents: the bundled skill is injected into the session system prompt from the first turn, and `/ponytail off|on|status` toggles it per session (`ponytail.enabled` persists the default).
+
+### Changed
+
+- Herdr notifications are now on by default: a turn that ran at least `herdr.notify.minWorkMs` toasts on completion, and a question or approval wait toasts immediately with herdr's `request` sound and the question text as the title.
+
+### Fixed
+
+- Glob's scan timeout now starts when the native walk begins, not during path preparation, so a slow stat cannot consume the budget and leave the timeout abort unobserved.
+- Fixed Herdr panes sticking on `working` after the agent went idle: a prompt that never became a run (Esc during setup, generation bail-out) held the pane on working forever, and a state report that timed out on the herdr socket was never retried. The working hold now expires against the session's real idle state, run bookkeeping is cleared at every run boundary and re-validated on a periodic tick, background subagents/jobs are read from the owner-scoped job snapshot instead of a private set, and lost reports are retried once and re-asserted periodically.
+- Herdr notifications get a 2s socket budget instead of 500ms, so a busy herdr server no longer drops them.
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@e6cb183a9132](https://github.com/can1357/oh-my-pi/blob/e6cb183a9132f4dfe3be5adc95727f93b1432517/packages/coding-agent/CHANGELOG.md).

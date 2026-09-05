@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.7.12] - 2026-09-05
+
 ### Added
 
 - Added GPT-6 Astra support for preserving prompt caching when changing the thinking level during a conversation across the OpenAI and OpenAI Codex providers.
@@ -9,18 +11,6 @@
 ### Changed
 
 - OpenAI Codex requests now send the `x-codex-routing-hint` header (model and service tier) on Responses, WebSocket, and remote-compaction calls, matching codex-rs.
-
-## [1.7.11] - 2026-09-04
-
-### Changed
-
-- Anthropic prompt-cache diagnostics now also report partial misses (a request that read back less than the previous prompt), attribute the change to the first differing system block, tool, or previously-sent message, and no longer count appended messages as a history change.
-- The per-block "dropped thinking block after conversation prefix changed" warning is now one debug line per request with a count.
-
-### Fixed
-
-- Fixed Anthropic prompt-cache rewrites after a conversation prefix change: thinking blocks the API drops with `prefix_mismatch_behavior: drop_block` are now kept on the wire unchanged (the API discards them for free), instead of being omitted from the next request, which changed the bytes at that message and rewrote the entire cached conversation behind it.
-- Fixed Anthropic advisor and side requests contaminating the main conversation: a signature rejected under a side request's different system prompt is now remembered per prompt prefix, so the main conversation keeps its preserved thinking and its prompt cache.
 
 ## [18.1.3] - 2026-09-02
 
@@ -2067,5 +2057,17 @@
 - Fixed `isUsageLimitError` missing Antigravity / Cloud Code Assist's `Individual quota reached` 429 phrasing. The `USAGE_LIMIT_PATTERN` only knew `quota.?exceeded` / `limit_reached`, so `auth-retry` and `AuthStorage.markUsageLimitReached` treated the response as a terminal provider error and pinned sessions to the exhausted OAuth account instead of rotating to a sibling credential. The pattern now also matches `quota.?reached`. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
 - Scoped Antigravity usage blocking and ranking by model family (`gemini-*`/`gemma-*` → Google, `claude-*` → Anthropic, `gpt-*`/`openai/*` → OpenAI), so an exhausted Gemini counter no longer makes a healthy Claude/OpenAI Antigravity credential unavailable until reset. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
 - Fixed no-model Antigravity credential lookups (e.g. image-provider discovery) inheriting provider-wide exhaustion: `scopeLimits` now returns no limits without a concrete backend counter, and `blockScope` always returns a counter scope so missing model context can never fall through to AuthStorage's provider-wide block bucket. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
+
+## [1.7.11] - 2026-09-04
+
+### Changed
+
+- Anthropic prompt-cache diagnostics now also report partial misses (a request that read back less than the previous prompt), attribute the change to the first differing system block, tool, or previously-sent message, and no longer count appended messages as a history change.
+- The per-block "dropped thinking block after conversation prefix changed" warning is now one debug line per request with a count.
+
+### Fixed
+
+- Fixed Anthropic prompt-cache rewrites after a conversation prefix change: thinking blocks the API drops with `prefix_mismatch_behavior: drop_block` are now kept on the wire unchanged (the API discards them for free), instead of being omitted from the next request, which changed the bytes at that message and rewrote the entire cached conversation behind it.
+- Fixed Anthropic advisor and side requests contaminating the main conversation: a signature rejected under a side request's different system prompt is now remembered per prompt prefix, so the main conversation keeps its preserved thinking and its prompt cache.
 
 Older entries are archived in [packages/ai/CHANGELOG.md@351a0dcc8796](https://github.com/can1357/oh-my-pi/blob/351a0dcc8796d8d7bd139d3d4b94080e0b968537/packages/ai/CHANGELOG.md).
