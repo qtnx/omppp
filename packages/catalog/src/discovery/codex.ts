@@ -102,6 +102,13 @@ export interface CodexModelDiscoveryOptions {
 export interface CodexModelDiscoveryResult {
 	models: ModelSpec<"openai-codex-responses">[];
 	etag?: string;
+	/**
+	 * Set when the backend rejected the credential itself (401/403, e.g.
+	 * `token_revoked`); `models` is empty. A definitive per-account denial,
+	 * unlike the `null` result for transport/parse failures, so multi-account
+	 * discovery can skip the account instead of aborting.
+	 */
+	rejectedStatus?: 401 | 403;
 }
 
 /**
@@ -131,6 +138,9 @@ export async function fetchCodexModels(options: CodexModelDiscoveryOptions): Pro
 			continue;
 		}
 
+		if (response.status === 401 || response.status === 403) {
+			return { models: [], rejectedStatus: response.status };
+		}
 		if (!response.ok) {
 			continue;
 		}
@@ -341,8 +351,8 @@ function buildNormalizedCodexModel(
 			baseUrl,
 			reasoning: parsed.reasoning,
 			input: parsed.input,
-			// Daybreak standard API pricing is rule-owned (`providers/openai-codex.kdl`
-			// cost-patch) and corrected at build time.
+			// Codex discovery omits pricing; documented subscription credit-equivalent
+			// rates are rule-owned (`providers/openai-codex.kdl`) and applied at build time.
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			remoteCompaction: CODEX_REMOTE_COMPACTION,
 			contextWindow,

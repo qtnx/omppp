@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added GPT-6 Astra to the OpenAI Codex model catalog, including support for configuration updates and requests using the freeform `apply_patch` tool.
+
+### Changed
+
+- Bumped the pinned Codex client version to 0.153.0 so version-gated OpenAI Codex models (e.g. `gpt-6-astra`) appear in discovery and accept requests.
+
+### Fixed
+
+- Fixed Codex model refresh silently keeping a stale catalog when one stored ChatGPT account's token had been revoked; the rejected account is now skipped and remaining accounts are unioned.
+- Fixed GPT-6 Astra showing as free with a 272K-token window in the OpenAI Codex catalog by applying its documented pricing and 1.05M-token context window ([#10852](https://github.com/can1357/oh-my-pi/pull/10852)).
+
 ## [18.1.4] - 2026-09-02
 
 ### Changed
