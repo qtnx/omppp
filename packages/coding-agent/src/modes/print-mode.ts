@@ -6,7 +6,7 @@
  * - `ompx --mode json "prompt"` - JSON event stream
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
 import { isSilentAbort } from "../session/messages";
@@ -223,12 +223,17 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 				process.stderr.write(`${sanitizeText(assistantMsg.errorMessage)}\n`);
 			}
 
-			// Output text content
-			for (const content of assistantMsg.content) {
-				if (content.type === "text") {
-					writeStdoutLine(`${sanitizeText(content.text)}\n`);
-				} else if (printThoughts && content.type === "thinking" && content.thinking.trim().length > 0) {
-					writeStdoutLine(`${sanitizeText(content.thinking)}\n`);
+			// Output text content. The turn may hold several assistant messages
+			// (text, then tool calls, then more text — GPT models do this on every
+			// long task); the TUI shows all of them, so print mode must too, or a
+			// plan written mid-turn is silently dropped. Oldest first, final last.
+			for (const message of turnAssistantMessages(session.state.messages, assistantMsg)) {
+				for (const content of message.content) {
+					if (content.type === "text") {
+						writeStdoutLine(`${sanitizeText(content.text)}\n`);
+					} else if (printThoughts && content.type === "thinking" && content.thinking.trim().length > 0) {
+						writeStdoutLine(`${sanitizeText(content.thinking)}\n`);
+					}
 				}
 			}
 		}
@@ -242,4 +247,17 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	// otherwise discard the buffered tail and truncate the last record.
 	await stdoutTail;
 	await session.dispose({ mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS });
+}
+
+/**
+ * Assistant messages of the turn that produced `last`: everything after the
+ * most recent user message, ending with `last` itself (which may already be
+ * pruned from the active context, e.g. a classifier refusal).
+ */
+function turnAssistantMessages(messages: readonly AgentMessage[], last: AssistantMessage): AssistantMessage[] {
+	const lastUser = messages.findLastIndex(message => message.role === "user");
+	const turn = messages
+		.slice(lastUser + 1)
+		.filter((message): message is AssistantMessage => message.role === "assistant" && message !== last);
+	return [...turn, last];
 }

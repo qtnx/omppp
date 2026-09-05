@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import {
 	PRINT_MODE_ADVISOR_DRAIN_TIMEOUT_MS,
@@ -46,9 +47,9 @@ interface DelayedSession {
 
 function createDelayedSession(
 	finalMessage: AssistantMessage,
-	options: { defaultPlanMode?: boolean } = {},
+	options: { defaultPlanMode?: boolean; priorMessages?: AgentMessage[]; turnMessages?: AssistantMessage[] } = {},
 ): DelayedSession {
-	const messages: AssistantMessage[] = [];
+	const messages: AgentMessage[] = [...(options.priorMessages ?? [])];
 	const { promise: promptStarted, resolve: markPromptStarted } = Promise.withResolvers<void>();
 	const { promise: promptReleased, resolve: resolvePrompt } = Promise.withResolvers<void>();
 	let advisorDrainPrepared = false;
@@ -122,7 +123,7 @@ function createDelayedSession(
 			if (advisorDrainPrepared) throw new Error("headless advisor delivery armed before prompt completion");
 			markPromptStarted();
 			await promptReleased;
-			messages.push(finalMessage);
+			messages.push(...(options.turnMessages ?? []), finalMessage);
 			return true;
 		},
 		prepareForHeadlessAdvisorDrain: () => {
@@ -234,6 +235,21 @@ describe("print mode working indicator", () => {
 
 		expect(stdoutOutput.join("")).toBe("final answer\n");
 		expect(delayed.getTextOutputCommitted()).toBe(true);
+	});
+
+	it("prints every assistant text of the current turn in order, not only the last message", async () => {
+		const priorUser: AgentMessage = { role: "user", content: [{ type: "text", text: "earlier ask" }], timestamp: 1 };
+		const delayed = createDelayedSession(makeAssistantMessage("final summary"), {
+			priorMessages: [makeAssistantMessage("stale answer from the previous turn"), priorUser],
+			turnMessages: [makeAssistantMessage("full plan written before the tool calls")],
+		});
+		const run = runPrintMode(delayed.session, { mode: "text", initialMessage: "plan it" });
+
+		await delayed.promptStarted;
+		delayed.resolvePrompt();
+		await run;
+
+		expect(stdoutOutput.join("")).toBe("full plan written before the tool calls\nfinal summary\n");
 	});
 
 	it("does not write the text-mode working indicator in JSON mode while the prompt is pending", async () => {

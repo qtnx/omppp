@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `ompx -p` now prints every assistant message of the turn in order (what the TUI shows) instead of only the last one; models that write a document mid-turn and then continue no longer lose it in print mode.
+
 ### Added
 
 - OpenAI GPT-5.6/GPT-6 models (e.g. `gpt-6-astra`) now get a model-notes block in the system prompt: deliver documents in the final message, inventory and cite only lines actually read, stop widening noisy searches, read mandatory skills before designing, and keep authorization across turns instead of re-asking.
