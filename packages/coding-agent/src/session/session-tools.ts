@@ -34,7 +34,7 @@ import {
 	type DiscoverableToolSearchIndex,
 	resolveEffectiveToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
-import type { Tool, ToolSession } from "../tools";
+import { isDuoToolName, type Tool, type ToolSession } from "../tools";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { ConsultTool } from "../tools/consult";
@@ -122,6 +122,8 @@ interface SessionToolsOptions {
 	setPendingFullWriteDescription?: (enabled: boolean) => void;
 	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
 	ensureGoalRegistered?: () => Promise<boolean>;
+	/** Registers `duo_handoff`/`duo_escalate` when a duo controller goes live after tool creation. */
+	ensureDuoToolsRegistered?: () => Promise<boolean>;
 	rebuildSystemPrompt?: (
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
@@ -341,6 +343,7 @@ export class SessionTools {
 	 */
 	readonly #deviceOnlyWriteTransportAvailable: boolean;
 	#ensureGoalRegistered: SessionToolsOptions["ensureGoalRegistered"];
+	#ensureDuoToolsRegistered: SessionToolsOptions["ensureDuoToolsRegistered"];
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
@@ -391,6 +394,7 @@ export class SessionTools {
 		this.#setDeviceOnlyWrite = options.setDeviceOnlyWrite;
 		this.#setPendingFullWriteDescription = options.setPendingFullWriteDescription;
 		this.#ensureGoalRegistered = options.ensureGoalRegistered;
+		this.#ensureDuoToolsRegistered = options.ensureDuoToolsRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#systemPromptOverlay = options.systemPromptOverlay;
 		this.#getPinnedRuntimeToolNames = options.getPinnedRuntimeToolNames;
@@ -1283,6 +1287,10 @@ export class SessionTools {
 			const goalRegistration = this.#ensureGoalRegistered?.();
 			if (goalRegistration) await untilAborted(signal, goalRegistration);
 		}
+		if (toolNames.some(name => isDuoToolName(name) && !this.#toolRegistry.has(name))) {
+			const duoRegistration = this.#ensureDuoToolsRegistered?.();
+			if (duoRegistration) await untilAborted(signal, duoRegistration);
+		}
 		const liveToolsByName = new Map(this.#host.agent.state.tools.map(tool => [tool.name, tool]));
 		const selectedTools = toolNames.flatMap(name => {
 			const tool = this.#toolRegistry.get(name) ?? liveToolsByName.get(name);
@@ -1796,6 +1804,10 @@ export class SessionTools {
 				const goalRegistration = this.#ensureGoalRegistered?.();
 				if (goalRegistration) await goalRegistration;
 			}
+			if (toolNames.some(name => isDuoToolName(name) && !this.#toolRegistry.has(name))) {
+				const duoRegistration = this.#ensureDuoToolsRegistered?.();
+				if (duoRegistration) await duoRegistration;
+			}
 			const normalized = this.#normalizeSelectableToolNames(toolNames);
 			// Transport-write eligibility keys off the *current* active set: an ordinary
 			// selection change should not demote `write` unless it is already active.
@@ -1814,6 +1826,10 @@ export class SessionTools {
 			if (toolNames.includes("goal") && !this.#toolRegistry.has("goal")) {
 				const goalRegistration = this.#ensureGoalRegistered?.();
 				if (goalRegistration) await goalRegistration;
+			}
+			if (toolNames.some(name => isDuoToolName(name) && !this.#toolRegistry.has(name))) {
+				const duoRegistration = this.#ensureDuoToolsRegistered?.();
+				if (duoRegistration) await duoRegistration;
 			}
 			const normalized = this.#normalizeSelectableToolNames(toolNames);
 			await this.#applyToolPresentation(

@@ -3,6 +3,11 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 export type DuoPhase = "inactive" | "planning" | "executing" | "takeover" | "suspended" | "degraded";
 export type DuoExecutionScope = "single" | "multi";
 export type DuoMode = "auto" | "on" | "off";
+
+/** Duo handoff/escalate tools exist only while a controller is actually driving a turn. */
+export function isDuoPhaseLive(phase: DuoPhase | undefined): boolean {
+	return phase !== undefined && phase !== "inactive" && phase !== "suspended";
+}
 export type TakeoverPurpose = "recover" | "plan";
 export type DuoSuspendReason = "set-model-failed" | "unresolvable";
 

@@ -122,7 +122,13 @@ import {
 	onModelRolesChanged,
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
-import type { DuoExecutionScope, DuoHandoffResult, DuoStateSnapshot, DuoStatus } from "../duo";
+import {
+	type DuoExecutionScope,
+	type DuoHandoffResult,
+	type DuoStateSnapshot,
+	type DuoStatus,
+	isDuoPhaseLive,
+} from "../duo";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
 import type { PythonResult } from "../eval/py/executor";
 import type { BashPtyOptions, BashResult } from "../exec/bash-executor";
@@ -220,11 +226,13 @@ import {
 import { isLowSignalTitleInput } from "../tiny/text";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
 import type { EffectiveToolDiscoveryMode } from "../tool-discovery/mode";
-import type {
-	ImageAttachmentEntry,
-	ToolCompactionRequest,
-	ToolShakeRequest,
-	ToolWaitingCompactionCheck,
+import {
+	DUO_TOOL_NAMES,
+	type ImageAttachmentEntry,
+	isDuoToolName,
+	type ToolCompactionRequest,
+	type ToolShakeRequest,
+	type ToolWaitingCompactionCheck,
 } from "../tools";
 import { resolveApproval } from "../tools/approval";
 import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../tools/ask";
@@ -1611,6 +1619,7 @@ export class AgentSession {
 			setDeviceOnlyWrite: config.setDeviceOnlyWrite,
 			setPendingFullWriteDescription: config.setPendingFullWriteDescription,
 			ensureGoalRegistered: config.ensureGoalRegistered,
+			ensureDuoToolsRegistered: config.ensureDuoToolsRegistered,
 			rebuildSystemPrompt: config.rebuildSystemPrompt,
 			getPinnedRuntimeToolNames: () => this.#liveDuoToolNames(),
 			getLocalCalendarDate: config.getLocalCalendarDate,
@@ -1937,6 +1946,7 @@ export class AgentSession {
 			},
 			getActiveToolNames: () => this.getActiveToolNames(),
 			setActiveToolsByName: names => this.#tools.setActiveToolsByNamePreservingMCPSelection(names),
+			syncDuoToolSurface: () => this.#syncDuoToolSurface(),
 			refreshSystemPrompt: () => this.refreshBaseSystemPrompt(),
 			emitModeChanged: mode => this.#emitSessionEvent({ type: "mode_changed", mode }),
 			persistModeChange: enabled => {
@@ -5543,11 +5553,10 @@ export class AgentSession {
 	/** Live duo/advisor tools stay active across allowlists and mode transitions. */
 	#liveDuoToolNames(): string[] {
 		const names: string[] = [];
-		const phase = this.#duoOrchestrator?.status?.phase;
-		if (phase !== undefined && phase !== "inactive" && phase !== "suspended") {
-			for (const name of ["duo_handoff", "duo_escalate"]) {
-				if (this.#tools.registry.has(name)) names.push(name);
-			}
+		if (isDuoPhaseLive(this.#duoOrchestrator?.status?.phase)) {
+			// Registration may lag activation; SessionTools registers missing
+			// duo tools on demand before resolving the pinned selection.
+			names.push(...DUO_TOOL_NAMES);
 		}
 		if (
 			(this.#advisors?.isAdvisorActive() || this.#advisors?.isAdvisorEnabled()) &&
@@ -5557,6 +5566,19 @@ export class AgentSession {
 			names.push("consult");
 		}
 		return names;
+	}
+
+	/**
+	 * Duo tools exist on the surface only while a controller is live: add them
+	 * on activation (registering on demand) and drop them on deactivation so a
+	 * duo-off session never advertises a handoff that returns "no controller".
+	 */
+	async #syncDuoToolSurface(): Promise<void> {
+		const live = isDuoPhaseLive(this.#duoOrchestrator?.status?.phase);
+		const active = this.#tools.getActiveToolNames().filter(name => !isDuoToolName(name));
+		const hasDuo = this.#tools.getActiveToolNames().some(name => isDuoToolName(name));
+		if (live === hasDuo) return;
+		await this.#tools.setActiveToolsByNamePreservingMCPSelection(live ? [...active, ...DUO_TOOL_NAMES] : active);
 	}
 
 	/** Names of tools currently exposed at the top level. */

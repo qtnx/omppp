@@ -247,6 +247,27 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		expect(userSession.sessionManager.buildSessionContext().mode).toBe("orchestrator");
 	});
 
+	it("exposes duo tools only while duo is on: absent when off, added on activation, removed on deactivation", async () => {
+		const session = createHarness({ activeToolNames: ["read"] });
+		session.settings.override("duo.mode", "off");
+		expect(session.getActiveToolNames()).not.toContain("duo_handoff");
+		expect(session.getActiveToolNames()).not.toContain("duo_escalate");
+
+		session.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md" });
+		session.settings.clearOverride("duo.mode");
+		await session.setDuoEnabled(true);
+		expect(session.getDuoStatus()?.phase).toBe("planning");
+		expect(session.getActiveToolNames()).toContain("duo_handoff");
+		expect(session.getActiveToolNames()).toContain("duo_escalate");
+		expect(session.getActiveToolNames()).toContain("read");
+
+		await session.setDuoEnabled(false);
+		expect(session.getDuoStatus()?.phase).toBe("inactive");
+		expect(session.getActiveToolNames()).not.toContain("duo_handoff");
+		expect(session.getActiveToolNames()).not.toContain("duo_escalate");
+		expect(session.getActiveToolNames()).toContain("read");
+	});
+
 	it("does not register consult for a plain non-duo non-advisor session", () => {
 		const session = createHarness({
 			duoMode: "off",

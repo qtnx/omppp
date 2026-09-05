@@ -31,7 +31,7 @@ Control tool: `orchestrator_mode` remains active for `status` and `exit`.
   - Every new plan MUST follow `skill://brainstorming` then `skill://writing-plans`; adversarial `super_review` is ONE round by default, skipped when the plan is confident and off the RISK list, and required for L3/RISK/irreversible or contested designs.
   - Cap: 1 round by default, 2 only to confirm blocker fixes, more ONLY on explicit user request. Satisfaction requires covered requirements, coherent contracts/ownership/sequence, executable acceptance, no placeholders, and any active plan-mode/harness approval gate satisfied. An ordinary user-sanctioned implementation request needs no second approval. At the cap, fix the remaining blockers, note residual risk, and lock.
   - Send lean context: current plan, prior blockers, material fixes, constraints/evidence, focused question. Avoid raw history/file dumps unless exact bytes matter.
-  - No blockers + active gate satisfied → LOCK. The NEXT work action MUST dispatch implementation or `duo_handoff`; mandatory skill reads and todo updates MAY precede it in the same turn. No plan/review/scout action may intervene unless a new user requirement invalidates the plan.
+  - No blockers + active gate satisfied → LOCK. The NEXT work action MUST dispatch implementation (or `duo_handoff` when that tool is present); mandatory skill reads and todo updates MAY precede it in the same turn. No plan/review/scout action may intervene unless a new user requirement invalidates the plan.
 </directives>
 
 <report>
