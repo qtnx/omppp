@@ -15,6 +15,7 @@
  * cascade thinking axes drive the ladder/mode/wire facts, and identity-generic
  * fallbacks cover unmatched targets.
  */
+import { CODEX_PINNED_CONTEXT_WINDOW, CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS } from "../discovery/codex";
 import { Effort, THINKING_EFFORTS } from "../effort";
 import { hostMatchesUrl, modelMatchesHost } from "../hosts";
 import type {
@@ -1186,15 +1187,9 @@ function buildResolveTarget<TApi extends Api>(spec: ModelSpec<TApi>, identity: M
 	return target;
 }
 
-const FORK_CODEX_GPT_56_372K_IDS: Record<string, true> = {
-	"gpt-5.6-luna": true,
-	"gpt-5.6-sol": true,
-	"gpt-5.6-terra": true,
-};
-
 function applyForkCatalogOverrides(spec: ModelSpec<Api>, catalog: Record<string, unknown>): Record<string, unknown> {
-	if (spec.api === "openai-codex-responses" && FORK_CODEX_GPT_56_372K_IDS[spec.id] === true) {
-		return { ...catalog, contextWindowFloor: 372_000 };
+	if (spec.api === "openai-codex-responses" && CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS.includes(spec.id)) {
+		return { ...catalog, contextWindowFloor: CODEX_PINNED_CONTEXT_WINDOW };
 	}
 	return catalog;
 }

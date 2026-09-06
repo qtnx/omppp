@@ -2134,6 +2134,16 @@
 - Scoped Antigravity usage blocking and ranking by model family (`gemini-*`/`gemma-*` → Google, `claude-*` → Anthropic, `gpt-*`/`openai/*` → OpenAI), so an exhausted Gemini counter no longer makes a healthy Claude/OpenAI Antigravity credential unavailable until reset. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
 - Fixed no-model Antigravity credential lookups (e.g. image-provider discovery) inheriting provider-wide exhaustion: `scopeLimits` now returns no limits without a concrete backend counter, and `blockScope` always returns a counter scope so missing model context can never fall through to AuthStorage's provider-wide block bucket. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
 
+## [1.7.12] - 2026-09-05
+
+### Added
+
+- Added GPT-6 Astra support for preserving prompt caching when changing the thinking level during a conversation across the OpenAI and OpenAI Codex providers.
+
+### Changed
+
+- OpenAI Codex requests now send the `x-codex-routing-hint` header (model and service tier) on Responses, WebSocket, and remote-compaction calls, matching codex-rs.
+
 ## [1.7.11] - 2026-09-04
 
 ### Changed

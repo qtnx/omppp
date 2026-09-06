@@ -1,23 +1,28 @@
 ---
 name: codebase-recon
 description: MANDATORY for unfamiliar non-trivial areas, but bounded to signals that can change the current slice. Contains a recon menu, stop conditions, codebase buckets, and cleanup-time runbook persistence; recon never becomes a Foundation phase.
+triggers:
+  - unfamiliar code
+  - unknown codebase
+  - new repository
+  - before editing unfamiliar area
 ---
 
 # Codebase Recon
 
 Measured, not exhaustive. Recon only the touched area and only until route, current contract, production owner, and acceptance are known. Then implement; future-phase questions remain future work.
 
-## The 10 signals — with the command to measure each
+## The 10 signals — use the repo's specialized tools
 This is a menu, NOT a checklist. L1 uses 0–1 signals, L2 normally ≤3, L3 normally ≤5; exceed only for ONE named blocker. A second lookup that cannot change the next production action is a stall.
-1. TEST POSTURE — `find <target-dir> -name "*test*" -o -name "*spec*" | head`; CI presence: `ls .github/workflows *.gitlab-ci.yml 2>/dev/null`. → covered / partial / none. None = no net: characterize before restructuring (skill://refactoring-safely).
-2. TYPE SAFETY — `cat tsconfig.json | grep -A5 compilerOptions` (strict?); `cat mypy.ini setup.cfg pyproject.toml 2>/dev/null | grep -i strict`; Go/Rust = strong by default. → strong types let you refactor by "break and follow errors"; weak types mean grep lies — verify at runtime.
-3. GATES — `cat package.json | jq .scripts`; `grep -E '^[a-z-]+:' Makefile`; CI steps. The repo's OWN definition of green — run THOSE, never invent parallel gates.
+1. TEST POSTURE — use `glob` for test/spec files beside the target and inspect CI workflow presence. → covered / partial / none. None = no net: characterize before restructuring (skill://refactoring-safely).
+2. TYPE SAFETY — inspect the language's strictness configuration with `read`/`grep` (strict? warnings-as-errors?). → strong types let you refactor by "break and follow errors"; weak types mean text search lies — verify at runtime.
+3. GATES — inspect manifest scripts and CI workflow steps with `read`; run the repo's OWN commands, never invented parallel gates.
 4. CONVENTIONS — open 2–3 sibling modules of the same kind as your target; note the dominant pattern for naming, error handling, DI, test layout. Fragmented with no dominant → interview trigger.
 5. BLAST RADIUS — LSP `references` on every symbol you'll change. The count is your migration denominator and a lane input.
-6. CHURN — `git log --oneline -n 100 -- <path> | wc -l` and `git log -n 5 --format='%ar %s' -- <path>`. Hot = load-bearing, someone depends on every quirk. Cold + untested = archaeology: characterize first.
-7. DEBT DENSITY — `grep -rn "TODO\|FIXME\|HACK" <target-dir> | wc -l`; commented-out blocks nearby. Context, not license — match conventions, don't extend debt.
+6. CHURN — `git log --oneline -n 100 -- <path>` and `git log -n 5 --format='%ar %s' -- <path>`. Hot = load-bearing, someone depends on every quirk. Cold + untested = archaeology: characterize before touching.
+7. DEBT DENSITY — use `grep` on TODO/FIXME/HACK in the target area; commented-out blocks nearby. Context, not license — match conventions, don't extend debt.
 8. SOURCE OF TRUTH — README, ADRs (`docs/adr`, `docs/decisions`), OpenAPI/proto/schema files. Docs contradict code → interview trigger, not a coin flip.
-9. OBSERVABILITY — `grep -rn "logger\.\|log\.\|metrics\." <target-dir> | head` — what do features here emit? Weighs into risk-lane rollout design.
+9. OBSERVABILITY — use `grep` to locate logger/log/metrics calls in the target area; inspect relevant ranges. Weighs into risk-lane rollout design.
 10. DEPENDENCY FRESHNESS — lockfile version of libs you'll touch vs manifest range; a lib 3 majors behind means online docs describe an API you don't have — read the INSTALLED version (skill://dependency-doctor).
 
 ## Buckets → strategy

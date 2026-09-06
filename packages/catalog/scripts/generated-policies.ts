@@ -9,6 +9,7 @@ import { isCollapsedVariantSpec } from "../src/compat/collapse";
 import { resolveModelPolicy } from "../src/compat/resolve";
 import { compareRevision, parseRevision } from "../src/compat/revision";
 import { classifyModel } from "../src/compat/taxonomy";
+import { CODEX_PINNED_CONTEXT_WINDOW, CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS } from "../src/discovery/codex";
 import { resolveCursorInput } from "../src/discovery/cursor";
 import { bareModelId, getLongestModelLikeIdSegment } from "../src/identity/id";
 import { buildModelReferenceIndex, resolveModelReference } from "../src/identity/reference";
@@ -81,12 +82,6 @@ export function applyAntigravityPricingFallback(models: readonly ModelSpec[]): M
 		return model;
 	});
 }
-
-const CODEX_GPT_5_6_372K_MODEL_IDS: Record<string, true> = {
-	"gpt-5.6-luna": true,
-	"gpt-5.6-sol": true,
-	"gpt-5.6-terra": true,
-};
 
 /**
  * Apply upstream metadata corrections to a mutable array of models, then
@@ -273,8 +268,8 @@ function applyGeneratedModelPolicy(model: ModelSpec<Api>): void {
 		if (limits.context !== undefined) model.contextWindow = limits.context;
 		if (limits.maxTokens !== undefined) model.maxTokens = limits.maxTokens;
 	}
-	if (model.api === "openai-codex-responses" && CODEX_GPT_5_6_372K_MODEL_IDS[model.id]) {
-		model.contextWindow = 372_000;
+	if (model.api === "openai-codex-responses" && CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS.includes(model.id)) {
+		model.contextWindow = CODEX_PINNED_CONTEXT_WINDOW;
 	}
 	if (model.provider === "alibaba-token-plan") {
 		const reference = ALIBABA_TOKEN_PLAN_STATIC_MODELS.find(candidate => candidate.id === model.id);

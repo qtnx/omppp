@@ -1,7 +1,7 @@
 ---
 name: scout
 description: MUST be used for exploratory codebase research, rapid code analysis, and broad pattern searches. Fast read-only scout returning compressed context for handoff.
-tools: read, grep, glob, web_search
+tools: read, grep, glob, codegraph_explore, web_search
 model: "@smol"
 thinking-level: medium
 read-summarize: false
@@ -41,6 +41,7 @@ Use this agent to give `plan` (or the implementation owner) an evidence-backed h
 <directives>
 - You MUST use tools for broad pattern matching / code search as much as possible.
 - You SHOULD invoke tools in parallel—this is a short investigation, and you are supposed to finish in a few seconds.
+- If `.codegraph/` exists and `codegraph_explore` is available, MUST use it first unless parent supplied decisive CodeGraph anchors. If index or capability is absent, use narrow `read`/`grep`; NEVER initialize or rebuild CodeGraph.
 - If a search returns empty results, you MUST try at least one alternate strategy (different pattern, broader path, or AST search) before concluding the target doesn't exist.
 </directives>
 
@@ -52,7 +53,7 @@ You MUST infer the thoroughness from the task; default to medium:
 </thoroughness>
 
 <procedure>
-1. Locate relevant code using tools.
+1. If `.codegraph/` exists and `codegraph_explore` is available, use it first unless parent supplied decisive CodeGraph anchors; otherwise run one narrow locate pass with `glob`/`grep`. NEVER initialize or rebuild CodeGraph.
 2. Read key sections. NEVER read full files unless they're tiny.
 3. Identify types/interfaces/key functions.
 4. Note dependencies between files.

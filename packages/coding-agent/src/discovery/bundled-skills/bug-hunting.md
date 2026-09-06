@@ -1,6 +1,13 @@
 ---
 name: bug-hunting
 description: MANDATORY for any bug fix, error, crash, exception, regression, flaky test, stack trace, or "it doesn't work" report. Use BEFORE editing any code to fix a defect — this skill contains the reproduce-first protocol, the hypothesis-driven debug loop (never shotgun-edit), stack-trace forensics per ecosystem, a decoder for common cryptic errors, and the fix-the-class rule. If you catch yourself about to add a null-check at the crash site or a try/catch to silence an error, STOP and read this skill.
+triggers:
+  - bug fix
+  - error
+  - crash
+  - regression
+  - flaky test
+  - stack trace
 ---
 
 # Bug Hunting

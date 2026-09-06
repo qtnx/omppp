@@ -1,6 +1,11 @@
 ---
 name: writing-tests-that-matter
 description: MANDATORY when authoring tests. Defines criticality-based test budgets, behavior assertions, mutation checks, and the execution rule that implementation tests stay with the production owner instead of forming a RED-only critical-path package.
+triggers:
+  - write tests
+  - regression test
+  - test coverage
+  - mutation check
 ---
 
 # Writing Tests That Matter

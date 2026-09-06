@@ -11,7 +11,7 @@ import type { EvalPreludeDefinition } from "../eval/preludes";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import type { DuoExecutionScope, DuoHandoffResult, DuoStatus } from "../duo";
-import { DuoEscalateTool, DuoHandoffTool } from "../duo";
+import { DuoEscalateTool, DuoHandoffTool, isDuoPhaseLive } from "../duo";
 import { EditTool } from "../edit";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
@@ -659,6 +659,12 @@ export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool |
 
 export type BuiltinToolLoadMode = "essential" | "discoverable";
 
+export const DUO_TOOL_NAMES = ["duo_handoff", "duo_escalate"] as const;
+export type DuoToolName = (typeof DUO_TOOL_NAMES)[number];
+export function isDuoToolName(name: string): name is DuoToolName {
+	return (DUO_TOOL_NAMES as readonly string[]).includes(name);
+}
+
 /** Default essential tool names when tools.essentialOverride is empty. */
 export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
 	"orchestrator_mode",
@@ -949,6 +955,15 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
 		if (isCodexGoalHiddenToolName(name)) return goalEnabled;
+		// Duo tools are advertised only while a duo controller is live. Listing
+		// them unconditionally made models route a locked plan through
+		// `duo_handoff` in sessions with duo off, where the call only returns
+		// "no duo controller is active". Late activation registers them via
+		// `ensureDuoToolsRegistered`.
+		if (isDuoToolName(name)) {
+			if (requestedTools?.includes(name)) return true;
+			return !restrictToolNames && isDuoPhaseLive(session.getDuoStatus?.()?.phase);
+		}
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "codegraph_init" || name === "codegraph_index" || name === "codegraph_explore")
 			return session.settings.get("codegraph.enabled");

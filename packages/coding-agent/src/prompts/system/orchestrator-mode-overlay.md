@@ -1,6 +1,3 @@
+{{baseSystemPrompt}}
+
 {{orchestratorMode}}
-
-{{#if skillsAndRules}}
-
-{{skillsAndRules}}
-{{/if}}

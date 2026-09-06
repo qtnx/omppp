@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/pi-coding-agent",
-	"version": "1.7.12",
+	"version": "1.7.14",
 	"description": "OMPx, an upgrade for OMP: coding agent CLI with read, bash, edit, write tools and session management",
 	"homepage": "https://github.com/qtnx/omppp",
 	"author": "Can Boluk",
@@ -32,25 +32,28 @@
 	},
 	"scripts": {
 		"build": "bun run check:canvas && bun scripts/build-binary.ts",
-		"check": "oxlint . && oxfmt --check --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts' && bun run check:docs && bun run check:canvas && bun run check:types",
+		"check": "biome check . && bun run check:docs && bun run check:canvas && bun run check:types",
+		"check:canvas": "bun scripts/bundle-canvas.ts --check",
+		"check:docs": "bun scripts/generate-docs-index.ts --check",
 		"check:types": "tsgo -p tsconfig.json --noEmit",
-		"lint": "oxlint .",
+		"lint": "biome lint .",
 		"test": "bun ../../scripts/ci-test-ts.ts coding-agent-heavy --full",
-		"fix": "oxlint --fix --fix-suggestions . && bun run fmt",
-		"fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts' && bun run format-prompts",
+		"fix": "biome check --write --unsafe . && bun run format-prompts",
+		"fmt": "biome format --write . && bun run format-prompts",
 		"format-prompts": "bun scripts/format-prompts.ts",
 		"gen:tool-views": "bun --cwd=../collab-web run gen:tool-views",
 		"gen:bundle": "bun scripts/bundle-dist.ts",
+		"gen:canvas": "bun scripts/bundle-canvas.ts",
 		"gen:native": "bun --cwd=../natives run gen:native",
 		"gen:native:reset": "bun --cwd=../natives run gen:native:reset",
 		"prepack": "bun run gen:tool-views && bun run gen:bundle",
-		"bench:guard": "bun scripts/bench-guard.ts",
-		"check:canvas": "bun scripts/bundle-canvas.ts --check",
-		"check:docs": "bun scripts/generate-docs-index.ts --check",
-		"gen:canvas": "bun scripts/bundle-canvas.ts"
+		"bench:guard": "bun scripts/bench-guard.ts"
 	},
 	"dependencies": {
 		"@babel/parser": "catalog:",
+		"@mozilla/readability": "catalog:",
+		"@oh-my-pi/context-gc-plugin": "catalog:",
+		"@oh-my-pi/delegation-reminder-plugin": "catalog:",
 		"@oh-my-pi/omp-stats": "catalog:",
 		"@oh-my-pi/omptype": "catalog:",
 		"@oh-my-pi/pi-agent-core": "catalog:",
@@ -62,6 +65,7 @@
 		"@oh-my-pi/pi-utils": "catalog:",
 		"@oh-my-pi/pi-wire": "catalog:",
 		"@oh-my-pi/snapcompact": "catalog:",
+		"@oh-my-pi/system-context-reminder-plugin": "catalog:",
 		"@opentelemetry/api": "catalog:",
 		"@opentelemetry/api-logs": "catalog:",
 		"@opentelemetry/context-async-hooks": "catalog:",
@@ -73,11 +77,6 @@
 		"@opentelemetry/sdk-metrics": "catalog:",
 		"@opentelemetry/sdk-trace-base": "catalog:",
 		"@opentelemetry/sdk-trace-node": "catalog:",
-		"puppeteer-core": "catalog:",
-		"@mozilla/readability": "catalog:",
-		"@oh-my-pi/context-gc-plugin": "catalog:",
-		"@oh-my-pi/delegation-reminder-plugin": "catalog:",
-		"@oh-my-pi/system-context-reminder-plugin": "catalog:",
 		"@puppeteer/browsers": "catalog:",
 		"@floating-ui/dom": "1.7.6",
 		"@xterm/headless": "catalog:",
@@ -94,6 +93,7 @@
 		"mammoth": "catalog:",
 		"marked": "18.0.5",
 		"mermaid": "11.16.1",
+		"puppeteer-core": "catalog:",
 		"react": "catalog:",
 		"react-dom": "catalog:",
 		"turndown": "catalog:",
@@ -277,6 +277,10 @@
 			"types": "./src/edit/*.ts",
 			"import": "./src/edit/*.ts"
 		},
+		"./edit/modes/*": {
+			"types": "./src/edit/modes/*.ts",
+			"import": "./src/edit/modes/*.ts"
+		},
 		"./exa": {
 			"types": "./src/exa/index.ts",
 			"import": "./src/exa/index.ts"
@@ -388,6 +392,10 @@
 		"./eval/py/*": {
 			"types": "./src/eval/py/*.ts",
 			"import": "./src/eval/py/*.ts"
+		},
+		"./kanban": {
+			"types": "./src/kanban/index.ts",
+			"import": "./src/kanban/index.ts"
 		},
 		"./lsp": {
 			"types": "./src/lsp/index.ts",
@@ -525,6 +533,10 @@
 			"types": "./src/plan-mode/*.ts",
 			"import": "./src/plan-mode/*.ts"
 		},
+		"./orchestrator-mode/*": {
+			"types": "./src/orchestrator-mode/*.ts",
+			"import": "./src/orchestrator-mode/*.ts"
+		},
 		"./prompts/*": "./src/prompts/*.md",
 		"./registry/*": {
 			"types": "./src/registry/*.ts",
@@ -618,18 +630,6 @@
 			"types": "./src/web/search/providers/*.ts",
 			"import": "./src/web/search/providers/*.ts"
 		},
-		"./*.js": "./src/*.ts",
-		"./edit/modes/*": {
-			"types": "./src/edit/modes/*.ts",
-			"import": "./src/edit/modes/*.ts"
-		},
-		"./kanban": {
-			"types": "./src/kanban/index.ts",
-			"import": "./src/kanban/index.ts"
-		},
-		"./orchestrator-mode/*": {
-			"types": "./src/orchestrator-mode/*.ts",
-			"import": "./src/orchestrator-mode/*.ts"
-		}
+		"./*.js": "./src/*.ts"
 	}
 }

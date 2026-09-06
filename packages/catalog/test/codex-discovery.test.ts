@@ -14,24 +14,6 @@ import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import { resolveProviderModelReference } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 
 describe("Codex model discovery", () => {
-	it("normalizes optional maximum context windows separately from the default window", async () => {
-		const result = await fetchCodexModels({
-			accessToken: "test-token",
-			fetchFn: async () =>
-				Response.json({
-					models: [
-						{ slug: "gpt-6-astra", context_window: 272_000, max_context_window: 872_000 },
-						{ slug: "gpt-5.5", context_window: 272_000 },
-						{ slug: "invalid-maximum", context_window: 64_000, max_context_window: -1 },
-					],
-				}),
-		});
-		const astra = result?.models.find(model => model.id === "gpt-6-astra");
-		expect(astra).toMatchObject({ contextWindow: 272_000, maxContextWindow: 872_000 });
-		expect(result?.models.find(model => model.id === "gpt-5.5")).not.toHaveProperty("maxContextWindow");
-		expect(result?.models.find(model => model.id === "invalid-maximum")).not.toHaveProperty("maxContextWindow");
-	});
-
 	it("marks discovered models for provider-native V2 compaction", async () => {
 		let capturedHeaders: Headers | undefined;
 		const fetchFn: typeof fetch = Object.assign(
@@ -248,22 +230,21 @@ describe("Codex model discovery", () => {
 			// `/models` omits prices, so discovery stays neutral and the KDL
 			// catalog rule remains the single authority for billed metadata.
 			expect(model.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-			expect(model.contextWindow).toBe(272_000);
+			// Both routes carry the fork's pinned window, not the advertised 272K.
+			expect(model.contextWindow).toBe(372_000);
 			const builtModel = buildModel(model);
-			// Codex credits keep this base rate and do not charge for cache
-			// writes; unlike the API card, there is no long-context tier. The
-			// default window stays at the deployment-advertised 272K; the
-			// 1.05M documented window is the `/extended-context` maximum.
+			// Codex credits keep this base rate above 272K and do not charge for
+			// cache writes; unlike the API card, there is no long-context tier.
 			expect(builtModel.cost).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 0 });
 			expect(builtModel.serviceTierCost).toEqual({ flex: 0.5, priority: 2.5 });
 			expect(builtModel).toMatchObject({
-				contextWindow: 272_000,
+				contextWindow: 372_000,
 				maxTokens: 128_000,
 			});
 		}
 	});
 
-	it("floors stale reported windows for GPT-5.6 luna/sol/terra and honors reports above the floor", async () => {
+	it("pins GPT-5.6 luna/sol/terra and GPT-6 astra to 372K regardless of the advertised window", async () => {
 		const fetchFn: typeof fetch = Object.assign(
 			async () =>
 				new Response(
@@ -288,6 +269,15 @@ describe("Codex model discovery", () => {
 								supported_in_api: true,
 							},
 							{
+								slug: "gpt-6-astra",
+								display_name: "GPT-6 Astra",
+								context_window: 1_050_000,
+								default_reasoning_level: "low",
+								supported_reasoning_levels: ["low", "medium", "high", "xhigh"],
+								input_modalities: ["text", "image"],
+								supported_in_api: true,
+							},
+							{
 								slug: "gpt-5.5",
 								display_name: "GPT-5.5",
 								context_window: 272_000,
@@ -308,11 +298,13 @@ describe("Codex model discovery", () => {
 			fetchFn,
 		});
 
-		// Explicit provider reports are honored, even when below the 372K fallback.
+		// The fork pin wins over both a smaller (272K) and a larger (1M) advertised window.
 		const sol = result?.models.find(model => model.id === "gpt-5.6-sol");
-		expect(sol?.contextWindow).toBe(272_000);
+		expect(sol?.contextWindow).toBe(372_000);
 		const terra = result?.models.find(model => model.id === "gpt-5.6-terra");
-		expect(terra?.contextWindow).toBe(1_050_000);
+		expect(terra?.contextWindow).toBe(372_000);
+		const astra = result?.models.find(model => model.id === "gpt-6-astra");
+		expect(astra?.contextWindow).toBe(372_000);
 		// Non-floored SKUs keep the actively reported value.
 		const legacy = result?.models.find(model => model.id === "gpt-5.5");
 		expect(legacy?.contextWindow).toBe(272_000);
@@ -732,8 +724,8 @@ describe("Codex model discovery", () => {
 		expect(plainModel?.provider).toBe("openai-codex");
 		// Both rows are the same model: the worker variant shares the plain
 		// SKU's explicit context metadata.
-		expect(workerModel?.contextWindow).toBe(272_000);
-		expect(plainModel?.contextWindow).toBe(272_000);
+		expect(workerModel?.contextWindow).toBe(372_000);
+		expect(plainModel?.contextWindow).toBe(372_000);
 	});
 
 	it("keeps the plain route through authoritative discovery that advertises only the `-wm` slug", async () => {

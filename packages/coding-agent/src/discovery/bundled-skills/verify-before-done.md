@@ -1,6 +1,11 @@
 ---
 name: verify-before-done
 description: Use when about to claim a coding task is done, fixed, implemented, passing, ready, or complete; when only tests/build/smoke are known; or when missing runtime, services, credentials, browser/device, or run instructions may tempt a lower claim.
+triggers:
+  - completion claim
+  - done claim
+  - runtime evidence
+  - verification
 ---
 
 # Verify Before Done

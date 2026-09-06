@@ -273,6 +273,7 @@ import {
 	createTools,
 	createVibeTools,
 	type DeferredDiagnosticsEntry,
+	DUO_TOOL_NAMES,
 	defaultLoadModeForToolName,
 	discoverStartupLspServers,
 	EditTool,
@@ -3493,6 +3494,28 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return goalRegistration;
 		};
 
+		let duoRegistration: Promise<boolean> | undefined;
+		/** Duo tools are created only while a controller is live; register them when duo activates mid-session. */
+		const ensureDuoToolsRegistered = (): Promise<boolean> => {
+			if (DUO_TOOL_NAMES.every(name => toolRegistry.has(name))) return Promise.resolve(true);
+			if (restrictToolNames) return Promise.resolve(false);
+			duoRegistration ??= (async () => {
+				for (const name of DUO_TOOL_NAMES) {
+					if (toolRegistry.has(name)) continue;
+					const tool = await logger.time(`createTools:${name}:session`, BUILTIN_TOOLS[name], toolSession);
+					if (!tool) continue;
+					const native = wrapToolWithMetaNotice(tool);
+					toolRegistry.set(tool.name, new ExtensionToolWrapper(native, extensionRunner) as Tool);
+					builtInRegistryToolNames.add(tool.name);
+					nativeToolsByName.set(tool.name, native);
+				}
+				return DUO_TOOL_NAMES.every(name => toolRegistry.has(name));
+			})().finally(() => {
+				duoRegistration = undefined;
+			});
+			return duoRegistration;
+		};
+
 		// Existing staged/device paths need write registered before active-set assembly.
 		// Deferred MCP also registers it now, but refresh activates it only after a server connects.
 		// xd:// mounts ride the session's write grant: createTools either saw a
@@ -4698,6 +4721,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				toolSession.pendingFullWriteDescription = enabled ? true : undefined;
 			},
 			ensureGoalRegistered,
+			ensureDuoToolsRegistered,
 			getMcpServerInstructions: mcpManager
 				? () => {
 						const raw = mcpManager.getServerInstructions();

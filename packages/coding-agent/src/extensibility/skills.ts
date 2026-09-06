@@ -15,6 +15,28 @@ import autoloadTemplate from "../prompts/skills/autoload.md" with { type: "text"
 import userInvocationTemplate from "../prompts/skills/user-invocation.md" with { type: "text" };
 import type { SkillPromptDetails } from "../session/messages";
 import { expandTilde } from "../tools/path-utils";
+
+const MAX_SKILL_METADATA_ENTRIES = 8;
+
+export function normalizeSkillMetadata(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const values = value
+		.filter((entry): entry is string => typeof entry === "string")
+		.map(entry => entry.trim())
+		.filter(entry => entry.length > 0)
+		.slice(0, MAX_SKILL_METADATA_ENTRIES);
+	return values.length > 0 ? values : undefined;
+}
+
+function skillMetadata(frontmatter: CapabilitySkill["frontmatter"]): Pick<Skill, "globs" | "triggers"> {
+	const globs = normalizeSkillMetadata(frontmatter?.globs);
+	const triggers = normalizeSkillMetadata(frontmatter?.triggers);
+	return {
+		...(globs !== undefined && { globs }),
+		...(triggers !== undefined && { triggers }),
+	};
+}
+
 export interface Skill {
 	name: string;
 	description: string;
@@ -22,6 +44,8 @@ export interface Skill {
 	baseDir: string;
 	source: string;
 	content?: string;
+	globs?: string[];
+	triggers?: string[];
 	/**
 	 * When `true`, the skill is loaded and reachable via `skill://<name>` and
 	 * (when enabled) `/skill:<name>`, but is excluded from the rendered system
@@ -110,6 +134,7 @@ export async function loadSkillsFromDir(options: LoadSkillsFromDirOptions): Prom
 			filePath: capSkill.path,
 			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 			source: options.source,
+			...skillMetadata(capSkill.frontmatter),
 			...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 			_source: capSkill._source,
@@ -265,6 +290,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 				filePath: capSkill.path,
 				baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 				source: `${capSkill._source.provider}:${capSkill.level}`,
+				...skillMetadata(capSkill.frontmatter),
 				...(capSkill._source.level === "native" ? { content: capSkill.content } : {}),
 				...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 				hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
@@ -304,6 +330,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 					filePath: capSkill.path,
 					baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 					source: "custom:user",
+					...skillMetadata(capSkill.frontmatter),
 					...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 					hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 					_source: { ...capSkill._source, providerName: "Custom" },
@@ -373,6 +400,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 			source: `${capSkill._source.provider}:${capSkill.level}`,
 			content: capSkill.content,
+			...skillMetadata(capSkill.frontmatter),
 			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 			_source: capSkill._source,
 		});
@@ -431,6 +459,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 			filePath: capSkill.path,
 			baseDir: capSkill.path.replace(/[\\/]SKILL\.md$/, ""),
 			source: `${capSkill._source.provider}:${capSkill.level}`,
+			...skillMetadata(capSkill.frontmatter),
 			...(capSkill.containRoot !== undefined && { containRoot: capSkill.containRoot }),
 			hide: capSkill.frontmatter?.hide === true || capSkill.frontmatter?.disableModelInvocation === true,
 			_source: capSkill._source,

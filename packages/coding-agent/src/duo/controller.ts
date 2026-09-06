@@ -52,6 +52,8 @@ export interface DuoControllerHost {
 	planModeActive(): boolean;
 	/** Continue after a duo-owned model switch that landed outside the normal user prompt flow. */
 	requestAgentContinue?(): void;
+	/** Add or remove `duo_handoff`/`duo_escalate` from the active tool surface after a phase change. */
+	syncToolSurface?(): Promise<void> | void;
 }
 
 export type DuoHandoffResult = "ok" | "no-controller" | "wrong-phase" | "already-executor" | "switch-failed";
@@ -133,6 +135,7 @@ export class DuoController {
 		const deactivated = previousPhase !== "inactive" && nextPhase === "inactive";
 		const preDuoThinking = activated ? this.#host.configuredThinkingLevel() : previousPreDuoThinking;
 		this.#refreshSnapshotMetadata(preDuoThinking);
+		if (activated || deactivated) await this.#host.syncToolSurface?.();
 
 		if (activated && nextPhase === "planning") {
 			this.#host.injectBrief(prompt.render(plannerNotice), "nextTurn");
@@ -565,6 +568,7 @@ export class DuoController {
 			this.#host.setThinkingLevel(restoredThinking);
 		}
 		await this.#host.setOrchestratorEnabled(false);
+		await this.#host.syncToolSurface?.();
 		this.#refreshSnapshotMetadata(snapshot.preDuoThinking);
 		this.#persistSnapshot();
 	}

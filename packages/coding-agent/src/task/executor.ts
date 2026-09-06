@@ -123,6 +123,7 @@ const MINIMAL_EXTENSION_RUNTIME_TOOL_NAMES = new Set([
 	"github",
 	"grep",
 	"glob",
+	"codegraph_explore",
 	"find",
 	"search",
 	"lsp",

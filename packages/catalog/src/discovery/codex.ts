@@ -8,13 +8,25 @@ const DEFAULT_MODEL_LIST_PATHS = ["/codex/models", "/models"] as const;
 const DEFAULT_CONTEXT_WINDOW = 272_000;
 const DEFAULT_MAX_TOKENS = 128_000;
 /**
- * GPT-5.6 luna/sol/terra hard context capacity. Codex discovery omits
- * `context_window` for these SKUs, so the generic {@link DEFAULT_CONTEXT_WINDOW}
- * (272000) would understate the real window — OpenAI's Codex model registry
- * declares context_window = max_context_window = 372000 (#5705). Used as the
- * fallback only when upstream reports no value.
+ * Usable Codex context window for the pinned first-party SKUs. The Codex model
+ * registry has advertised 272K, 372K, and 1M for these over time (#5705) while
+ * the backend accepts 372K, so the fork pins the bundled catalog and runtime
+ * discovery to this value regardless of what upstream reports. A `models.yml`
+ * `modelOverrides.<id>.contextWindow` entry still wins at the registry layer.
  */
-const GPT_5_6_CONTEXT_WINDOW = 372_000;
+export const CODEX_PINNED_CONTEXT_WINDOW = 372_000;
+/** Codex SKUs whose context window is pinned to {@link CODEX_PINNED_CONTEXT_WINDOW}. */
+export const CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS: readonly string[] = [
+	"gpt-5.6-luna",
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-6-astra",
+];
+
+/** Whether a model is a Codex-transport SKU with a fork-pinned context window. */
+export function isCodexPinnedContextWindowModel(model: { api: string; id: string }): boolean {
+	return model.api === "openai-codex-responses" && CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS.includes(model.id);
+}
 /**
  * Codex advertises worker-mode SKUs under a `-wm` suffix (`gpt-5.6-luna-wm`).
  *
@@ -335,14 +347,13 @@ function buildNormalizedCodexModel(
 	canonicalSlug: string,
 	baseUrl: string,
 ): NormalizedCodexModel {
-	// Codex discovery historically omitted `context_window` for these SKUs
-	// (#5705). Keep the fork's 372K floor for GPT-5.6 first-party routes and
-	// Daybreak Blue; explicit provider values remain authoritative.
-	const pinned372k = ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-daybreak-blue-latest"].includes(
-		canonicalSlug,
-	);
-	const fallbackContextWindow = pinned372k ? GPT_5_6_CONTEXT_WINDOW : DEFAULT_CONTEXT_WINDOW;
-	const contextWindow = parsed.contextWindow ?? fallbackContextWindow;
+	// Pinned first-party SKUs ignore the advertised window (see
+	// CODEX_PINNED_CONTEXT_WINDOW); Daybreak Blue keeps 372K only as a fallback
+	// when discovery omits the value (#5705).
+	const contextWindow = CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS.includes(canonicalSlug)
+		? CODEX_PINNED_CONTEXT_WINDOW
+		: (parsed.contextWindow ??
+			(canonicalSlug === "gpt-daybreak-blue-latest" ? CODEX_PINNED_CONTEXT_WINDOW : DEFAULT_CONTEXT_WINDOW));
 	const maxTokens = Math.min(DEFAULT_MAX_TOKENS, contextWindow);
 	return {
 		priority: parsed.priority,
