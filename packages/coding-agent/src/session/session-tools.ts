@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import * as path from "node:path";
 import type { Agent, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
+import { resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
 import { isRecord, logger, prompt, stringProperty, untilAborted } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
@@ -25,7 +26,6 @@ import orchestratorModeOverlayTemplate from "../prompts/system/orchestrator-mode
 import toolRosterNoticePrompt from "../prompts/system/tool-roster-notice.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import type { SecretVaultLike } from "../secrets/vault";
-import { modelPromptProfile, usesCodexTaskPrompt } from "../task/prompt-policy";
 import { countToolsForAutoDiscovery, type EffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import {
 	buildDiscoverableToolSearchIndex,
@@ -34,9 +34,8 @@ import {
 	type DiscoverableToolSearchIndex,
 	resolveEffectiveToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
-import { isDuoToolName, type Tool, type ToolSession } from "../tools";
+import type { Tool, ToolSession } from "../tools";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
-import { computerExposureMode } from "../tools/computer/exposure";
 import { ConsultTool } from "../tools/consult";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { isFilesystemSourcePath } from "../tools/path-utils";
@@ -51,7 +50,6 @@ import {
 	xdevEntries,
 } from "../tools/xdev";
 import { type EditMode, resolveEditMode } from "../utils/edit-mode";
-import { type InspectImageMode, isInspectImageToolActive } from "../utils/inspect-image-mode";
 import { formatLocalCalendarDate } from "../utils/local-date";
 import {
 	extractPermissionLocations,
@@ -96,8 +94,6 @@ export interface SessionToolsHost {
 	localProtocolOptions(): LocalProtocolOptions;
 	secretVault: SecretVaultLike | undefined;
 	/** Session-scoped `/vision` override; undefined means "follow the persisted setting". */
-	getInspectImageModeOverride(): InspectImageMode | undefined;
-	setInspectImageModeOverride(mode: InspectImageMode | undefined): void;
 	/** Publishes the current Codex Code Mode tool exposure snapshot for turn metadata; undefined clears it. */
 	setCodeModeNamespacesInfo?(info: unknown): void;
 }
@@ -107,11 +103,8 @@ interface SessionToolsOptions {
 	toolRegistry?: Map<string, AgentTool>;
 	toolSession?: ToolSession;
 	createVibeTools?: () => AgentTool[];
-	createComputerTool?: () => Promise<AgentTool | null>;
 	/** Creates the private `think` scratchpad tool for runtime setting changes. */
 	createThinkTool?: () => Promise<AgentTool | null>;
-	/** Creates the built-in `inspect_image` tool for session-scoped runtime enablement (see {@link SessionTools.setInspectImageMode}). */
-	createInspectImageTool?: () => Promise<AgentTool | null>;
 	builtInToolNames?: Iterable<string>;
 	presentationPinnedToolNames?: ReadonlySet<string>;
 	/** MCP tool names whose current registry entries came from the manager snapshot. */
@@ -122,8 +115,6 @@ interface SessionToolsOptions {
 	setPendingFullWriteDescription?: (enabled: boolean) => void;
 	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
 	ensureGoalRegistered?: () => Promise<boolean>;
-	/** Registers `duo_handoff`/`duo_escalate` when a duo controller goes live after tool creation. */
-	ensureDuoToolsRegistered?: () => Promise<boolean>;
 	rebuildSystemPrompt?: (
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
@@ -166,9 +157,11 @@ function extractSkillsAndRulesSection(systemPromptBlock: string): string | undef
 }
 
 export function buildSystemPromptWithOrchestratorOverlay(baseSystemPrompt: string[]): string[] {
+	const skillsAndRules = extractSkillsAndRulesSection(baseSystemPrompt[0] ?? "");
+	if (!skillsAndRules) return [orchestratorModeActivePrompt, ...baseSystemPrompt.slice(1)];
 	const orchestratorPrompt = prompt.render(orchestratorModeOverlayTemplate, {
-		baseSystemPrompt: baseSystemPrompt[0] ?? "",
 		orchestratorMode: orchestratorModeActivePrompt,
+		skillsAndRules,
 	});
 	return [orchestratorPrompt, ...baseSystemPrompt.slice(1)];
 }
@@ -274,9 +267,7 @@ export class SessionTools {
 	#toolRegistry: Map<string, AgentTool>;
 	#createVibeTools: (() => AgentTool[]) | undefined;
 	#toolSession: ToolSession | undefined;
-	#createComputerTool: SessionToolsOptions["createComputerTool"];
 	#createThinkTool: SessionToolsOptions["createThinkTool"];
-	#createInspectImageTool: SessionToolsOptions["createInspectImageTool"];
 	#installedVibeToolNames = new Set<string>();
 	#builtInToolNames: Set<string>;
 	#rpcHostToolNames = new Set<string>();
@@ -341,7 +332,6 @@ export class SessionTools {
 	 */
 	readonly #deviceOnlyWriteTransportAvailable: boolean;
 	#ensureGoalRegistered: SessionToolsOptions["ensureGoalRegistered"];
-	#ensureDuoToolsRegistered: SessionToolsOptions["ensureDuoToolsRegistered"];
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
@@ -370,9 +360,7 @@ export class SessionTools {
 		this.#toolSession = options.toolSession;
 		if (this.#toolSession) this.#toolSession.secretVault = host.secretVault;
 		this.#createVibeTools = options.createVibeTools;
-		this.#createComputerTool = options.createComputerTool;
 		this.#createThinkTool = options.createThinkTool;
-		this.#createInspectImageTool = options.createInspectImageTool;
 		this.#builtInToolNames = new Set(options.builtInToolNames ?? []);
 		this.#mcpManagerToolNames = new Set(options.mcpManagerToolNames ?? []);
 		if (options.mcpManagerToolNames === undefined) {
@@ -392,7 +380,6 @@ export class SessionTools {
 		this.#setDeviceOnlyWrite = options.setDeviceOnlyWrite;
 		this.#setPendingFullWriteDescription = options.setPendingFullWriteDescription;
 		this.#ensureGoalRegistered = options.ensureGoalRegistered;
-		this.#ensureDuoToolsRegistered = options.ensureDuoToolsRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#systemPromptOverlay = options.systemPromptOverlay;
 		this.#getPinnedRuntimeToolNames = options.getPinnedRuntimeToolNames;
@@ -438,8 +425,8 @@ export class SessionTools {
 		);
 		// Seed from the construction slate (top-level tools plus xd:// mounts).
 		// Left empty, getEnabledToolNames() falls back to live agent.state.tools,
-		// so an early reconcile (think/inspect_image/Code Mode after the startup
-		// model resolution) landing while the live set is transiently narrow
+		// so an early reconcile (think/Code Mode after the startup model
+		// resolution) landing while the live set is transiently narrow
 		// commits that narrow set as the sticky slate — the session keeps almost
 		// no tools and the prompt rebuild without `read` empties the skill list.
 		for (const tool of host.agent.state.tools) this.#enabledToolNames.add(tool.name);
@@ -926,22 +913,13 @@ export class SessionTools {
 	}
 	#currentPromptModelKey(): string | undefined {
 		const activeModel = this.#host.model();
-		const model = activeModel ? formatModelString(activeModel) : undefined;
-		if (!model || this.#host.settings.get("includeModelInPrompt")) return model;
-		const taskPolicy = usesCodexTaskPrompt(model) ? "gpt-5.6" : "default";
-		return `task-policy:${taskPolicy}|model-notes:${modelPromptProfile(model) ?? "default"}`;
+		if (!activeModel) return undefined;
+		const model = formatModelString(activeModel);
+		if (this.#host.settings.get("includeModelInPrompt")) return model;
+		return `delegation-bias:${resolveDelegationBias(activeModel)}`;
 	}
 
 	/** Reconciles the model-dependent discovery surface after a model change. */
-	#logComputerState(message: string, enabled: boolean): void {
-		const model = this.#host.model();
-		logger.debug(message, {
-			enabled,
-			active: this.getEnabledToolNames().includes("computer"),
-			model: model ? formatModelString(model) : undefined,
-			exposure: computerExposureMode(model),
-		});
-	}
 
 	/** Rebuilds model-dependent tool prompts after a model change. */
 	async syncAfterModelChange(previousEditMode: EditMode): Promise<void> {
@@ -961,25 +939,6 @@ export class SessionTools {
 		if (editModeChanged || modelChanged) {
 			await this.refreshBaseSystemPrompt();
 		}
-		const computerExpected = this.#host.settings.get("computer.enabled");
-		const computerActive = this.getEnabledToolNames().includes("computer");
-		if (computerExpected && !computerActive) {
-			const model = this.#host.model();
-			const modelName = model ? formatModelString(model) : "the current model";
-
-			logger.warn("Enabled computer tool missing after model change", { model: modelName });
-			this.#host.emitNotice(
-				"warning",
-				`Computer use remains enabled, but the computer tool is unavailable to ${modelName}.`,
-				"computer",
-			);
-		} else if (computerExpected) {
-			this.#logComputerState("Computer tool retained after model change", true);
-		}
-
-		// inspect_image auto mode keys off model image capability, so a model
-		// switch can flip the tool either way.
-		await this.reconcileInspectImageAfterModelChange();
 	}
 
 	#defaultMCPToolNames(mcpTools: Iterable<{ name: string; mcpServerName?: string }>): string[] {
@@ -1284,10 +1243,6 @@ export class SessionTools {
 		if (toolNames.includes("goal") && !this.#toolRegistry.has("goal")) {
 			const goalRegistration = this.#ensureGoalRegistered?.();
 			if (goalRegistration) await untilAborted(signal, goalRegistration);
-		}
-		if (toolNames.some(name => isDuoToolName(name) && !this.#toolRegistry.has(name))) {
-			const duoRegistration = this.#ensureDuoToolsRegistered?.();
-			if (duoRegistration) await untilAborted(signal, duoRegistration);
 		}
 		const liveToolsByName = new Map(this.#host.agent.state.tools.map(tool => [tool.name, tool]));
 		const selectedTools = toolNames.flatMap(name => {
@@ -1802,10 +1757,6 @@ export class SessionTools {
 				const goalRegistration = this.#ensureGoalRegistered?.();
 				if (goalRegistration) await goalRegistration;
 			}
-			if (toolNames.some(name => isDuoToolName(name) && !this.#toolRegistry.has(name))) {
-				const duoRegistration = this.#ensureDuoToolsRegistered?.();
-				if (duoRegistration) await duoRegistration;
-			}
 			const normalized = this.#normalizeSelectableToolNames(toolNames);
 			// Transport-write eligibility keys off the *current* active set: an ordinary
 			// selection change should not demote `write` unless it is already active.
@@ -1824,10 +1775,6 @@ export class SessionTools {
 			if (toolNames.includes("goal") && !this.#toolRegistry.has("goal")) {
 				const goalRegistration = this.#ensureGoalRegistered?.();
 				if (goalRegistration) await goalRegistration;
-			}
-			if (toolNames.some(name => isDuoToolName(name) && !this.#toolRegistry.has(name))) {
-				const duoRegistration = this.#ensureDuoToolsRegistered?.();
-				if (duoRegistration) await duoRegistration;
 			}
 			const normalized = this.#normalizeSelectableToolNames(toolNames);
 			await this.#applyToolPresentation(
@@ -1937,6 +1884,18 @@ export class SessionTools {
 		this.#discoverableToolSearchIndex = undefined;
 	}
 
+	/** Restores a non-MCP presentation snapshot while retaining the current MCP selection. */
+	restoreNonMCPToolPresentation(nonMCPToolNames: string[], nonMCPMountedToolNames: string[]): Promise<void> {
+		return this.runToolRegistryMutation(async () => {
+			const currentMCPToolNames = this.getSelectedMCPToolNames();
+			const currentMountedMCPToolNames = this.getMountedXdevToolNames().filter(isMCPToolName);
+			await this.setActiveToolPresentation(
+				[...nonMCPToolNames, ...currentMCPToolNames],
+				[...nonMCPMountedToolNames, ...currentMountedMCPToolNames],
+			);
+		});
+	}
+
 	/**
 	 * Shared body for {@link setActiveToolsByName} and {@link setActiveToolPresentation}:
 	 * pins non-mounted names as the runtime selection (holding `write` back when it is
@@ -1995,51 +1954,6 @@ export class SessionTools {
 	}
 
 	/**
-	 * Session-scoped enable/disable for the settings-gated `computer` tool.
-	 *
-	 * `createTools` derives the built-in slate once at session start, so a runtime
-	 * `computer.enabled` override alone never changes the active tools. Enabling
-	 * builds the tool through the config factory on first use (later toggles reuse
-	 * the registry entry, so only one desktop controller is ever registered) and
-	 * activates it; disabling drops it from the active set while keeping the
-	 * registry entry. Takes effect before the next model call.
-	 *
-	 * @returns false when enabling was requested but this session cannot build the
-	 * tool (e.g. restricted child sessions have no factory).
-	 */
-	setComputerToolEnabled(enabled: boolean): Promise<boolean> {
-		return this.runToolRegistryMutation(async () => {
-			const logState = (): void => this.#logComputerState("Computer tool state changed", enabled);
-			const active = this.getEnabledToolNames();
-			if (!enabled) {
-				if (active.includes("computer")) {
-					await this.#applyActiveToolsByName(active.filter(name => name !== "computer"));
-				}
-				logState();
-				return true;
-			}
-			if (!this.#toolRegistry.has("computer")) {
-				const tool = await this.#createComputerTool?.();
-				if (tool?.name !== "computer") {
-					const model = this.#host.model();
-					logger.warn("Computer tool could not be created", {
-						model: model ? formatModelString(model) : undefined,
-					});
-					return false;
-				}
-				const wrapped = this.#wrapRuntimeTool(tool);
-				this.#toolRegistry.set(wrapped.name, wrapped);
-				this.#builtInToolNames.add(wrapped.name);
-			}
-			if (!active.includes("computer")) {
-				await this.#applyActiveToolsByName([...active, "computer"]);
-			}
-			logState();
-			return true;
-		});
-	}
-
-	/**
 	 * Session-scoped enable/disable for the private `think` scratchpad tool.
 	 *
 	 * Enabling constructs the tool once and refreshes the model's tool contract;
@@ -2078,114 +1992,6 @@ export class SessionTools {
 				await this.#applyActiveToolsByName([...active, "think"]);
 			}
 			return true;
-		});
-	}
-
-	/** Current effective inspect_image state for `/vision status`. */
-	inspectImageState(): { mode: InspectImageMode; active: boolean; model: string | undefined } {
-		const model = this.#host.model();
-		return {
-			mode: this.#host.getInspectImageModeOverride() ?? this.#host.settings.get("inspect_image.mode"),
-			active: this.getEnabledToolNames().includes("inspect_image"),
-			model: model ? formatModelString(model) : undefined,
-		};
-	}
-
-	/**
-	 * Brings the active tool set in line with the effective inspect_image state
-	 * (mode setting, `/vision` override, active-model image capability).
-	 * Mirrors {@link setComputerToolEnabled}: enabling builds the tool through
-	 * the config factory on first use and reuses the registry entry afterwards.
-	 * Idempotent — safe to call from every model/settings change path.
-	 *
-	 * @returns false when the tool should be active but this session cannot
-	 *   build it (e.g. restricted child sessions have no factory).
-	 */
-	reconcileInspectImageTool(): Promise<boolean> {
-		return this.runToolRegistryMutation(async () => {
-			const expected = isInspectImageToolActive({
-				settings: this.#host.settings,
-				getActiveModel: () => this.#host.model(),
-				getInspectImageModeOverride: () => this.#host.getInspectImageModeOverride(),
-			});
-			// Keep the read tool's advertised description in sync BEFORE any prompt
-			// rebuild below, passing the post-change availability so the prompt never
-			// lags a flip in either direction. Per-read lazy sync is the backstop.
-			const syncReadDescription = (available: boolean): void => {
-				const readTool = this.#toolRegistry.get("read") as
-					| { syncInspectImageState?: (available?: boolean) => boolean }
-					| undefined;
-				readTool?.syncInspectImageState?.(available);
-			};
-			const active = this.getEnabledToolNames();
-			const isActive = active.includes("inspect_image");
-			if (expected === isActive) {
-				syncReadDescription(isActive);
-				return true;
-			}
-			if (!expected) {
-				syncReadDescription(false);
-				await this.#applyActiveToolsByName(active.filter(name => name !== "inspect_image"));
-				return true;
-			}
-			if (!this.#toolRegistry.has("inspect_image")) {
-				const tool = await this.#createInspectImageTool?.();
-				if (tool?.name !== "inspect_image") {
-					logger.warn("inspect_image tool could not be created", {
-						model: this.#host.model()?.id,
-					});
-					syncReadDescription(false);
-					return false;
-				}
-				const wrapped = this.#wrapRuntimeTool(tool);
-				this.#toolRegistry.set(wrapped.name, wrapped);
-				this.#builtInToolNames.add(wrapped.name);
-			}
-			syncReadDescription(true);
-			await this.#applyActiveToolsByName([...active, "inspect_image"]);
-			return true;
-		});
-	}
-
-	/**
-	 * Reconciles inspect_image after a model change and surfaces a notice when
-	 * the visible tool set actually flipped. Called from every model-change
-	 * path — including retry-fallback switches that bypass
-	 * {@link syncAfterModelChange}.
-	 */
-	reconcileInspectImageAfterModelChange(): Promise<void> {
-		return this.runToolRegistryMutation(async () => {
-			const before = this.getEnabledToolNames().includes("inspect_image");
-			const reconciled = await this.reconcileInspectImageTool();
-			const after = this.getEnabledToolNames().includes("inspect_image");
-			if (!reconciled || before === after) return;
-			const model = this.#host.model();
-			const modelName = model ? formatModelString(model) : "the current model";
-			this.#host.emitNotice(
-				"info",
-				after
-					? `inspect_image is now available: ${modelName} has no native image input.`
-					: `inspect_image is now hidden: ${modelName} supports image input natively. Override with /vision on.`,
-				"vision",
-			);
-		});
-	}
-
-	/**
-	 * Session-scoped `/vision` override. `auto` clears the override so the
-	 * persisted `inspect_image.mode` setting (itself possibly `auto`) decides;
-	 * `on`/`off` force the tool for this session only. Takes effect before the
-	 * next model call.
-	 *
-	 * @returns false when `on` was requested but the tool cannot be built here.
-	 */
-	setInspectImageMode(mode: InspectImageMode): Promise<boolean> {
-		return this.runToolRegistryMutation(async () => {
-			this.#host.setInspectImageModeOverride(mode === "auto" ? undefined : mode);
-			const applied = await this.reconcileInspectImageTool();
-			const { active, model } = this.inspectImageState();
-			logger.debug("inspect_image mode changed", { mode, active, model });
-			return applied;
 		});
 	}
 

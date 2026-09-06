@@ -4,13 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
+import { resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { buildSystemPrompt, type SystemPromptToolMetadata } from "@oh-my-pi/pi-coding-agent/system-prompt";
-import { modelPromptProfile, usesCodexTaskPrompt } from "@oh-my-pi/pi-coding-agent/task/prompt-policy";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { cleanupTempHome } from "./helpers/temp-home-cleanup";
 
@@ -145,28 +145,6 @@ describe("system prompt model identifier", () => {
 		expect(firstSystemPrompt).not.toContain("You are Codex, based on GPT-5");
 	});
 
-	it("adds the OpenAI GPT model notes for GPT-5.6 and GPT-6 models only", async () => {
-		const render = async (model: string) => {
-			const { systemPrompt } = await buildSystemPrompt({
-				cwd: tempDir,
-				contextFiles: [],
-				skills: [],
-				rules: [],
-				toolNames: [],
-				workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
-				model,
-			});
-			return systemPrompt.join("\n\n");
-		};
-		const astra = await render("openai-codex/gpt-6-astra");
-		expect(astra).toContain("# OpenAI GPT model notes");
-		expect(astra).toMatch(/LAST message of the turn[\s\S]*re-emit the complete document/);
-		expect(astra).toMatch(/Authorization persists across turns/);
-		expect(await render("openai-codex/gpt-5.6-sol")).toContain("# OpenAI GPT model notes");
-		expect(await render("openai-codex/gpt-5.5")).not.toContain("# OpenAI GPT model notes");
-		expect(await render("anthropic/claude-opus-5")).not.toContain("# OpenAI GPT model notes");
-	});
-
 	it("uses the main system prompt for codex-family model ids", async () => {
 		const tools = new Map<string, SystemPromptToolMetadata>([
 			["read", { label: "Read", description: "Read files", wireName: "read" }],
@@ -229,19 +207,18 @@ describe("AgentSession model-change prompt refresh", () => {
 		const second = all.find(
 			model =>
 				(model.provider !== first.provider || model.id !== first.id) &&
-				usesCodexTaskPrompt(model.id) === usesCodexTaskPrompt(first.id) &&
-				modelPromptProfile(model.id) === modelPromptProfile(first.id),
+				resolveDelegationBias(model) === resolveDelegationBias(first),
 		);
-		if (!first || !second) throw new Error("Expected two distinct models with the same task prompt policy");
+		if (!first || !second) throw new Error("Expected two distinct models with the same delegation bias");
 		return [first, second];
 	}
 
 	function pickModelsAcrossTaskPolicies(): [Model, Model] {
 		const all = modelRegistry.getAll();
-		const defaultPolicy = all.find(model => !usesCodexTaskPrompt(model.id));
-		const codexPolicy = all.find(model => usesCodexTaskPrompt(model.id));
-		if (!defaultPolicy || !codexPolicy) throw new Error("Expected default-policy and GPT-5.6 models");
-		return [defaultPolicy, codexPolicy];
+		const eager = all.find(model => resolveDelegationBias(model) === "eager");
+		const restrained = all.find(model => resolveDelegationBias(model) === "restrained");
+		if (!eager || !restrained) throw new Error("Expected eager and restrained delegation models");
+		return [eager, restrained];
 	}
 
 	function newSession(
@@ -303,29 +280,6 @@ describe("AgentSession model-change prompt refresh", () => {
 		await session.setModel(modelB);
 		expect(rebuildCount).toBe(0);
 		expect(session.agent.state.systemPrompt).toEqual(["initial"]);
-	});
-
-	it("rebuilds a hidden-model prompt when only the model-notes profile changes", async () => {
-		const all = modelRegistry.getAll();
-		const plain = all.find(model => !usesCodexTaskPrompt(model.id) && modelPromptProfile(model.id) === undefined);
-		const gpt6 = all.find(model => !usesCodexTaskPrompt(model.id) && modelPromptProfile(model.id) === "openai-gpt");
-		if (!plain || !gpt6) throw new Error("Expected a default-profile model and a GPT-6 model");
-		authStorage.setRuntimeApiKey(plain.provider, "key-a");
-		authStorage.setRuntimeApiKey(gpt6.provider, "key-b");
-
-		let rebuildCount = 0;
-		session = newSession(
-			plain,
-			Settings.isolated({ "compaction.enabled": false, includeModelInPrompt: false }),
-			async () => {
-				rebuildCount++;
-				return { systemPrompt: ["notes changed"] };
-			},
-		);
-
-		await session.setModel(gpt6);
-		expect(rebuildCount).toBe(1);
-		expect(session.agent.state.systemPrompt).toEqual(["notes changed"]);
 	});
 
 	it("rebuilds a hidden-model prompt when the task policy changes", async () => {
