@@ -6,6 +6,10 @@ export const acpHelp = {
 
 export const agentsHelp = { description: "Manage bundled task agents" } satisfies CommandMetadata;
 
+export const annotateHelp = {
+	description: "Install the OMPx Annotate Chrome extension (page feedback with screenshots)",
+} satisfies CommandMetadata;
+
 export const authBrokerHelp = {
 	description: "Manage the omp auth-broker (credential vault)",
 } satisfies CommandMetadata;

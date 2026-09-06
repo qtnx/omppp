@@ -43,6 +43,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.agentsHelp,
 	},
 	{
+		name: "annotate",
+		load: () => import("./commands/annotate").then(m => m.default),
+		help: commandHelp.annotateHelp,
+	},
+	{
 		name: "bench",
 		load: () => import("./commands/bench").then(m => m.default),
 		help: commandHelp.benchHelp,
