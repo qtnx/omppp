@@ -11,14 +11,19 @@
 		"url": "git+https://github.com/can1357/oh-my-pi.git",
 		"directory": "packages/system-context-reminder-plugin"
 	},
-	"keywords": ["context", "extension", "persona", "reminder"],
+	"keywords": [
+		"context",
+		"extension",
+		"persona",
+		"reminder"
+	],
 	"scripts": {
-		"check": "biome check . && bun run check:types",
+		"check": "oxlint . && oxfmt --check --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts' && bun run check:types",
 		"check:types": "tsgo -p tsconfig.json --noEmit",
 		"test": "bun test --parallel",
-		"lint": "biome lint .",
-		"fix": "biome check --write --unsafe .",
-		"fmt": "biome format --write ."
+		"lint": "oxlint .",
+		"fix": "oxlint --fix --fix-suggestions . && bun run fmt",
+		"fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts'"
 	},
 	"devDependencies": {
 		"@oh-my-pi/pi-coding-agent": "workspace:*",
@@ -41,7 +46,12 @@
 		}
 	},
 	"omp": {
-		"extensions": ["./src/extension.ts"]
+		"extensions": [
+			"./src/extension.ts"
+		]
 	},
-	"files": ["src", "CHANGELOG.md"]
+	"files": [
+		"src",
+		"CHANGELOG.md"
+	]
 }

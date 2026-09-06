@@ -258,7 +258,7 @@ function mockIsolation(options: { captureError?: Error; captureResults?: DeltaPa
 	};
 	const isolationHandle: IsolationHandle = {
 		mergedDir: "/tmp/isolated-subagent",
-		backend: worktreeModule.parseIsolationMode("rcopy")!,
+		backend: worktreeModule.parseIsolationBackend("rcopy")!,
 		fellBack: false,
 		fallbackReason: null,
 	};
@@ -328,7 +328,7 @@ function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "
 
 	const settings = Settings.isolated({
 		"async.enabled": false,
-		"task.isolation.mode": "auto",
+		"task.isolation.enabled": true,
 		...overrides,
 	} as Parameters<typeof Settings.isolated>[0]);
 
@@ -801,7 +801,7 @@ describe("task review gate", () => {
 		const { trace } = mockSessionQueue([{ role: "implementer" }]);
 
 		const tool = await TaskTool.create(
-			createSession({ ...reviewGateSettings(), "task.batch": false, "task.isolation.mode": "none" }),
+			createSession({ ...reviewGateSettings(), "task.batch": false, "task.isolation.enabled": false }),
 		);
 		const result = await tool.execute("call-no-flat-self-review", {
 			agent: "task",
@@ -818,7 +818,7 @@ describe("task review gate", () => {
 		const { trace } = mockSessionQueue([{ role: "implementer" }]);
 
 		const tool = await TaskTool.create(
-			createSession({ ...reviewGateSettings(), "task.batch": true, "task.isolation.mode": "none" }),
+			createSession({ ...reviewGateSettings(), "task.batch": true, "task.isolation.enabled": false }),
 		);
 		const result = await tool.execute("call-no-batch-self-review", {
 			context: "Shared context.",
@@ -863,7 +863,7 @@ describe("task review gate", () => {
 		const tool = await TaskTool.create(
 			createSession({
 				...reviewGateSettings(),
-				"task.isolation.mode": "none",
+				"task.isolation.enabled": false,
 			}),
 		);
 		const result = await tool.execute("call-non-isolated-gate", TASK_PARAMS);
@@ -886,7 +886,7 @@ describe("task review gate", () => {
 				createSession(
 					{
 						...reviewGateSettings(),
-						"task.isolation.mode": "none",
+						"task.isolation.enabled": false,
 					},
 					cwd,
 				),
@@ -937,7 +937,7 @@ describe("task review gate", () => {
 				createSession(
 					{
 						...reviewGateSettings(),
-						"task.isolation.mode": "none",
+						"task.isolation.enabled": false,
 					},
 					repo,
 				),
@@ -974,7 +974,7 @@ describe("task review gate", () => {
 		const tool = await TaskTool.create(
 			createSession({
 				...reviewGateSettings(),
-				"task.isolation.mode": "none",
+				"task.isolation.enabled": false,
 			}),
 		);
 		await tool.execute("call-review-progress", TASK_PARAMS, undefined, update => {
@@ -1023,7 +1023,7 @@ describe("task review gate", () => {
 		const tool = await TaskTool.create(
 			createSession({
 				...reviewGateSettings(),
-				"task.isolation.mode": "none",
+				"task.isolation.enabled": false,
 				"task.maxConcurrency": 2,
 			}),
 		);

@@ -35,7 +35,6 @@ import {
 import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
 import { withOpenRouterAffordableMaxTokensRetry } from "../utils/openrouter-affordable-max-tokens";
 import { notifyProviderResponse } from "../utils/provider-response";
-import { callWithCopilotModelRetry } from "../utils/retry";
 import {
 	adaptSchemaForStrict,
 	findStrictToolSchemaViolation,
@@ -202,9 +201,7 @@ function isRetryableOpenAIResponsesStreamFailure(error: unknown): boolean {
 }
 
 interface OpenAIResponsesProviderSessionState
-	extends ProviderSessionState,
-		OpenAIStrictToolsState,
-		OpenAIReasoningEffortFallbackState {
+	extends ProviderSessionState, OpenAIStrictToolsState, OpenAIReasoningEffortFallbackState {
 	nativeHistoryReplayWarmed: boolean;
 	/** Stateful `previous_response_id` chain baselines, keyed by baseUrl/model/session. */
 	chains: Map<string, OpenAIResponsesChainState>;
@@ -463,7 +460,7 @@ const streamOpenAIResponsesOnce = (
 				extraHeaders: options?.headers,
 				initiatorOverride: options?.initiatorOverride,
 				messages: context.messages,
-				openAISessionId: routingSessionId,
+				sessionId: options?.sessionId ?? routingSessionId,
 				promptCacheSessionId,
 			});
 			const premiumRequestsTotal = copilotPremiumRequests;
@@ -546,52 +543,46 @@ const streamOpenAIResponsesOnce = (
 				body: chained.params,
 			};
 			rawRequestDump = activeRawRequestDump;
-			const openResponsesStream = (requestParams: OpenAIResponsesSamplingParams) => {
+			const openResponsesStream = async (
+				requestParams: OpenAIResponsesSamplingParams,
+			): Promise<AsyncIterable<ResponseStreamEvent>> => {
 				activeReasoningEffortFallbackKey = createOpenAIReasoningEffortFallbackKey(
 					"responses",
 					resolvedBaseUrl,
 					typeof requestParams.model === "string" ? requestParams.model : model.id,
 				);
 				activeRequestParams = requestParams;
-				return callWithCopilotModelRetry(
-					async () => {
-						let requestTimeout: NodeJS.Timeout | undefined;
-						if (requestTimeoutMs !== undefined) {
-							requestTimeout = setTimeout(
-								() => abortTracker.abortLocally(firstEventTimeoutAbortError),
-								requestTimeoutMs,
-							);
-						}
-						try {
-							const headersWithTimeout = { ...headers };
-							if (requestTimeoutMs !== undefined) {
-								headersWithTimeout["X-Stainless-Timeout"] = Math.floor(requestTimeoutMs / 1000).toString();
-							}
-							const { events, response, requestId } = await postOpenAIStream<ResponseStreamEvent>({
-								url: requestUrl,
-								headers: headersWithTimeout,
-								body: requestParams,
-								signal: requestSignal,
-								fetch: options?.fetch,
-								// Transient 408/429/5xx get Retry-After-aware transport
-								// retries; the first-event watchdog aborts `requestSignal`,
-								// so retries cannot extend the caller's deadline.
-								onSseEvent: rawSseObserver,
-							});
-							// Disarm the first-event watchdog as soon as headers arrive — a slow
-							// onResponse callback must not abort an already-connected stream.
-							if (requestTimeout !== undefined) {
-								clearTimeout(requestTimeout);
-								requestTimeout = undefined;
-							}
-							await notifyProviderResponse(options, response, model, requestId);
-							return events;
-						} finally {
-							if (requestTimeout !== undefined) clearTimeout(requestTimeout);
-						}
-					},
-					{ provider: model.provider, signal: requestSignal },
-				);
+				let requestTimeout: NodeJS.Timeout | undefined;
+				if (requestTimeoutMs !== undefined) {
+					requestTimeout = setTimeout(
+						() => abortTracker.abortLocally(firstEventTimeoutAbortError),
+						requestTimeoutMs,
+					);
+				}
+				try {
+					const headersWithTimeout = { ...headers };
+					if (requestTimeoutMs !== undefined) {
+						headersWithTimeout["X-Stainless-Timeout"] = Math.floor(requestTimeoutMs / 1000).toString();
+					}
+					const { events, response, requestId } = await postOpenAIStream<ResponseStreamEvent>({
+						url: requestUrl,
+						headers: headersWithTimeout,
+						body: requestParams,
+						signal: requestSignal,
+						fetch: options?.fetch,
+						// Transient 408/429/5xx get Retry-After-aware transport
+						// retries; the first-event watchdog aborts `requestSignal`,
+						// so retries cannot extend the caller's deadline.
+						onSseEvent: rawSseObserver,
+					});
+					// Disarm the first-event watchdog as soon as headers arrive — a slow
+					// onResponse callback must not abort an already-connected stream.
+					clearTimeout(requestTimeout);
+					await notifyProviderResponse(options, response, model, requestId);
+					return events;
+				} finally {
+					clearTimeout(requestTimeout);
+				}
 			};
 			let strictRetryAvailable = true;
 			let activeStrictToolsApplied = builtParams.strictToolsApplied;

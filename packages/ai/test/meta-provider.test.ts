@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
-import { loginMeta } from "@oh-my-pi/pi-ai/registry/meta";
-import { getOAuthProviders } from "@oh-my-pi/pi-ai/registry/oauth";
+import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry/registry";
 import { getEnvApiKey } from "@oh-my-pi/pi-ai/stream";
 import type { Context, FetchImpl, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -28,6 +27,8 @@ const ORIGINAL_ENV = {
 	META_API_KEY: Bun.env.META_API_KEY,
 	MODEL_API_KEY: Bun.env.MODEL_API_KEY,
 } as const;
+
+const loginMeta = getProviderDefinition("meta")!.login!;
 
 const testContext: Context = {
 	messages: [{ role: "user", content: "Return one sentence.", timestamp: 1 }],
@@ -84,7 +85,7 @@ describe("Meta Model API provider", () => {
 			label: "Meta Model API",
 			envVars: ["META_MODEL_API_KEY", "META_API_KEY"],
 		});
-		expect(getOAuthProviders().find(provider => provider.id === "meta")?.name).toBe("Meta Model API");
+		expect(getProviderDefinition("meta")?.name).toBe("Meta Model API");
 	});
 
 	it("only resolves Meta-scoped API-key environment variables", () => {

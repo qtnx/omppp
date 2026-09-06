@@ -60,7 +60,6 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"slow",
 	"vision",
 	"plan",
-	"designer",
 	"commit",
 	"tiny",
 	"task",

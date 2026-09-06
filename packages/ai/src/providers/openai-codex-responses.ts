@@ -145,13 +145,9 @@ export interface OpenAICodexResponsesOptions extends StreamOptions {
 	preferWebsockets?: boolean;
 	serviceTier?: ServiceTier;
 	/**
-	 * Responses Lite transport override; defaults to the model's catalog
-	 * `useResponsesLite` flag (codex-rs `use_responses_lite`). Sends
-	 * `x-openai-internal-codex-responses-lite: true` on HTTP requests and on the
-	 * WebSocket upgrade (the marker is connection-scoped there, so lite and
-	 * non-lite turns never share a pooled socket), moves instructions/tools
-	 * into input items, strips image detail, and disables parallel tool
-	 * calling — mirroring codex-rs.
+	 * Responses Lite transport opt-in. Normal inference defaults to full
+	 * Responses; provider-native compaction explicitly follows the model's
+	 * `useResponsesLite` flag.
 	 */
 	responsesLite?: boolean;
 	/**
@@ -1658,7 +1654,7 @@ function createCodexRequestContext(
 			? createCodexProviderSessionState()
 			: undefined;
 	const transportProviderSessionState = isolatedTransportState ?? providerSessionState;
-	const responsesLite = resolveCodexResponsesLite(model, options?.responsesLite);
+	const responsesLite = resolveCodexResponsesLite(options?.responsesLite);
 	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, apiKey, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (sessionKey && publicSessionKey) {
@@ -1734,16 +1730,18 @@ async function buildCodexRequestContext(
 	});
 }
 
-/** @internal Exported for tests. */
+/** Serialize normal Codex turns and V2 compaction with the same cacheable prefix. */
 export async function buildTransformedCodexRequestBody(
 	model: Model<"openai-codex-responses">,
 	context: Context,
 	options: OpenAICodexResponsesOptions | undefined,
 	promptCacheKey = getOpenAIPromptCacheKey(options),
+	inputPrefix?: InputItem[],
 ): Promise<RequestBody> {
+	const input = convertMessages(model, context);
 	const params: RequestBody = {
 		model: model.requestModelId ?? model.id,
-		input: convertMessages(model, context),
+		input: inputPrefix?.length ? [...inputPrefix, ...input] : input,
 		stream: true,
 		prompt_cache_key: promptCacheKey,
 	};
@@ -3269,9 +3267,7 @@ class CodexStreamProcessor {
 
 	async #tryRetryProviderError(error: unknown): Promise<boolean> {
 		const retryable =
-			error instanceof CodexProviderStreamError
-				? error.retryable
-				: AIError.isProviderRetryableError(error, { provider: this.model.provider });
+			error instanceof CodexProviderStreamError ? error.retryable : AIError.isProviderRetryableError(error);
 		// A leading `response.output_item.added` opens an empty block and emits only
 		// a `*_start` before any delta; that is replay-safe. But once any text or
 		// thinking delta has streamed — including a whitespace-only
@@ -3541,7 +3537,7 @@ export async function prewarmOpenAICodexResponses(
 	const prewarmBody = options?.context
 		? await buildTransformedCodexRequestBody(model, options.context, options, promptCacheKey)
 		: undefined;
-	const responsesLite = resolveCodexResponsesLite(model, options?.responsesLite);
+	const responsesLite = resolveCodexResponsesLite(options?.responsesLite);
 	const sessionKey = getCodexWebSocketSessionKey(transportSessionId, model, accountId, apiKey, baseUrl, responsesLite);
 	const publicSessionKey = transportSessionId ? `${baseUrl}:${model.id}:${transportSessionId}` : undefined;
 	if (publicSessionKey && sessionKey) {

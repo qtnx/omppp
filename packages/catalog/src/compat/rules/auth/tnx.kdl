@@ -1,0 +1,6 @@
+auth "tnx" {
+	name "TNX"
+	login "api-key" {
+		prompt "Paste your TNX API key" placeholder="sk-..."
+	}
+}

@@ -7,16 +7,11 @@
  */
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import {
-	formatHashlineHeader,
-	formatNumberedLines,
-	type SnapshotStore,
-	splitAddressableFileLines,
-} from "@oh-my-pi/hashline";
+import type { EditStore } from "@oh-my-pi/pi-natives";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { formatAge, formatBytes, isProbablyBinary, readImageMetadata } from "@oh-my-pi/pi-utils";
-import { canonicalSnapshotKey } from "../edit/file-snapshot-store";
+import { formatHashlineHeader, formatNumberedLines, splitAddressableFileLines } from "../tools/hashline-format";
 import { normalizeToLF } from "../edit/normalize";
 import type { FileMentionMessage } from "../session/messages";
 import {
@@ -27,6 +22,15 @@ import {
 } from "../session/streaming-output";
 import { resolveReadPath } from "../tools/path-utils";
 import { formatDimensionNote, resizeImage } from "./image-resize";
+import {
+	VideoError,
+	buildVideoContactSheetPng,
+	createVideoPreviewImage,
+	formatVideoDetails,
+	isVideoPath,
+	probeVideo,
+	videoMimeForPath,
+} from "./video";
 
 /** Regex to match @filepath patterns in text */
 const FILE_MENTION_REGEX = /@(?:"([^"]+)"|'([^']+)'|([^\s@]+))/g;
@@ -254,7 +258,7 @@ export async function generateFileMentionMessages(
 	options?: {
 		autoResizeImages?: boolean;
 		useHashLines?: boolean;
-		snapshotStore?: SnapshotStore;
+		snapshotStore?: EditStore;
 		workspaceRoots?: readonly WorkspaceMentionRoot[];
 	},
 ): Promise<AgentMessage[]> {
@@ -318,6 +322,39 @@ export async function generateFileMentionMessages(
 				continue;
 			}
 
+			if (isVideoPath(absolutePath)) {
+				try {
+					const meta = await probeVideo(absolutePath);
+					const sheet = await buildVideoContactSheetPng(absolutePath, meta);
+					let image: ImageContent = { type: "image", data: sheet.png.data, mimeType: sheet.png.mimeType };
+					let dimensionNote: string | undefined;
+					if (autoResizeImages) {
+						try {
+							const resized = await resizeImage(image);
+							dimensionNote = formatDimensionNote(resized);
+							image = { type: "image", mimeType: resized.mimeType, data: resized.data };
+						} catch {
+							// Keep the extracted sheet when resize fails.
+						}
+					}
+					const details = formatVideoDetails(displayPath, meta, stat.size, videoMimeForPath(absolutePath));
+					files.push({
+						path: displayPath,
+						content: `${details}\nPreview grid: ${sheet.thumbs} frames (${sheet.cols}x${sheet.rows})${dimensionNote ? `\n${dimensionNote}` : ""}`,
+						image: createVideoPreviewImage(image, absolutePath),
+					});
+				} catch (error) {
+					const reason = error instanceof VideoError ? error.message : "video preview failed";
+					files.push({
+						path: displayPath,
+						content: `(skipped auto-read: ${reason})`,
+						byteSize: stat.size,
+						skippedReason: "binary",
+					});
+				}
+				continue;
+			}
+
 			if (stat.size > MAX_AUTO_READ_TEXT_BYTES) {
 				files.push({
 					path: displayPath,
@@ -345,7 +382,7 @@ export async function generateFileMentionMessages(
 			let { output } = textOutput;
 			const { lineCount } = textOutput;
 			if (snapshotStore) {
-				const tag = snapshotStore.record(canonicalSnapshotKey(absolutePath), normalized);
+				const tag = snapshotStore.recordSnapshot(absolutePath, normalized);
 				output = `${formatHashlineHeader(displayPath, tag)}\n${formatNumberedLines(output)}`;
 			}
 			files.push({ path: displayPath, content: output, lineCount });

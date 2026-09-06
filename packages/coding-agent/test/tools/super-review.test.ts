@@ -43,7 +43,7 @@ interface SessionOptions {
 }
 
 function makeSession(options: SessionOptions = {}): ToolSession {
-	const settings = Settings.isolated({ "async.enabled": false, "task.isolation.mode": "none" });
+	const settings = Settings.isolated({ "async.enabled": false, "task.isolation.enabled": false });
 	if (options.superReviewRole) settings.setModelRole("super_review", options.superReviewRole);
 	const models = options.models ?? [options.model ?? SUPER_MODEL];
 	const resolveKey = (model?: Model<Api>): string | null => {

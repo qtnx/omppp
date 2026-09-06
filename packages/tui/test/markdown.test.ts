@@ -1361,7 +1361,7 @@ bar`,
 			let visible = "";
 			const targets: Array<string | null> = [];
 
-			for (let i = 0; i < line.length; ) {
+			for (let i = 0; i < line.length;) {
 				if (line.startsWith("\x1b]8;;", i)) {
 					const terminator = line.indexOf("\x07", i + 5);
 					activeTarget = line.slice(i + 5, terminator) || null;

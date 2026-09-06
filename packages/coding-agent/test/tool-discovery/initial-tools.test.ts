@@ -24,7 +24,6 @@ const allToolsSettings = Settings.isolated({
 	"grep.enabled": true,
 	"github.enabled": true,
 	"lsp.enabled": true,
-	"inspect_image.enabled": true,
 	"web_search.enabled": true,
 	"browser.enabled": true,
 	"computer.enabled": true,

@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { disableUserSource, enableUserSource } from "@oh-my-pi/pi-coding-agent/capability";
 import { type Skill as CapabilitySkill, skillCapability } from "@oh-my-pi/pi-coding-agent/capability/skill";
 import { getCapability } from "@oh-my-pi/pi-coding-agent/discovery";
 import { getWslWindowsHomeCandidate, runHostProbe } from "@oh-my-pi/pi-coding-agent/discovery/agents";
@@ -302,6 +303,7 @@ triggers:
 			delete Bun.env.CLAUDE_CONFIG_DIR;
 			const tempHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-home-"));
 			const tempProjectDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-project-"));
+			enableUserSource("claude");
 
 			try {
 				const userSkillDir = path.join(tempHomeDir, ".claude", "skills", "user-only-skill");
@@ -326,6 +328,7 @@ triggers:
 				const result = await claudeProvider!.load({ cwd: tempProjectDir, home: tempHomeDir, repoRoot: null });
 				expect(result.items.some(skill => skill.name === "user-only-skill" && skill.level === "user")).toBe(true);
 			} finally {
+				disableUserSource("claude");
 				restoreEnvValue("CLAUDE_CONFIG_DIR", originalClaudeConfigDir);
 				await removeWithRetries(tempProjectDir);
 				await removeWithRetries(tempHomeDir);
