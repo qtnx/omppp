@@ -7,7 +7,7 @@ export const acpHelp = {
 export const agentsHelp = { description: "Manage bundled task agents" } satisfies CommandMetadata;
 
 export const annotateHelp = {
-	description: "Install the OMPx Annotate Chrome extension (page feedback with screenshots)",
+	description: "Write the OMPx Annotate Chrome extension to disk with load-unpacked steps",
 } satisfies CommandMetadata;
 
 export const authBrokerHelp = {
