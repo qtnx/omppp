@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OMPx Annotate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "action": {
     "default_popup": "popup.html"
   },
@@ -11,7 +11,8 @@
   "commands": {
     "toggle-annotate": {
       "suggested_key": {
-        "default": "Alt+Shift+A"
+        "default": "Ctrl+Period",
+        "mac": "Command+Period"
       },
       "description": "Toggle OMPx Annotate overlay"
     }

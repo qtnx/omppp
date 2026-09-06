@@ -18,9 +18,20 @@ interface TabCodesStorage {
 	tabCodes?: Record<string, TabCodeEntry>;
 }
 
+interface ScreenshotBlob {
+	data: string;
+	mimeType: string;
+}
+
 interface SubmitMessage {
 	type: "ompx-annotate-submit";
 	payload: AnnotationPayload;
+	/** Composed by the content script (markers burned in) from a prior capture. */
+	screenshot: ScreenshotBlob;
+}
+
+interface CaptureMessage {
+	type: "ompx-annotate-capture";
 }
 
 interface PairMessage {
@@ -40,10 +51,10 @@ interface SetHostMessage {
 	host: string;
 }
 
-type ExtensionMessage = SubmitMessage | PairMessage | StatusMessage | SetHostMessage;
+type ExtensionMessage = SubmitMessage | CaptureMessage | PairMessage | StatusMessage | SetHostMessage;
 
 type ExtensionResponse =
-	| { ok: true; host?: string | null; paired?: boolean; session?: string }
+	| { ok: true; host?: string | null; paired?: boolean; session?: string; dataUrl?: string }
 	| { ok: false; error: string; session?: string };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
@@ -61,15 +72,19 @@ const normalizePairHost = (value: string): string => {
 const isPayload = (value: unknown): value is AnnotationPayload =>
 	isRecord(value) && typeof value.comment === "string" && Array.isArray(value.rects) && typeof value.url === "string";
 
+const isScreenshot = (value: unknown): value is ScreenshotBlob =>
+	isRecord(value) && typeof value.data === "string" && value.data.length > 0 && typeof value.mimeType === "string";
+
 const errorMessage = (value: unknown): string => (value instanceof Error ? value.message : String(value)).slice(0, 300);
 
 const parseOptionalTabId = (value: unknown): number | undefined => (typeof value === "number" ? value : undefined);
 
 const parseMessage = (value: unknown): ExtensionMessage | null => {
 	if (!isRecord(value) || typeof value.type !== "string") return null;
-	if (value.type === "ompx-annotate-submit" && isPayload(value.payload)) {
-		return { type: "ompx-annotate-submit", payload: value.payload };
+	if (value.type === "ompx-annotate-submit" && isPayload(value.payload) && isScreenshot(value.screenshot)) {
+		return { type: "ompx-annotate-submit", payload: value.payload, screenshot: value.screenshot };
 	}
+	if (value.type === "ompx-annotate-capture") return { type: "ompx-annotate-capture" };
 	if (value.type === "ompx-annotate-pair" && typeof value.code === "string") {
 		const message: PairMessage = { type: "ompx-annotate-pair", code: value.code };
 		if (typeof value.host === "string") message.host = value.host;
@@ -196,8 +211,6 @@ const readServerJson = async (response: Response): Promise<ServerJson> => {
 	}
 };
 
-const stripPngDataUrl = (dataUrl: string): string => dataUrl.replace(/^data:image\/png;base64,/, "");
-
 const handleSubmit = async (
 	message: SubmitMessage,
 	sender: chrome.runtime.MessageSender,
@@ -215,20 +228,6 @@ const handleSubmit = async (
 	}
 	if (!host || !entry) return { ok: false, error: "not_paired" };
 
-	const windowId = sender.tab?.windowId;
-
-	let dataUrl: string;
-	try {
-		dataUrl = await captureVisiblePng(windowId);
-	} catch {
-		try {
-			dataUrl = await captureVisiblePng();
-		} catch (error) {
-			return { ok: false, error: `capture_failed: ${errorMessage(error)}` };
-		}
-	}
-
-	const data = stripPngDataUrl(dataUrl);
 	const url = `http://${host}/v1/annotations`;
 	let response: Response;
 	try {
@@ -238,7 +237,7 @@ const handleSubmit = async (
 			body: JSON.stringify({
 				code: entry.code,
 				payload: message.payload,
-				screenshot: { data, mimeType: "image/png" },
+				screenshot: message.screenshot,
 			}),
 		});
 	} catch (error) {
@@ -316,10 +315,25 @@ const handleSetHost = async (message: SetHostMessage): Promise<ExtensionResponse
 	return { ok: true, host };
 };
 
+/** Bare viewport capture; the content script hides its overlay first and draws markers itself. */
+const handleCapture = async (sender: chrome.runtime.MessageSender): Promise<ExtensionResponse> => {
+	if (typeof sender.tab?.id !== "number") return { ok: false, error: "no_tab" };
+	try {
+		return { ok: true, dataUrl: await captureVisiblePng(sender.tab.windowId) };
+	} catch {
+		try {
+			return { ok: true, dataUrl: await captureVisiblePng() };
+		} catch (error) {
+			return { ok: false, error: `capture_failed: ${errorMessage(error)}` };
+		}
+	}
+};
+
 const handleMessage = async (rawMessage: unknown, sender: chrome.runtime.MessageSender): Promise<ExtensionResponse> => {
 	const message = parseMessage(rawMessage);
 	if (!message) return { ok: false, error: "unknown_message" };
 	if (message.type === "ompx-annotate-submit") return handleSubmit(message, sender);
+	if (message.type === "ompx-annotate-capture") return handleCapture(sender);
 	if (message.type === "ompx-annotate-pair") return handlePair(message, sender);
 	if (message.type === "ompx-annotate-set-host") return handleSetHost(message);
 	return handleStatus(message, sender);
