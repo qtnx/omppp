@@ -296,6 +296,13 @@ export class EventController {
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
 			irc_message: e => this.#handleIrcMessage(e),
 			notice: e => this.#handleNotice(e),
+			queued_messages_changed: async () => {
+				// Producers outside the input controller (browser annotation intake,
+				// SDK) enqueue chip-bearing customs straight on the session; refresh
+				// the pending bar so the chip appears without waiting for a keystroke.
+				this.ctx.updatePendingMessagesDisplay();
+				this.ctx.ui.requestRender();
+			},
 			model_changed: async () => {
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();

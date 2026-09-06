@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `ompx annotate install` to write the bundled OMPx Annotate Chrome extension to disk with load-unpacked steps.
+
+### Fixed
+
+- Browser annotations sent while the agent is running now show their queued chip immediately instead of after the next keystroke.
+
 ## [1.7.12] - 2026-09-05
 
 ### Added

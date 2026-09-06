@@ -933,6 +933,13 @@ describe("EventController custom queued-message refresh", () => {
 		expect(addMessageToChat).toHaveBeenCalledTimes(2);
 	});
 
+	it("refreshes the pending bar on queued_messages_changed so session-enqueued chips appear", async () => {
+		const { controller, updatePendingMessagesDisplay, addMessageToChat } = createEventControllerFixture();
+		await controller.handleEvent({ type: "queued_messages_changed" });
+		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+		expect(addMessageToChat).not.toHaveBeenCalled();
+	});
+
 	it("reconciles the optimistic skill row instead of duplicating it on the canonical message_start", async () => {
 		const { controller, addMessageToChat, reconcileOptimisticSkillMessage } = createEventControllerFixture({
 			optimisticSkillMessagePending: true,

@@ -724,6 +724,11 @@ export function getBrowserRelayDir(): string {
 	return dirs.rootSubdir("browser-relay", "data");
 }
 
+/** Get the annotate Chrome extension install directory (~/.omp/annotate). */
+export function getAnnotateExtensionDir(): string {
+	return dirs.rootSubdir("annotate", "data");
+}
+
 /** Get DOCS_RS cache directory () */
 export function getDocsRsCacheDir(): string {
 	return dirs.rootSubdir("webcache", "cache");
