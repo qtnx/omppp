@@ -67,7 +67,16 @@ describe("bundled task agents", () => {
 
 		expect(explore?.resourceProfile).toBe("minimal");
 		expect(explore?.thinkingLevel).toBe(Effort.Medium);
-		expect(explore?.tools).toEqual(["read", "grep", "glob", "bash", "web_search", "irc", "yield"]);
+		expect(explore?.tools).toEqual([
+			"read",
+			"grep",
+			"glob",
+			"codegraph_explore",
+			"bash",
+			"web_search",
+			"irc",
+			"yield",
+		]);
 		expect(explore?.tools).toContain("web_search");
 		expect(explore?.systemPrompt).toContain("Target at most 8 tool calls");
 		expect(explore?.systemPrompt).toContain("12 is the hard ceiling");
