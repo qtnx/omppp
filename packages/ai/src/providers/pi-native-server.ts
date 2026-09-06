@@ -77,6 +77,7 @@ const ALLOWED_OPTION_KEYS: ReadonlySet<keyof SimpleStreamOptions> = new Set([
 	"guardrailIdentifier",
 	"guardrailVersion",
 	"guardrailTrace",
+	"requestMetadata",
 	"kimiApiFormat",
 	"syntheticApiFormat",
 	"preferWebsockets",

@@ -13,6 +13,7 @@ import {
 	resolveAgentModelSelection,
 	resolveConfiguredModelPatterns,
 } from "../config/model-resolver";
+import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { Skill } from "../extensibility/skills";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
@@ -50,7 +51,8 @@ import {
 	type StructuredSubagentOutput,
 } from "./types";
 import type { DeltaPatchResult, NestedRepoPatch, WorktreeBaseline } from "./worktree";
-import { captureBaseline, captureDeltaPatch, getRepoRoot, parseIsolationMode } from "./worktree";
+import { captureBaseline, captureDeltaPatch, getRepoRoot, parseIsolationBackend } from "./worktree";
+import type { WorkPoolYieldItem } from "./workpool-yield";
 
 /** Validation behavior requested for an effective output schema. */
 export type StructuredSubagentSchemaMode = "permissive" | "strict";
@@ -111,6 +113,14 @@ export interface StructuredSubagentRequest {
 	blockedAgent?: string;
 	/** Preserve a completed temporary artifacts directory for an agent:// handle. */
 	retainArtifacts?: boolean;
+	/**
+	 * Invoked instead of immediate cleanup when a temporary artifacts
+	 * directory is retained (`retainArtifacts`). Callers that outlive this
+	 * call — e.g. an async job body — take ownership of the returned
+	 * disposal closure and MUST eventually run it once the retained handle
+	 * is no longer needed, or the directory leaks for the process lifetime.
+	 */
+	onArtifactsRetained?: (cleanup: () => Promise<void>) => void;
 	/** Task UI agents keep live registry references; eval one-shots normally do not. */
 	keepAlive?: boolean;
 	/** Task subagents share their parent's eval kernel; eval bridge children must not. */
@@ -123,6 +133,10 @@ export interface StructuredSubagentRequest {
 	selfReview?: boolean;
 	/** `0` disables executor wall-clock timeout. Undefined inherits settings. */
 	maxRuntimeMs?: number;
+	/** Kernel-defined tools explicitly exposed to this child. */
+	customTools?: CustomTool[];
+	/** Workpool items accepted by the child yield tool during this turn. */
+	workPoolYieldItems?: WorkPoolYieldItem[];
 	signal?: AbortSignal;
 	onProgress?: (progress: AgentProgress) => void;
 }
@@ -237,6 +251,9 @@ function createPlanModeAgent(agent: AgentDefinition): AgentDefinition {
 
 function assertPlanControlsAllowed(request: StructuredSubagentRequest, planMode: boolean): void {
 	if (!planMode) return;
+	if (request.customTools?.length) {
+		throw new StructuredSubagentError("preflight", "Eval-defined tools are unavailable in plan mode.");
+	}
 	const isolation = request.isolation;
 	if (
 		isolation &&
@@ -387,12 +404,12 @@ export async function resolveEffectiveSubagentPolicy(
 	const modelOverrideFromUserConfig =
 		request.model === undefined &&
 		resolveConfiguredModelPatterns(settingsModelOverride, request.session.settings).length > 0;
-	const isolationMode = request.session.settings.get("task.isolation.mode");
+	const isolationEnabled = request.session.settings.get("task.isolation.enabled");
 	const isIsolated = request.isolation?.requested === true;
-	if (isIsolated && isolationMode === "none") {
+	if (isIsolated && !isolationEnabled) {
 		throw new StructuredSubagentError(
 			"preflight",
-			`Subagent isolated execution requires task.isolation.mode to be set; current mode is "none".`,
+			"Subagent isolated execution requires task.isolation.enabled; it is currently false.",
 		);
 	}
 	return {
@@ -574,7 +591,9 @@ function buildExecutorOptions(
 		mcpManager: allowsMCP ? session.mcpManager : undefined,
 		enableMCP,
 		parentContextFile: contextSnapshot?.path,
-		contextFiles: baseContextFiles,
+		customTools: request.customTools,
+		workPoolYieldItems: request.workPoolYieldItems,
+		contextFiles: baseContextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
 		skills,
 		autoloadSkills,
 		workspaceTree: session.workspaceTree,
@@ -712,6 +731,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 	let mergeSummary = "";
 	let requiresRecoveryArtifacts = false;
 	let completedSuccessfully = false;
+	let hasValidStructuredOutput = false;
 	let deferredCleanup: Promise<void> | undefined;
 	const onSubprocessResult =
 		request.invocationKind === "eval"
@@ -901,7 +921,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			result = await runIsolatedSubprocess({
 				baseOptions,
 				context: isolationContext,
-				preferredBackend: parseIsolationMode(request.session.settings.get("task.isolation.mode")),
+				preferredBackend: parseIsolationBackend(request.session.settings.get("isolation.backend")),
 				agentId: id,
 				mergeMode: policy.mergeMode,
 				artifactsDir: lease.artifactsDir,
@@ -935,6 +955,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		}
 		attachStructuredOutputMetadata(result, policy.schema);
 		const reviewBlocked = result.reviewGate?.outcome === "blocked";
+		hasValidStructuredOutput = result.structuredOutput?.status === "valid";
 		requiresRecoveryArtifacts =
 			policy.isIsolated &&
 			(result.exitCode !== 0 || result.error !== undefined || result.aborted === true) &&
@@ -1000,14 +1021,15 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		);
 	} finally {
 		const shouldRetainArtifacts =
-			(request.retainArtifacts && completedSuccessfully) ||
+			request.detached === true ||
+			(request.retainArtifacts && (completedSuccessfully || hasValidStructuredOutput)) ||
 			(policy.isIsolated && (!policy.applyChanges || changesApplied === false || requiresRecoveryArtifacts));
 		const shouldCleanup = lease.temporary && !shouldRetainArtifacts;
+		const cleanupArtifacts = async (): Promise<void> => {
+			await fs.rm(lease.artifactsDir, { recursive: true, force: true });
+			lease.unregister?.();
+		};
 		if (shouldCleanup) {
-			const cleanupArtifacts = async (): Promise<void> => {
-				await fs.rm(lease.artifactsDir, { recursive: true, force: true });
-				lease.unregister?.();
-			};
 			if (deferredCleanup) {
 				trackLateCleanup(deferredCleanup.then(cleanupArtifacts), {
 					resource: "artifacts",
@@ -1016,6 +1038,11 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			} else {
 				await cleanupArtifacts();
 			}
+		} else if (lease.temporary && request.onArtifactsRetained) {
+			// Retained rather than cleaned up now: the caller (e.g. an async
+			// job body) owns disposing it once the retained handle is no
+			// longer needed, instead of it leaking for the process lifetime.
+			request.onArtifactsRetained(cleanupArtifacts);
 		}
 	}
 }

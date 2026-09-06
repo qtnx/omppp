@@ -287,7 +287,7 @@ function applyGeneratedModelPolicy(model: ModelSpec<Api>): void {
 	// the live resolver so offline regeneration cannot change request shape.
 	if (model.api === "openai-completions" && model.provider === "kimi-code" && model.id === "k3") {
 		model.compat = {
-			...(model.compat ?? {}),
+			...model.compat,
 			thinkingFormat: "kimi",
 			reasoningContentField: "reasoning_content",
 			supportsDeveloperRole: false,

@@ -96,7 +96,6 @@ describe("bundled agent parsing", () => {
 				task: "anthropic/sonnet",
 				smol: "fast/hy3",
 				slow: "codex/sol",
-				designer: "anthropic/opus",
 			},
 		});
 

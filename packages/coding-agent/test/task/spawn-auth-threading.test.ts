@@ -91,7 +91,7 @@ function createToolSession(authStorage: AuthStorage, modelRegistry: ModelRegistr
 	return {
 		cwd: "/tmp",
 		hasUI: false,
-		settings: Settings.isolated({ "task.isolation.mode": "none" }),
+		settings: Settings.isolated({ "task.isolation.enabled": false }),
 		authStorage,
 		modelRegistry,
 		getSessionFile: () => null,

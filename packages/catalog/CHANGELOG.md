@@ -3,6 +3,36 @@
 ## [Unreleased]
 
 ## [1.7.12] - 2026-09-05
+## [18.1.12] - 2026-09-06
+
+### Added
+
+- Added Muse Code as a provider with Muse Spark models and live account-scoped discovery.
+- Muse Code subscriptions now resolve a compact edit-prompt variant, cutting recurring per-request tool bytes without touching other providers.
+- Added Meta's new `max` reasoning effort tier to Muse Spark 1.3 (standard) on the Meta Model API and Muse Code.
+
+### Fixed
+
+- Fixed OpenCode Go/Zen live model discovery (`GET /v1/models`) missing `x-opencode-session` and omp's `User-Agent`: discovery requests now attribute with the stable install id so the requests OpenCode flags as `Bun fetch` carry the required session header.
+	- Fixed GPT-6 Astra requests through GitHub Copilot failing with an unsupported endpoint error ([#10874](https://github.com/can1357/oh-my-pi/pull/10874) by [@xpcmdshell](https://github.com/xpcmdshell)).
+	- Fixed GPT-6 Astra showing as free with a 272K-token window in the OpenAI Codex catalog by applying its documented pricing; `/extended-context` enables the wire-advertised 872K-token maximum ([#10980](https://github.com/can1357/oh-my-pi/pull/10980) by [@H4vC](https://github.com/H4vC)).
+	- Made extended-context catalog rebuilds faster by resolving each model's maximum window once per process ([#11039](https://github.com/can1357/oh-my-pi/pull/11039) by [@H4vC](https://github.com/H4vC)).
+
+## [18.1.9] - 2026-09-04
+
+### Added
+
+- Added the `delegation-bias` capability for tuning how agents delegate work to subagents.
+
+### Changed
+
+- Adjusted subagent delegation for GPT-6 and newer OpenAI models to reduce unnecessary delegation.
+
+### Fixed
+
+- Fixed `/login zai` for Z.AI GLM Coding Plan by supporting the provider’s updated authentication flow, including local desktop sign-in, remote paste-code completion, and the configurable `ZAI_OAUTH_REDIRECT_URI`.
+
+## [18.1.8] - 2026-09-03
 
 ### Added
 
@@ -16,6 +46,42 @@
 
 - Fixed Codex model refresh silently keeping a stale catalog when one stored ChatGPT account's token had been revoked; the rejected account is now skipped and remaining accounts are unioned.
 - Fixed GPT-6 Astra showing as free with a 272K-token window in the OpenAI Codex catalog by applying its documented pricing and 1.05M-token context window ([#10852](https://github.com/can1357/oh-my-pi/pull/10852)).
+### Fixed
+
+- Fixed `omp models refresh` so revoked ChatGPT account tokens no longer prevent the remaining OpenAI Codex models from being discovered.
+
+## [18.1.6] - 2026-09-03
+
+### Added
+
+- Added catalog-delivered model intelligence scores and estimated output throughput to help compare model capabilities and performance.
+
+### Changed
+
+- Improved model search and selection so configured roles, provider preferences, and recent usage are prioritized while browsing and filtering models.
+
+## [18.1.5] - 2026-09-03
+
+### Added
+
+- Added the Abliteration (abliteration.ai) provider, including its documented abliterated-model catalog and live model discovery.
+- Added the GLM 5.3 Promo 50 model.
+- Added computer-use capability metadata to model configurations.
+- Added declarative provider authentication policies covering login, refresh, environment-key, and credential behavior, with generated compatibility data and typed accessors.
+
+### Changed
+
+- Gemini 3.8 Flash now supports reasoning modes and image inputs.
+- Updated the GitHub Copilot API version to 2026-08-01.
+- Reduced input pricing for the minimax/minimax-m2 model.
+- Renamed Meta Model API contributor SKUs to use the Muse Spark 1.x (C) naming.
+
+### Fixed
+
+- GitHub Copilot model discovery now respects the Copilot CLI identity, ensuring eligible enterprise and experimental models are available.
+- Fixed startup failures when discovering Bedrock-style Mistral Mixtral models.
+- Fixed Muse Spark 1.3 contributor models on OpenCode gateways so they use the correct Responses API route.
+- Updated Meta and OpenCode Muse Spark 1.3 model metadata and capabilities, including context windows, reasoning levels, image input, pricing, and model naming; media-only Muse SKUs are no longer presented as chat models.
 
 ## [18.1.4] - 2026-09-02
 

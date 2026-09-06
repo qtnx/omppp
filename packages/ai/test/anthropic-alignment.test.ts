@@ -241,11 +241,14 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("matches Claude Code OAuth header defaults", () => {
 		const sessionId = "167ec5b4-e711-4169-879f-84fa52679d9c";
-		const headers = buildAnthropicHeaders({
+		const { defaultHeaders: headers } = buildAnthropicClientOptions({
+			model: ANTHROPIC_MODEL,
 			apiKey: "sk-ant-oat-test",
 			isOAuth: true,
 			stream: true,
-			claudeCodeSessionId: sessionId,
+			hasTools: true,
+			thinkingEnabled: true,
+			sessionId,
 		});
 
 		expect(headers.Accept).toBe("application/json");
@@ -279,6 +282,7 @@ describe("Anthropic request fingerprint alignment", () => {
 			"Connection",
 			"Accept-Encoding",
 		]);
+		expect(headers["X-Claude-Code-Session-Id"]).toBe(sessionId);
 		expect(headers["anthropic-beta"]).toBe(
 			"claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01",
 		);
@@ -1263,7 +1267,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(extractSuffix(billingWithDev)).toBe(extractSuffix(billingUserOnly));
 	});
 
-	it("caches eligible system blocks on API-key requests", async () => {
+	it("anchors the last system block on API-key requests", async () => {
 		const payload = (await captureAnthropicPayload(
 			ANTHROPIC_MODEL,
 			{
@@ -1273,10 +1277,16 @@ describe("Anthropic request fingerprint alignment", () => {
 			{ isOAuth: false },
 		)) as { system?: Array<{ type: string; text?: string; cache_control?: unknown }> };
 
-		expect(payload.system).toEqual([
-			{ type: "text", text: "stable system", cache_control: { type: "ephemeral" } },
-			{ type: "text", text: "stable durable context", cache_control: { type: "ephemeral" } },
-		]);
+		// The API-key path anchors the stable head: the last system block always
+		// carries a breakpoint so the whole tools+system prefix is a cache hit.
+		// OMPx additionally caches the preceding system blocks (prefix sharing),
+		// so only the tail anchor is asserted here.
+		expect(payload.system?.[0]?.text).toBe("stable system");
+		expect(payload.system?.[1]).toEqual({
+			type: "text",
+			text: "stable durable context",
+			cache_control: { type: "ephemeral" },
+		});
 	});
 
 	it("uses Bearer auth for non-Anthropic API bases with api-key credentials", () => {

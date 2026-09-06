@@ -1,17 +1,8 @@
 <system-notice>
-The user's message contains the **workflow** keyword and was classified as an explicit workflow directive. This permits workflow use; it does not make a workflow mandatory. When the eligibility gate below passes, call the `workflow` tool with a dynamic JavaScript workflow script; otherwise execute directly.
-
-Fast path: a trivial lookup, one contained runnable slice, a direct command, or a question about workflows MUST be handled directly. Use `workflow` only when at least two independent subagent slices or a real multi-stage per-item chain materially improves wall-clock, coverage, confidence, or context isolation.
+User message contains **workflow** or **workflowz** → deterministic multi-subagent workflow. Default to `workpool()` for 2+ independent items; use individual `agent()` handles only for dependency-coupled or schema-returning calls. Workflow keyword permits workflow use; it does not make workflow mandatory. Fast path: trivial lookup, one contained runnable slice, direct command, or question about workflows MUST be handled directly.
 
 <when>
-Worth it only when concrete work decomposes into independent parallel slices, a real multi-stage per-item chain, independent/adversarial cross-checking, or scale one context cannot hold. Otherwise execute directly.{{#if scoutAvailable}} Scout inline FIRST{{else}} Explore inline FIRST{{/if}} (identify files, conflicts, failures, call sites, or review dimensions), then fan out over the discovered work-list.
-
-Common shapes:
-- **Understand** — parallel readers over subsystems → structured map.
-- **Design** — judge panel of independent approaches → scored synthesis.
-- **Review** — split into dimensions → find per dimension → adversarially verify findings.
-- **Research** — multi-modal sweep → deep-read hits → synthesize.
-- **Migrate** — discover sites → transform each → verify.
+Use for broad research, reviews, migrations, adversarial coverage, and open-ended work lists. Quick lookup/single edit: direct; no agents. {{#if scoutAvailable}}Scout inline FIRST{{else}}Explore inline FIRST{{/if}} — scope files, call sites, and contracts before creating the pool.
 </when>
 
 <workflow-use>
@@ -32,42 +23,100 @@ Common shapes:
 </workflow-use>
 
 <helpers>
-Workflow scripts run in the `workflow` tool and have these globals:
+Workflow scripts run in `workflow` tool and may use `agent(prompt, { agentType, model, label, phase, schema }?)`, `parallel(thunks)`, `pipeline(items, …stages)`, `log(message)`, `phase(title)`, `budget`, and nested `workflow(nameOrRef, args?)`. `parallel` is barrier; `pipeline` advances each item independently. Shared context goes in `local://` files. Workflow runs may be background or synchronous; parent owns correctness and must verify results.
 
-- `agent(prompt, { agentType, model, label, phase, schema }?)` — run ONE subagent; returns its final text, or the validated object when `schema` (a JSON Schema object) is provided. `agentType` picks a discovered agent (`workflow-subagent` by default; `"explore"`, `"reviewer"`, `"tester"`, …); `label` names the artifact; `phase` overrides the current phase for that spawn. Shared background goes in a `local://` file referenced from each prompt, not a parameter. Subagents are told their final text IS the return value, so branch on returned data instead of parsed prose when `schema` is used. `agent()` blocks until the subagent finishes.
-- `parallel(thunks)` — BARRIER. Start zero-arg functions concurrently, preserving input order; returns once all finish. `agent()` calls inside those thunks are limited by the workflow concurrency cap. Rejected/throwing thunks become `null` in the returned array instead of rejecting the whole call. In loops, bind each closure's value (`const item = items[i]`) before creating the thunk.
-- `pipeline(items, …stages)` — NO barrier. Each item flows through all stages independently; each stage gets `(prevResult, originalItem, index)`. If a stage throws, that item becomes `null` and skips its remaining stages. Use this as the default for multi-stage per-item chains.
-- `log(message)` — emit a progress line above the status tree. `phase(title)` — start a phase; subsequent status lines group under it.
-- `budget` — `{ total, spent(), remaining() }`. `total` is the workflow token-budget setting or `null` when none is set; `spent()` counts output tokens from workflow `agent()` calls; `remaining()` is `Infinity` when `total` is `null`. Once `spent() ≥ total`, further `agent()` calls throw. Guard loops on `budget.total` first: `while (budget.total && budget.remaining() > 50000) { … }`.
-- `workflow(nameOrRef, args?)` — run another workflow inline (one level of nesting only). `args` is the value passed to this workflow invocation.
+State persists across `eval` calls. Every call provides:
 
-Workflows run through the `workflow` tool; with a background runner they launch in the background and report progress in `/workflows`. In headless/no-background contexts they run synchronously. Each workflow script is one well-scoped fan-out; chain phases by reading results before deciding the next workflow call.
+- `workpool(agent=None, *, name=None, context=None{{#if evalTools}}, tools=None{{/if}})`: pool of keep-alive workers bounded by live `task.maxConcurrency`. `.push(*items)` returns item ids; each item goes to the least context-loaded idle worker, a new worker while capacity remains, or a busy worker's round-robin queue. `eval.workpool.freshAgents=true` instead spawns a new agent per item. `.status()` reports counts/workers; `.peek()` returns a non-consuming batch snapshot; `.close()` drops queued work.
+  - The pool name is its background job id and label. Push all items while it is active; its first full drain settles and closes that pool job. New phase/wave after drain → create a new named pool.
+  - Results auto-deliver. Need to block? Leave `eval`, then call `hub` with `op:"wait", ids:["<pool-name>"]`; re-issue until settled. NEVER block the kernel with `pool.wait()`.
+- `agent(prompt, *, agent=None, label=None, schema=None, isolated=None, apply=None, merge=None{{#if evalTools}}, tools=None{{/if}})`: immediate `AgentHandle`; use for a small fixed dependency graph or when the parent needs validated `schema` data. `.wait()` returns text/data; `.handle` is `agent://<id>`. Unwaited results auto-deliver.
+- `completion(prompt, *, model="default", system=None, schema=None)`: immediate `CompletionHandle` for a tool-free one-shot call. Tiers: `"smol"`, `"default"`, `"slow"`.
+- `wait(handles, timeout=None, *, raise_errors=True)`: ordered barrier for agent/completion handles only; `raise_errors=False` keeps an error in its slot.
+{{#if evalTools}}- `@tool` (Python) / `tool(fn, {…})` (JS): kernel-local tool exposed via `tools=`. Use for shared caches, dedup sets, scoring, or structured accumulation across pool workers; calls execute in YOUR kernel and a raised exception returns to the caller without killing it.
+{{/if}}- `log(message)`: progress line. `phase(title)`: status-tree phase.
+- `budget`: Python `budget.total` / `budget.spent()` / `budget.remaining()`; JS awaits them. User `+Nk` = advisory; `+Nk!` = hard.
 </helpers>
 
-<structure>
-For independent per-item chains (review → verify, fetch → extract), use `pipeline()` so each item flows through its own steps without waiting on unrelated items.
+<pool-workflow>
+1. Scope the full independent work list before spawning.
+2. Create ONE explicitly named pool per phase.
+3. Push every known item in one cell; later discoveries MAY be pushed while the pool job is still running.
+4. Continue useful local work. Results auto-deliver.
+5. Completely blocked? Poll `hub wait` with `ids:[pool-name]`, never `pool.wait()`.
+6. Read every batch result; YOU verify and integrate.
 
-Reach for `pipeline()` for per-item multi-stage chains where each item can advance independently. Use `parallel()` when you need a barrier because all results must be gathered before the next step: dedup/merge across the whole set, early-exit on zero, or compare against other findings. Do not add a barrier just to flatten/map/filter; do that with plain JavaScript between calls.
-</structure>
+**Python:**
+
+```python
+phase("Review")
+review = workpool({{#if scoutAvailable}}"scout", {{/if}}name="review", context="Return evidence with exact paths; do not edit.")
+review.push(*[
+    "Review authentication correctness",
+    "Review authorization boundaries",
+    "Review cancellation and cleanup",
+    "Review performance regressions",
+])
+print(review.name)   # poll outside eval: hub wait, ids:["review"]
+```
+
+**JavaScript:**
+
+```js
+phase("Review");
+const review = await workpool({{#if scoutAvailable}}"scout", {{/if}}{
+    name: "review",
+    context: "Return evidence with exact paths; do not edit.",
+});
+await review.push(
+    "Review authentication correctness",
+    "Review authorization boundaries",
+    "Review cancellation and cleanup",
+    "Review performance regressions",
+);
+console.log(review.name); // poll outside eval: hub wait, ids:["review"]
+```
+
+Need a snapshot without consuming/delivering results? `review.peek()` (JS: `await review.peek()`). Need activity counts? `review.status()`.
+</pool-workflow>
+
+<dependencies>
+Use handles only when work item B requires A's exact output before B can be written:
+
+```python
+spec = agent("Extract the protocol", {{#if scoutAvailable}}agent="scout", {{/if}}schema=SPEC).wait()
+impl = agent(f"Implement this protocol: {spec}")
+result = impl.wait()
+```
+
+```js
+const specHandle = await agent("Extract the protocol", { {{#if scoutAvailable}}agent: "scout", {{/if}}schema: SPEC });
+const spec = await specHandle.wait();
+const impl = await agent(`Implement this protocol: ${JSON.stringify(spec)}`);
+const result = await impl.wait();
+```
+
+Fixed independent handles are acceptable when each result must be returned directly into the kernel as structured data. Otherwise use a pool.
+</dependencies>
 
 <patterns>
-Compose the harness the task calls for:
-- **Adversarial verify** — independent skeptics per finding, each prompted to refute; keep only findings that survive.
-- **Perspective-diverse verify** — give verifiers distinct lenses (correctness, security, performance, reproduction) instead of identical prompts.
-- **Judge panel** — independent approaches scored by judges; synthesize from the winner and graft the best of the rest.
-- **Loop-until-dry** — for unknown-size discovery, keep spawning finders until consecutive rounds surface nothing new; dedup against everything seen.
-- **Multi-modal sweep** — parallel finders searching different ways, each blind to the others.
-- **Completeness critic** — final agent asks what is missing: modality not run, claim unverified, file unread.
-- **No silent caps** — if you bound coverage by top-N, no-retry, or sampling, `log()` what you dropped.
+- **Adversarial verify**: pool one REFUTE task per claim/lens; retain only evidence-backed survivors.
+- **Perspective-diverse review**: distinct correctness/security/perf/reproduction items; NEVER clone one vague prompt.
+- **Judge panel**: pool proposals, then a second named pool scores them after the first pool settles.
+- **Loop-until-dry**: push newly discovered items while the pool remains active; dedup against all SEEN.
+- **Multi-modal sweep**: queue by-container/by-content/by-entity/by-time items.
+- **Completeness critic**: final pool item asks what modality/file/claim remains unchecked.
+- **No silent caps**: if sampling/top-N drops work, `log()` what was omitted.
 
-Scale to the ask: "find any bugs" → a few finders and single verification pass. "Thoroughly audit / be comprehensive" → larger finder pool, adversarial pass, and synthesis stage.
+Scale: `"find any bugs"` → small pool. `"thoroughly audit"` → broad pool + a separate adversarial verification pool.
 </patterns>
 
 <execution>
-- Decompose the surface first; capture it in a plan/TODO when it spans phases.
-- Prefer `schema` for any agent whose output you branch on.
-- After a fan-out returns, YOU own correctness: read artifacts, run gates, and verify before acting. Subagents do the legwork; they do not get the last word.
-- Keep going until the task is closed — a returned workflow is a step, not a stopping point.
+- Multi-phase work: capture in `todo`.
+- Each pool item: self-contained target, change/read scope, acceptance.
+- Same-file mutation? One worker owns it; serialize shared boundaries.
+- Pool output is evidence, not truth. Read artifacts, gate findings, run final verification yourself.
+- Continue until closed; a drained pool is a phase boundary, not task completion.
 </execution>
 
 <critical>

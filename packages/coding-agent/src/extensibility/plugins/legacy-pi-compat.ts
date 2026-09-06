@@ -1838,8 +1838,8 @@ async function isSelectedNoTypeEsmPackageBranch(
 	);
 	return Boolean(
 		importTarget &&
-			path.resolve(importTarget) === path.resolve(resolvedPath) &&
-			(!requireTarget || path.resolve(requireTarget) !== path.resolve(importTarget)),
+		path.resolve(importTarget) === path.resolve(resolvedPath) &&
+		(!requireTarget || path.resolve(requireTarget) !== path.resolve(importTarget)),
 	);
 }
 

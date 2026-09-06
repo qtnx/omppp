@@ -50,7 +50,13 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types";
-import { isRecord, normalizeSystemPrompts, normalizeToolCallId, resolveCacheRetention } from "../utils";
+import {
+	getHeaderCaseInsensitive,
+	isRecord,
+	normalizeSystemPrompts,
+	normalizeToolCallId,
+	resolveCacheRetention,
+} from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
 import {
 	clearStreamingPartialJson,
@@ -119,6 +125,7 @@ import {
 	resolveGitHubCopilotBaseUrl,
 } from "./github-copilot-headers";
 import { getOpenAIPromptCacheKey } from "./openai-shared";
+import { applyInferenceHeaders } from "./inference-headers";
 import { transformMessages } from "./transform-messages";
 import { isImageContentAvailable, NON_VISION_IMAGE_PLACEHOLDER, UNAVAILABLE_IMAGE_PLACEHOLDER } from "./vision-guard";
 
@@ -257,15 +264,6 @@ function buildClaudeCodeBetas({
 	if (thinkingRequest) betas.push(effortBeta);
 	betas.push(fallbackCreditBeta);
 	return betas;
-}
-
-function getHeaderCaseInsensitive(headers: Record<string, string> | undefined, headerName: string): string | undefined {
-	if (!headers) return undefined;
-	const normalizedName = headerName.toLowerCase();
-	for (const [key, value] of Object.entries(headers)) {
-		if (key.toLowerCase() === normalizedName) return value;
-	}
-	return undefined;
 }
 
 function isClaudeCodeClientUserAgent(userAgent: string | undefined): userAgent is string {
@@ -1360,7 +1358,7 @@ export type AnthropicClientOptionsArgs = {
 	disableStrictTools?: boolean;
 	fetch?: FetchImpl;
 	maxRetryDelayMs?: number;
-	claudeCodeSessionId?: string;
+	sessionId?: string;
 };
 
 export type AnthropicClientOptionsResult = {
@@ -1750,13 +1748,6 @@ async function* observeDecodedAnthropicSdkEvents(
 const PROVIDER_MAX_RETRIES = 10;
 
 /**
- * Flat delay between attempts when Copilot 400s a model its own `/models`
- * catalog advertises. Part of the fleet carries the model and part doesn't, so
- * the retry is a reroll rather than a wait for capacity to free up.
- */
-const COPILOT_MODEL_FLAP_RETRY_DELAY_MS = 400;
-
-/**
  * How long `ping` keepalives may keep extending the idle deadline without any
  * semantic stream progress, as a multiple of the idle timeout. Anthropic pings
  * across legitimate generation gaps, so pings count as liveness — but a wedged
@@ -1781,20 +1772,6 @@ function shouldIgnoreAnthropicPreambleEvent(eventType: unknown): boolean {
 	if (typeof eventType !== "string") return false;
 	if (eventType === "ping") return true;
 	return !ANTHROPIC_MESSAGE_EVENTS.has(eventType);
-}
-
-/**
- * Whether an Anthropic (or Copilot-over-Anthropic) stream error should be
- * retried. The classification lives in {@link AIError.isProviderRetryableError};
- * this wrapper injects the Copilot-specific model-availability transient check,
- * which the error module must not import directly.
- */
-export function isProviderRetryableError(error: unknown, provider?: string): boolean {
-	return AIError.isProviderRetryableError(error, {
-		provider,
-		isProviderTransient:
-			provider === "github-copilot" ? (err): boolean => AIError.isCopilotTransientModelError(err) : undefined,
-	});
 }
 
 const THINKING_ENVELOPE_OPEN = "<thinking>";
@@ -2344,7 +2321,11 @@ const streamAnthropicOnce = (
 					thinkingDisplay: options?.thinkingDisplay,
 					fetch: options?.fetch,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
-					claudeCodeSessionId: options?.sessionId ?? extractClaudeMetadataSessionId(options?.metadata?.user_id),
+					sessionId:
+						options?.sessionId ??
+						extractClaudeMetadataSessionId(options?.metadata?.user_id) ??
+						options?.promptCacheKey,
+					disableStrictTools,
 				});
 				client = created.client;
 				isOAuthToken = created.isOAuthToken;
@@ -3228,7 +3209,7 @@ const streamAnthropicOnce = (
 						!isLocalIdleTimeout &&
 						firstTokenTime === undefined &&
 						!streamedReplayUnsafeContent &&
-						isProviderRetryableError(streamFailure, model.provider);
+						AIError.isProviderRetryableError(streamFailure);
 					if (
 						activeAbortTracker.wasCallerAbort() ||
 						providerRetryAttempt >= PROVIDER_MAX_RETRIES ||
@@ -3237,12 +3218,7 @@ const streamAnthropicOnce = (
 						throw streamFailure;
 					}
 					providerRetryAttempt++;
-					// Copilot's model-availability 400 is a per-request replica reroll, not
-					// upstream backpressure — the exponential curve would just add dead
-					// time to a coin flip that the next attempt is as likely to win.
-					const backoffDelayMs = AIError.isCopilotTransientModelError(streamFailure)
-						? COPILOT_MODEL_FLAP_RETRY_DELAY_MS
-						: calculateAnthropicRetryDelayMs(providerRetryAttempt - 1);
+					const backoffDelayMs = calculateAnthropicRetryDelayMs(providerRetryAttempt - 1);
 					// Honor the server's retry hint (`retry-after-ms`/`retry-after`) on
 					// 429/529-style failures: retrying sooner than the server asked is a
 					// guaranteed failure that just burns the retry budget.
@@ -3449,7 +3425,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		thinkingDisplay,
 		isOAuth,
 		maxRetryDelayMs,
-		claudeCodeSessionId,
+		sessionId,
 		disableStrictTools: disableStrictToolsOverride,
 	} = args;
 	const compat = model.compat;
@@ -3512,6 +3488,11 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 			dynamicHeaders,
 			headers,
 		);
+		applyInferenceHeaders(defaultHeaders, {
+			provider: model.provider,
+			protocol: "anthropic",
+			sessionId,
+		});
 
 		return {
 			isOAuthToken: false,
@@ -3534,22 +3515,23 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 		betaFeatures.push(interleavedThinkingBeta);
 	}
 
+	const requestModelHeaders = mergeHeaders(
+		model.headers,
+		foundryCustomHeaders,
+		getUmansWebSearchHeader(model, mergeHeaders(model.headers, headers)),
+		headers,
+		dynamicHeaders,
+	);
 	const defaultHeaders = buildAnthropicHeaders({
 		apiKey,
 		baseUrl,
 		isOAuth: oauthToken,
 		extraBetas: betaFeatures,
 		stream,
-		modelHeaders: mergeHeaders(
-			model.headers,
-			foundryCustomHeaders,
-			getUmansWebSearchHeader(model, mergeHeaders(model.headers, headers)),
-			headers,
-			dynamicHeaders,
-		),
+		modelHeaders: requestModelHeaders,
 		isCloudflareAiGateway: model.provider === "cloudflare-ai-gateway",
 		allowAnthropicHeaderOverrides: model.compat.allowAnthropicHeaderOverrides,
-		claudeCodeSessionId,
+		claudeCodeSessionId: sessionId,
 		claudeCodeBetas: oauthToken
 			? buildClaudeCodeBetas({
 					agentRequest: hasTools || thinkingEnabled,
@@ -3560,6 +3542,11 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 					includeAdvancedToolUse: false,
 				})
 			: [],
+	});
+	applyInferenceHeaders(defaultHeaders, {
+		provider: model.provider,
+		protocol: "anthropic",
+		sessionId,
 	});
 
 	if (model.provider === "cloudflare-ai-gateway") {
@@ -3932,6 +3919,73 @@ function shouldUseCoworkRedactThinkingBeta(
 	if (effectiveThinkingDisplay(model, thinkingEnabled, thinkingDisplay) !== "omitted") return false;
 	const family = classifyModel("anthropic", model.id, { lenient: true }).family;
 	return family === "fable" || family === "mythos";
+}
+/**
+ * Anchor cache_control on the stable request head — the last (non-deferred)
+ * tool definition and the last system block. The canonical cache order is
+ * tools → system → messages, so a breakpoint on the final system block caches
+ * the entire tools+system prefix, and the extra tool breakpoint keeps the tool
+ * definitions cached even when the system text changes. This guarantees the
+ * large, unchanging head is a cache hit on every turn regardless of how the
+ * message tail churns — the breakpoint placement first-party Anthropic clients
+ * (Claude Code, Pi) use. Without it, the general API-key path anchors only the
+ * moving message tail, so tail churn re-writes the whole head uncached.
+ *
+ * Anthropic allows at most 4 cache breakpoints per request. At most one is
+ * spent on tools and one on system here, leaving two for the message tail in
+ * `applyPromptCaching`. Head caching is skipped entirely when the head is
+ * already anchored — the OAuth Claude Code path caches its own instruction
+ * block at buildAnthropicSystemBlocks, and via the canonical tools → system
+ * order that single system breakpoint already caches every preceding tool. Re-
+ * anchoring there would be redundant, would change the OAuth wire, and could
+ * push a tool-heavy request over the 4-breakpoint budget, so the general
+ * API-key path (nothing cached upstream) is the only one decorated here.
+ *
+ * Runs after the byte-stability plane (planStableAnthropicSystem /
+ * planStableAnthropicTools), which hands back fresh block/tool copies each turn
+ * and keys tool identity off a fingerprint that excludes cache_control — so
+ * decorating here is byte-stable across turns and never forces a re-baseline.
+ */
+function applyHeadCaching(
+	systemBlocks: AnthropicSystemBlock[] | undefined,
+	tools: AnthropicWireTool[] | undefined,
+	cacheControl?: AnthropicCacheControl,
+): void {
+	if (!cacheControl) return;
+
+	// OMPx places system-prefix breakpoints in buildAnthropicSystemBlocks
+	// (global prefix + trailing project context), so the system head is usually
+	// anchored already. The tool anchor is independent: it keeps tool
+	// definitions cached even when the system text changes. Each anchor is
+	// applied only when its section has none; the total stays inside the
+	// 4-breakpoint budget because applyPromptCaching counts every breakpoint.
+	const systemAnchored = systemBlocks?.some(block => block.cache_control != null) ?? false;
+	const toolsAnchored = tools?.some(tool => tool.cache_control != null) ?? false;
+	// The OAuth Claude Code layout keeps first-party wire parity: its system
+	// breakpoints already cache every preceding tool (canonical tools → system
+	// order), so no tool anchor is added there.
+	const isOAuthLayout = systemBlocks?.[0]?.text?.startsWith(CLAUDE_BILLING_HEADER_PREFIX) === true;
+
+	if (tools && tools.length > 0 && !toolsAnchored && !isOAuthLayout) {
+		// Deferred tools are not part of the checked prefix until referenced, so
+		// anchor the last tool that actually sits in the stable prefix.
+		for (let index = tools.length - 1; index >= 0; index--) {
+			const tool = tools[index];
+			if (!tool || tool.defer_loading) continue;
+			tool.cache_control = cloneAnthropicCacheControl(cacheControl);
+			break;
+		}
+	}
+
+	if (systemBlocks && systemBlocks.length > 0 && !systemAnchored) {
+		// OAuth cloak blocks (billing header, Claude Code instruction) carry a
+		// request-specific fingerprint and must stay uncached; anchor the last
+		// cacheable block instead, if any.
+		const lastIndex = systemBlocks.length - 1;
+		if (lastIndex >= firstCacheableSystemIndex(systemBlocks)) {
+			systemBlocks[lastIndex].cache_control = cloneAnthropicCacheControl(cacheControl);
+		}
+	}
 }
 function usesAdaptiveThinkingTagOnly(model: Model<"anthropic-messages">): boolean {
 	const thinking = model.thinking;
@@ -4468,6 +4522,9 @@ function buildParams(
 	if (controlState) syncAnthropicControlState(controlState, wireMessages);
 	systemBlocks = planStableAnthropicSystem(systemBlocks, controlState, model.compat.supportsMidConversationSystem);
 	tools = planStableAnthropicTools(tools, wireMessages, controlState, model.compat.supportsMidConversationToolChanges);
+	// Anchor the stable tools+system head so it stays cached across turns; the
+	// moving message tail is anchored separately in applyPromptCaching below.
+	applyHeadCaching(systemBlocks, tools, cacheControl);
 	const topLevelEffort = planStableAnthropicEffort(
 		outputConfigEffort,
 		wireMessages,
@@ -5435,12 +5492,10 @@ function buildAnthropicBaseToolInputSchema(tool: Tool): Record<string, unknown> 
 }
 
 function buildAnthropicToolSchemaPlans(tools: Tool[], disableStrictTools = false): AnthropicToolSchemaPlan[] {
-	const plans = tools.map(
-		(tool): AnthropicToolSchemaPlan => ({
-			inputSchema: buildAnthropicBaseToolInputSchema(tool) as AnthropicToolInputSchema,
-			strict: false,
-		}),
-	);
+	const plans = tools.map((tool): AnthropicToolSchemaPlan => ({
+		inputSchema: buildAnthropicBaseToolInputSchema(tool) as AnthropicToolInputSchema,
+		strict: false,
+	}));
 	if (NO_STRICT || disableStrictTools) return plans;
 
 	const candidateIndexes = tools.flatMap((tool, index) => {

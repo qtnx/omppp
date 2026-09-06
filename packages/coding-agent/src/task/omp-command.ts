@@ -427,9 +427,9 @@ function firstNonFlagArg(args: readonly string[], startIndex = 0): string | unde
 function sourceEntrypointArg(first: string | undefined): boolean {
 	return Boolean(
 		first &&
-			!first.startsWith("-") &&
-			(first.endsWith(".ts") || first.endsWith(".js")) &&
-			(path.isAbsolute(first) || first.includes(path.sep)),
+		!first.startsWith("-") &&
+		(first.endsWith(".ts") || first.endsWith(".js")) &&
+		(path.isAbsolute(first) || first.includes(path.sep)),
 	);
 }
 

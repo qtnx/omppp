@@ -116,7 +116,6 @@ function groupConcurrency(group: string): number {
 // their short TS suites can run together. CI still downloads the Linux x64 native
 // addon before this bucket: shared utility barrels may load native-backed modules.
 const fastWorkspacePackages = [
-	"packages/hashline",
 	"packages/wire",
 	"packages/omptype",
 	"packages/utils",
@@ -491,7 +490,7 @@ async function runTestCommand(testCommand: TestCommand): Promise<void> {
 }
 
 async function runTestCommands(testCommands: TestCommand[]): Promise<void> {
-	for (let index = 0; index < testCommands.length; ) {
+	for (let index = 0; index < testCommands.length;) {
 		const group = testCommands[index]?.group;
 		const parallel = group ? groupConcurrency(group) : 1;
 		if (!group || parallel <= 1) {

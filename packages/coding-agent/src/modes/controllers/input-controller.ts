@@ -2,7 +2,13 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { type AutocompleteProvider, getKeybindings, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
+import {
+	type AutocompleteProvider,
+	getKeybindings,
+	matchesKey,
+	type PasteOptions,
+	type SlashCommand,
+} from "@oh-my-pi/pi-tui";
 import { isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
@@ -16,7 +22,7 @@ import { ToolExecutionComponent } from "../../modes/components/tool-execution";
 import { TreeSelectorComponent } from "../../modes/components/tree-selector";
 import { chipLabel, shiftImageMarkers } from "../../modes/composer-attachments";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
-import { materializeImageReferenceLinks } from "../../modes/image-references";
+import { materializeImageReferenceLinks, setCachedImageDimensions } from "../../modes/image-references";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-input";
 import { buildSkillCommandPrompt, isKnownSkillCommand } from "../../modes/skill-command";
@@ -29,6 +35,7 @@ import { parseSlashCommand } from "../../slash-commands/helpers/parse";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
+import { resolveReadPath } from "../../tools/path-utils";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { vocalizer } from "../../tts/vocalizer";
 import {
@@ -41,6 +48,13 @@ import { getSlashCommandUsage, loadSlashCommandUsage, recordSlashCommandUsage } 
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
+import {
+	VideoError,
+	buildVideoContactSheetPng,
+	createVideoPreviewImage,
+	isVideoPath,
+	probeVideo,
+} from "../../utils/video";
 import { resizeImage } from "../../utils/image-resize";
 
 /**
@@ -271,18 +285,18 @@ export class InputController {
 		const viewSession = this.ctx.viewSession;
 		return Boolean(
 			viewSession.isCompacting ||
-				viewSession.isGeneratingHandoff ||
-				viewSession.isRetrying ||
-				this.ctx.loopModeEnabled ||
-				this.ctx.hasActiveBtw() ||
-				this.ctx.hasActiveOmfg() ||
-				(this.ctx.collabGuest && (this.ctx.collabGuest.state?.isStreaming || this.ctx.loadingAnimation)) ||
-				this.ctx.loadingAnimation ||
-				this.ctx.session.isBashRunning ||
-				this.ctx.isBashMode ||
-				this.ctx.session.isEvalRunning ||
-				this.ctx.isPythonMode ||
-				this.ctx.session.isStreaming,
+			viewSession.isGeneratingHandoff ||
+			viewSession.isRetrying ||
+			this.ctx.loopModeEnabled ||
+			this.ctx.hasActiveBtw() ||
+			this.ctx.hasActiveOmfg() ||
+			(this.ctx.collabGuest && (this.ctx.collabGuest.state?.isStreaming || this.ctx.loadingAnimation)) ||
+			this.ctx.loadingAnimation ||
+			this.ctx.session.isBashRunning ||
+			this.ctx.isBashMode ||
+			this.ctx.session.isEvalRunning ||
+			this.ctx.isPythonMode ||
+			this.ctx.session.isStreaming,
 		);
 	}
 
@@ -577,7 +591,7 @@ export class InputController {
 			this.ctx.keybindings.getKeys("app.clipboard.pasteTextRaw"),
 		);
 		this.ctx.editor.onPasteTextRaw = () => void this.handleClipboardTextRawPaste();
-		this.ctx.editor.onLargePaste = (text, lineCount) => this.handleLargePaste(text, lineCount);
+		this.ctx.editor.onLargePaste = (text, lineCount, options) => this.handleLargePaste(text, lineCount, options);
 		this.ctx.editor.setActionKeys(
 			"app.clipboard.copyPrompt",
 			this.ctx.keybindings.getKeys("app.clipboard.copyPrompt"),
@@ -1629,30 +1643,27 @@ export class InputController {
 		return allQueued.length;
 	}
 
-	async #insertPendingImage(imageData: ImageContent): Promise<void> {
-		const imageLink = (
-			await materializeImageReferenceLinks(
-				[
-					{
-						type: "image",
-						data: imageData.data,
-						mimeType: imageData.mimeType,
-					},
-				],
-				this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager),
-			)
-		)?.[0];
-		this.ctx.editor.pendingImages.push({
-			type: "image",
-			data: imageData.data,
-			mimeType: imageData.mimeType,
-		});
+	async #insertPendingImage(imageData: ImageContent, videoPath?: string): Promise<void> {
+		const image: ImageContent = videoPath
+			? createVideoPreviewImage(imageData, videoPath)
+			: { type: "image", data: imageData.data, mimeType: imageData.mimeType };
+		const imageLink =
+			videoPath ??
+			(
+				await materializeImageReferenceLinks([image], this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager))
+			)?.[0];
+		this.ctx.editor.pendingImages.push(image);
 		this.ctx.editor.pendingImageLinks.push(imageLink);
 		this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
 		const imageNum = this.ctx.editor.pendingImages.length;
 		const dims = await this.#imageDimensions(imageData);
-		const label = dims ? `[Image #${imageNum}, ${dims.width}x${dims.height}]` : `[Image #${imageNum}]`;
-		this.ctx.editor.insertAtom(chipLabel("image", imageNum), label);
+		setCachedImageDimensions(image, dims ?? null);
+		const kind = videoPath === undefined ? "image" : "video";
+		// The buffer holds compact chip token; atom table expands it to bracketed marker on submit.
+		const expansion = dims
+			? `[${kind === "video" ? "Video" : "Image"} #${imageNum}, ${dims.width}x${dims.height}]`
+			: `[${kind === "video" ? "Video" : "Image"} #${imageNum}]`;
+		this.ctx.editor.insertAtom(chipLabel(kind, imageNum), expansion);
 		this.ctx.ui.requestRender();
 	}
 
@@ -1668,11 +1679,11 @@ export class InputController {
 		return undefined;
 	}
 
-	async #normalizeAndInsertPastedImage(image: ImageContent, unsupportedMessage: string): Promise<boolean> {
+	async #normalizePastedImage(image: ImageContent, unsupportedMessage: string): Promise<ImageContent | null> {
 		let imageData = await ensureSupportedImageInput(image);
 		if (!imageData) {
 			this.ctx.showStatus(unsupportedMessage);
-			return false;
+			return null;
 		}
 		if (settings.get("images.autoResize")) {
 			try {
@@ -1686,7 +1697,13 @@ export class InputController {
 				// Keep the normalized image when resize fails.
 			}
 		}
-		await this.#insertPendingImage(imageData);
+		return imageData;
+	}
+
+	async #normalizeAndInsertPastedImage(image: ImageContent, unsupportedMessage: string): Promise<boolean> {
+		const normalized = await this.#normalizePastedImage(image, unsupportedMessage);
+		if (!normalized) return false;
+		await this.#insertPendingImage(normalized);
 		return true;
 	}
 
@@ -1703,6 +1720,33 @@ export class InputController {
 	 * the outcome (image attached, or an unsupported-format status surfaced), so
 	 * the caller stops without emitting its own degraded diagnostic.
 	 */
+	/**
+	 * Attach a pasted video path as a contact-sheet preview grid through the
+	 * image pipeline. A missing ffmpeg (or probe failure) degrades to a text
+	 * paste with an actionable status; ENOENT propagates to the caller's
+	 * clipboard-fallback handling.
+	 */
+	async #insertPendingVideoPreview(pastedPath: string): Promise<void> {
+		try {
+			const absolutePath = resolveReadPath(pastedPath, this.ctx.sessionManager.getCwd());
+			const meta = await probeVideo(absolutePath);
+			const sheet = await buildVideoContactSheetPng(absolutePath, meta);
+			const preview = await this.#normalizePastedImage(
+				{ type: "image", data: sheet.png.data, mimeType: sheet.png.mimeType },
+				"Unsupported pasted video preview format",
+			);
+			if (preview) await this.#insertPendingImage(preview, absolutePath);
+		} catch (error) {
+			if (error instanceof VideoError) {
+				this.ctx.editor.pasteText(pastedPath);
+				this.ctx.ui.requestRender();
+				this.ctx.showStatus(error.message);
+				return;
+			}
+			throw error;
+		}
+	}
+
 	async #tryPasteClipboardImage(): Promise<boolean> {
 		const env = process.env;
 		if (env.SSH_CONNECTION || env.SSH_TTY || env.SSH_CLIENT) return false;
@@ -1721,6 +1765,10 @@ export class InputController {
 
 	async handleImagePathPaste(path: string): Promise<void> {
 		try {
+			if (isVideoPath(path)) {
+				await this.#insertPendingVideoPreview(path);
+				return;
+			}
 			const image = await loadImageInput({
 				path,
 				cwd: this.ctx.sessionManager.getCwd(),
@@ -1885,13 +1933,15 @@ export class InputController {
 	}
 
 	/**
-	 * Editor `onLargePaste` hook: stage below-threshold pastes as attachment chips and
-	 * route larger pastes through the menu. Returning `true` tells the editor the paste
-	 * was fully handled.
+	 * Editor `onLargePaste` hook: gate marker-sized paste behind large-paste menu. Returns
+	 * `true` to intercept once it reaches configured threshold; otherwise default collapse-to-marker
+	 * behavior. Below-threshold pastes stage as attachment chips. A paste whose input burst already
+	 * carries submit key skips menu, since nobody can answer it before submit lands.
 	 */
-	handleLargePaste(text: string, lineCount: number): boolean {
+	handleLargePaste(text: string, lineCount: number, options: PasteOptions = {}): boolean {
 		const threshold = this.ctx.settings.get("paste.largeMenuThreshold");
-		if (!(threshold > 0) || lineCount < threshold) {
+		if (!(threshold > 0) || lineCount < threshold || options.submitAfterPaste) {
+			// Below menu threshold: stage paste as text-attachment chip.
 			this.ctx.editor.insertTextAttachment(text);
 			return true;
 		}
@@ -2008,6 +2058,15 @@ export class InputController {
 			basePath,
 			dollarMentions: { skills: this.ctx.session.skills, agents },
 			commandUsage: getSlashCommandUsage,
+			// This TUI host uses the default registry; the receiving session can change with focus.
+			internalUrlCaller: () => {
+				const manager = this.ctx.viewSession.sessionManager;
+				return {
+					cwd: manager.getCwd(),
+					sessionId: manager.getSessionId(),
+					sessionFile: manager.getSessionFile(),
+				};
+			},
 			keybindings: this.ctx.keybindings,
 			workspaceRoots: this.ctx.session.workspaceRoots,
 			copyCurrentLine: () => this.handleCopyCurrentLine(),

@@ -1,5 +1,5 @@
 import type { Page } from "puppeteer-core";
-import { generateUnifiedDiffString } from "../../edit/diff";
+import { editDiffString } from "@oh-my-pi/pi-natives";
 import type { Observation, ObservationEntry } from "./tab-protocol";
 
 export interface PixelDiffResult {
@@ -38,7 +38,7 @@ export function diffObservations(prev: Observation, next: Observation): { diff: 
 	const prevText = serializeObservation(prev);
 	const nextText = serializeObservation(next);
 	if (prevText === nextText) return { diff: "", changed: false };
-	return { diff: generateUnifiedDiffString(prevText, nextText, 2).diff, changed: true };
+	return { diff: editDiffString(prevText, nextText).diff, changed: true };
 }
 
 export async function pixelDiffInPage(

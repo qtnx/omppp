@@ -74,7 +74,7 @@ async function createFixture(overrides?: Partial<Record<string, unknown>>): Prom
 		"learning.consolidation.minEntries": 1,
 		"learning.consolidation.intervalDays": 7,
 		"learning.consolidation.timeoutMs": 5_000,
-		...(overrides ?? {}),
+		...overrides,
 	});
 	const session = {
 		sessionId: "session-1",

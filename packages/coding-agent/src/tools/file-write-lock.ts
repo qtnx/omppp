@@ -3,8 +3,9 @@
  * key; atomic patch renames are the sole two-key exception and acquire source
  * and destination in lexical key order to avoid deadlock.
  */
+import * as fs from "node:fs";
+import * as nodePath from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
-import { canonicalSnapshotKey } from "../edit/file-snapshot-store";
 import { Semaphore } from "../task/parallel";
 
 interface FileWriteLockEntry {
@@ -17,11 +18,23 @@ const fileWriteLocks = new Map<string, FileWriteLockEntry>();
 /**
  * Return the process-wide lock key for a file mutation.
  *
- * This uses the snapshot store's realpath-aware canonicalization so `edit` and
- * `write` contend when different path spellings resolve to the same file.
+ * Realpath-aware so `edit` and `write` contend when different path spellings
+ * (symlinks, `..` segments) resolve to the same file. A path that does not exist
+ * yet (new-file write) falls back to the realpath of its parent directory plus
+ * the basename, then to the input, keeping creates and updates of one file on a
+ * single key.
  */
 export function fileWriteLockKey(absolutePath: string): string {
-	return canonicalSnapshotKey(absolutePath);
+	try {
+		return fs.realpathSync.native(absolutePath);
+	} catch {
+		try {
+			const parent = fs.realpathSync.native(nodePath.dirname(absolutePath));
+			return nodePath.join(parent, nodePath.basename(absolutePath));
+		} catch {
+			return absolutePath;
+		}
+	}
 }
 
 /**

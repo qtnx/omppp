@@ -126,9 +126,12 @@ connectButton.addEventListener("click", async () => {
 	setStatus("Connecting...");
 	try {
 		const [tab] = await queryActiveTab();
-		const response = (await chrome.runtime.sendMessage({ type: "ompx-annotate-pair", host, code, tabId: tab?.id })) as
-			| PairResponse
-			| undefined;
+		const response = (await chrome.runtime.sendMessage({
+			type: "ompx-annotate-pair",
+			host,
+			code,
+			tabId: tab?.id,
+		})) as PairResponse | undefined;
 		if (response?.ok) {
 			setAnnotateAvailability();
 			setStatus(`Paired with ${response.session ?? "session"}`);

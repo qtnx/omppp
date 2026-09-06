@@ -37,7 +37,7 @@ describe("task agent capability descriptions", () => {
 		expect(isReadOnlyAgent({ ...scout, tools: ["read", "grep", "yield"] })).toBe(true);
 	});
 
-	it("disables read summarization for scout and librarian, leaves other agents summarizing", () => {
+	it("disables read summarization for scout, leaves other agents summarizing", () => {
 		const agents = loadBundledAgents();
 
 		expect(agentByName(agents, "explore").readSummarize).toBe(false);
@@ -50,7 +50,7 @@ describe("task agent capability descriptions", () => {
 	it("ships every bundled agent without prewalk; hand-off is opt-in via task.agentPrewalk", () => {
 		const agents = loadBundledAgents();
 
-		for (const name of ["task", "scout", "quick_task", "reviewer", "designer", "librarian"]) {
+		for (const name of ["task", "scout", "quick_task", "reviewer", "security-reviewer", "designer", "librarian"]) {
 			expect(agentByName(agents, name).prewalk).toBeUndefined();
 		}
 	});

@@ -49,8 +49,7 @@ export class IdleMemoryTrim {
 
 		const idleSeconds = Math.max(MIN_IDLE_SECONDS, Math.min(MAX_IDLE_SECONDS, this.#deps.config.idleSeconds()));
 		const generation = this.#generation;
-		let timer: NodeJS.Timeout;
-		timer = setTimeout(() => {
+		const timer: NodeJS.Timeout = setTimeout(() => {
 			void this.#trimFromTimer(timer, generation);
 		}, idleSeconds * 1_000);
 		this.#timer = timer;

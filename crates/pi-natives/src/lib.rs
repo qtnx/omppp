@@ -31,6 +31,7 @@ pub mod crash_handler;
 pub mod desktop;
 pub mod devicecheck;
 pub mod diff;
+pub mod edit;
 pub mod fd;
 pub mod file_lock;
 pub mod glob;
@@ -42,6 +43,7 @@ pub mod iofs;
 pub mod js;
 pub mod keys;
 pub mod live;
+pub mod oauth_callback;
 /// PDF inspection and Markdown conversion.
 pub mod pdf;
 pub mod sixel;

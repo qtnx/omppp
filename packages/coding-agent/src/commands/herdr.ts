@@ -24,7 +24,6 @@ import {
 	type HerdrNotifyPayload,
 	listNotifyDescriptors,
 	type NotifyDescriptor,
-	notifyRunDir,
 	pruneNotifyDescriptor,
 	renderSettledNotification,
 } from "../herdr/notify-optin";

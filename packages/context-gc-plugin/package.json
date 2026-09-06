@@ -11,14 +11,19 @@
 		"url": "git+https://github.com/can1357/oh-my-pi.git",
 		"directory": "packages/context-gc-plugin"
 	},
-	"keywords": ["context", "extension", "memory", "unload"],
+	"keywords": [
+		"context",
+		"extension",
+		"memory",
+		"unload"
+	],
 	"scripts": {
-		"check": "biome check . && bun run check:types",
+		"check": "oxlint . && oxfmt --check --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts' && bun run check:types",
 		"check:types": "tsgo -p tsconfig.json --noEmit",
 		"test": "bun test --parallel",
-		"lint": "biome lint .",
-		"fix": "biome check --write --unsafe .",
-		"fmt": "biome format --write ."
+		"lint": "oxlint .",
+		"fix": "oxlint --fix --fix-suggestions . && bun run fmt",
+		"fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts'"
 	},
 	"dependencies": {
 		"@oh-my-pi/omptype": "catalog:",
@@ -47,7 +52,12 @@
 		}
 	},
 	"omp": {
-		"extensions": ["./src/extension.ts"]
+		"extensions": [
+			"./src/extension.ts"
+		]
 	},
-	"files": ["src", "README.md"]
+	"files": [
+		"src",
+		"README.md"
+	]
 }

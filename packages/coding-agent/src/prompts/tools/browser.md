@@ -1,43 +1,58 @@
-Drives real Chromium tab; full puppeteer access via JS.
+Drive real Chromium tabs from JavaScript or Python Eval with the global `browser` object.
 
 <instruction>
-- Static content (articles, docs, issues/PRs, JSON, PDFs, feeds)? Use `read` with the URL — reader-mode text without spinning up browser. Reach for browser only for JS execution, authentication, or interactive actions.
-- Four actions:
-  - `open` — acquire or reuse named tab (`name` defaults `"main"`). Optional `url` navigates after tab ready. Optional `viewport` sets dimensions. Optional `dialogs: "accept" | "dismiss"` auto-handles `alert`/`confirm`/`beforeunload` so navigation/clicks don't hang; by default dialogs are unhandled and the page hangs until you wire `page.on('dialog', …)`.
-  - `close` — release tab by `name`, or every tab with `all: true`. For spawned-app browsers, set `kill: true` to terminate process tree (default leaves running).
-  - `run` — execute JS against existing tab. `code` is body of async function with `page`, `browser`, `tab`, `display`, `assert`, `wait` in scope. Function's return value JSON-stringified into tool result; multiple `display(value)` calls accumulate text/images. `wait(ms)` sleeps; `wait(fn, { timeout?, interval? })` polls `fn` (sync or async) until truthy and resolves with that value (default 100ms interval; deadline min(30s, cell budget − 1s); named error on timeout) — use it instead of in-page polling Promises inside `tab.evaluate`.
-  - `annotate` — overlay a human feedback UI on the tab: the user draws red boxes or uses **Pick** to select an element DevTools-style (hover highlights the element under the cursor; click marks its box), writes a comment, then hits "Send to agent". The floating toolbar can be dragged anywhere and minimized to a pill. If the named tab is missing or lives on a hidden headless browser, a **visible** browser is launched automatically with a fresh profile (pass `url` when no tab exists). The first call may wait up to `timeout` and return one submission directly. When session queue support is available (normal CLI sessions), annotation mode also registers a background listener, so later submissions are queued as `browser-annotation` messages and wake the agent even while idle; otherwise re-issue `{action:"annotate"}` to pull the next buffered submission. Submissions made while no agent is connected are saved in the page (survives reloads) and delivered automatically the next time annotation mode is enabled. `enabled: false` removes the overlay and stops background delivery; `wait: false` enables without blocking. Timing out is not an error — future submissions still arrive automatically when queue support exists; rects stay on the page.
-- Tabs survive across `run` calls and in-process subagents — open once, reuse.
-- Browser kinds (`app` field on `open`):
-  - default (no `app`) → headless Chromium with stealth patches.
-  - `app.path` → spawn absolute binary (Electron/CDP). No stealth patches — NEVER tamper with a real desktop app.
-  - `app.cdp_url` → connect to existing CDP endpoint (e.g. `http://127.0.0.1:9222`).
-  - `app.target` (with `path`/`cdp_url`) — substring on url+title picks BrowserWindow.
-  - `app.relay: true` → drive the user's own Chrome tabs through the OMPx browser relay (auto-started; requires the OMPx Browser Relay extension). `app.target` picks a tab by URL/title substring; without it the visible tab is adopted without stealing focus.
-- `tab` helpers; drop to raw puppeteer `page` for anything uncovered:
-  - `tab.goto(url, { waitUntil? })` — navigate. A hung load fails ~1s before the cell budget with a named, catchable error and the pending navigation is stopped; for slow pages raise `timeout` or use `waitUntil: "domcontentloaded"`.
-  - `tab.observe({ includeAll?, viewportOnly? })` — accessibility snapshot: `{ url, title, viewport, scroll, elements: [{ id, role, name, value, states, … }] }`. Ids stable until navigation or a re-render invalidates them; re-observe before acting on a changed page.
-  - `tab.ariaSnapshot(selector?, { depth?, boxes? })` — Playwright-format ARIA-tree YAML (nested roles + accessible names + `/url`/`/placeholder`), scoped to `selector` or the whole document. Every node carries a `[ref=eN]` id; `[cursor=pointer]` flags clickables. Captures dense, hierarchical structure/text that `observe()`'s flat list flattens away. Refs renumber from e1 each call and stay valid until navigation, a re-render, or the next `ariaSnapshot()`.
-  - `tab.ref("e5")` — `[ref=eN]` from the last ariaSnapshot → element handle with the common action methods (`.click()`, `.type()`, `.fill()`, `.hover()`, `.evaluate()`, …); the primary way to act on a ref. Snapshot refs also work in selector slots: `tab.click("e5")` and `tab.click("aria-ref=e5")` are equivalent.
-  - `tab.id(n)` — id from last observe → element handle with the same action methods (`.click()`, `.type()`, `.fill()`, …). Handles are not selectors: `tab.click`/`type`/`fill`/`waitFor*` take string selectors only.
-  - `tab.click(selector)` / `tab.type(selector, text)` / `tab.fill(selector, value)` / `tab.press(key, { selector? })` / `tab.scroll(dx, dy)`.
-  - `tab.waitFor(selector, { timeout? })` / `tab.waitForSelector(selector, { timeout?, visible?, hidden? })` — wait until attached (optionally visible/hidden); returns an action-method handle.
-  - `tab.drag(from, to)` — endpoints: selector (center-to-center) or `{ x, y }` viewport point (canvases, sliders).
-  - `tab.scrollIntoView(selector)` — center in viewport; before clicking off-screen elements.
-  - `tab.select(selector, …values)` — set `<select>` option(s); returns selection. `tab.fill` NEVER works for selects.
-  - `tab.uploadFile(selector, …filePaths)` — attach files to `<input type="file">`; paths relative to cwd.
-  - `tab.waitForUrl(pattern, { timeout? })` — substring or `RegExp` (matches SPA pushState nav); returns matched URL.
-  - `tab.waitForResponse(pattern, { timeout? })` — substring, `RegExp`, or `(response) => boolean`; returns puppeteer `HTTPResponse` (`.text()`/`.json()`/`.status()`/`.headers()`).
-  - `tab.waitForNavigation({ waitUntil?, timeout? })` — resolves on the next navigation. Start it BEFORE the click/submit that triggers it; after `tab.goto` (which already waits) use `tab.waitForUrl`/`tab.waitForSelector` instead.
-  - `tab.evaluate(fn, …args)` — run ad-hoc code in the page's MAIN world. DOM and page-defined globals (`window.myFlag`) are visible; mutations affect the page.
-  - `tab.screenshot({ selector?, fullPage?, save?, silent? })` — capture + attach for viewing (`silent: true` skips). Pass `save` only when a later step needs the file.
-  - `tab.extract(format = "markdown")` — readable page content (`"markdown"` | `"text"`); throws when nothing readable.
-- Raw request interception is run-scoped: ending `run` removes request handlers, disables interception, and releases held requests.
-- Selectors: CSS + puppeteer handlers `aria/Sign in`, `text/Continue`, `xpath/…`, `pierce/…`; also Playwright-style `p-aria/…`, `p-text/…`. Playwright-only engines/pseudos (`:has-text()`, `:visible`, …) are rejected — use `text/…` or `aria/…`. A stalled action/wait fails fast with a named `tab.<op>` error carrying a match-count diagnosis, never the whole-cell timeout; a selector matching nothing fails in ~2s (pass an explicit `{ timeout }` to `waitFor`/`waitForSelector` to wait out slow-appearing elements). A whole-cell timeout names the stalled op (including `wait(…)`) and any unhandled dialog blocking the page.
+- Static content? Use `read`. Use `browser` for JavaScript execution, authenticated sessions, and interactive actions.
+- JavaScript: `await browser.open(options)` returns a `BrowserTab`; `browser.tab(name)` returns an existing handle; `await browser.close(options)` releases tabs.
+- Python: `await browser.open(name=…, url=…)`, synchronous `browser.tab(name)`, and `await browser.close(name=…)`. Python methods accept keyword arguments.
+- `annotate`: overlay human feedback UI on tab. User draws red boxes or uses **Pick** to select element DevTools-style, writes comment, then sends. Toolbar draggable/minimizable. Missing or hidden-headless tab auto-launches visible browser with fresh profile; pass `url` when no tab exists. First call may wait up to `timeout` and return submission. Normal CLI sessions queue later submissions as `browser-annotation` messages; otherwise call annotate again. Pending submissions survive reload and deliver when mode re-enabled. `enabled: false` removes overlay; `wait: false` enables without blocking. Timeout is not an error; future submissions still arrive.
+- `open` options: `name`, `url`, `app`, `viewport`, `wait_until`, `dialogs`, `timeout`.
+- `close` options: `name`, `all`, `kill`, `timeout`.
+- Direct tab helpers:
+  - Navigation: `url`, `title`, `goto`.
+  - Inspection: `observe`, `ariaSnapshot`, `screenshot`, `extract`.
+  - Interaction: `click`, `type`, `fill`, `press`, `scroll`, `drag`, `scrollIntoView`, `select`, `uploadFile`.
+  - Waiting: `waitFor`, `waitForSelector`, `waitForUrl`.
+  - Page execution: `evaluate`.
+- `tab.id(n)` / `tab.ref("e5")` return `BrowserElement` handles supporting `click`, `type`, `fill`, `press`, `hover`, `focus`, `select`, `uploadFile`, `scrollIntoView`, `boundingBox`, `isVisible`, `isHidden`, and `evaluate`. A string passed to `BrowserElement.evaluate` is a function expression invoked with the element as its first argument.
+- JavaScript `await tab.run(fnOrCode, { args?, timeout? })` runs a function or code string. Functions receive `{ tab, page, browser, wait, assert }`; cell closures are not captured. Plain data, functions, and `RegExp` values are supported in `args`.
+- Python `await tab.run(code, timeout=…)` accepts a JavaScript code string only. Direct Python helpers use the same method names; keyword arguments become a trailing JavaScript options object.
+- `tab.run` executes in an isolated JavaScript tab runtime with raw Puppeteer `page`/`browser`, ordinary Eval helpers, and full Bun/Node + tool-bridge access. It is not sandboxed.
+- Direct helpers and `tab.run` return real structured values. Nonempty inner `display` text prints in the outer Eval cell; screenshots surface as Eval images.
+- Selectors accept CSS plus Puppeteer `aria/…`, `text/…`, `xpath/…`, and `pierce/…` query handlers.
+- Navigation and re-renders invalidate observed ids and refs. Re-observe, then act in the same cell.
+- Use `tab.select` for `<select>` elements; `tab.fill` does not support them.
+- Raw request interception lasts only for the current `tab.run`.
+- Application modes:
+  - `app.path`: spawn the specified browser or Electron executable.
+  - `app.cdp_url`: attach to an existing CDP endpoint.
+  - `app.relay: true`: drive the user's Chrome through the OMPx relay. `app.target` selects a tab by URL/title substring; without it, the visible tab is adopted. Opening with `url` navigates that adopted tab.
+- Relay sessions are the user's real logged-in browser. Sites attribute actions to the user. Name a target or create a dedicated tab; NEVER navigate the visible tab without authorization.
+- Closing releases the managed tab. It never closes relay/CDP-attached pages. Spawned browsers remain open unless `kill: true`.
 </instruction>
 
+<examples>
+```javascript
+const tab = await browser.open({ name: "docs", url: "https://example.com" });
+const observed = await tab.observe();
+await tab.id(observed.elements[0].id).click();
+const title = await tab.run(async ({ tab }, suffix) => (await tab.title()) + suffix, { args: ["!"] });
+await tab.close();
+```
+
+```python
+tab = await browser.open(name="docs", url="https://example.com")
+observed = await tab.observe()
+await tab.id(observed["elements"][0]["id"]).click()
+title = await tab.run("return await tab.title();", timeout=30)
+await tab.close()
+```
+</examples>
+
 <critical>
-- MUST `open` before `run`. Default to `tab.observe()`; screenshot only for appearance. `code` runs with full Node access — not sandboxed.
+- MUST open a tab before direct use; `browser.tab(name)` does not open one.
+- Default to `tab.observe()`; use screenshots for visual confirmation.
+- `tab.run` has full Bun/Node and tool-bridge access; it is not sandboxed.
+- Relay and CDP actions operate on real user sessions.
 </critical>
 
 <examples>

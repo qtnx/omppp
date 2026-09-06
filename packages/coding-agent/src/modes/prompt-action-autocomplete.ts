@@ -15,6 +15,7 @@ import { getGithubRefContext, getGithubRefSuggestions } from "./github-ref-autoc
 import {
 	applyInternalUrlCompletion,
 	getInternalUrlSuggestions,
+	type InternalUrlCallerContext,
 	isInternalUrlPrefix,
 } from "./internal-url-autocomplete";
 
@@ -42,6 +43,8 @@ interface PromptActionAutocompleteOptions {
 	basePath: string;
 	/** Usage count per command name for frequency-ranked slash completions. */
 	commandUsage?: (name: string) => number;
+	/** Read the receiving session at lookup time, following focus and session replacement. */
+	internalUrlCaller?: () => InternalUrlCallerContext;
 	keybindings: KeybindingsManager;
 	workspaceRoots?: readonly WorkspaceAutocompleteRoot[];
 	copyCurrentLine: () => void;
@@ -189,7 +192,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	#dollarMentions?: DollarMentionAutocompleteOptions;
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
-	#basePath: string;
+	#internalUrlCaller: () => InternalUrlCallerContext;
 
 	constructor(
 		commands: SlashCommand[],
@@ -198,10 +201,11 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		dollarMentions?: DollarMentionAutocompleteOptions,
 		workspaceRoots?: readonly WorkspaceAutocompleteRoot[],
 		commandUsage?: (name: string) => number,
+		internalUrlCaller?: () => InternalUrlCallerContext,
 	) {
 		this.#commands = commands;
 		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, { workspaceRoots, commandUsage });
-		this.#basePath = basePath;
+		this.#internalUrlCaller = internalUrlCaller ?? (() => ({ cwd: basePath }));
 		this.#actions = actions;
 		this.#dollarMentions = dollarMentions;
 	}
@@ -232,7 +236,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 				// tokens such as `#copy` literal.
 				const githubRefSuggestions = getGithubRefSuggestions(textBeforeCursor);
 				if (githubRefSuggestions) return githubRefSuggestions;
-				return getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal);
+				return getInternalUrlSuggestions(textBeforeCursor, undefined, signal, this.#internalUrlCaller);
 			}
 		}
 
@@ -269,7 +273,12 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
-		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal);
+		const urlSuggestions = await getInternalUrlSuggestions(
+			textBeforeCursor,
+			undefined,
+			signal,
+			this.#internalUrlCaller,
+		);
 		if (urlSuggestions) return urlSuggestions;
 
 		if (!isSettingsInitialized() || settings.get("emojiAutocomplete")) {
@@ -414,5 +423,6 @@ export function createPromptActionAutocompleteProvider(
 		options.dollarMentions,
 		options.workspaceRoots,
 		options.commandUsage,
+		options.internalUrlCaller,
 	);
 }

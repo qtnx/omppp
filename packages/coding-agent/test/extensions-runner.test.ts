@@ -2766,7 +2766,7 @@ describe("ExtensionRunner", () => {
 			};
 		}
 
-		it("exposes a single hashline edit path to extension gate handlers", async () => {
+		it("allows bracketed Markdown paths, blocks non-Markdown paths, and accepts legacy headers", async () => {
 			const eventsPath = path.join(tempDir.path(), "tool-call-events.jsonl");
 			const extCode = `
 				import * as fs from "node:fs";
@@ -2778,7 +2778,7 @@ describe("ExtensionRunner", () => {
 							${JSON.stringify(eventsPath)},
 							JSON.stringify({ path: event.input.path, paths: event.input.paths }) + "\\n",
 						);
-						if (typeof event.input.path !== "string") {
+						if (typeof event.input.path !== "string" || !event.input.path.endsWith(".md")) {
 							return { block: true, reason: \`Blocked: \${event.input.path}\` };
 						}
 					});
@@ -2797,17 +2797,37 @@ describe("ExtensionRunner", () => {
 			const wrapped = new ExtensionToolWrapper(createHashlineEditTool(), runner);
 
 			const resultMessage = await wrapped.execute("tool-call-id", {
-				input: "¶plans/switch-case-array-syntax.md#ABC1\n27 27\n+new content",
+				input: [
+					"*** Begin Patch",
+					'["plans/switch case-array.md"#ABC1]',
+					"PUT 27.=27:",
+					"+new content",
+					"*** End Patch",
+				].join("\n"),
+			});
+			await expect(
+				wrapped.execute("non-markdown-tool-call-id", {
+					input: "[packages/coding-agent/src/main.ts#BCD2]\nPUT 1.=1:\n+changed",
+				}),
+			).rejects.toThrow("Blocked: packages/coding-agent/src/main.ts");
+			const legacyResult = await wrapped.execute("legacy-tool-call-id", {
+				input: "¶plans/legacy.md#CDE3\n27 27\n+new content",
 			});
 
 			expect(resultMessage.content).toEqual([{ type: "text", text: "ok" }]);
+			expect(legacyResult.content).toEqual([{ type: "text", text: "ok" }]);
 			const events = fs
 				.readFileSync(eventsPath, "utf8")
 				.trim()
 				.split("\n")
 				.map(line => JSON.parse(line));
 			expect(events).toEqual([
-				{ path: "plans/switch-case-array-syntax.md", paths: ["plans/switch-case-array-syntax.md"] },
+				{ path: "plans/switch case-array.md", paths: ["plans/switch case-array.md"] },
+				{
+					path: "packages/coding-agent/src/main.ts",
+					paths: ["packages/coding-agent/src/main.ts"],
+				},
+				{ path: "plans/legacy.md", paths: ["plans/legacy.md"] },
 			]);
 		});
 		it("keeps non-tag hash suffixes in hashline edit paths", async () => {
@@ -2838,7 +2858,7 @@ describe("ExtensionRunner", () => {
 			const wrapped = new ExtensionToolWrapper(createHashlineEditTool(), runner);
 
 			await wrapped.execute("tool-call-id", {
-				input: "¶plans/foo.md#notatag\n27 27\n+new content",
+				input: "[plans/foo.md#notatag]\nPUT 27.=27:\n+new content",
 			});
 
 			const events = fs
@@ -2878,7 +2898,7 @@ describe("ExtensionRunner", () => {
 
 			await wrapped.execute("tool-call-id", {
 				_path: "plans/allowed.md",
-				input: "¶src/secret.ts#ABC1\n27 27\n+evil content",
+				input: "[src/secret.ts#ABC1]\nPUT 27.=27:\n+evil content",
 			});
 
 			const events = fs
@@ -2921,7 +2941,7 @@ describe("ExtensionRunner", () => {
 
 			await expect(
 				wrapped.execute("tool-call-id", {
-					input: "¶plans/switch-case-array-syntax.md#ABC1\n27 27\n+new content\n¶packages/coding-agent/src/main.ts#DEF2\n1 1\n+changed",
+					input: "[plans/switch-case-array-syntax.md#ABC1]\nPUT 27.=27:\n+new content\n[packages/coding-agent/src/main.ts#DEF2]\nPUT 1.=1:\n+changed",
 				}),
 			).rejects.toThrow("Blocked: undefined");
 

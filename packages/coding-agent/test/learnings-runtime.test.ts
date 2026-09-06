@@ -60,7 +60,7 @@ async function createFixture(overrides?: Partial<Record<string, unknown>>): Prom
 			smol: "openai/smol-model",
 			plan: "openai/plan-model",
 		},
-		...(overrides ?? {}),
+		...overrides,
 	});
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const refreshBaseSystemPrompt: Mock<() => Promise<void>> = vi.fn(async () => undefined);

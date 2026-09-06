@@ -301,7 +301,7 @@ async function createRepoWorktree(
 			await fs.mkdir(path.dirname(worktreePath), { recursive: true });
 			if (branchExists) {
 				// Branch already present but not checked out anywhere — attach it.
-				await repository.worktreeAdd(worktreePath, branch, false);
+				await repository.worktreeAdd(worktreePath, branch, { detach: false, clone: false });
 			} else {
 				const startPoint = await resolveStartPoint(repoRoot, tag, notices);
 				// Native VCS binding has no new-branch worktree operation.

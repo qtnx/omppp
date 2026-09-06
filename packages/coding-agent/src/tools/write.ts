@@ -2,7 +2,6 @@ import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { formatHashlineHeader, stripHashlinePrefixes } from "@oh-my-pi/hashline";
 import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
@@ -21,7 +20,7 @@ import {
 	readArchiveEntries,
 	writeArchive,
 } from "@oh-my-pi/pi-utils/ar";
-import { canonicalSnapshotKey, getFileSnapshotStore } from "../edit/file-snapshot-store";
+import { getEditStore } from "../edit/store";
 import { normalizeToLF } from "../edit/normalize";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
@@ -39,6 +38,7 @@ import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { routeWriteThroughBridge } from "./acp-bridge";
 import { resolveToolTier, truncateForPrompt } from "./approval";
 import { assertEditableFile } from "./auto-generated-guard";
+import { formatHashlineHeader, stripHashlinePrefixes } from "./hashline-format";
 import {
 	type ConflictEntry,
 	conflictRegionPresent,
@@ -332,9 +332,10 @@ export interface WriteToolDetails {
  * line-number prefixes (for example legacy or malformed hashline echoes).
  */
 function stripWriteContentWithPotentialLooseHeader(lines: string[]): { text: string; stripped: boolean } {
-	const cleaned = stripHashlinePrefixes(lines);
-	if (cleaned !== lines) {
-		return { text: cleaned.join("\n"), stripped: true };
+	const originalText = lines.join("\n");
+	const cleanedText = stripHashlinePrefixes(lines).join("\n");
+	if (cleanedText !== originalText) {
+		return { text: cleanedText, stripped: true };
 	}
 
 	const headerIndex = lines.findIndex(line => line.trim().length > 0);
@@ -343,11 +344,12 @@ function stripWriteContentWithPotentialLooseHeader(lines: string[]): { text: str
 	}
 
 	const linesWithoutHeader = lines.slice(0, headerIndex).concat(lines.slice(headerIndex + 1));
-	const cleanedWithoutHeader = stripHashlinePrefixes(linesWithoutHeader);
-	if (cleanedWithoutHeader === linesWithoutHeader) {
-		return { text: lines.join("\n"), stripped: false };
+	const textWithoutHeader = linesWithoutHeader.join("\n");
+	const cleanedWithoutHeader = stripHashlinePrefixes(linesWithoutHeader).join("\n");
+	if (cleanedWithoutHeader === textWithoutHeader) {
+		return { text: originalText, stripped: false };
 	}
-	return { text: cleanedWithoutHeader.join("\n"), stripped: true };
+	return { text: cleanedWithoutHeader, stripped: true };
 }
 
 /**
@@ -379,7 +381,7 @@ function stripWriteContent(session: ToolSession, content: string): { text: strin
 function maybeWriteSnapshotHeader(session: ToolSession, absolutePath: string, content: string): string | undefined {
 	if (!resolveFileDisplayMode(session).hashLines) return undefined;
 	const normalized = normalizeToLF(content);
-	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized, []);
+	const tag = getEditStore(session).recordSnapshot(absolutePath, normalized, []);
 	return formatHashlineHeader(formatPathRelativeToCwd(absolutePath, session.cwd), tag);
 }
 
@@ -868,7 +870,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			await writethroughNoop(absolutePath, newContent, signal);
 			invalidateFsScanAfterWrite(absolutePath);
 			this.session.bumpFileMutationVersion?.(absolutePath);
-			this.session.fileSnapshotStore?.invalidate(absolutePath);
+			getEditStore(this.session).invalidate(absolutePath);
 			const history = this.session.conflictHistory;
 			history?.invalidate(entry.id);
 			if (history) {
@@ -1056,7 +1058,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				await writethroughNoop(absolutePath, text, signal);
 				invalidateFsScanAfterWrite(absolutePath);
 				this.session.bumpFileMutationVersion?.(absolutePath);
-				this.session.fileSnapshotStore?.invalidate(absolutePath);
+				getEditStore(this.session).invalidate(absolutePath);
 				for (const entry of resolvedEntries) history.invalidate(entry.id);
 				for (const entry of staleEntries) history.invalidate(entry.id);
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, text);
@@ -1362,7 +1364,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				if (madeExecutable) {
 					resultText += `\n${EXECUTABLE_NOTICE}`;
 				}
-				if (!diagnostics) {
+				if (!diagnostics.diagnostics) {
 					return {
 						content: [{ type: "text", text: resultText }],
 						details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
@@ -1373,10 +1375,10 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					content: [{ type: "text", text: resultText }],
 					details: {
 						resolvedPath: absolutePath,
-						diagnostics,
+						diagnostics: diagnostics.diagnostics,
 						madeExecutable: madeExecutable || undefined,
 						meta: outputMeta()
-							.diagnostics(diagnostics.summary, diagnostics.messages ?? [])
+							.diagnostics(diagnostics.diagnostics.summary, diagnostics.diagnostics.messages ?? [])
 							.get(),
 					},
 				};

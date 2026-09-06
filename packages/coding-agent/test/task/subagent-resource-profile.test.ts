@@ -170,7 +170,7 @@ function createToolSession(
 	mcpManager?: MCPManager,
 	settings = Settings.isolated({
 		"async.enabled": false,
-		"task.isolation.mode": "none",
+		"task.isolation.enabled": false,
 	}),
 ): ToolSession {
 	return {
@@ -614,7 +614,7 @@ describe("subagent resource profile", () => {
 		};
 		const settings = Settings.isolated({
 			"async.enabled": false,
-			"task.isolation.mode": "none",
+			"task.isolation.enabled": false,
 			"caveman.enabled": false,
 			"rtk.enabled": true,
 		});
@@ -645,7 +645,7 @@ describe("subagent resource profile", () => {
 		};
 		const settings = Settings.isolated({
 			"async.enabled": false,
-			"task.isolation.mode": "none",
+			"task.isolation.enabled": false,
 			"ponytail.enabled": false,
 			"rtk.enabled": true,
 		});
@@ -676,7 +676,7 @@ describe("subagent resource profile", () => {
 		};
 		const settings = Settings.isolated({
 			"async.enabled": false,
-			"task.isolation.mode": "none",
+			"task.isolation.enabled": false,
 			"caveman.enabled": true,
 			"rtk.enabled": false,
 		});
@@ -917,7 +917,7 @@ describe("subagent resource profile", () => {
 		const session = createToolSession([], sessionFile);
 		session.settings = Settings.isolated({
 			"async.enabled": false,
-			"task.isolation.mode": "none",
+			"task.isolation.enabled": false,
 			"irc.enabled": true,
 		});
 		session.contextFiles = [{ path: "/tmp/AGENTS.md", content: "repo-specific rule" }];

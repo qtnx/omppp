@@ -9,7 +9,7 @@ import {
 import { skillCapability } from "../capability/skill";
 import type { EffectiveExtensionRoots, SourceMeta } from "../capability/types";
 import type { SkillsSettings } from "../config/settings";
-import { type Skill as CapabilitySkill, loadCapability } from "../discovery";
+import { type Skill as CapabilitySkill, isUserSourceEnabled, loadCapability } from "../discovery";
 import { compareSkillOrder, scanSkillsFromDir } from "../discovery/helpers";
 import autoloadTemplate from "../prompts/skills/autoload.md" with { type: "text" };
 import userInvocationTemplate from "../prompts/skills/user-invocation.md" with { type: "text" };
@@ -137,8 +137,8 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	const {
 		cwd = getProjectDir(),
 		enabled = true,
-		enableCodexUser = true,
-		enableClaudeUser = true,
+		enableCodexUser = false,
+		enableClaudeUser = false,
 		enableClaudeProject = true,
 		enablePiUser = true,
 		enablePiProject = true,
@@ -165,7 +165,6 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	// Codex/Claude/Pi (issue #2401 / PR #2405 review).
 	const anyThirdPartySkillToggleEnabled =
 		enableCodexUser || enableClaudeUser || enableClaudeProject || enablePiUser || enablePiProject;
-
 	function isSourceEnabled(source: SourceMeta): boolean {
 		const { provider, level } = source;
 		// Managed skills (auto-learn) are OMP-native and discovered unconditionally
@@ -173,13 +172,21 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		// master `enabled` flag above still gates them.
 		if (provider === MANAGED_SKILLS_PROVIDER_ID) return true;
 		if (provider === "bundled") return enableAgentsUser || enableAgentsProject;
-		if (provider === "codex" && level === "user") return enableCodexUser;
-		if (provider === "claude" && level === "user") return enableClaudeUser;
+		if (provider === "codex" && level === "user") return enableCodexUser || isUserSourceEnabled("codex");
+		if (provider === "claude" && level === "user") return enableClaudeUser || isUserSourceEnabled("claude");
 		if (provider === "claude" && level === "project") return enableClaudeProject;
 		if (provider === "native" && level === "user") return enablePiUser;
 		if (provider === "native" && level === "project") return enablePiProject;
 		if (provider === "agents" && level === "user") return enableAgentsUser;
 		if (provider === "agents" && level === "project") return enableAgentsProject;
+		// User-scope claude-plugins skills carry the root's origin (#10743). omp's
+		// own installs (`omp` registry, `--plugin-dir`) are not the foreign
+		// ~/.claude/plugins tree, so the foreign opt-in gate applies only to
+		// claude-origin roots — parity with allowedRoots() in
+		// discovery/claude-plugins.ts. Without this, #10666's root-level fix is
+		// re-dropped here for every user-level claude-plugins skill.
+		if (provider === "claude-plugins" && source.origin !== undefined && source.origin !== "claude") return true;
+		if (level === "user") return isUserSourceEnabled(provider);
 		return anyThirdPartySkillToggleEnabled;
 	}
 
