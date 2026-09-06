@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.7.14] - 2026-09-06
+
 ### Added
 
 - Added `ompx annotate install`, which writes the extension bundled inside the ompx binary to `~/.omp/annotate/extension` (or `--dir`) and prints the Chrome load-unpacked steps.

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.7.14] - 2026-09-06
+
+### Added
+
+- Skills can include bounded `globs` and `triggers` hints in the skill index without loading their full content.
+- `plan` and `slow` roles assigned a GPT-6 model (e.g. `gpt-6-astra`) without a `:level` suffix now run at `xhigh` thinking; execution roles keep the configured default. An explicit suffix still wins.
+- OpenAI GPT-5.6/GPT-6 models (e.g. `gpt-6-astra`) now get a model-notes block in the system prompt: deliver documents in the final message, inventory and cite only lines actually read, stop widening noisy searches, read mandatory skills before designing, and keep authorization across turns instead of re-asking.
+- Added `ompx annotate install` to write the bundled OMPx Annotate Chrome extension to disk with load-unpacked steps.
+
 ### Fixed
 
 - Planning-only requests stay planning-only in normal and Safe Orchestrator modes, with bundled planning skills available without extra setup.
@@ -9,25 +18,7 @@
 - Codex `gpt-5.6-luna`/`sol`/`terra` and `gpt-6-astra` now keep their 372K context window when `extendedContext` is off (previously capped to 272K); `models.yml` `modelOverrides` still win.
 - `duo_handoff`/`duo_escalate` are no longer advertised (in the tool list or the system prompt) while duo is off; models picked them after a plan approval and got "no duo controller is active". They appear when duo activates and disappear when it deactivates.
 - `ompx -p` now prints every assistant message of the turn in order (what the TUI shows) instead of only the last one; models that write a document mid-turn and then continue no longer lose it in print mode.
-
-### Added
-
-- Skills can include bounded `globs` and `triggers` hints in the skill index without loading their full content.
-- `plan` and `slow` roles assigned a GPT-6 model (e.g. `gpt-6-astra`) without a `:level` suffix now run at `xhigh` thinking; execution roles keep the configured default. An explicit suffix still wins.
-- OpenAI GPT-5.6/GPT-6 models (e.g. `gpt-6-astra`) now get a model-notes block in the system prompt: deliver documents in the final message, inventory and cite only lines actually read, stop widening noisy searches, read mandatory skills before designing, and keep authorization across turns instead of re-asking.
-### Added
-
-- Added `ompx annotate install` to write the bundled OMPx Annotate Chrome extension to disk with load-unpacked steps.
-
-### Fixed
-
 - Browser annotations sent while the agent is running now show their queued chip immediately instead of after the next keystroke.
-
-## [1.7.12] - 2026-09-05
-
-### Added
-
-- OpenAI Codex now supports GPT-6 Astra, including mid-conversation thinking-level changes without breaking prompt cache.
 
 ## [18.1.3] - 2026-09-02
 
@@ -1715,6 +1706,12 @@
 - Fixed `ast_edit` erroring with "`lang` is required" — an argument that no longer exists in the tool schema — when `paths` resolved to files of multiple languages (e.g. a crate directory with `.rs` + `.toml`). Mixed-language paths now rewrite per file: each file is parsed in its own inferred language, patterns are compiled per language, and a pattern that doesn't parse in some matched language simply skips those files.
 - Fixed the `retain` tool's TUI renderer crashing when streaming arguments temporarily expose a non-array `items` value ([#6528](https://github.com/can1357/oh-my-pi/issues/6528)).
 - Fixed Edit and Write tools failing with `Settings not initialized` in isolated sessions by using each tool session's settings for generated-file guards, with safe schema defaults for standalone guards and inline-image rendering ([#6549](https://github.com/can1357/oh-my-pi/issues/6549)).
+
+## [1.7.12] - 2026-09-05
+
+### Added
+
+- OpenAI Codex now supports GPT-6 Astra, including mid-conversation thinking-level changes without breaking prompt cache.
 
 ## [1.7.11] - 2026-09-04
 
