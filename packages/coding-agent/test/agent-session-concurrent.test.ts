@@ -979,6 +979,33 @@ describe("AgentSession concurrent prompt guard", () => {
 		await promptTask.catch(() => {});
 	});
 
+	it("emits queued_messages_changed only for chip-bearing customs queued mid-stream", async () => {
+		const session = await createSession();
+		const promptTask = session.prompt("First message");
+		await waitFor(() => session.isStreaming);
+		const events: string[] = [];
+		const unsubscribe = session.subscribe(event => {
+			if (event.type === "queued_messages_changed") events.push(event.type);
+		});
+
+		// Chip-less aside first: subscriber fan-out is FIFO, so if it emitted, its
+		// event would land before the chip event and the final list would be 2 long.
+		await session.sendCustomMessage(
+			{ customType: "context-aside", content: "silent aside", display: false, attribution: "agent" },
+			{ deliverAs: "followUp" },
+		);
+		await session.sendCustomMessage(
+			{ customType: "browser-annotation", content: "human feedback", display: true, attribution: "user" },
+			{ deliverAs: "followUp", triggerTurn: true, queueChipText: "Browser annotation — example.com" },
+		);
+		await waitFor(() => events.length >= 1);
+		expect(events).toEqual(["queued_messages_changed"]);
+
+		unsubscribe();
+		session.abort({ reason: USER_INTERRUPT_LABEL });
+		await promptTask.catch(() => {});
+	});
+
 	it("does not emit session_stop for subagent sessions", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({

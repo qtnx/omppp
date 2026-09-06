@@ -63,6 +63,8 @@ export type AgentSessionEvent =
 	| { type: "todo_reminder"; todos: TodoItem[]; attempt: number; maxAttempts: number }
 	| { type: "todo_auto_clear" }
 	| { type: "irc_message"; message: CustomMessage }
+	/** A chip-bearing custom message was queued behind the streaming turn (browser annotation, skill prompt). */
+	| { type: "queued_messages_changed" }
 	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
 	| {
 			type: "thinking_level_changed";
