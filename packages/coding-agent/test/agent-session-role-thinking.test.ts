@@ -202,6 +202,42 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(session.thinkingLevel).toBe(Effort.High);
 	});
 
+	it("pins xhigh for GPT-6 planning roles without a suffix, but not for execution roles or GPT-5.6", async () => {
+		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
+		const astra = getBundledModel("openai-codex", "gpt-6-astra");
+		const sol = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!astra || !sol) throw new Error("Expected openai-codex gpt-6-astra and gpt-5.6-sol in the catalog");
+
+		await createSession({
+			initialModelId: defaultModel.id,
+			initialThinkingLevel: Effort.Medium,
+			modelRoles: {
+				default: `${defaultModel.provider}/${defaultModel.id}`,
+				plan: `${astra.provider}/${astra.id}`,
+				slow: `${astra.provider}/${astra.id}:medium`,
+				smol: `${astra.provider}/${astra.id}`,
+			},
+			runtimeApiKeys: { "openai-codex": "test-key" },
+		});
+
+		const plan = session.resolveRoleModelWithThinking("plan");
+		expect(plan.model?.id).toBe(astra.id);
+		expect(plan.thinkingLevel).toBe(Effort.XHigh);
+		expect(plan.explicitThinkingLevel).toBe(true);
+
+		// An explicit suffix always wins over the family floor.
+		expect(session.resolveRoleModelWithThinking("slow").thinkingLevel).toBe(Effort.Medium);
+		// Execution roles keep the configured default (no pin).
+		const smol = session.resolveRoleModelWithThinking("smol");
+		expect(smol.explicitThinkingLevel).toBe(false);
+		expect(smol.thinkingLevel).toBeUndefined();
+
+		sessionSettings.setModelRole("plan", `${sol.provider}/${sol.id}`);
+		const solPlan = session.resolveRoleModelWithThinking("plan");
+		expect(solPlan.model?.id).toBe(sol.id);
+		expect(solPlan.explicitThinkingLevel).toBe(false);
+	});
+
 	it("preserves explicit role thinking when updating default model despite unresolved previous model", async () => {
 		const defaultModel = getAnthropicModelOrThrow("claude-sonnet-4-5");
 		const slowModel = getAnthropicModelOrThrow("claude-sonnet-4-6");

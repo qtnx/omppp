@@ -26,12 +26,13 @@ import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile
 import { expandAtImports } from "./discovery/at-imports";
 import cavemanSkill from "./discovery/bundled-skills/caveman.md" with { type: "text" };
 import ponytailSkill from "./discovery/bundled-skills/ponytail.md" with { type: "text" };
-import { loadSkills, type Skill } from "./extensibility/skills";
+import { loadSkills, normalizeSkillMetadata, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
 import cavemanModeActiveTemplate from "./prompts/system/caveman-mode-active.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
+import openAIGptModelNotes from "./prompts/system/model-notes/openai-gpt.md" with { type: "text" };
 import defaultPersonality from "./prompts/system/personalities/default.md" with { type: "text" };
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
@@ -39,7 +40,7 @@ import ponytailModeActiveTemplate from "./prompts/system/ponytail-mode-active.md
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
-import { usesCodexTaskPrompt } from "./task/prompt-policy";
+import { modelPromptProfile, usesCodexTaskPrompt } from "./task/prompt-policy";
 import { shortenPath } from "./tools/render-utils";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
@@ -172,6 +173,11 @@ function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | nu
 }
 
 /** Bundled caveman skill body (frontmatter stripped) wrapped in the caveman-mode block. */
+/** Model-family guidance block; empty for models without a profile (see `modelPromptProfile`). */
+function renderModelNotesBlock(model: string | undefined): string {
+	return modelPromptProfile(model) === "openai-gpt" ? openAIGptModelNotes.trim() : "";
+}
+
 function renderCavemanModeBlock(): string {
 	const skill = parseFrontmatter(cavemanSkill, { level: "off" }).body.trim();
 	return prompt.render(cavemanModeActiveTemplate, { skill }).trim();
@@ -759,15 +765,49 @@ export interface BuildSystemPromptResult {
 /** Build the system prompt with tools, guidelines, and context */
 const SKILL_INDEX_MAX_CHARS = 120;
 
+const SKILL_INDEX_METADATA_VALUE_MAX_CHARS = 80;
+const SKILL_INDEX_METADATA_MAX_CHARS = 240;
+
+function sanitizeSkillIndexMetadataValue(value: string): string {
+	const normalized = value
+		.replace(/[\p{Cc}\p{Cf}]/gu, " ")
+		.replace(/[<>`]/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (normalized.length <= SKILL_INDEX_METADATA_VALUE_MAX_CHARS) return normalized;
+	return `${normalized.slice(0, SKILL_INDEX_METADATA_VALUE_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+function boundSkillIndexDescription(firstSentence: string): string {
+	if (firstSentence.length <= SKILL_INDEX_MAX_CHARS) return firstSentence;
+	const cut = firstSentence.slice(0, SKILL_INDEX_MAX_CHARS - 1);
+	const lastSpace = cut.lastIndexOf(" ");
+	return `${cut.slice(0, lastSpace > 60 ? lastSpace : SKILL_INDEX_MAX_CHARS - 1).trimEnd()}…`;
+}
+
 /** First sentence of a skill description, bounded, for the `<skills>` routing index. */
-export function skillIndexLine(description: string): string {
+export function skillIndexLine(description: string, metadata?: Pick<Skill, "globs" | "triggers">): string {
 	const text = description.replace(/\s+/g, " ").trim();
 	const sentenceEnd = text.search(/[.!?](?=\s|$)/);
 	const firstSentence = sentenceEnd > 0 ? text.slice(0, sentenceEnd + 1) : text;
-	if (firstSentence.length <= SKILL_INDEX_MAX_CHARS) return firstSentence;
-	const cut = firstSentence.slice(0, SKILL_INDEX_MAX_CHARS);
-	const lastSpace = cut.lastIndexOf(" ");
-	return `${cut.slice(0, lastSpace > 60 ? lastSpace : SKILL_INDEX_MAX_CHARS).trimEnd()}…`;
+	const boundedDescription = boundSkillIndexDescription(firstSentence);
+	const metadataValues = [
+		...(normalizeSkillMetadata(metadata?.globs) ?? []),
+		...(normalizeSkillMetadata(metadata?.triggers) ?? []),
+	]
+		.map(sanitizeSkillIndexMetadataValue)
+		.filter(value => value.length > 0);
+	if (metadataValues.length === 0) return boundedDescription;
+	let metadataSuffix = "when: ";
+	for (const value of metadataValues) {
+		const separator = metadataSuffix === "when: " ? "" : ", ";
+		const available = SKILL_INDEX_METADATA_MAX_CHARS - metadataSuffix.length - separator.length;
+		if (available <= 0) break;
+		const boundedValue = value.length > available ? value.slice(0, available).trimEnd() : value;
+		metadataSuffix += `${separator}${boundedValue}`;
+		if (boundedValue.length < value.length) break;
+	}
+	return `${boundedDescription} ${metadataSuffix}`;
 }
 
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
@@ -1073,7 +1113,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	const filteredSkills = hasRead
 		? skills
 				.filter(skill => skill.hide !== true)
-				.map(skill => ({ ...skill, description: skillIndexLine(skill.description) }))
+				.map(skill => ({ ...skill, description: skillIndexLine(skill.description, skill) }))
 		: [];
 
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [
@@ -1118,6 +1158,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		additionalWorkspaceRoots: additionalWorkspaceRoots.filter(d => path.resolve(d) !== path.resolve(resolvedCwd)),
 		model: includeModelInPrompt ? (model ?? "") : "",
 		useCodexTaskPrompt: usesCodexTaskPrompt(model),
+		modelNotes: renderModelNotesBlock(model),
 		personality: personalityBlock,
 		cavemanMode: cavemanEnabled ? renderCavemanModeBlock() : "",
 		ponytailMode: ponytailEnabled ? renderPonytailModeBlock() : "",

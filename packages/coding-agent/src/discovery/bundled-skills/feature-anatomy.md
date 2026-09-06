@@ -1,6 +1,11 @@
 ---
 name: feature-anatomy
 description: MANDATORY for new capabilities in existing code. Mirrors the newest feature, identifies full reachability, and drives one executable vertical slice at a time; the anatomy checklist never becomes a serial Foundation program.
+triggers:
+  - new feature
+  - add capability
+  - feature wiring
+  - reachability
 ---
 
 # Feature Anatomy
@@ -9,7 +14,7 @@ A feature is not the happy-path function. It is the FULL anatomy the codebase's 
 
 ## Step 1 — find the template: the newest similar feature
 Don't invent a shape; mirror the team's freshest one:
-- `git log --oneline --diff-filter=A -- src/routes src/features | head -20` → recently added feature files.
+- `git log --oneline --diff-filter=A -n 20 -- src/routes src/features` → recently added feature files.
 - Map the newest feature's files as a checklist, but read only the files needed by the CURRENT vertical slice before coding. Later wiring stays in its owning slice.
 - Two competing patterns in the repo → follow the newest-blessed/dominant one; genuinely split → ask which is canonical (interview trigger). NEVER add pattern #3.
 
@@ -37,7 +42,7 @@ Walk applicable items inside the SAME full-cycle feature owner; mark each done o
 Skipped applicable wiring is a defect; N/A or later-slice items are not blockers for the current executable slice.
 
 ## Step 4 — prove reachability end to end
-Per skill://verify-before-done: exercise the USER-reachable path once on the real surface (real HTTP through the router with real auth / real click flow in the browser / real command), assert response fields AND persisted state, then two failure paths (bad input → designed 4xx + store unchanged; bad auth → 401/403).
+Per skill://verify-before-done: exercise the USER-reachable path once on its real surface (HTTP through the router, browser click flow, CLI command, worker message, as applicable), then assert relevant output/state. Exercise invalid-input, auth, and persistence failure paths only when the feature has those boundaries.
 
 ## Scope discipline
 Implement the FULL requested scope through back-to-back executable vertical slices. This is sequencing, not MVP delivery: each slice runs before the next, and no phase stops at contracts/tests/scaffolding alone. Ideas beyond scope go to `Noticed:`.

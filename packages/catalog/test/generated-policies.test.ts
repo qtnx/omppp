@@ -212,7 +212,7 @@ describe("generated model policies", () => {
 		expect(models[4]?.cost.longContext).toBeUndefined();
 	});
 
-	it("pins bundled GPT-5.6 Codex-transport context windows to exactly 372K", () => {
+	it("pins bundled GPT-5.6 and GPT-6 astra Codex-transport context windows to exactly 372K", () => {
 		const models: ModelSpec<Api>[] = [
 			// Discovery may omit or report any positive context for these.
 			createSpec({
@@ -233,6 +233,12 @@ describe("generated model policies", () => {
 				provider: "openai-codex",
 				contextWindow: 1_050_000,
 			}),
+			createSpec({
+				id: "gpt-6-astra",
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+				contextWindow: 1_050_000,
+			}),
 			// The first-party API-key entry uses openai-responses and is untouched.
 			createSpec({ id: "gpt-5.6-sol", api: "openai-responses", provider: "openai", contextWindow: 1050000 }),
 			// The Codex registry actively reports 272K for this alias, so the
@@ -248,8 +254,9 @@ describe("generated model policies", () => {
 		expect(models[0]?.contextWindow).toBe(372_000);
 		expect(models[1]?.contextWindow).toBe(372_000);
 		expect(models[2]?.contextWindow).toBe(372_000);
-		expect(models[3]?.contextWindow).toBe(1050000);
-		expect(models[4]?.contextWindow).toBe(272000);
+		expect(models[3]?.contextWindow).toBe(372_000);
+		expect(models[4]?.contextWindow).toBe(1050000);
+		expect(models[5]?.contextWindow).toBe(272000);
 	});
 
 	it("applies GPT-5.6 long-context pricing to Codex-transport SKUs (openai/codex#32486)", () => {

@@ -45,6 +45,8 @@ export interface SessionDuoOrchestratorHost {
 	requestAgentContinue(): void;
 	getActiveToolNames(): string[];
 	setActiveToolsByName(names: string[]): Promise<void>;
+	/** Reconcile `duo_handoff`/`duo_escalate` presence with the live duo phase. */
+	syncDuoToolSurface?(): Promise<void>;
 	refreshSystemPrompt(): Promise<void>;
 	emitModeChanged(mode: "orchestrator" | "none"): Promise<void>;
 	persistModeChange(enabled: boolean): void;
@@ -357,6 +359,7 @@ export class SessionDuoOrchestrator {
 				setPlanModeEnabled: enabled => this.#setDuoPlanModeEnabled(enabled),
 				planModeActive: () => this.#host.getPlanModeState()?.enabled === true,
 				requestAgentContinue: () => this.#host.requestAgentContinue(),
+				syncToolSurface: () => this.#host.syncDuoToolSurface?.(),
 			},
 			config,
 			restored,

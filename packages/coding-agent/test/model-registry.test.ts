@@ -1780,9 +1780,11 @@ describe("ModelRegistry", () => {
 			await Settings.init({ inMemory: true, overrides: { extendedContext: false } });
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
 
-			// GPT-5.6 bills 2x input above 272K on both the API and Codex.
+			// GPT-5.6 bills 2x input above 272K on the API; the Codex route keeps
+			// the fork's pinned 372K usable window (the cap never shrinks it).
 			expect(registry.find("openai", "gpt-5.6-sol")?.contextWindow).toBe(272_000);
-			expect(registry.find("openai-codex", "gpt-5.6-sol")?.contextWindow).toBe(272_000);
+			expect(registry.find("openai-codex", "gpt-5.6-sol")?.contextWindow).toBe(372_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(372_000);
 			// Standard-priced 1M models (no long-context tier) keep their window.
 			expect(registry.find("anthropic", "claude-opus-4-8")?.contextWindow).toBe(1_000_000);
 			// SuperGrok carries public xAI tiers for stats estimates, not billing.

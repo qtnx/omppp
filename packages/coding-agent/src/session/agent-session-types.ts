@@ -233,6 +233,8 @@ export interface AgentSessionConfig {
 	setPendingFullWriteDescription?: (enabled: boolean) => void;
 	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
 	ensureGoalRegistered?: () => Promise<boolean>;
+	/** Registers `duo_handoff`/`duo_escalate` when a duo controller goes live after tool creation. */
+	ensureDuoToolsRegistered?: () => Promise<boolean>;
 	/** Current session pre-LLM message transform pipeline. */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	/** Provider request transform applied after message conversion. */

@@ -25,7 +25,7 @@ import orchestratorModeOverlayTemplate from "../prompts/system/orchestrator-mode
 import toolRosterNoticePrompt from "../prompts/system/tool-roster-notice.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
 import type { SecretVaultLike } from "../secrets/vault";
-import { usesCodexTaskPrompt } from "../task/prompt-policy";
+import { modelPromptProfile, usesCodexTaskPrompt } from "../task/prompt-policy";
 import { countToolsForAutoDiscovery, type EffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import {
 	buildDiscoverableToolSearchIndex,
@@ -34,7 +34,7 @@ import {
 	type DiscoverableToolSearchIndex,
 	resolveEffectiveToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
-import type { Tool, ToolSession } from "../tools";
+import { isDuoToolName, type Tool, type ToolSession } from "../tools";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { computerExposureMode } from "../tools/computer/exposure";
 import { ConsultTool } from "../tools/consult";
@@ -122,6 +122,8 @@ interface SessionToolsOptions {
 	setPendingFullWriteDescription?: (enabled: boolean) => void;
 	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
 	ensureGoalRegistered?: () => Promise<boolean>;
+	/** Registers `duo_handoff`/`duo_escalate` when a duo controller goes live after tool creation. */
+	ensureDuoToolsRegistered?: () => Promise<boolean>;
 	rebuildSystemPrompt?: (
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
@@ -164,11 +166,9 @@ function extractSkillsAndRulesSection(systemPromptBlock: string): string | undef
 }
 
 export function buildSystemPromptWithOrchestratorOverlay(baseSystemPrompt: string[]): string[] {
-	const skillsAndRules = extractSkillsAndRulesSection(baseSystemPrompt[0] ?? "");
-	if (!skillsAndRules) return [orchestratorModeActivePrompt, ...baseSystemPrompt.slice(1)];
 	const orchestratorPrompt = prompt.render(orchestratorModeOverlayTemplate, {
+		baseSystemPrompt: baseSystemPrompt[0] ?? "",
 		orchestratorMode: orchestratorModeActivePrompt,
-		skillsAndRules,
 	});
 	return [orchestratorPrompt, ...baseSystemPrompt.slice(1)];
 }
@@ -341,6 +341,7 @@ export class SessionTools {
 	 */
 	readonly #deviceOnlyWriteTransportAvailable: boolean;
 	#ensureGoalRegistered: SessionToolsOptions["ensureGoalRegistered"];
+	#ensureDuoToolsRegistered: SessionToolsOptions["ensureDuoToolsRegistered"];
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
@@ -391,6 +392,7 @@ export class SessionTools {
 		this.#setDeviceOnlyWrite = options.setDeviceOnlyWrite;
 		this.#setPendingFullWriteDescription = options.setPendingFullWriteDescription;
 		this.#ensureGoalRegistered = options.ensureGoalRegistered;
+		this.#ensureDuoToolsRegistered = options.ensureDuoToolsRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#systemPromptOverlay = options.systemPromptOverlay;
 		this.#getPinnedRuntimeToolNames = options.getPinnedRuntimeToolNames;
@@ -926,7 +928,8 @@ export class SessionTools {
 		const activeModel = this.#host.model();
 		const model = activeModel ? formatModelString(activeModel) : undefined;
 		if (!model || this.#host.settings.get("includeModelInPrompt")) return model;
-		return usesCodexTaskPrompt(model) ? "task-policy:gpt-5.6" : "task-policy:default";
+		const taskPolicy = usesCodexTaskPrompt(model) ? "gpt-5.6" : "default";
+		return `task-policy:${taskPolicy}|model-notes:${modelPromptProfile(model) ?? "default"}`;
 	}
 
 	/** Reconciles the model-dependent discovery surface after a model change. */
@@ -1281,6 +1284,10 @@ export class SessionTools {
 		if (toolNames.includes("goal") && !this.#toolRegistry.has("goal")) {
 			const goalRegistration = this.#ensureGoalRegistered?.();
 			if (goalRegistration) await untilAborted(signal, goalRegistration);
+		}
+		if (toolNames.some(name => isDuoToolName(name) && !this.#toolRegistry.has(name))) {
+			const duoRegistration = this.#ensureDuoToolsRegistered?.();
+			if (duoRegistration) await untilAborted(signal, duoRegistration);
 		}
 		const liveToolsByName = new Map(this.#host.agent.state.tools.map(tool => [tool.name, tool]));
 		const selectedTools = toolNames.flatMap(name => {
@@ -1795,6 +1802,10 @@ export class SessionTools {
 				const goalRegistration = this.#ensureGoalRegistered?.();
 				if (goalRegistration) await goalRegistration;
 			}
+			if (toolNames.some(name => isDuoToolName(name) && !this.#toolRegistry.has(name))) {
+				const duoRegistration = this.#ensureDuoToolsRegistered?.();
+				if (duoRegistration) await duoRegistration;
+			}
 			const normalized = this.#normalizeSelectableToolNames(toolNames);
 			// Transport-write eligibility keys off the *current* active set: an ordinary
 			// selection change should not demote `write` unless it is already active.
@@ -1813,6 +1824,10 @@ export class SessionTools {
 			if (toolNames.includes("goal") && !this.#toolRegistry.has("goal")) {
 				const goalRegistration = this.#ensureGoalRegistered?.();
 				if (goalRegistration) await goalRegistration;
+			}
+			if (toolNames.some(name => isDuoToolName(name) && !this.#toolRegistry.has(name))) {
+				const duoRegistration = this.#ensureDuoToolsRegistered?.();
+				if (duoRegistration) await duoRegistration;
 			}
 			const normalized = this.#normalizeSelectableToolNames(toolNames);
 			await this.#applyToolPresentation(

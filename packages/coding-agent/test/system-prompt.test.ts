@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { prompt } from "@oh-my-pi/pi-utils";
 import eagerTaskPrompt from "../src/prompts/system/eager-task.md" with { type: "text" };
+import { buildSystemPromptWithOrchestratorOverlay } from "../src/session/session-tools";
 import { buildSystemPrompt } from "../src/system-prompt";
 
 interface ProbeRunResult {
@@ -268,7 +269,66 @@ function expectSoloWorkCarveOut(rendered: string): void {
 	expect(rendered).toMatch(/one\s+runnable\s+slice/i);
 }
 
+async function renderDelegationPrompt(): Promise<string[]> {
+	const { systemPrompt } = await buildSystemPrompt({
+		cwd: import.meta.dir,
+		toolNames: ["read", "bash", "edit", "write", "task"],
+		contextFiles: [],
+		skills: [],
+		rules: [],
+		workspaceTree: {
+			rootPath: import.meta.dir,
+			rendered: "",
+			truncated: false,
+			totalLines: 0,
+			agentsMdFiles: [],
+		},
+		activeRepoContext: null,
+		personality: "none",
+		taskBatch: true,
+	});
+	return systemPrompt;
+}
+
+function planLockPolicy(rendered: string): string {
+	const start = rendered.indexOf("PLAN LOCK & MOMENTUM");
+	const end = rendered.indexOf("PRODUCTION STANCE", start);
+	expect(start).toBeGreaterThan(-1);
+	expect(end).toBeGreaterThan(start);
+	return rendered.slice(start, end);
+}
+
 describe("normal system prompt delegation contract", () => {
+	it("keeps terminal artifacts out of the implementation pipeline", async () => {
+		const rendered = (await renderDelegationPrompt())[0] ?? "";
+		const policy = planLockPolicy(rendered);
+
+		expect(rendered).toMatch(
+			/Terminal artifact verbs[\s\S]*RISK MAY increase[\s\S]*NEVER authorizes implementation, production edits, production-owner dispatch, QA, or deployment/i,
+		);
+		expect(policy).toMatch(
+			/locked terminal-artifact plan ends with its requested plan, review, investigation, or recommendation; NEVER dispatch production owners, edit code, run QA, or deploy/i,
+		);
+		expect(policy).not.toMatch(/a locked plan[\s\S]{0,80}NEXT action implements/i);
+	});
+
+	it("keeps plan-and-implement dispatch conditional and intact", async () => {
+		const rendered = (await renderDelegationPrompt())[0] ?? "";
+		const policy = planLockPolicy(rendered);
+
+		expect(rendered).toContain("|plan and implement|plan then code, same session|code verified against the plan|");
+		expect(policy).toMatch(/locked implementation plan[\s\S]{0,180}NEXT action implements/i);
+	});
+
+	it("retains canonical terminal-artifact plan semantics in the orchestrator overlay", async () => {
+		const rendered = buildSystemPromptWithOrchestratorOverlay(await renderDelegationPrompt())[0] ?? "";
+
+		expect(rendered).toMatch(
+			/Canonical plan semantics live in `system-prompt\.md`[\s\S]*terminal artifacts[\s\S]*NEVER authorizes implementation, production-owner dispatch, QA, or deployment/i,
+		);
+		expect(rendered).toMatch(/locked implementation plan[\s\S]{0,180}NEXT action implements/i);
+	});
+
 	it("minimizes latency without down-tiering load-bearing work", async () => {
 		const { systemPrompt } = await buildSystemPrompt({
 			cwd: import.meta.dir,

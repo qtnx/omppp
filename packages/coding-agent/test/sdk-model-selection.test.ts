@@ -1378,7 +1378,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		}
 	});
 
-	test("caps premium Codex context before a new session starts", async () => {
+	test("keeps the pinned Codex GPT-5.6 window when extendedContext is off", async () => {
 		const authStorage = createInMemoryAuthStorage();
 		authStoragesToClose.push(authStorage);
 		authStorage.setRuntimeApiKey("openai-codex", "codex-oauth-token");
@@ -1406,7 +1406,8 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		try {
 			expect(session.model?.provider).toBe("openai-codex");
 			expect(session.model?.id).toBe("gpt-5.6-sol");
-			expect(session.model?.contextWindow).toBe(272_000);
+			// Fork pin: the Codex route keeps 372K even with extendedContext off.
+			expect(session.model?.contextWindow).toBe(372_000);
 		} finally {
 			await session.dispose();
 		}

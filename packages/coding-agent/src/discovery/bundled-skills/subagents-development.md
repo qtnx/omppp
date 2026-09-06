@@ -37,9 +37,10 @@ CHANGE
   4. Export from src/middleware/index.ts following the existing named-export pattern.
 
 ACCEPTANCE (run these yourself)
-  - npx vitest run test/middleware/rateLimit.test.ts → green; tests cover:
+  - `<repo test command>` → green; tests cover:
     under-limit passes, over-limit 429 with envelope fields, window reset restores access.
-  - npx tsc --noEmit → clean.
+  - `<repo typecheck command>` → clean.
+    Resolve these placeholders to exact commands from the repository before dispatch.
 
 DONE (report)
   Files changed; per-acceptance evidence (command + output); deviations from CHANGE

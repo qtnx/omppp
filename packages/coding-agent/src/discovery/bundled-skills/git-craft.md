@@ -13,12 +13,12 @@ Every repo has its own flow; the generic `gitFlow` only says WHICH steps exist. 
 Read the signals with tools, in this order; stop as soon as the value is known:
 ```bash
 git status --porcelain && git branch --show-current && git remote -v      # where am I, what is dirty (peers' work stays)
-git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null                     # default branch
-git branch -r | sed 's#origin/##' | grep -E '^(main|master|develop|production|prod|release|staging|hotfix)' # long-lived branches
+git symbolic-ref refs/remotes/origin/HEAD                                # default branch
+git branch -r                                                            # inspect remote branches with repository tools
 git log --oneline -15 --first-parent origin/<base>                        # merge style: "Merge pull request" vs squash vs rebase
-git log -20 --format=%s | head                                            # commit convention (conventional commits? ticket prefix?)
-git tag --sort=-v:refname | head -5                                       # tag pattern (v1.2.3, 2026.09.02, service/v3)
-ls .github/workflows .gitlab-ci.yml .github/pull_request_template.md CONTRIBUTING.md CHANGELOG* 2>/dev/null
+git log -n 20 --format=%s                                       # commit convention (conventional commits? ticket prefix?)
+git for-each-ref --sort=-v:refname --count=5 refs/tags          # tag pattern (v1.2.3, 2026.09.02, service/v3)
+# Inspect `.github/workflows`, `.gitlab-ci.yml`, `.github/pull_request_template.md`, `CONTRIBUTING.md`, and `CHANGELOG*` with repository read tools.
 ```
 - `AGENTS.md`/`CONTRIBUTING.md`/PR template outrank inference. A repo `repoGitFlow` line (e.g. root `AGENTS.md`) is the answer; do not re-derive it.
 - Host decides the verbs: `github.com` remote → `gh pr …`; `gitlab` remote → `glab mr …`; neither → push and report the branch.
@@ -68,7 +68,7 @@ Use the repo's PR template when one exists; fold the block above into its sectio
 ## Rescue recipes
 - "I lost work" → `git reflog` shows every HEAD position for ~90 days: find the sha, `git branch rescue <sha>` (safe) before any reset. Uncommitted-but-staged content: `git fsck --lost-found`.
 - Bad rebase/merge → `git reflog`, reset the branch to the pre-rebase entry (`branch@{1}` right after), redo calmly — in a tree that is exclusively yours (safety rules).
-- Deleted branch → `git reflog | grep <name>` → `git branch <name> <sha>`.
+- Deleted branch → inspect `git reflog` with repository tools, then `git branch <name> <sha>`.
 - Committed to wrong branch → `git branch correct-branch` (bookmark it), then reset the wrong branch back: `git reset --hard HEAD~N` (own tree only).
 - Amend ONLY unpushed commits; after pushing, fix-forward with a new commit, or if the branch is exclusively yours: `git push --force-with-lease` (never bare `--force`; lease aborts if someone else pushed meanwhile).
 - Undo a pushed commit on shared history → `git revert <sha>`, never rewrite.
@@ -110,15 +110,15 @@ base/ours/theirs: `git show :1:<f>` / `:2:<f>` / `:3:<f>`. Ours intent: <commit 
 # Change
 Produce the merged file preserving BOTH intents. LOCKED contract: <signature/schema final form>. Keep every hunk unless duplicate/obsolete; do not reformat untouched lines.
 # Acceptance
-1. `grep -nE '^(<{7}|={7}|>{7})' <f>` → no output.
-2. `<repo parse/typecheck for one file, e.g. bunx tsc --noEmit -p . | grep <f>` → no errors in owned files (or the repo's per-file lint/parse command).
+1. Use the repository `grep` tool to search `^(<{7}|={7}|>{7})` in `<f>` → no output.
+2. `<repo typecheck command>` → no errors in owned files. Use the command documented by the repository; never substitute a different compiler or runner.
 3. `git add <f1> <f2>` → `git diff --name-only --diff-filter=U` no longer lists them.
 # Done
 Yield immediately after Acceptance. Report per hunk: `f:hunk → O intent | T intent | resolution | dropped? reason`. BLOCKED (do not guess) when: on-disk contract differs from LOCKED; a correct merge needs a file you do not own; both sides deleted/renamed the same symbol differently.
 ```
 
 **Parent integrate (after the batch settles):**
-1. `git diff --name-only --diff-filter=U` → empty; `git grep -nE '^(<{7}|={7}|>{7})'` → empty across the tree.
+1. `git diff --name-only --diff-filter=U` → empty; use the repository `grep` tool to search `^(<{7}|={7}|>{7})` across the tree → empty.
 2. Regenerate lockfiles/generated files; stage them.
 3. Read every child ledger; any dropped hunk without a duplicate/obsolete reason goes back to that child (one round) or is restored by you.
 4. ONE build/typecheck for the whole tree, then focused tests for every module a cluster touched; a semantic conflict found here is a targeted fix, not a re-fanout.

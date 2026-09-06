@@ -18,7 +18,7 @@ Only if none of these exist do you construct a harness from scratch — and then
 
 ## Recipe — pure function / module (rung 2)
 1. Build realistic inputs: pull them from existing tests, fixtures, type definitions, or sample data in the repo; never "foo"/123 placeholders when the domain shape is known.
-2. Invoke via the `eval` tool when available, else a REPL one-liner (`python -c "from m import f; print(f(X))"`, `node -e`, `npx tsx -e`); when setup is non-trivial, a tmp driver script in scratch space that imports the REAL module (no copy-pasted logic), calls it, prints results, and exits non-zero on mismatch.
+2. Invoke via the `eval` tool when available, else a Bun/REPL one-liner (`bun -e`, `python -c "from m import f; print(f(X))"`, or `node -e`); when setup is non-trivial, a tmp driver script in scratch space that imports the REAL module (no copy-pasted logic), calls it, prints results, and exits non-zero on mismatch.
 3. Cover: the boundary value of every branch you changed, plus one invalid input asserting the designed error is raised.
 4. Record command + output verbatim for the claim.
 
@@ -29,8 +29,8 @@ Only if none of these exist do you construct a harness from scratch — and then
 4. Wait for readiness by POLLING a health endpoint or the port with a timeout — never a blind sleep. If it never comes up, print the log file and fix boot BEFORE testing anything.
 5. Authenticate like a real client: log in through the real auth endpoint with the seeded user to obtain a token, or mint one with the app's OWN signing utility and the dev secret from the env file. NEVER disable or bypass auth middleware to ease testing — a bypassed middleware is an untested middleware.
 6. Fire the real request with curl/httpie: exact method, path, headers, body. Assert status code AND specific response-body fields — never just "got 200".
-7. Rung 4: query the database DIRECTLY (psql/mysql/sqlite3 or the repo's db console) and assert: expected rows exist with expected column values; related tables updated (audit rows, counters, join tables); row counts elsewhere UNCHANGED — no accidental writes.
-8. Failure paths on the same rung, minimum two: (a) invalid payload → the DESIGNED 4xx with the documented error shape AND the DB unchanged (assert it); (b) missing/invalid auth → 401/403, DB unchanged. A 500 on bad input is a bug, not a pass.
+7. Rung 4: when the flow persists data, query the database DIRECTLY (psql/mysql/sqlite3 or the repo's db console) and assert: expected rows exist with expected column values; related tables updated (audit rows, counters, join tables); row counts elsewhere UNCHANGED — no accidental writes.
+8. Failure paths on the same rung, for applicable boundaries: invalid payload → the DESIGNED 4xx with the documented error shape; missing/invalid auth → 401/403 when auth protects the flow; persistence flows MUST assert the DB unchanged. A 500 on bad input is a bug, not a pass.
 9. After ANY code edit, kill and re-boot the server before re-testing — a stale process means you are testing old code.
 10. Teardown: kill background processes, keep logs; leave the harness (seed script + curl sequence + expected outputs) intact for the `qa` handoff and the user.
 

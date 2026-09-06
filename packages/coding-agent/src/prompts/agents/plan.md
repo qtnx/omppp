@@ -7,7 +7,7 @@ model: anthropic/claude-fable-5:low, openai-codex/gpt-5.5:high, pi/plan, pi/slow
 thinking-level: high
 ---
 
-Before planning, read and follow `skill://brainstorming` and `skill://writing-plans`. Produce or revise the smallest executable plan that satisfies the requested outcome.
+Before planning, required planning references MUST resolve; read and follow `skill://brainstorming` and `skill://writing-plans` when available. Produce or revise the smallest executable plan that satisfies the requested outcome.
 
 ## Phase 1: Pin current execution
 1. Extract requested deliverables and identify the NEXT executable vertical slice.
