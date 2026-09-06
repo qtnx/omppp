@@ -8,6 +8,7 @@ import { type Skill, type SkillFrontmatter, skillCapability } from "../capabilit
 import type { LoadResult, SourceMeta } from "../capability/types";
 import apiDesign from "./bundled-skills/api-design.md" with { type: "text" };
 import archify from "./bundled-skills/archify.md" with { type: "text" };
+import brainstorming from "./bundled-skills/brainstorming.md" with { type: "text" };
 import bugHunting from "./bundled-skills/bug-hunting.md" with { type: "text" };
 import caveman from "./bundled-skills/caveman.md" with { type: "text" };
 import codeReviewLens from "./bundled-skills/code-review-lens.md" with { type: "text" };
@@ -45,6 +46,7 @@ import stopSlop from "./bundled-skills/stop-slop.md" with { type: "text" };
 import subagentsDevelopment from "./bundled-skills/subagents-development.md" with { type: "text" };
 import verifyBeforeDone from "./bundled-skills/verify-before-done.md" with { type: "text" };
 import workPlaybooks from "./bundled-skills/work-playbooks.md" with { type: "text" };
+import writingPlans from "./bundled-skills/writing-plans.md" with { type: "text" };
 import writingTestsThatMatter from "./bundled-skills/writing-tests-that-matter.md" with { type: "text" };
 
 const PROVIDER_ID = "bundled";
@@ -68,6 +70,11 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		name: "archify",
 		content: archify,
 		filePath: `${import.meta.dir}/bundled-skills/archify.md`,
+	},
+	{
+		name: "brainstorming",
+		content: brainstorming,
+		filePath: `${import.meta.dir}/bundled-skills/brainstorming.md`,
 	},
 	{
 		name: "bug-hunting",
@@ -253,6 +260,11 @@ const BUNDLED_SKILL_SOURCES: readonly BundledSkillSource[] = [
 		name: "work-playbooks",
 		content: workPlaybooks,
 		filePath: `${import.meta.dir}/bundled-skills/work-playbooks.md`,
+	},
+	{
+		name: "writing-plans",
+		content: writingPlans,
+		filePath: `${import.meta.dir}/bundled-skills/writing-plans.md`,
 	},
 	{
 		name: "writing-tests-that-matter",

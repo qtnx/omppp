@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { resetActiveSkillsForTests, type Skill, setActiveSkills } from "../../src/extensibility/skills";
+import { loadSkills, resetActiveSkillsForTests, type Skill, setActiveSkills } from "../../src/extensibility/skills";
 import { InternalUrlRouter } from "../../src/internal-urls";
 
 function createSkill(baseDir: string, name: string): Skill {
@@ -37,5 +37,17 @@ describe("SkillProtocolHandler", () => {
 		await expect(router.resolve("skill://global-only", { skills: [scopedAllowed] })).rejects.toThrow(
 			"Unknown skill: global-only\nAvailable: allowed",
 		);
+	});
+	it("resolves bundled planning skills from the active snapshot", async () => {
+		using tempDir = TempDir.createSync("@omp-bundled-planning-");
+		const { skills } = await loadSkills({ cwd: tempDir.path() });
+		const planningSkills = skills.filter(skill => skill.name === "brainstorming" || skill.name === "writing-plans");
+		setActiveSkills(planningSkills);
+
+		const router = InternalUrlRouter.instance();
+		for (const name of ["brainstorming", "writing-plans"]) {
+			const resource = await router.resolve(`skill://${name}`);
+			expect(resource.content).toContain(`# ${name === "brainstorming" ? "Brainstorming" : "Writing Plans"}`);
+		}
 	});
 });

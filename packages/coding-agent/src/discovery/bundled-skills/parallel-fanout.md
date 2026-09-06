@@ -1,6 +1,11 @@
 ---
 name: parallel-fanout
 description: MANDATORY before multi-file delegation, scout dispatch, or wave planning. Defines ready-horizon slicing, C/R dependency tests, ownership and shared-file rules, one-wave scouting, bounded adversarial plan convergence (1 review round by default), and the production-owner invariant after lock.
+triggers:
+  - parallel work
+  - multi-file delegation
+  - scout wave
+  - ready horizon
 ---
 
 # Parallel Fanout
@@ -32,7 +37,7 @@ Phases 1–4 are bounded preparation, not a Foundation program. A blank future r
 | Mechanical perimeter | registrations, renames, config, wiring, docs | one `quick_task` batch package |
 | Cross-owner integration | a test must execute several owners' REAL code together | exactly ONE integration package, wave 2 |
 
-Maximize parallel packages: dispatch every genuinely independent slice at once — one package is valid; 5–10 is a ceiling-shaped target, never a quota. Only a real R-edge (B's tests must run A's working code) serializes work. Two packages touching the same file is NOT a dependency and NEVER forces a phase split or ownership re-cut — the per-file write lock serializes their edits and each agent preserves the other's changes (see the same-file row below).
+Maximize parallel packages: dispatch every genuinely independent slice at once — one package is valid; 5–10 is a ceiling-shaped target, never a quota. Only a real R-edge (B's tests must run A's working code) serializes work. Same-file edits MAY run in parallel only when each edit is independently anchored and per-file write serialization is verified; otherwise one integration owner serializes them.
 
 ## The C/R dependency test — apply to every edge
 
@@ -40,7 +45,7 @@ Maximize parallel packages: dispatch every genuinely independent slice at once �
 |---|---|---|---|
 | B imports A's types/interface/schema only | "Do B's tests execute A's code?" → NO | C | lock the shape in Phase 3; A and B run in PARALLEL |
 | B's tests must call A's working code | → YES | R | B goes to wave 2 behind A — or stub A behind the locked interface when a stub is cheap, then B joins wave 1 |
-| A and B edit the same file (even the same region) | — | C | run in PARALLEL — the per-file write lock serializes their edits; each agent re-reads, preserves peer changes, and merges. NEVER phase-split or re-cut ownership just to avoid a shared file |
+| A and B edit the same file (even the same region) | Are edits independently anchored and per-file write serialization verified? | C only when YES; otherwise serialize | Parallelize only under that condition; one integration owner serializes otherwise |
 
 Default: assume C until proven R. Nearly every "foundation first" serialization is a C-edge wearing an R costume — types flow, not behavior.
 

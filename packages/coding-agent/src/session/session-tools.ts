@@ -166,11 +166,9 @@ function extractSkillsAndRulesSection(systemPromptBlock: string): string | undef
 }
 
 export function buildSystemPromptWithOrchestratorOverlay(baseSystemPrompt: string[]): string[] {
-	const skillsAndRules = extractSkillsAndRulesSection(baseSystemPrompt[0] ?? "");
-	if (!skillsAndRules) return [orchestratorModeActivePrompt, ...baseSystemPrompt.slice(1)];
 	const orchestratorPrompt = prompt.render(orchestratorModeOverlayTemplate, {
+		baseSystemPrompt: baseSystemPrompt[0] ?? "",
 		orchestratorMode: orchestratorModeActivePrompt,
-		skillsAndRules,
 	});
 	return [orchestratorPrompt, ...baseSystemPrompt.slice(1)];
 }

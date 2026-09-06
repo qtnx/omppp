@@ -4,12 +4,15 @@
 
 ### Fixed
 
+- Planning-only requests stay planning-only in normal and Safe Orchestrator modes, with bundled planning skills available without extra setup.
+- Generic skills now keep verification proportional to the task, preserve tests for observable defaults, and let read-only scouts use CodeGraph.
 - Codex `gpt-5.6-luna`/`sol`/`terra` and `gpt-6-astra` now keep their 372K context window when `extendedContext` is off (previously capped to 272K); `models.yml` `modelOverrides` still win.
 - `duo_handoff`/`duo_escalate` are no longer advertised (in the tool list or the system prompt) while duo is off; models picked them after a plan approval and got "no duo controller is active". They appear when duo activates and disappear when it deactivates.
 - `ompx -p` now prints every assistant message of the turn in order (what the TUI shows) instead of only the last one; models that write a document mid-turn and then continue no longer lose it in print mode.
 
 ### Added
 
+- Skills can include bounded `globs` and `triggers` hints in the skill index without loading their full content.
 - `plan` and `slow` roles assigned a GPT-6 model (e.g. `gpt-6-astra`) without a `:level` suffix now run at `xhigh` thinking; execution roles keep the configured default. An explicit suffix still wins.
 - OpenAI GPT-5.6/GPT-6 models (e.g. `gpt-6-astra`) now get a model-notes block in the system prompt: deliver documents in the final message, inventory and cite only lines actually read, stop widening noisy searches, read mandatory skills before designing, and keep authorization across turns instead of re-asking.
 
