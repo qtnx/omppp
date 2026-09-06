@@ -64,6 +64,7 @@ import { AstEditTool } from "./ast-edit";
 import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { BrowserTool } from "./browser";
+import { NativeBrowserComputerTool } from "./browser-native-computer";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { CompactTool } from "./compact";
@@ -764,7 +765,10 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	kanban: KanbanTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
-	computer: s => new ComputerTool(s),
+	computer: s =>
+		s.settings.get("browser.nativeComputer.enabled") === true
+			? new NativeBrowserComputerTool(s)
+			: new ComputerTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	compact: CompactTool.createIf,

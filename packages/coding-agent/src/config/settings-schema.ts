@@ -5095,12 +5095,13 @@ export const SETTINGS_SCHEMA = {
 
 	"computer.enabled": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "tools",
 			group: "Available Tools",
 			label: "Computer",
-			description: "Enable the scriptable host-desktop control tool (screenshots, input, accessibility)",
+			description:
+				"Enable computer control; browser-native mode uses screenshot actions, otherwise desktop scripting",
 		},
 	},
 
@@ -5176,6 +5177,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Available Tools",
 			label: "Read URLs",
 			description: "Allow the read tool to fetch and process URLs",
+		},
+	},
+
+	"browser.nativeComputer.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "OpenAI Browser Computer Use",
+			description:
+				"Use screenshot-driven Computer Use actions in a managed browser; keep the DOM browser tool available",
 		},
 	},
 
