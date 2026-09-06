@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Codex `gpt-5.6-luna`/`sol`/`terra` and `gpt-6-astra` now keep their 372K context window when `extendedContext` is off (previously capped to 272K); `models.yml` `modelOverrides` still win.
 - `duo_handoff`/`duo_escalate` are no longer advertised (in the tool list or the system prompt) while duo is off; models picked them after a plan approval and got "no duo controller is active". They appear when duo activates and disappear when it deactivates.
 - `ompx -p` now prints every assistant message of the turn in order (what the TUI shows) instead of only the last one; models that write a document mid-turn and then continue no longer lose it in print mode.
 

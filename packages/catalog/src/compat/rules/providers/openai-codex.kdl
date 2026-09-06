@@ -29,10 +29,11 @@ provider "openai-codex" {
 			cache-write 15.625
 		}
 	}
-	// Codex discovery currently reports Astra's legacy 272K window and no
-	// pricing. Attribute subscription usage at the documented credit-equivalent
-	// rates, with free cache writes and without the API's >272K multiplier,
-	// while exposing the 1.05M window.
+	// Codex discovery reports no pricing for Astra. Attribute subscription usage
+	// at the documented credit-equivalent rates, with free cache writes and
+	// without the API's >272K multiplier. The fork pins Astra's usable window
+	// to 372K (see CODEX_PINNED_CONTEXT_WINDOW); a larger floor here would undo
+	// that pin because buildModel applies floors after the generated policies.
 	models "gpt-6-astra" "gpt-6-astra-wm" {
 		cost-patch {
 			input 10.0
@@ -44,7 +45,7 @@ provider "openai-codex" {
 			flex 0.5
 			priority 2.5
 		}
-		context-window-floor 1050000
+		context-window-floor 372000
 	}
 	class "openai" {
 		revision ">=5.3 <5.7" {

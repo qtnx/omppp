@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex `gpt-5.6-luna`/`sol`/`terra` and `gpt-6-astra` keep a 372K context window even when Codex discovery advertises 272K or 1M; `models.yml` `modelOverrides.<id>.contextWindow` still wins.
+
 ## [1.7.12] - 2026-09-05
 
 ### Added

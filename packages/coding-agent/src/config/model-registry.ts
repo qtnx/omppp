@@ -18,6 +18,7 @@ import { Effort } from "@oh-my-pi/pi-ai/types";
 import type { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { collapseBuiltVariants } from "@oh-my-pi/pi-catalog/compat/collapse";
+import { isCodexPinnedContextWindowModel } from "@oh-my-pi/pi-catalog/discovery/codex";
 import { readModelCache, writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import {
 	createModelManager,
@@ -2279,8 +2280,9 @@ export class ModelRegistry {
 			// SuperGrok requests remain subscription-backed, so its estimated tier
 			// must not constrain the runtime context window. Explicit per-model
 			// `contextWindow` overrides reapply later in composition and win over
-			// this cap.
-			if (!extendedContext && model.provider !== "xai-oauth") {
+			// this cap. Fork-pinned Codex SKUs (372K) are the usable window, not
+			// a premium tier, so the cap never shrinks them.
+			if (!extendedContext && model.provider !== "xai-oauth" && !isCodexPinnedContextWindowModel(model)) {
 				const threshold = model.cost.longContext?.inputThreshold;
 				if (threshold !== undefined && model.contextWindow !== null && model.contextWindow > threshold) {
 					model = applyModelOverride(model, { contextWindow: threshold });
