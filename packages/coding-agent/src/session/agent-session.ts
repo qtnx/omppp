@@ -7867,6 +7867,7 @@ export class AgentSession {
 			this.agent.steer(normalizedAppMessage);
 		}
 		this.#scheduleIdleQueueDrain();
+		if (queueChipText !== undefined) void this.#emitSessionEvent({ type: "queued_messages_changed" });
 	}
 
 	/**
@@ -7928,6 +7929,7 @@ export class AgentSession {
 				});
 			}
 			this.#scheduleIdleQueueDrain();
+			if (options?.queueChipText) void this.#emitSessionEvent({ type: "queued_messages_changed" });
 			return false;
 		}
 

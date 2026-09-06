@@ -5,7 +5,7 @@ type ExtWindow = Window &
 		__ompxExtAnnotateActive?: boolean;
 		__ompxExtAnnotateFocusGuard?: EventListener;
 		__ompxExtAnnotateListenerInstalled?: boolean;
-		__ompxExtAnnotateSetChromeVisible?: (visible: boolean) => void;
+		__ompxExtAnnotateShortcutInstalled?: boolean;
 		__ompxExtAnnotateTeardown?: () => void;
 	};
 
@@ -29,6 +29,17 @@ interface DragState {
 interface SubmitResponse {
 	ok?: boolean;
 	error?: string;
+}
+
+interface CaptureResponse {
+	ok?: boolean;
+	error?: string;
+	dataUrl?: string;
+}
+
+interface ScreenshotBlob {
+	data: string;
+	mimeType: string;
 }
 
 interface PairResponse {
@@ -694,11 +705,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 				return { comment: comment.value, rects: out, url: location.href, title: doc.title };
 			};
 
-			const setChromeVisible = (visible: boolean) => {
-				chromeLayer.style.display = visible ? "" : "none";
-			};
-
-			const waitForChromeRepaint = async () => {
+			const waitForRepaint = async () => {
 				const { promise, resolve } = Promise.withResolvers<void>();
 				requestAnimationFrame(() => {
 					requestAnimationFrame(() => resolve());
@@ -706,11 +713,61 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 				await promise;
 			};
 
+			const PNG_DATA_URL_PREFIX = /^data:image\/png;base64,/;
+
+			// Burn the markers into the captured bitmap instead of relying on the DOM
+			// overlay being visible during capture. `captureVisibleTab` renders at the
+			// device pixel ratio (and the emulated viewport under DevTools device mode),
+			// so scale CSS-px rects by bitmap/viewport ratio. Falls back to the raw
+			// capture if canvas work fails; the numbered rects still ride in the payload.
+			const composeScreenshot = async (dataUrl: string, marks: AnnotationRect[]): Promise<ScreenshotBlob> => {
+				const raw: ScreenshotBlob = { data: dataUrl.replace(PNG_DATA_URL_PREFIX, ""), mimeType: "image/png" };
+				if (marks.length === 0) return raw;
+				try {
+					const bin = atob(raw.data);
+					const bytes = new Uint8Array(bin.length);
+					for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+					const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+					const canvas = doc.createElement("canvas");
+					canvas.width = bitmap.width;
+					canvas.height = bitmap.height;
+					const ctx = canvas.getContext("2d");
+					if (!ctx) return raw;
+					ctx.drawImage(bitmap, 0, 0);
+					bitmap.close();
+					const sx = canvas.width / window.innerWidth;
+					const sy = canvas.height / window.innerHeight;
+					const line = Math.max(2, Math.round(2 * sx));
+					const fontPx = Math.max(11, Math.round(12 * sx));
+					const pad = Math.round(fontPx * 0.35);
+					ctx.font = `700 ${fontPx}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
+					ctx.textBaseline = "top";
+					for (const [index, mark] of marks.entries()) {
+						const x = mark.x * sx;
+						const y = mark.y * sy;
+						const w = mark.width * sx;
+						const h = mark.height * sy;
+						ctx.fillStyle = "rgba(229,57,53,0.12)";
+						ctx.fillRect(x, y, w, h);
+						ctx.strokeStyle = "#e53935";
+						ctx.lineWidth = line;
+						ctx.strokeRect(x, y, w, h);
+						const label = String(index + 1);
+						const badgeW = ctx.measureText(label).width + pad * 2;
+						const badgeH = fontPx + pad;
+						ctx.fillStyle = "#e53935";
+						ctx.fillRect(x, y, badgeW, badgeH);
+						ctx.fillStyle = "#fff";
+						ctx.fillText(label, x + pad, y + Math.round(pad / 2));
+					}
+					return { data: canvas.toDataURL("image/png").replace(PNG_DATA_URL_PREFIX, ""), mimeType: "image/png" };
+				} catch {
+					return raw;
+				}
+			};
+
 			const teardown = () => {
 				extWindow.__ompxExtAnnotateActive = false;
-				if (extWindow.__ompxExtAnnotateSetChromeVisible === setChromeVisible) {
-					extWindow.__ompxExtAnnotateSetChromeVisible = undefined;
-				}
 				if (extWindow.__ompxExtAnnotateTeardown === teardown) {
 					extWindow.__ompxExtAnnotateTeardown = undefined;
 				}
@@ -739,19 +796,37 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 				}
 				sending = true;
 				sendBtn.disabled = true;
-				setStatus("Sending...");
+				setStatus("Capturing...");
 				const payload = buildPayload();
-				setChromeVisible(false);
-				await waitForChromeRepaint();
+				// Hide the whole overlay (markers included) so the capture is the bare
+				// page; markers are drawn back onto the bitmap by composeScreenshot.
+				host.style.display = "none";
+				await waitForRepaint();
+				let captured: CaptureResponse | undefined;
+				let captureError: string | undefined;
 				try {
-					const res = (await chrome.runtime.sendMessage({ type: "ompx-annotate-submit", payload })) as
+					captured = (await chrome.runtime.sendMessage({ type: "ompx-annotate-capture" })) as
+						| CaptureResponse
+						| undefined;
+				} catch (error) {
+					captureError = error instanceof Error ? error.message : String(error);
+				}
+				host.style.display = "";
+				try {
+					if (!captured?.ok || !captured.dataUrl) {
+						toast(captured?.error ?? captureError ?? "capture_failed", true);
+						setStatus("Screenshot failed. Try again.");
+						return;
+					}
+					setStatus("Sending...");
+					const screenshot = await composeScreenshot(captured.dataUrl, payload.rects);
+					const res = (await chrome.runtime.sendMessage({ type: "ompx-annotate-submit", payload, screenshot })) as
 						| SubmitResponse
 						| undefined;
-					setChromeVisible(true);
 					if (res?.ok) {
-						clearRects();
-						comment.value = "";
-						setStatus("Sent.");
+						// Markers and comment stay so the next round can build on them;
+						// Clear wipes them explicitly.
+						setStatus(rects.length ? "Sent. Markers kept \u2014 Clear to start over." : "Sent.");
 						toast("Sent to agent");
 						return;
 					}
@@ -760,7 +835,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 					if (error.includes("invalid_code")) showPairingBanner(storedHost);
 					setStatus("Send failed. Check pairing and try again.");
 				} catch (error) {
-					setChromeVisible(true);
 					const errMessage = error instanceof Error ? error.message : String(error);
 					toast(`Send failed: ${errMessage}`, true);
 					setStatus("Send failed. Check pairing and try again.");
@@ -851,8 +925,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 			window.addEventListener("resize", onResize, { passive: true });
 
 			void refreshPairingStatus();
-			extWindow.__ompxExtAnnotateSetChromeVisible = setChromeVisible;
 			extWindow.__ompxExtAnnotateTeardown = teardown;
+			// Touch/narrow viewports have no practical drag: start in Pick so a single
+			// tap marks an element.
+			if (window.matchMedia("(pointer: coarse)").matches || window.innerWidth < 768) setPick(true);
 		};
 
 		if (document.documentElement) install();
@@ -867,6 +943,24 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 			else openOverlay();
 			sendResponse({ ok: true });
 		});
+	}
+
+	// In-page fallback for the manifest command (Cmd+. on macOS, Ctrl+. elsewhere):
+	// works once the content script has been injected in this tab, so the overlay
+	// can be re-opened after Close/Esc without the toolbar popup.
+	if (!extWindow.__ompxExtAnnotateShortcutInstalled) {
+		extWindow.__ompxExtAnnotateShortcutInstalled = true;
+		document.addEventListener(
+			"keydown",
+			event => {
+				if (event.key !== "." || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+				event.preventDefault();
+				event.stopPropagation();
+				if (extWindow.__ompxExtAnnotateActive) extWindow.__ompxExtAnnotateTeardown?.();
+				else openOverlay();
+			},
+			true,
+		);
 	}
 
 	openOverlay();
