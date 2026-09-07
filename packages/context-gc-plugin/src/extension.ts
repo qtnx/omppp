@@ -15,7 +15,12 @@ import {
 } from "./active-context";
 import contextGcSystemPrompt from "./context-gc-system-prompt.md" with { type: "text" };
 import { isContextGcInspectionTool, projectUnloadedContext } from "./context-transform";
-import { type DeferredUnloadSessionState, decideDeferredUnloads } from "./deferred-unload";
+import {
+	type DeferredUnloadSessionState,
+	decideDeferredUnloads,
+	isCacheCold,
+	selectAutoShakeRecords,
+} from "./deferred-unload";
 import { extractMessagePayload, payloadForMessage, payloadFromContent } from "./extract";
 import { buildContextGcReminder, buildContextUsageReminder } from "./reminder";
 import {
@@ -28,7 +33,12 @@ import {
 	type ContextSource,
 	type ContextStatus,
 } from "./schema";
-import { branchRecords, type ContextGcSessionState, readContextGcSessionState } from "./session-state";
+import {
+	branchRecords,
+	type ContextGcSessionState,
+	deriveBranchStatuses,
+	readContextGcSessionState,
+} from "./session-state";
 import { type ContextGcStore, openContextGcStore } from "./storage";
 import { buildFallbackSummary, estimateTokens, normalizeAgentSummary } from "./summary";
 import { classifyContextSurface } from "./tool-classification";
@@ -41,7 +51,7 @@ import {
 	createContextStatsTool,
 	createContextTreeTool,
 } from "./tools/context-report";
-import { createContextUnloadTool } from "./tools/context-unload";
+import { buildContextGcDelta, createContextUnloadTool, runContextUnload } from "./tools/context-unload";
 
 export { estimateContextGcEffectiveTokens } from "./effective-usage";
 export { renderContextGcReport } from "./report";
@@ -56,6 +66,11 @@ const LARGE_EXECUTION_TOKENS = 2_000;
 
 export interface ContextGcExtensionOptions {
 	dbPath?: string;
+	/**
+	 * Unload stale tool output automatically when the prompt cache is already cold, so the
+	 * unavoidable cache rewrite starts from a smaller prompt. Default on; `OMP_CONTEXT_GC_AUTO_SHAKE=0` disables.
+	 */
+	autoShakeOnColdCache?: boolean;
 	/** Clock for prompt-cache idle detection; tests inject a controllable one. */
 	now?: () => number;
 }
@@ -490,6 +505,7 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 	const compactHintBands = new Map<string, number>();
 	const deferredUnloads = new Map<string, DeferredUnloadSessionState>();
 	const now = options.now ?? Date.now;
+	const autoShake = options.autoShakeOnColdCache ?? process.env.OMP_CONTEXT_GC_AUTO_SHAKE !== "0";
 	const deferredUnloadState = (sessionId: string): DeferredUnloadSessionState => {
 		let state = deferredUnloads.get(sessionId);
 		if (!state) {
@@ -536,9 +552,42 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 		await inventoryLargeCustomMessages(store, pi, event.messages, ctx, state);
 		await inventoryLargeFileMentionMessages(store, pi, event.messages, ctx, state);
 		await inventoryLargeExecutionMessages(store, pi, event.messages, ctx, state);
-		const currentState = readContextGcSessionState(ctx);
-		const records = branchRecords(store, currentState);
-		const analysis = analyzeActiveContext(event.messages, records);
+		let currentState = readContextGcSessionState(ctx);
+		let records = branchRecords(store, currentState);
+		let analysis = analyzeActiveContext(event.messages, records);
+		const deferred = deferredUnloadState(currentState.sessionId);
+		// Cold-cache auto-shake: the provider will re-write the whole prompt on this request
+		// regardless, so stale tool output is shed first and the new cache starts smaller.
+		if (autoShake && isCacheCold(deferred, now())) {
+			const shaken = selectAutoShakeRecords(
+				[...analysis.matches.values()].map(match => ({
+					record: match.record,
+					messageIndex: match.messageIndex,
+					netTokens: match.estimate.netTokens,
+				})),
+				event.messages.length,
+			);
+			if (shaken.length > 0) {
+				const reason = "auto-shake: prompt cache cold";
+				const result = await runContextUnload(
+					store,
+					currentState.sessionId,
+					{ ids: shaken.map(record => record.id), summary: "", reason },
+					deriveBranchStatuses(currentState.deltas.filter(delta => delta.sessionId === currentState.sessionId)),
+				);
+				for (const record of shaken) {
+					if (!result.unloaded.includes(record.id)) continue;
+					pi.appendEntry(CONTEXT_GC_CUSTOM_TYPE, buildContextGcDelta(record, "unload", reason, record.summary));
+				}
+				logger.debug("Context GC: auto-shake on cold cache", {
+					unloaded: result.unloaded.length,
+					tokens: shaken.reduce((sum, record) => sum + record.tokenEstimate, 0),
+				});
+				currentState = readContextGcSessionState(ctx);
+				records = branchRecords(store, currentState);
+				analysis = analyzeActiveContext(event.messages, records);
+			}
+		}
 		activeSnapshots.set(currentState.sessionId, createActiveSnapshot(currentState, analysis));
 		// Unloads are honored lazily: rewriting an early message re-writes the provider
 		// prompt cache for everything after it, so pending unloads wait until the cache is
@@ -548,7 +597,7 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 			.map(match => match.record);
 		const decision = decideDeferredUnloads({
 			unloaded,
-			state: deferredUnloadState(currentState.sessionId),
+			state: deferred,
 			contextTokens: ctx.getContextUsage()?.tokens ?? null,
 			now: now(),
 		});

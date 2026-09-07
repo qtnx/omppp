@@ -47,7 +47,7 @@ export function decideDeferredUnloads(input: DeferredUnloadDecisionInput): Defer
 		return { projectIds: new Set(state.applied), newlyApplied: [], reason: "none", deferredTokens: 0 };
 	}
 	const deferredTokens = pending.reduce((sum, record) => sum + record.tokenEstimate, 0);
-	const cacheCold = state.lastResponseAt === undefined || input.now - state.lastResponseAt >= PROMPT_CACHE_TTL_MS;
+	const cacheCold = isCacheCold(state, input.now);
 	const worthRewrite =
 		input.contextTokens === null ||
 		input.contextTokens <= 0 ||
@@ -63,4 +63,59 @@ export function decideDeferredUnloads(input: DeferredUnloadDecisionInput): Defer
 		reason: cacheCold ? "cache-cold" : "ratio",
 		deferredTokens,
 	};
+}
+
+/**
+ * Cold-cache auto-shake: when the prompt cache has already expired, the next
+ * request re-writes the whole prompt anyway, so shedding stale tool output
+ * before that write is free. Only tool-output-like kinds qualify; skills and
+ * file mentions carry instructions the model did not ask to drop.
+ */
+const AUTO_SHAKE_KINDS: Record<string, true> = {
+	tool_result: true,
+	file_read: true,
+	bash_execution: true,
+	python_execution: true,
+	subagent_output: true,
+	browser_output: true,
+	mcp_output: true,
+	custom_tool_output: true,
+};
+
+/** Messages at the tail that are never auto-shaken: the model is likely still using them. */
+export const AUTO_SHAKE_KEEP_RECENT_MESSAGES = 12;
+/** Below this total the placeholder rewrite is not worth a hidden history change. */
+export const AUTO_SHAKE_MIN_TOTAL_TOKENS = 4_000;
+
+export interface AutoShakeCandidate {
+	record: ContextRecord;
+	messageIndex: number;
+	netTokens: number;
+}
+
+export function isCacheCold(state: DeferredUnloadSessionState, now: number): boolean {
+	return state.lastResponseAt === undefined || now - state.lastResponseAt >= PROMPT_CACHE_TTL_MS;
+}
+
+/**
+ * Candidate records safe to unload automatically on a cold cache: eligible kind,
+ * not among the most recent messages, and worth the rewrite in aggregate.
+ */
+export function selectAutoShakeRecords(
+	candidates: readonly AutoShakeCandidate[],
+	messageCount: number,
+): ContextRecord[] {
+	const cutoff = messageCount - AUTO_SHAKE_KEEP_RECENT_MESSAGES;
+	const selected = candidates
+		.filter(
+			candidate =>
+				candidate.record.status === "candidate" &&
+				AUTO_SHAKE_KINDS[candidate.record.kind] === true &&
+				candidate.messageIndex < cutoff &&
+				candidate.netTokens > 0,
+		)
+		.sort((a, b) => a.messageIndex - b.messageIndex);
+	const total = selected.reduce((sum, candidate) => sum + candidate.netTokens, 0);
+	if (total < AUTO_SHAKE_MIN_TOTAL_TOKENS) return [];
+	return selected.map(candidate => candidate.record);
 }

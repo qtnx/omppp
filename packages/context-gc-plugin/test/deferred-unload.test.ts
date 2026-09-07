@@ -1,9 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
+	AUTO_SHAKE_KEEP_RECENT_MESSAGES,
+	AUTO_SHAKE_MIN_TOTAL_TOKENS,
 	DEFERRED_UNLOAD_APPLY_RATIO,
 	type DeferredUnloadSessionState,
 	decideDeferredUnloads,
 	PROMPT_CACHE_TTL_MS,
+	selectAutoShakeRecords,
 } from "../src/deferred-unload";
 import type { ContextRecord } from "../src/schema";
 
@@ -87,5 +90,44 @@ describe("decideDeferredUnloads", () => {
 		});
 		expect(decision.reason).toBe("deferred");
 		expect([...decision.projectIds]).toEqual(["a"]);
+	});
+});
+
+describe("selectAutoShakeRecords", () => {
+	const candidate = (id: string, kind: string, messageIndex: number, netTokens: number, status = "candidate") => ({
+		record: { id, kind, status, tokenEstimate: netTokens } as ContextRecord,
+		messageIndex,
+		netTokens,
+	});
+	const messageCount = 100;
+
+	it("keeps recent messages, pinned records, and instruction kinds", () => {
+		const selected = selectAutoShakeRecords(
+			[
+				candidate("old-tool", "tool_result", 5, 5_000),
+				candidate("recent-tool", "tool_result", messageCount - AUTO_SHAKE_KEEP_RECENT_MESSAGES, 5_000),
+				candidate("skill", "skill", 3, 5_000),
+				candidate("pinned", "bash_execution", 4, 5_000, "pinned"),
+				candidate("already", "file_read", 2, 5_000, "unloaded"),
+			],
+			messageCount,
+		);
+		expect(selected.map(record => record.id)).toEqual(["old-tool"]);
+	});
+
+	it("shakes nothing when the aggregate saving is below the floor", () => {
+		const selected = selectAutoShakeRecords(
+			[candidate("a", "tool_result", 1, AUTO_SHAKE_MIN_TOTAL_TOKENS - 1)],
+			messageCount,
+		);
+		expect(selected).toEqual([]);
+	});
+
+	it("orders shaken records from the earliest message", () => {
+		const selected = selectAutoShakeRecords(
+			[candidate("late", "mcp_output", 40, 3_000), candidate("early", "tool_result", 10, 3_000)],
+			messageCount,
+		);
+		expect(selected.map(record => record.id)).toEqual(["early", "late"]);
 	});
 });
