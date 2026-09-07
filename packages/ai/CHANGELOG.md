@@ -2,7 +2,16 @@
 
 ## [Unreleased]
 
-## [1.7.12] - 2026-09-05
+## [1.8.0] - 2026-09-07
+
+### Changed
+
+- OpenAI Codex requests now send the `x-codex-routing-hint` header (model and service tier) on Responses, WebSocket, and remote-compaction calls, matching codex-rs.
+
+### Fixed
+
+- Fixed OpenAI Codex sessions stalling 60–180s per request on a throttled ChatGPT account: the backend's `server_is_overloaded` (a ~30s server-side park per attempt) was replayed in place up to five times on the same account. It now rotates to a sibling credential immediately and parks the throttled account for five minutes across every session in the pool; single-account setups fall back to the whole-turn retry backoff.
+
 ## [18.1.12] - 2026-09-06
 
 ### Added
@@ -34,7 +43,6 @@
 
 ### Changed
 
-- OpenAI Codex requests now send the `x-codex-routing-hint` header (model and service tier) on Responses, WebSocket, and remote-compaction calls, matching codex-rs.
 - Updated OpenAI Codex requests to improve routing by communicating the selected model and service tier across Responses, WebSocket, and remote-compaction requests.
 
 ## [18.1.7] - 2026-09-03
@@ -87,9 +95,6 @@
 - Fixed Gemini 3 cross-model sessions in Cloud Code Assist when replaying tool calls without a thought signature.
 - Fixed Cursor models behind an authentication gateway incorrectly retrying valid client-declared tool calls.
 - Fixed reasoning from models that prefill `<think>` (including DeepSeek-R1 and hosted Qwen3-Thinking) being shown in the response instead of as a separate thinking block.
-### Fixed
-
-- Fixed OpenAI Codex sessions stalling 60–180s per request on a throttled ChatGPT account: the backend's `server_is_overloaded` (a ~30s server-side park per attempt) was replayed in place up to five times on the same account. It now rotates to a sibling credential immediately and parks the throttled account for five minutes across every session in the pool; single-account setups fall back to the whole-turn retry backoff.
 
 ## [18.1.3] - 2026-09-02
 
@@ -2160,4 +2165,5 @@
 - Fixed Anthropic advisor and side requests contaminating the main conversation: a signature rejected under a side request's different system prompt is now remembered per prompt prefix, so the main conversation keeps its preserved thinking and its prompt cache.
 
 Older entries are archived in [packages/ai/CHANGELOG.md@351a0dcc8796](https://github.com/can1357/oh-my-pi/blob/351a0dcc8796d8d7bd139d3d4b94080e0b968537/packages/ai/CHANGELOG.md).
+
 Older entries are archived in [packages/ai/CHANGELOG.md@8a9097246135](https://github.com/can1357/oh-my-pi/blob/8a9097246135bd572ff96fb552121fe1194d2906/packages/ai/CHANGELOG.md).

@@ -2,7 +2,17 @@
 
 ## [Unreleased]
 
-## [1.7.12] - 2026-09-05
+## [1.8.0] - 2026-09-07
+
+### Changed
+
+- Bumped the pinned Codex client version to 0.153.0 so version-gated OpenAI Codex models (e.g. `gpt-6-astra`) appear in discovery and accept requests.
+
+### Fixed
+
+- Fixed Codex model refresh silently keeping a stale catalog when one stored ChatGPT account's token had been revoked; the rejected account is now skipped and remaining accounts are unioned.
+- Fixed GPT-6 Astra showing as free with a 272K-token window in the OpenAI Codex catalog by applying its documented pricing and 1.05M-token context window ([#10852](https://github.com/can1357/oh-my-pi/pull/10852)).
+
 ## [18.1.12] - 2026-09-06
 
 ### Added
@@ -38,14 +48,6 @@
 
 - Added GPT-6 Astra to the OpenAI Codex model catalog, including support for configuration updates and requests using the freeform `apply_patch` tool.
 
-### Changed
-
-- Bumped the pinned Codex client version to 0.153.0 so version-gated OpenAI Codex models (e.g. `gpt-6-astra`) appear in discovery and accept requests.
-
-### Fixed
-
-- Fixed Codex model refresh silently keeping a stale catalog when one stored ChatGPT account's token had been revoked; the rejected account is now skipped and remaining accounts are unioned.
-- Fixed GPT-6 Astra showing as free with a 272K-token window in the OpenAI Codex catalog by applying its documented pricing and 1.05M-token context window ([#10852](https://github.com/can1357/oh-my-pi/pull/10852)).
 ### Fixed
 
 - Fixed `omp models refresh` so revoked ChatGPT account tokens no longer prevent the remaining OpenAI Codex models from being discovered.
@@ -82,11 +84,6 @@
 - Fixed startup failures when discovering Bedrock-style Mistral Mixtral models.
 - Fixed Muse Spark 1.3 contributor models on OpenCode gateways so they use the correct Responses API route.
 - Updated Meta and OpenCode Muse Spark 1.3 model metadata and capabilities, including context windows, reasoning levels, image input, pricing, and model naming; media-only Muse SKUs are no longer presented as chat models.
-## [1.7.14] - 2026-09-06
-
-### Fixed
-
-- Codex `gpt-5.6-luna`/`sol`/`terra` and `gpt-6-astra` keep a 372K context window even when Codex discovery advertises 272K or 1M; `models.yml` `modelOverrides.<id>.contextWindow` still wins.
 
 ## [18.1.4] - 2026-09-02
 
@@ -1477,6 +1474,12 @@
 ### Removed
 
 - Removed the runtime enrichment layer: `enrichModelThinking` (and its non-enumerable memo-slot cache), `refreshModelThinking`, `modelOmitsReasoningEffort`, and the `model-thinking` re-exports of generator-only policies. Thinking metadata is resolved exactly once inside `buildModel`; runtime helpers (`getSupportedEfforts`, `clampThinkingLevelForModel`, `requireSupportedEffort`, the effort mappers) are pure field reads.
+
+## [1.7.14] - 2026-09-06
+
+### Fixed
+
+- Codex `gpt-5.6-luna`/`sol`/`terra` and `gpt-6-astra` keep a 372K context window even when Codex discovery advertises 272K or 1M; `models.yml` `modelOverrides.<id>.contextWindow` still wins.
 
 ## [1.7.12] - 2026-09-05
 
