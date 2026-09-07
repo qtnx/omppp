@@ -50,7 +50,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 	#queue = Promise.resolve();
 	constructor(readonly session: ToolSession) {}
 	get description(): string {
-		return "OpenAI Computer Use browser mode. Fixed 1280x720 browser viewport. DOM browser tool remains available; native actions use the exclusive computer tab.";
+		return "OpenAI Computer Use browser mode for visual browser interaction, including canvas/WebGL games and graphic UI testing. Use screenshots and coordinate actions when DOM selectors are unavailable. Fixed 1280x720 viewport. The DOM browser tool remains available for text and selector-based work.";
 	}
 	async execute(
 		_callId: string,
