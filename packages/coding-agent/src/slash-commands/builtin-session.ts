@@ -10,7 +10,9 @@ import {
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import {
+	collectModelBlame,
 	exportSessionFeedbackZip,
+	formatModelBlame,
 	formatSessionFeedbackList,
 	listSessionFeedback,
 	parseFeedbackScore,
@@ -349,11 +351,12 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "feedback",
 		icon: "pencil",
-		description: "Record feedback about this session locally; list or export it as a zip later",
-		acpInputHint: "<text> | rate <1-5> [text] | list | export [path]",
+		description: "Record feedback about this session locally; list, export, or see which model draws the most blame",
+		acpInputHint: "<text> | rate <1-5> [text] | list | stats | export [path]",
 		subcommands: [
 			{ name: "rate", description: "Rate this session from 1 (worst) to 5 (best)", usage: "<1-5> [<text>]" },
 			{ name: "list", description: "Show feedback recorded in this session" },
+			{ name: "stats", description: "Negative feedback per model across all sessions" },
 			{ name: "export", description: "Zip the session transcript and its feedback", usage: "[<path>]" },
 		],
 		allowArgs: true,
@@ -361,6 +364,10 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const { verb, rest } = parseSubcommand(command.args);
 			if (verb === "list") {
 				await runtime.output(formatSessionFeedbackList(listSessionFeedback(runtime.sessionManager)));
+				return commandConsumed();
+			}
+			if (verb === "stats") {
+				await runtime.output(formatModelBlame(await collectModelBlame()));
 				return commandConsumed();
 			}
 			if (verb === "export") {
@@ -389,7 +396,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			if (!command.args.trim()) {
 				return usage(
-					"Usage: /feedback <text> | /feedback rate <1-5> [text] | /feedback list | /feedback export [path]",
+					"Usage: /feedback <text> | /feedback rate <1-5> [text] | /feedback list | /feedback stats | /feedback export [path]",
 					runtime,
 				);
 			}

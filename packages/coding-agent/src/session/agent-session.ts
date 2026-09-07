@@ -396,6 +396,7 @@ import {
 	type SessionDuoOrchestratorHost,
 } from "./session-duo-orchestrator";
 import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
+import { recordProfanityFeedback } from "./session-feedback";
 import { SessionHandoff, type SessionHandoffHost } from "./session-handoff";
 import {
 	COMPACTION_CHECK_NONE,
@@ -6930,6 +6931,12 @@ export class AgentSession {
 			// A user turn owns the next decision; drop a queued forced choice from
 			// a reminder continuation this prompt just preempted.
 			this.#toolChoiceQueue.removeByLabel("plan-mode-decision");
+			// Profanity in a typed message is an implicit 1/5 for the last assistant turn.
+			try {
+				recordProfanityFeedback(this, typedText);
+			} catch (error) {
+				logger.debug("Profanity feedback not recorded", { error: String(error) });
+			}
 		}
 
 		// If streaming, queue via steer()/followUp()/aside based on option

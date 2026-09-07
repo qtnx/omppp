@@ -7,7 +7,7 @@
  * listed or bundled into a zip together with the transcript.
  */
 import * as path from "node:path";
-import { APP_NAME, isEnoent } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getSessionsDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { zipSync } from "fflate";
 import type { CustomEntry, SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
@@ -19,7 +19,7 @@ export type FeedbackRating = "positive" | "negative";
 /** 1 (worst) to 5 (best). */
 export type FeedbackScore = 1 | 2 | 3 | 4 | 5;
 
-export type FeedbackSource = "command" | "rating-prompt";
+export type FeedbackSource = "command" | "rating-prompt" | "auto-profanity";
 
 /** Payload persisted in the `feedback` custom entry. */
 export interface SessionFeedbackData {
@@ -81,6 +81,22 @@ export function ratingFromScore(score: FeedbackScore): FeedbackRating | undefine
 
 /** Rating prompts ask for detail when the score is 3 or below. */
 export const LOW_SCORE_THRESHOLD = 3;
+
+/**
+ * Profanity aimed at the agent counts as an automatic 1/5. Vietnamese entries
+ * are listed with diacritics (and the common no-diacritic chat spellings that
+ * have no innocent reading); ambiguous short forms (`dm`, `vl`, `cl`, `deo`,
+ * `lon`, `cho`) are deliberately excluded to avoid scoring ordinary messages.
+ */
+const PROFANITY_PATTERN =
+	/(?<![\p{L}\p{N}])(?:f+u+c+k(?:ing|ed|er|s)?|f\*+k|fck|wtf|shit|bullshit|dumbass|idiot|stupid|moron|đ[ịi]t|đm|đcm|dcm|đkm|dkm|vcl|vkl|clmm|cmm|lồn|buồi|cặc|đéo|ngu|óc chó|mẹ mày|má mày|cụ mày|đồ ngu|thằng ngu|con ngu)(?![\p{L}\p{N}])/iu;
+
+/** Whether a user message contains profanity that should auto-record a 1/5. */
+export function containsProfanity(text: string): boolean {
+	return PROFANITY_PATTERN.test(text);
+}
+
+const AUTO_FEEDBACK_TEXT_LIMIT = 200;
 
 const PREVIEW_LIMIT = 120;
 
@@ -160,13 +176,110 @@ export function listSessionFeedback(manager: Pick<SessionManager, "getEntries">)
 	return records;
 }
 
-/** Whether the session already holds a 1-5 rating (the idle prompt asks only once per session). */
+/**
+ * Whether the session already holds a 1-5 rating the user gave explicitly (the
+ * idle prompt asks only once per session). Automatic profanity scores do not
+ * count: they are the agent's inference, not the user's answer.
+ */
 export function hasSessionRating(manager: Pick<SessionManager, "getEntries">): boolean {
-	return listSessionFeedback(manager).some(record => record.score !== undefined);
+	return listSessionFeedback(manager).some(record => record.score !== undefined && record.source !== "auto-profanity");
+}
+
+/**
+ * Record an automatic 1/5 when a user message contains profanity, attributing it
+ * to the latest assistant message and the active model. Returns the record, or
+ * undefined when the message is clean or there is no assistant message to blame.
+ */
+export function recordProfanityFeedback(
+	session: FeedbackSessionLike,
+	userText: string,
+): SessionFeedbackRecord | undefined {
+	if (!containsProfanity(userText)) return undefined;
+	if (!lastAssistantTarget(session.sessionManager.getBranch())) return undefined;
+	const trimmed = userText.trim().replace(/\s+/g, " ");
+	const text =
+		trimmed.length > AUTO_FEEDBACK_TEXT_LIMIT ? `${trimmed.slice(0, AUTO_FEEDBACK_TEXT_LIMIT - 1)}…` : trimmed;
+	return recordSessionFeedback(session, { score: 1, text, source: "auto-profanity" });
+}
+
+/** Per-model tally of negative feedback (score ≤ 2 or `-1`) across every stored session. */
+export interface ModelBlameRow {
+	model: string;
+	negative: number;
+	/** Negative records that came from the profanity detector. */
+	autoProfanity: number;
+	/** Every feedback record for the model, any rating. */
+	total: number;
+}
+
+function isNegative(record: SessionFeedbackData): boolean {
+	return record.score !== undefined ? record.score <= 2 : record.rating === "negative";
+}
+
+/**
+ * Scan every session file under the sessions root and tally feedback per model.
+ * Records without a model land under `(unknown)`. Sorted by negative count.
+ */
+export async function collectModelBlame(sessionsRoot: string = getSessionsDir()): Promise<ModelBlameRow[]> {
+	const rows = new Map<string, ModelBlameRow>();
+	const marker = `"customType":"${FEEDBACK_CUSTOM_TYPE}"`;
+	let files: string[] = [];
+	try {
+		files = await Array.fromAsync(new Bun.Glob("*/*.jsonl").scan(sessionsRoot), name =>
+			path.join(sessionsRoot, name),
+		);
+	} catch (error) {
+		if (!isEnoent(error)) throw error;
+	}
+	for (const file of files) {
+		let content: string;
+		try {
+			content = await Bun.file(file).text();
+		} catch (error) {
+			if (isEnoent(error)) continue;
+			throw error;
+		}
+		if (!content.includes(marker)) continue;
+		for (const line of content.split("\n")) {
+			if (!line.includes(marker)) continue;
+			let entry: SessionEntry;
+			try {
+				entry = JSON.parse(line) as SessionEntry;
+			} catch {
+				continue;
+			}
+			if (!isFeedbackEntry(entry)) continue;
+			const data = entry.data!;
+			const model = data.model ?? "(unknown)";
+			const row = rows.get(model) ?? { model, negative: 0, autoProfanity: 0, total: 0 };
+			row.total++;
+			if (isNegative(data)) {
+				row.negative++;
+				if (data.source === "auto-profanity") row.autoProfanity++;
+			}
+			rows.set(model, row);
+		}
+	}
+	return [...rows.values()].sort(
+		(a, b) => b.negative - a.negative || b.total - a.total || a.model.localeCompare(b.model),
+	);
+}
+
+/** Operator-facing table used by `/feedback stats`. */
+export function formatModelBlame(rows: readonly ModelBlameRow[]): string {
+	if (rows.length === 0) return "No feedback recorded in any session yet.";
+	const lines = ["Negative feedback per model (all sessions)", "negative  auto  total  model"];
+	for (const row of rows) {
+		lines.push(
+			`${String(row.negative).padStart(8)}  ${String(row.autoProfanity).padStart(4)}  ${String(row.total).padStart(5)}  ${row.model}`,
+		);
+	}
+	return lines.join("\n");
 }
 
 function ratingLabel(record: SessionFeedbackRecord): string {
-	if (record.score !== undefined) return `[${record.score}/5] `;
+	if (record.score !== undefined)
+		return record.source === "auto-profanity" ? `[${record.score}/5 auto] ` : `[${record.score}/5] `;
 	if (record.rating === "positive") return "[+1] ";
 	if (record.rating === "negative") return "[-1] ";
 	return "";
@@ -196,6 +309,7 @@ export function formatSessionFeedbackMarkdown(
 			record.score !== undefined ? ` (${record.score}/5)` : record.rating ? ` (${record.rating})` : "";
 		lines.push(`## ${record.timestamp}${scoreLabel}`, "");
 		if (record.source === "rating-prompt") lines.push("- Source: idle rating prompt");
+		if (record.source === "auto-profanity") lines.push("- Source: automatic (profanity in user message)");
 		if (record.model) lines.push(`- Model: ${record.model}`);
 		if (record.targetEntryId) lines.push(`- Assistant entry: ${record.targetEntryId}`);
 		if (record.targetPreview) lines.push(`- Assistant said: ${record.targetPreview}`);

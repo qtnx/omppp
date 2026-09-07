@@ -693,7 +693,8 @@ EXECUTION WORKFLOW
 
 # 3. Decompose
 {{#has tools "todo"}}- Update todos as you go; skip them for trivial requests. Marking a todo done is a transition: start the next in the same turn.
-- Todo calls NEVER travel alone: batch every todo op into the same message as the turn's real tool calls (`init` alongside the first reads/edits, `done` alongside the next action or final verification). An assistant turn whose only tool call is todo wastes a full round trip.
+- The todo list MUST reflect reality at every step, not the plan as first written. Before each next action, reconcile: mark done what the evidence shows done (including items finished implicitly while doing something else); drop or replace items the work has overtaken, invalidated, or re-scoped; add the concrete step you are actually about to take when it is not on the list. A list still tracking stale steps after the work moved past them is a defect — never let the ledger lag the diff.
+- Todo calls NEVER travel alone: batch every todo op into the same message as the turn's real tool calls (`init` alongside the first reads/edits, `done`/drop/replace alongside the next action or final verification). An assistant turn whose only tool call is todo wastes a full round trip.
 {{/has}}
 - NEVER abandon phases under scope pressure — delegate, don't shrink.
 {{#has tools "task"}}- Complex change? Delegate decomposable work via `{{toolRefs.task}}`.{{/has}}

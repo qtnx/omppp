@@ -5,11 +5,14 @@ import * as path from "node:path";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
 import { unzipSync } from "fflate";
 import {
+	collectModelBlame,
 	exportSessionFeedbackZip,
+	formatModelBlame,
 	formatSessionFeedbackList,
 	hasSessionRating,
 	listSessionFeedback,
 	parseFeedbackInput,
+	recordProfanityFeedback,
 	recordSessionFeedback,
 } from "../src/session/session-feedback";
 import { SessionManager } from "../src/session/session-manager";
@@ -110,7 +113,7 @@ describe("session feedback", () => {
 
 		await runFeedbackCommand(manager, "", output);
 		expect(output.at(-1)).toBe(
-			"Usage: /feedback <text> | /feedback rate <1-5> [text] | /feedback list | /feedback export [path]",
+			"Usage: /feedback <text> | /feedback rate <1-5> [text] | /feedback list | /feedback stats | /feedback export [path]",
 		);
 	});
 
@@ -132,6 +135,67 @@ describe("session feedback", () => {
 		const high = recordSessionFeedback({ sessionManager: manager }, { score: 5, source: "rating-prompt" });
 		expect(high).toMatchObject({ score: 5, rating: "positive", text: "", source: "rating-prompt" });
 		expect(formatSessionFeedbackList(listSessionFeedback(manager))).toContain("[5/5] (no text)");
+	});
+
+	it("auto-records a 1/5 for profanity aimed at the last assistant turn without consuming the idle rating", () => {
+		const manager = SessionManager.inMemory();
+		const session = { sessionManager: manager, model: { provider: "openai", id: "gpt-6-astra" } };
+
+		// No assistant message yet: nothing to blame.
+		expect(recordProfanityFeedback(session, "fuck this")).toBeUndefined();
+
+		appendAssistant(manager, "Browser computer action complete. URL: about:blank");
+		expect(recordProfanityFeedback(session, "please open the map")).toBeUndefined();
+		expect(recordProfanityFeedback(session, "dm cái này là gì")).toBeUndefined();
+
+		const record = recordProfanityFeedback(session, "  fuck you. use fucking computer not browser  ");
+		expect(record).toMatchObject({
+			score: 1,
+			rating: "negative",
+			source: "auto-profanity",
+			model: "openai/gpt-6-astra",
+			text: "fuck you. use fucking computer not browser",
+		});
+		expect(record?.targetPreview).toContain("about:blank");
+		expect(recordProfanityFeedback(session, "địt cụ mày sao ngu thế")).toMatchObject({ score: 1 });
+		expect(listSessionFeedback(manager)).toHaveLength(2);
+		expect(hasSessionRating(manager)).toBe(false);
+		expect(formatSessionFeedbackList(listSessionFeedback(manager))).toContain("[1/5 auto]");
+	});
+
+	it("tallies negative feedback per model across every persisted session", async () => {
+		const root = await makeTempDir("session-feedback-root-");
+		const sessionsRoot = path.join(root, "sessions");
+		const makeSession = async (
+			name: string,
+			model: { provider: string; id: string } | undefined,
+			inputs: Array<string | { score: 1 | 2 | 3 | 4 | 5 }>,
+		) => {
+			const cwd = path.join(root, name);
+			await fs.mkdir(cwd, { recursive: true });
+			const manager = SessionManager.create(cwd, path.join(sessionsRoot, name));
+			appendAssistant(manager, "reply");
+			for (const input of inputs) recordSessionFeedback({ sessionManager: manager, model }, input);
+			await manager.ensureOnDisk();
+			await manager.flush();
+		};
+		await makeSession("a", { provider: "openai", id: "gpt-6-astra" }, [
+			{ score: 1 },
+			{ score: 2 },
+			"-1 wrong tool",
+			"+1 nice",
+		]);
+		await makeSession("b", { provider: "anthropic", id: "claude-opus-5" }, [{ score: 5 }, "-1 slow"]);
+		await makeSession("c", undefined, [{ score: 3 }]);
+
+		const rows = await collectModelBlame(sessionsRoot);
+		expect(rows.map(row => [row.model, row.negative, row.total])).toEqual([
+			["openai/gpt-6-astra", 3, 4],
+			["anthropic/claude-opus-5", 1, 2],
+			["(unknown)", 0, 1],
+		]);
+		expect(formatModelBlame(rows).split("\n")[2]).toMatch(/^\s+3\s+0\s+4\s+openai\/gpt-6-astra$/);
+		expect(await collectModelBlame(path.join(root, "missing"))).toEqual([]);
 	});
 
 	it("exports persisted feedback with its transcript and omits the transcript for in-memory sessions", async () => {
