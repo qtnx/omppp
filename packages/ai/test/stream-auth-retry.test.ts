@@ -757,6 +757,10 @@ describe("streamSimple resolver auth retry", () => {
 			{ message: '{"error":{"code":"insufficient_quota","message":"quota exhausted"}}' },
 			{ message: '{"error":{"code":"usage_limit_exceeded","message":"usage limit exceeded"}}' },
 			{ message: '{"error":{"code":"usage_limit_reached","message":"usage limit reached"}}' },
+			{
+				message:
+					"Codex error event: Our servers are currently overloaded. Please try again later. (code=server_is_overloaded)",
+			},
 		];
 		let activePayload = payloads[0]!;
 		let keys: unknown[] = [];

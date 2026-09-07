@@ -1466,6 +1466,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const emitProgressNow = () => {
 		refreshRecentOutput();
 		progress.durationMs = Date.now() - startTime;
+		progress.modelMs = modelMs;
 		progress.inputTokens = accumulatedUsage.input;
 		progress.outputTokens = accumulatedUsage.output;
 		onProgress?.({ ...progress });

@@ -608,6 +608,14 @@ export interface AgentProgress {
 	/** Cumulative billing cost in USD, accumulated incrementally from message_end events. */
 	cost: number;
 	durationMs: number;
+	/**
+	 * Sum of provider-reported assistant request durations (TTFT + decode).
+	 * Throughput displays divide `outputTokens` by this, not by `durationMs`,
+	 * so tool execution and setup time do not deflate the tok/s figure below
+	 * what the main status line shows for the same model. Absent on snapshots
+	 * from producers that predate the field.
+	 */
+	modelMs?: number;
 	modelOverride?: string | string[];
 	/** Explicit pre-expansion model role alias selected for this run. */
 	modelRole?: string;
