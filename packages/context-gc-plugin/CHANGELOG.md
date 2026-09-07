@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Cold-cache auto-shake: when the provider prompt cache has expired (idle > 5 min, or process start), stale tool output older than the last 12 messages is unloaded automatically before the request, so the unavoidable cache rewrite starts from a smaller prompt. Records stay recallable via `context_recall`; `OMP_CONTEXT_GC_AUTO_SHAKE=0` disables.
+
 ### Changed
 
 - `context_unload` now applies its projection lazily: pending unloads stay verbatim while the provider prompt cache is warm and are applied once the cache is idle past its TTL or the pending savings reach 30% of the live context, so a small unload no longer rewrites the whole cached prompt.

@@ -160,6 +160,12 @@ function reminderContent(result: { message?: unknown } | undefined): string | un
 	return typeof content === "string" ? content : undefined;
 }
 
+function unloadDeltas(fakePi: FakePi): Array<{ op: string; reason?: string }> {
+	return fakePi.deltas
+		.map(delta => (delta as { data: unknown }).data as { op: string; reason?: string })
+		.filter(delta => delta.op === "unload");
+}
+
 function getHandler<T>(fakePi: FakePi, event: string): T | undefined {
 	return fakePi.handlers.get(event)?.[0] as T | undefined;
 }
@@ -410,20 +416,68 @@ describe("contextGcExtension", () => {
 			{ type: "context", messages: [pythonMessage] },
 			createFakeContext(warmUsage),
 		);
-		expect((deferred?.messages?.[0] as { role?: string }).role).toBe("pythonExecution");
+		expect((deferred?.messages?.[0] as { role?: string } | undefined)?.role).toBe("pythonExecution");
 
 		clock += PROMPT_CACHE_TTL_MS;
 		const applied = await contextHandler(
 			{ type: "context", messages: [pythonMessage] },
 			createFakeContext(warmUsage),
 		);
-		expect((applied?.messages?.[0] as { customType?: string }).customType).toBe("context-gc-projected");
+		expect((applied?.messages?.[0] as { customType?: string } | undefined)?.customType).toBe("context-gc-projected");
 
 		// Sticky: a fresh warm turn must not flip the placeholder back to verbatim.
 		turnEnd({ type: "turn_end" }, createFakeContext(warmUsage));
 		clock += 1_000;
 		const sticky = await contextHandler({ type: "context", messages: [pythonMessage] }, createFakeContext(warmUsage));
-		expect((sticky?.messages?.[0] as { customType?: string }).customType).toBe("context-gc-projected");
+		expect((sticky?.messages?.[0] as { customType?: string } | undefined)?.customType).toBe("context-gc-projected");
+		shutdown(fakePi);
+	});
+
+	it("auto-shakes stale tool output on a cold cache without a model unload, but not while warm", async () => {
+		let clock = 1_000_000;
+		const fakePi = createFakePi();
+		createContextGcExtension({ dbPath: getContextGcDbPath(tempDir), now: () => clock })(
+			fakePi as unknown as ExtensionAPI,
+		);
+		const contextHandler = getHandler<ContextHandler>(fakePi, "context");
+		const turnEnd = getHandler<(event: unknown, ctx: FakeContext) => void>(fakePi, "turn_end");
+		if (!contextHandler || !turnEnd) throw new Error("handlers missing");
+
+		const stale = {
+			role: "pythonExecution",
+			entryId: "python-stale-entry",
+			code: "print('old')",
+			output: "old output\n".repeat(3_000),
+			exitCode: 0,
+			timestamp: 1,
+		};
+		const filler = Array.from({ length: 15 }, (_, index) => ({
+			role: "user",
+			content: `filler ${index}`,
+			timestamp: index + 2,
+		}));
+		const messages = [stale, ...filler];
+		const usage = { tokens: 400_000, contextWindow: 1_000_000, percent: 40 };
+
+		// A completed turn marks the cache warm; the stale record is inventoried on the
+		// following request but must not be shaken while warm.
+		turnEnd({ type: "turn_end" }, createFakeContext(usage));
+		clock += 30_000;
+		await contextHandler({ type: "context", messages }, createFakeContext(usage));
+		const warm = await contextHandler({ type: "context", messages }, createFakeContext(usage));
+		expect((warm?.messages?.[0] as { role?: string } | undefined)?.role).toBe("pythonExecution");
+		expect(unloadDeltas(fakePi)).toHaveLength(0);
+
+		clock += PROMPT_CACHE_TTL_MS;
+		const cold = await contextHandler({ type: "context", messages }, createFakeContext(usage));
+		const first = cold?.messages?.[0] as { customType?: string; content?: Array<{ text: string }> } | undefined;
+		expect(first?.customType).toBe("context-gc-projected");
+		expect(first?.content?.[0]?.text).toContain("context_recall");
+		const unloads = unloadDeltas(fakePi);
+		expect(unloads).toHaveLength(1);
+		expect(unloads[0]?.reason).toBe("auto-shake: prompt cache cold");
+		// Recent messages survive untouched.
+		expect((cold?.messages?.[15] as { content?: string } | undefined)?.content).toBe("filler 14");
 		shutdown(fakePi);
 	});
 
