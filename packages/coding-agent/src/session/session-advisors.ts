@@ -211,7 +211,7 @@ interface AdvisorRuntimeDescriptor {
  * explicitly. Matched as substrings so provider prefixes (`global.anthropic.…`,
  * `openai.…`) and SKU suffixes (`gpt-5.6-sol`, `-pro`) are all covered.
  */
-const ADVISOR_OFF_BY_DEFAULT_MODEL_IDS = ["claude-opus-5", "claude-fable-5", "gpt-5.6"] as const;
+const ADVISOR_OFF_BY_DEFAULT_MODEL_IDS = ["claude-opus-5", "claude-fable-5", "gpt-5.6", "gpt-6-astra"] as const;
 
 /** True when this model opts out of the advisor unless the user configured it. */
 export function advisorDefaultsOffForModel(model: { id: string } | undefined): boolean {

@@ -6,6 +6,7 @@ import type { ModelRegistry } from "../../src/config/model-registry";
 import { resolveDuoConfig } from "../../src/config/model-resolver";
 import { Settings } from "../../src/config/settings";
 import { getDefault, type SettingPath } from "../../src/config/settings-schema";
+import { advisorDefaultsOffForModel, resolveAdvisorEnabled } from "../../src/session/session-advisors";
 import { parseConfiguredThinkingLevel } from "../../src/thinking";
 
 function model(provider: string, id: string, reasoning = false): Model {
@@ -95,5 +96,14 @@ describe("duo advisor thinking", () => {
 	test("advisor is enabled by default for fresh settings", () => {
 		expect(getDefault("advisor.enabled")).toBe(true);
 		expect(Settings.isolated({}).get("advisor.enabled")).toBe(true);
+	});
+
+	test("GPT-6 Astra opts out unless advisor is explicitly enabled", () => {
+		const settings = Settings.isolated({});
+		const model = { id: "gpt-6-astra" };
+		expect(advisorDefaultsOffForModel(model)).toBe(true);
+		expect(resolveAdvisorEnabled(settings, model)).toBe(false);
+		settings.set("advisor.enabled", true);
+		expect(resolveAdvisorEnabled(settings, model)).toBe(true);
 	});
 });

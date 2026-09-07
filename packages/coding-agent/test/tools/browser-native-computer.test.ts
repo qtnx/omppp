@@ -18,6 +18,7 @@ describe("native browser computer tool", () => {
 	it("uses OpenAI native computer marker and fixed coordinate viewport", () => {
 		const tool = new NativeBrowserComputerTool(makeSession());
 
+		expect(tool.name).toBe("browser_use");
 		expect(tool.native).toEqual({ type: "computer" });
 		expect(NATIVE_BROWSER_VIEWPORT).toEqual({ width: 1280, height: 720 });
 		expect(tool.description).toContain("1280x720");

@@ -8,11 +8,26 @@ import { acquireTab, releaseTab, runInTab, type TabSession } from "./browser/tab
 import { ToolAbortError } from "./tool-errors";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
+const pointSchema = type({ x: "number", y: "number" });
+const actionSchema = type({
+	type: "'click' | 'double_click' | 'drag' | 'keypress' | 'move' | 'scroll' | 'type' | 'wait' | 'screenshot'",
+	"x?": "number",
+	"y?": "number",
+	"button?": "'left' | 'right' | 'wheel' | 'back' | 'forward'",
+	"keys?": "string[]",
+	"text?": "string",
+	"scroll_x?": "number",
+	"scroll_y?": "number",
+	"path?": pointSchema.array(),
+});
 const nativeComputerSchema = type({
-	"actions?": type("unknown[]").describe("OpenAI computer actions"),
-	"action?": type("unknown").describe("OpenAI computer action"),
+	"url?": type("string").describe("Open this URL in the browser_use tab before running actions"),
+	"actions?": actionSchema
+		.array()
+		.describe(
+			"Ordered screen actions in 1280x720 viewport pixels. click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} (Playwright key names); type: {text}; wait; screenshot. A screenshot is returned after the last action.",
+		),
 	"pending_safety_checks?": type("unknown[]").describe("Safety checks requiring explicit approval"),
-	"call_id?": type("string"),
 	"+": "reject",
 });
 type NativeComputerInput = typeof nativeComputerSchema.infer;
@@ -26,8 +41,7 @@ type NativeDetails = {
 };
 
 function actionList(input: NativeComputerInput): ComputerAction[] {
-	const values = [...(Array.isArray(input.actions) ? input.actions : []), ...(input.action ? [input.action] : [])];
-	return values as ComputerAction[];
+	return (input.actions ?? []) as ComputerAction[];
 }
 
 function actionCode(action: ComputerAction): string {
@@ -36,8 +50,8 @@ function actionCode(action: ComputerAction): string {
 }
 
 export class NativeBrowserComputerTool implements AgentTool<typeof nativeComputerSchema, NativeDetails> {
-	readonly name = "computer";
-	readonly label = "Browser Computer";
+	readonly name = "browser_use";
+	readonly label = "Browser Use";
 	readonly loadMode = "essential" as const;
 	readonly concurrency = "exclusive" as const;
 	readonly summary = "Control browser viewport with OpenAI Computer Use actions";
@@ -50,7 +64,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 	#queue = Promise.resolve();
 	constructor(readonly session: ToolSession) {}
 	get description(): string {
-		return "OpenAI Computer Use browser mode for visual browser interaction, including canvas/WebGL games and graphic UI testing. Use screenshots and coordinate actions when DOM selectors are unavailable. Fixed 1280x720 viewport. The DOM browser tool remains available for text and selector-based work.";
+		return "OpenAI Computer Use browser mode for visual browser interaction, including canvas/WebGL games and graphic UI testing. Use screenshots and coordinate actions when DOM selectors are unavailable. Fixed 1280x720 viewport. The DOM browser tool remains available for text and selector-based work. Call with {url} to open a page and get a screenshot; then send {actions:[...]} using coordinates read from that screenshot.";
 	}
 	async execute(
 		_callId: string,
@@ -80,17 +94,25 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 						signal,
 					});
 					this.#tab = (
-						await acquireTab("computer", browser, {
+						await acquireTab("browser_use", browser, {
 							viewport: VIEWPORT,
 							timeoutMs: 30_000,
 							ownerSessionId: this.session.getSessionId?.() ?? undefined,
 						})
 					).tab;
 				}
+				if (typeof input.url === "string" && input.url.length > 0) {
+					await runInTab("browser_use", {
+						code: `await tab.goto(${JSON.stringify(input.url)}, { waitUntil: "domcontentloaded" }); return tab.url();`,
+						timeoutMs: 30_000,
+						signal,
+						session: this.session,
+					});
+				}
 				let screenshot = "";
 				let screenshotMimeType = "image/png";
 				for (const action of actions) {
-					const result = await runInTab("computer", {
+					const result = await runInTab("browser_use", {
 						code: actionCode(action),
 						timeoutMs: 30_000,
 						signal,

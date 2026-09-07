@@ -759,7 +759,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	codegraph_index: s => new CodeGraphIndexTool(s),
 	codegraph_explore: s => new CodeGraphExploreTool(s),
 	kanban: KanbanTool.createIf,
-	computer: s => new NativeBrowserComputerTool(s),
+	browser_use: s => new NativeBrowserComputerTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	compact: CompactTool.createIf,
@@ -987,9 +987,8 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "ask") return session.settings.get("ask.enabled");
 		// Native OpenAI Computer Use rides the managed browser; the scriptable
 		// desktop path stays an eval prelude (see getEvalPreludes in sdk.ts).
-		if (name === "computer")
+		if (name === "browser_use")
 			return (
-				session.settings.get("computer.enabled") === true &&
 				session.settings.get("browser.enabled") === true &&
 				session.settings.get("browser.nativeComputer.enabled") === true
 			);
