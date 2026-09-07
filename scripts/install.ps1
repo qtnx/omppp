@@ -19,7 +19,11 @@ $ErrorActionPreference = "Stop"
 $Repo = "qtnx/omppp"
 $Package = "@oh-my-pi/pi-coding-agent"
 $InstallDir = if ($env:PI_INSTALL_DIR) { $env:PI_INSTALL_DIR } else { "$env:LOCALAPPDATA\ompx" }
-$BinaryName = "ompx-windows-x64.exe"
+$NativeArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+if ($NativeArchitecture -notin @("x64", "arm64")) {
+    throw "Unsupported Windows architecture: $NativeArchitecture"
+}
+$BinaryName = "ompx-windows-$NativeArchitecture.exe"
 $MinimumBunVersion = "1.3.14"
 $ApiBaseUrl = if ($env:PI_GITHUB_API_BASE_URL) { $env:PI_GITHUB_API_BASE_URL.TrimEnd([char]"/") } else { "https://api.github.com/repos/$Repo" }
 $ReleaseDownloadBaseUrl = if ($env:PI_RELEASE_DOWNLOAD_BASE_URL) { $env:PI_RELEASE_DOWNLOAD_BASE_URL.TrimEnd([char]"/") } else { "https://github.com/$Repo/releases/download" }

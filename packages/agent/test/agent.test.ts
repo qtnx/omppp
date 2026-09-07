@@ -35,6 +35,7 @@ describe("Agent", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				if (params.value === "first") {
@@ -99,6 +100,7 @@ describe("Agent", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				if (params.value === "first") {
@@ -229,6 +231,7 @@ describe("Agent", () => {
 				description: "Echo tool",
 				parameters: toolSchema,
 				concurrency: "exclusive",
+				interruptible: true,
 				async execute(_toolCallId, params) {
 					executed.push(params.value);
 					if (params.value === "first") {

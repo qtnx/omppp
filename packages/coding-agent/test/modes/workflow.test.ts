@@ -60,6 +60,18 @@ describe("workflow request intent", () => {
 	});
 });
 
+describe("workflow notice", () => {
+	it("defaults to workpools and hides eval-defined tools when disabled", () => {
+		const enabled = renderWorkflowNotice({ taskBatch: true, evalTools: true });
+		const disabled = renderWorkflowNotice({ taskBatch: true, evalTools: false });
+		expect(enabled).toContain("Default to `workpool()`");
+		expect(enabled).toContain("`@tool`");
+		expect(disabled).toContain("Default to `workpool()`");
+		expect(disabled).not.toContain("`@tool`");
+		expect(disabled).not.toContain("tools=None");
+	});
+});
+
 describe("workflow keyword highlighting", () => {
 	it("decorates the keyword with zero-width escapes, preserving visible text", () => {
 		const input = "please workflow this";

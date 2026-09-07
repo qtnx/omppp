@@ -1276,6 +1276,59 @@ describe("agentLoop with AgentMessage", () => {
 		}
 	});
 
+	it("normalizes trailing periods from intent at extraction site", async () => {
+		const context: AgentContext = {
+			systemPrompt: ["test"],
+			messages: [],
+			tools: [
+				{
+					name: "echo",
+					label: "echo",
+					description: "echoes value",
+					parameters: type({ value: "string" }),
+					execute: async (_toolCallId, params: { value: string }) => ({
+						content: [{ type: "text", text: params.value }],
+					}),
+				},
+			],
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{
+							type: "toolCall",
+							id: "tool-1",
+							name: "echo",
+							arguments: { value: "hello", [INTENT_FIELD]: "Reading model role settings." },
+						},
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			intentTracing: true,
+		};
+
+		const stream = agentLoop([createUserMessage("run")], context, config, undefined, mock.stream);
+		for await (const _ of stream) {
+			// drain
+		}
+		const messages = await stream.result();
+		const assistantWithToolCall = messages.find(
+			message => message.role === "assistant" && message.content.some(content => content.type === "toolCall"),
+		) as AssistantMessage | undefined;
+		const tracedToolCall = assistantWithToolCall?.content.find(content => content.type === "toolCall");
+
+		expect(tracedToolCall?.type).toBe("toolCall");
+		if (tracedToolCall?.type === "toolCall") {
+			expect(tracedToolCall.intent).toBe("Reading model role settings");
+		}
+	});
+
 	it("runs shared tools in parallel and emits completion-ordered results", async () => {
 		const toolSchema = type({ value: "string" });
 		const startTimes: Record<string, number> = {};
@@ -1527,7 +1580,7 @@ describe("agentLoop with AgentMessage", () => {
 		expect(assistantEnd.message.content.some(block => block.type === "toolCall")).toBe(false);
 	});
 
-	it("should skip remaining tool calls when steering is queued", async () => {
+	it("should skip remaining interruptible waits when steering is queued", async () => {
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -1536,6 +1589,7 @@ describe("agentLoop with AgentMessage", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				return {
@@ -1584,7 +1638,7 @@ describe("agentLoop with AgentMessage", () => {
 			events.push(event);
 		}
 
-		// Only the first tool should execute; the second is skipped after steering is queued.
+		// Only the first wait should execute; the second is skipped after steering is queued.
 		expect(executed).toEqual(["first"]);
 
 		const toolEnds = events.filter(
@@ -1702,6 +1756,75 @@ describe("agentLoop with AgentMessage", () => {
 		);
 		expect(advisorIndex).toBeGreaterThan(lastToolResultIndex);
 	});
+	it("runs already-emitted non-interruptible tools when steering is queued and injects the steer after the batch (#10439)", async () => {
+		// A user message typed while the model streams an `edit`/`write` must not
+		// throw the finished call away: the generation cost is sunk, the tool is
+		// cheap, and a skip only makes the model re-emit the same call.
+		const toolSchema = type({ value: "string" });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "write",
+			label: "Write",
+			description: "Non-interruptible side effect",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const queuedUserMessage = createUserMessage("interrupt");
+		let queuedDelivered = false;
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "write", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "write", arguments: { value: "second" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			interruptMode: "immediate",
+			hasSteeringMessages: () => mock.calls.length >= 1 && !queuedDelivered,
+			getSteeringMessages: async () => {
+				if (mock.calls.length < 1 || queuedDelivered) return [];
+				queuedDelivered = true;
+				return [queuedUserMessage];
+			},
+		};
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("start")], context, config, undefined, mock.stream)) {
+			events.push(event);
+		}
+		expect(executed).toEqual(["first", "second"]);
+		const toolEnds = events.filter(
+			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> => e.type === "tool_execution_end",
+		);
+		expect(toolEnds.map(e => e.isError)).toEqual([false, false]);
+		const eventSequence = events.flatMap(event => {
+			if (event.type !== "message_start") return [];
+			if (event.message.role === "toolResult") return [`tool:${event.message.toolCallId}`];
+			if (event.message.role === "user" && typeof event.message.content === "string") {
+				return [event.message.content];
+			}
+			return [];
+		});
+		expect(eventSequence.indexOf("tool:tool-2")).toBeLessThan(eventSequence.indexOf("interrupt"));
+		const sawInterruptInContext = mock.calls[1]?.context.messages.some(
+			m => m.role === "user" && typeof m.content === "string" && m.content === "interrupt",
+		);
+		expect(sawInterruptInContext).toBe(true);
+	});
+
 	it("does not spin when a non-interrupting steer is queued before tool watcher subscription", async () => {
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];
@@ -1733,9 +1856,8 @@ describe("agentLoop with AgentMessage", () => {
 			],
 		});
 
-		let agent: Agent;
 		let steered = false;
-		agent = new Agent({
+		const agent: Agent = new Agent({
 			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
 			streamFn: mock.stream,
 			beforeToolCall: async () => {
@@ -1825,12 +1947,14 @@ describe("agentLoop with AgentMessage", () => {
 		releaseFirst.resolve();
 		await run;
 
-		expect(executed).toEqual(["first"]);
+		// Non-interruptible calls the model already emitted run to completion;
+		// the steers inject at the batch boundary (upstream #10439 semantics).
+		expect(executed).toEqual(["first", "second"]);
 		const nextContext = mock.calls[1]?.context.messages;
 		if (!nextContext) throw new Error("expected a second model context after mixed steering");
 		const toolResults = nextContext.filter((message): message is ToolResultMessage => message.role === "toolResult");
 		expect(toolResults.map(message => message.toolCallId)).toEqual(["tool-1", "tool-2"]);
-		expect(toolResults.map(message => message.isError)).toEqual([false, true]);
+		expect(toolResults.map(message => message.isError)).toEqual([false, false]);
 
 		const deliveredSteers = nextContext.flatMap(message => {
 			if (message.role !== "user" || typeof message.content !== "string") return [];
@@ -1896,7 +2020,10 @@ describe("agentLoop with AgentMessage", () => {
 		releaseFirst.resolve();
 		await run;
 
-		expect(executed).toEqual(["first"]);
+		// The re-steered message is interrupting again (interruptState is
+		// triggered) but non-interruptible tools still complete; the contract is
+		// that the message reaches the next provider turn.
+		expect(executed).toEqual(["first", "second"]);
 		const nextContext = mock.calls[1]?.context.messages;
 		if (!nextContext) throw new Error("expected a second model context after the interrupting steer");
 		expect(
@@ -1916,6 +2043,7 @@ describe("agentLoop with AgentMessage", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				return {
@@ -2694,6 +2822,7 @@ describe("agentLoop with AgentMessage", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				return {
@@ -3159,6 +3288,7 @@ describe("agentLoop event-driven steering watch", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				// Make a steer available and wake the watcher, the way a real queue

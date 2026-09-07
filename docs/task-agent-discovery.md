@@ -114,7 +114,7 @@ Bundled agents are embedded at build time (`src/task/agents.ts`) using text impo
 `EMBEDDED_AGENT_DEFS` defines:
 
 - `explore`, `scout`, `plan`, `designer`, `frontend_ui`, `presenter`, `ui_ux_reviewer`, `ux_copywriter`, `browser_qa`, `reviewer`, `security-reviewer`, `qa`, `librarian`, `oracle`, `tester`, and `workflow-subagent` from prompt files.
-- `heavy_task`, `task`, and `quick_task` from injected frontmatter plus dedicated worker prompt bodies; no bundled agent sets `prewalk` — hand-off is armed by `task.prewalk` (default off), per-agent `/agents` / `task.agentPrewalk` settings, or user agent frontmatter.
+- `heavy_task`, `task`, and `quick_task` from the shared `task.md` body plus injected frontmatter; no bundled agent sets `prewalk` — hand-off is armed by `task.prewalk` (default off), per-agent `/agents` / `task.agentPrewalk` settings, or user agent frontmatter.
 
 Loading path:
 

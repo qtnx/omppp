@@ -717,6 +717,8 @@ export interface ResolvedOpenAISharedCompat {
 	alwaysSendMaxTokens: boolean;
 	/** Provider-specific hard output-token ceiling; undefined keeps pi-ai's conservative default. */
 	providerOutputClamp?: number;
+	/** Clamp a requested output-token count to the model's advertised ceiling. */
+	clampOutputToModelMax: boolean;
 	openRouterRouting?: OpenAICompat["openRouterRouting"];
 	/** Provider-specific wire model-id transform applied to the base id. */
 	wireModelIdMode: "raw" | "cline-pass" | "firepass" | "fireworks" | "openrouter";
@@ -786,6 +788,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "supportsLongPromptCacheRetention"
 			| "alwaysSendMaxTokens"
 			| "providerOutputClamp"
+			| "clampOutputToModelMax"
 			| "wireModelIdMode"
 			| "vercelGatewayRouting"
 			| "extraBody"
@@ -921,8 +924,10 @@ export type ResolvedDevinCompat = Required<DevinCompat>;
 export interface GoogleCompat {
 	/** Whether functionCall/functionResponse parts carry the `id` field. */
 	supportsFunctionPartId?: boolean;
-	/** Whether replayed thinking parts must be skipped when they carry no signature. */
+	/** Add the bypass sentinel to every unsigned Gemini function call. */
 	requiresSkipThoughtSignature?: boolean;
+	/** Add the bypass sentinel when a Gemini turn's first function call is unsigned. */
+	requiresSkipThoughtSignatureOnFirstFunctionCall?: boolean;
 	/** Drop unsigned thinking blocks from replayed history (Antigravity Claude). */
 	dropUnsignedThinking?: boolean;
 	/** Cloud Code Assist legacy `parameters` schema field instead of `parametersJsonSchema`. */
@@ -1125,6 +1130,8 @@ export interface Model<TApi extends Api = Api> {
 	/** Premium Copilot requests charged per user-initiated request (defaults to 1). */
 	premiumMultiplier?: number;
 	contextWindow: number | null;
+	/** Optional larger prompt window available when extended context is enabled. */
+	maxContextWindow?: number;
 	maxTokens: number | null;
 	/**
 	 * When `true`, providers MUST omit `max_output_tokens` (Responses) /
@@ -1187,6 +1194,10 @@ export interface Model<TApi extends Api = Api> {
 	isRecommended?: boolean;
 	/** Canonical thinking capability metadata for this model. */
 	thinking?: ThinkingConfig;
+	/** Intelligence score delivered by the model catalog. */
+	int?: number | null;
+	/** Catalog-estimated output speed in tokens per second. */
+	tps?: number | null;
 	/**
 	 * Fully-resolved compatibility record, materialized once by `buildModel`.
 	 * Protocol handlers read fields; they never detect, resolve, or allocate.
@@ -1202,6 +1213,13 @@ export interface Model<TApi extends Api = Api> {
 	 * - `"function"` or undefined: JSON function-tool with `{input: string}` (spec §1.2).
 	 */
 	applyPatchToolType?: "freeform" | "function";
+	/**
+	 * Edit-tool description density for this model. `"compact"` selects the
+	 * terse mode prompt (all operations and invariants preserved) for hosts
+	 * where per-request prompt bytes are the dominant cost. Generated catalog
+	 * policy sets it; the edit tool falls back to the full prompt when unset.
+	 */
+	editPromptVariant?: "full" | "compact";
 	/**
 	 * Force OAuth-style request shaping for providers whose API key prefix doesn't
 	 * match an OAuth token (e.g. routing Anthropic traffic through a proxy that
@@ -1221,6 +1239,12 @@ export interface Model<TApi extends Api = Api> {
 	guardrailVersion?: string;
 	/** Bedrock guardrail trace verbosity. */
 	guardrailTrace?: "enabled" | "disabled" | "enabled_full";
+	/**
+	 * Bedrock invocation-log tags attached to every Converse request for this
+	 * model. Set from `providers.<provider>.requestMetadata`; the Bedrock
+	 * transport reads it directly and validates it against AWS's limits.
+	 */
+	requestMetadata?: Record<string, string>;
 }
 
 /**
@@ -1228,16 +1252,15 @@ export interface Model<TApi extends Api = Api> {
  * vocabulary of `buildModel`. Identical to `Model` except `compat` carries the
  * sparse override shape and nothing is resolved yet.
  */
-export interface ModelSpec<TApi extends Api = Api>
-	extends Omit<
-		Model<TApi>,
-		| "compat"
-		| "identity"
-		| "compatConfig"
-		| "requiresGlyphTokenization"
-		| "requiresCursorToolSchemaProjection"
-		| "supportsComputerUseConfig"
-	> {
+export interface ModelSpec<TApi extends Api = Api> extends Omit<
+	Model<TApi>,
+	| "compat"
+	| "identity"
+	| "compatConfig"
+	| "requiresGlyphTokenization"
+	| "requiresCursorToolSchemaProjection"
+	| "supportsComputerUseConfig"
+> {
 	/** Sparse compatibility overrides; resolved into `Model.compat` by `buildModel`. */
 	compat?: CompatConfigOf<TApi>;
 }

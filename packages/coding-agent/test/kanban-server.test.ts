@@ -129,7 +129,9 @@ async function parseTaskResponse(response: Response): Promise<{ id: string; vers
 async function readSseFrame(
 	// Structural: bun-types and node:stream/web disagree on the reader type
 	// (`readMany`), and fetch() can bind to either depending on lib order.
-	reader: { read(): Promise<{ done: boolean; value?: Uint8Array }> },
+	reader: {
+		read(): Promise<{ done: boolean; value?: Uint8Array }>;
+	},
 ): Promise<{ event: KanbanActivity; remainder: string }> {
 	const decoder = new TextDecoder();
 	let received = "";

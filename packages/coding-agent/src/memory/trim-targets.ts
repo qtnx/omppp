@@ -1,7 +1,6 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { closeAllAutoresearchStorages } from "../autoresearch/storage";
 import { clearCache } from "../capability/fs";
-import { disposeAllJuliaKernelSessions } from "../eval/jl/executor";
 import { disposeAllVmContexts } from "../eval/js/context-manager";
 import { disposeAllKernelSessions } from "../eval/py/executor";
 import { mnemopiEmbedClient } from "../mnemopi/embed-client";
@@ -26,7 +25,6 @@ export function buildWorkerTrimTargets(): WorkerTrimTargets {
 			await runWorkerTarget("mnemopi embed client", () => mnemopiEmbedClient.terminate());
 			await runWorkerTarget("JavaScript eval contexts", disposeAllVmContexts);
 			await runWorkerTarget("Python kernel sessions", disposeAllKernelSessions);
-			await runWorkerTarget("Julia kernel sessions", disposeAllJuliaKernelSessions);
 		},
 	};
 }

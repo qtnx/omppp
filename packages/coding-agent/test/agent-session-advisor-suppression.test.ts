@@ -40,7 +40,7 @@ interface MockYieldDetails {
 }
 
 const mockYieldParameters = type({
-	result: "unknown",
+	data: "unknown",
 	"type?": "unknown",
 });
 
@@ -124,11 +124,6 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		return { session, sessionManager, mock, streamStarted: started.promise };
 	}
 
-	function readYieldResultData(result: unknown): unknown {
-		if (!result || typeof result !== "object" || !("data" in result)) return undefined;
-		return result.data;
-	}
-
 	function isYieldType(value: unknown): value is string | string[] {
 		return (
 			typeof value === "string" ||
@@ -143,7 +138,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 			description: "Mock yield tool",
 			parameters: mockYieldParameters,
 			execute: async (_toolCallId, params) => {
-				const details: MockYieldDetails = { status: "success", data: readYieldResultData(params.result) };
+				const details: MockYieldDetails = { status: "success", data: params.data };
 				if (isYieldType(params.type)) details.type = params.type;
 				return {
 					content: [{ type: "text", text: "Result submitted." }],
@@ -153,7 +148,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		};
 	}
 
-	function createYieldMockResponse(args: { result: { data: unknown }; type?: string | string[] }): MockResponse {
+	function createYieldMockResponse(args: { data: unknown; type?: string | string[] }): MockResponse {
 		const toolCall: ToolCall = {
 			type: "toolCall",
 			id: `call_yield_${Snowflake.next()}`,
@@ -265,7 +260,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({
 			responses: [
-				createYieldMockResponse({ result: { data: "FINAL RESULT" } }),
+				createYieldMockResponse({ data: "FINAL RESULT" }),
 				{ content: ["must not run"], stopReason: "stop" },
 			],
 		});
@@ -724,7 +719,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 				if (providerCalls > 1) {
 					throw new Error("terminal yield must not start a second provider call");
 				}
-				return createYieldMockResponse({ result: { data: { ok: true } } });
+				return createYieldMockResponse({ data: { ok: true } });
 			},
 		});
 		const agent = new Agent({

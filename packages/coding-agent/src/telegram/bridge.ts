@@ -293,8 +293,7 @@ export class TelegramBridge implements TelegramBridgeHandle {
 
 	#startSender(generation: Generation): void {
 		if (!this.#isLive(generation) || generation.sendPromise || generation.outbound.length === 0) return;
-		let drain: Promise<void>;
-		drain = this.#send(generation).finally(() => {
+		const drain: Promise<void> = this.#send(generation).finally(() => {
 			if (generation.sendPromise !== drain) return;
 			generation.sendPromise = undefined;
 			if (this.#isLive(generation) && generation.outbound.length > 0) this.#startSender(generation);

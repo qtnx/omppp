@@ -3,8 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { DEFAULT_FUZZY_THRESHOLD, executePatchSingle } from "@oh-my-pi/pi-coding-agent/edit";
-import { writethroughNoop } from "@oh-my-pi/pi-coding-agent/lsp";
+import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { withFileWriteLock, withFileWriteLocks } from "@oh-my-pi/pi-coding-agent/tools/file-write-lock";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
@@ -187,39 +186,44 @@ describe("file write lock", () => {
 		expect(new TextDecoder().decode(secondEntry as Uint8Array)).toBe("second member\n");
 	});
 
-	it("serializes a rename against an edit of its destination", async () => {
+	it("serializes concurrent native-engine edits of one file", async () => {
+		// Both edits stage from a full read of the file inside the native engine's
+		// `apply`. Unserialized, each would patch the same pre-state and the
+		// second write would clobber the first (lost update); the per-file write
+		// lock forces the loser to re-read, so both hunks survive.
+		const filePath = path.join(tmpDir, "concurrent.txt");
+		await fs.writeFile(filePath, "alpha\nbeta\ngamma\n");
+		const patch = (from: string, to: string) => ({
+			path: filePath,
+			edits: [{ op: "update" as const, diff: `@@\n-${from}\n+${to}\n` }],
+		});
+
+		const results = await Promise.all([
+			new EditTool(createSession(tmpDir), "patch").execute("first", patch("alpha", "ALPHA")),
+			new EditTool(createSession(tmpDir), "patch").execute("second", patch("gamma", "GAMMA")),
+		]);
+
+		expect(results.some(result => result.isError)).toBe(false);
+		expect(await fs.readFile(filePath, "utf8")).toBe("ALPHA\nbeta\nGAMMA\n");
+	});
+
+	it("serializes a native-engine rename against an edit of its destination", async () => {
 		const sourcePath = path.join(tmpDir, "source.txt");
 		const destinationPath = path.join(tmpDir, "destination.txt");
 		await fs.writeFile(sourcePath, "source\n");
 
-		const rename = executePatchSingle({
-			session: createSession(tmpDir),
+		const rename = new EditTool(createSession(tmpDir), "patch").execute("rename", {
 			path: sourcePath,
-			params: { op: "update", rename: destinationPath, diff: "@@\n-source\n+moved" },
-			allowFuzzy: false,
-			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-			writethrough: writethroughNoop,
-			beginDeferredDiagnosticsForPath: () => {
-				throw new Error("deferred diagnostics unused with writethroughNoop");
-			},
+			edits: [{ op: "update", rename: destinationPath, diff: "@@\n-source\n+moved\n" }],
 		});
-		const editDestination = executePatchSingle({
-			session: createSession(tmpDir),
+		const editDestination = new EditTool(createSession(tmpDir), "patch").execute("create", {
 			path: destinationPath,
-			params: { op: "create", diff: "edited\n" },
-			allowFuzzy: false,
-			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-			writethrough: writethroughNoop,
-			beginDeferredDiagnosticsForPath: () => {
-				throw new Error("deferred diagnostics unused with writethroughNoop");
-			},
+			edits: [{ op: "create", diff: "edited\n" }],
 		});
 
 		const [renameResult, editResult] = await Promise.allSettled([rename, editDestination]);
 
 		expect(renameResult.status === "fulfilled" || editResult.status === "fulfilled").toBe(true);
-		expect(renameResult.status === "fulfilled" || renameResult.reason instanceof Error).toBe(true);
-		expect(editResult.status === "fulfilled" || editResult.reason instanceof Error).toBe(true);
 		expect(await fs.readFile(destinationPath, "utf8")).toSatisfy(
 			content => content === "moved\n" || content === "edited\n",
 		);

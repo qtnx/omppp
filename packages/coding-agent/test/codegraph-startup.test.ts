@@ -156,7 +156,7 @@ describe("CodeGraph startup", () => {
 		const session = await createSession(cwd, Settings.isolated({ "codegraph.enabled": true }));
 		const { promise: deliveryObserved, resolve: resolveDeliveryObserved } = Promise.withResolvers<{
 			method: "deferred" | "next-turn";
-			options?: { deliverAs?: "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean };
+			options?: { deliverAs?: "aside" | "steer" | "followUp" | "nextTurn"; triggerTurn?: boolean };
 		}>();
 		session.queueDeferredMessage = () => {
 			resolveDeliveryObserved({ method: "deferred" });

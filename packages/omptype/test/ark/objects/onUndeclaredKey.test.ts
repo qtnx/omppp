@@ -83,9 +83,8 @@ describe("traversal", () => {
 	});
 
 	it("fails on delete indiscriminable union key", () => {
-		expect(() =>
-			type([{ a: "string" }, "|", { b: "boolean" }]).onUndeclaredKey("delete"),
-		).toThrow(`ParseError: An unordered union of a type including a morph and a type with overlapping input is indeterminate:
+		expect(() => type([{ a: "string" }, "|", { b: "boolean" }]).onUndeclaredKey("delete"))
+			.toThrow(`ParseError: An unordered union of a type including a morph and a type with overlapping input is indeterminate:
 Left: { a: string, + (undeclared): delete }
 Right: { b: boolean, + (undeclared): delete }`);
 	});

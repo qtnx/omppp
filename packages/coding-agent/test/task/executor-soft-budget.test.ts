@@ -94,6 +94,7 @@ function createMockSession(
 		setIrcWakeTurnObserver: observer => {
 			ircWakeTurnObserver = observer;
 		},
+		trackIrcReply: () => {},
 		subscribeRunState: () => () => {},
 		deliverIrcMessage: async msg => {
 			const record: CustomMessage = {
@@ -113,7 +114,7 @@ function createMockSession(
 						type: "toolCall" as const,
 						id: "tool-irc-yield",
 						name: "yield",
-						arguments: { result: { data: { report: "resumed findings" } } },
+						arguments: { data: { report: "resumed findings" } },
 					},
 				],
 				stopReason: "toolUse" as const,
@@ -235,7 +236,7 @@ describe("runSubprocess soft request budget", () => {
 						type: "toolCall" as const,
 						id: "tool-forced-yield",
 						name: "yield",
-						arguments: { result: { data: { report: "partial findings" } } },
+						arguments: { data: { report: "partial findings" } },
 					},
 				],
 				stopReason: "toolUse" as const,

@@ -560,7 +560,8 @@ const EMPTY_META: TypeMeta = {};
 const ARK_COMPAT_SCOPE = Object.freeze({ internal: Object.freeze({ name: "ark" as const }) });
 
 interface InternalType
-	extends Type<unknown, unknown>,
+	extends
+		Type<unknown, unknown>,
 		FluentMethods<unknown, unknown>,
 		ObjectMethods<Record<PropertyKey, unknown>, unknown> {
 	(data: unknown): unknown;

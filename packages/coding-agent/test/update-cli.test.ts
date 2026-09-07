@@ -529,6 +529,20 @@ describe("parseReportedVersion", () => {
 		expect(parseReportedVersion("v1.7.0\n")).toBe("1.7.0");
 	});
 
+	it("pins the native addon core and the platform-specific leaf to the same version so the loader sentinel cannot drift on supported tags", () => {
+		// Regression: bun install -g <pkg>@<v> would update only the top-level
+		// package, leaving @oh-my-pi/pi-natives and @oh-my-pi/pi-natives-<tag>
+		// at their previous version. The next launch then loaded a stale .node
+		// file and aborted at validateLoadedBindings with `The .node file on
+		// disk is from a different release than this loader`. See
+		// https://github.com/can1357/oh-my-pi/issues/1824.
+		for (const tag of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"]) {
+			const args = buildBunInstallArgs("15.9.0", tag);
+			expect(args).toContain("@oh-my-pi/pi-natives@15.9.0");
+			expect(args).toContain(`@oh-my-pi/pi-natives-${tag}@15.9.0`);
+		}
+	});
+
 	it("returns undefined when the binary printed no version", () => {
 		expect(parseReportedVersion("command not found")).toBeUndefined();
 		expect(parseReportedVersion("")).toBeUndefined();

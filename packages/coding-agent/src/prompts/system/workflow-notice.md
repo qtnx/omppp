@@ -1,5 +1,5 @@
 <system-notice>
-The user's message contains the **workflow** keyword and was classified as an explicit workflow directive. This permits workflow use; it does not make a workflow mandatory. When the eligibility gate below passes, call the `workflow` tool with a dynamic JavaScript workflow script; otherwise execute directly.
+The user's message contains the **workflow** keyword and was classified as an explicit workflow directive. This permits workflow use; it does not make a workflow mandatory. When the eligibility gate below passes, call the `workflow` tool with a dynamic JavaScript workflow script; otherwise execute directly. Inside eval, Default to `workpool()` for 2+ independent items; use individual `agent()` handles only for dependency-coupled or schema-returning calls.
 
 Fast path: a trivial lookup, one contained runnable slice, a direct command, or a question about workflows MUST be handled directly. Use `workflow` only when at least two independent subagent slices or a real multi-stage per-item chain materially improves wall-clock, coverage, confidence, or context isolation.
 
@@ -22,6 +22,8 @@ Common shapes:
 - Use `schema` for subagent outputs you branch on.
 - Keep subagent prompts self-contained: target files, constraints, acceptance.
 - After workflow completion, verify results yourself before claiming status.
+- Inside eval, `workpool(agent=None, *, name=None, context=None{{#if evalTools}}, tools=None{{/if}})` keeps workers alive across pushed items; `agent(...)` handles are for dependency-coupled or `schema` results.{{#if evalTools}} `@tool` (Python) / `tool(fn, {…})` (JS) defines a kernel-local tool exposed via `tools=`.{{/if}}
+- Pool results auto-deliver. Need to block? Leave `eval`, then call `hub` with `op:"wait", ids:["<pool-name>"]`; re-issue until settled. NEVER block the kernel with `pool.wait()`.
 
 {{#if taskBatch}}
 - Call `task` once per independent fan-out batch.
@@ -62,6 +64,41 @@ Compose the harness the task calls for:
 
 Scale to the ask: "find any bugs" → a few finders and single verification pass. "Thoroughly audit / be comprehensive" → larger finder pool, adversarial pass, and synthesis stage.
 </patterns>
+
+<pool-examples>
+**Python:**
+
+```python
+phase("Review")
+review = workpool({{#if scoutAvailable}}"scout", {{/if}}name="review", context="Return evidence with exact paths; do not edit.")
+review.push(*[
+    "Review authentication correctness",
+    "Review authorization boundaries",
+    "Review cancellation and cleanup",
+    "Review performance regressions",
+])
+print(review.name)   # poll outside eval: hub wait, ids:["review"]
+```
+
+**JavaScript:**
+
+```js
+phase("Review");
+const review = await workpool({{#if scoutAvailable}}"scout", {{/if}}{
+    name: "review",
+    context: "Return evidence with exact paths; do not edit.",
+});
+await review.push(
+    "Review authentication correctness",
+    "Review authorization boundaries",
+    "Review cancellation and cleanup",
+    "Review performance regressions",
+);
+console.log(review.name); // poll outside eval: hub wait, ids:["review"]
+```
+
+Need a snapshot without consuming/delivering results? `review.peek()` (JS: `await review.peek()`). Need activity counts? `review.status()`.
+</pool-examples>
 
 <execution>
 - Decompose the surface first; capture it in a plan/TODO when it spans phases.

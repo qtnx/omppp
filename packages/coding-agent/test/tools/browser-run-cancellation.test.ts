@@ -282,7 +282,7 @@ describe("browser run cancellation", () => {
 			reason => floatingRejections.push(reason),
 			async () => {
 				try {
-					await Promise.all([facade.fail()]);
+					await facade.fail();
 				} catch (error) {
 					caught = error;
 				}

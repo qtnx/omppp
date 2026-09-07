@@ -1,4 +1,5 @@
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import {
 	type Component,
@@ -16,7 +17,7 @@ import type { Terminal as XtermTerminalType } from "@oh-my-pi/pi-utils/vterm";
 import { Settings } from "../config/settings";
 import type { Theme } from "../modes/theme/theme";
 import { OutputSink, type OutputSummary } from "../session/streaming-output";
-import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
+import { TerminalGraphicsDecoder } from "../utils/terminal-graphics";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
 import { formatStatusIcon, replaceTabs } from "./render-utils";
 import { readTerminalRows, styleTerminalRow } from "./terminal-output";
@@ -25,11 +26,8 @@ export interface BashInteractiveResult extends OutputSummary {
 	exitCode: number | undefined;
 	cancelled: boolean;
 	timedOut: boolean;
-}
-
-function normalizeCaptureChunk(chunk: string): string {
-	const normalized = chunk.replace(/\r\n?/gu, "\n");
-	return sanitizeWithOptionalSixelPassthrough(normalized, sanitizeText);
+	/** Terminal graphics extracted from raw PTY output before transcript sanitization. */
+	images?: ImageContent[];
 }
 
 // Caps only the live xterm display backlog; OutputSink remains the bounded
@@ -336,6 +334,7 @@ export async function runInteractiveBashPty(
 	// Load the xterm Terminal ctor here (async boundary) — the ui.custom factory below is sync.
 	const XtermTerminal = await loadXtermTerminal();
 	const { shell: resolvedShell } = settings.getShellConfig();
+	const graphics = new TerminalGraphicsDecoder();
 	const sink = new OutputSink({
 		artifactPath: options.artifactPath,
 		artifactId: options.artifactId,
@@ -361,12 +360,15 @@ export async function runInteractiveBashPty(
 					tui.requestRender();
 					void (async () => {
 						await component.flushOutput();
-						const summary = await sink.dump();
+						const tail = graphics.finish();
+						if (tail) sink.push(tail);
+						const [summary, images] = await Promise.all([sink.dump(), graphics.images()]);
 						done({
 							exitCode: run.exitCode,
 							cancelled: run.cancelled,
 							timedOut: run.timedOut,
 							...summary,
+							...(images.length > 0 ? { images } : {}),
 						});
 					})();
 				};
@@ -416,9 +418,15 @@ export async function runInteractiveBashPty(
 						(err, chunk) => {
 							if (finished || err || !chunk) return;
 							component.appendOutput(chunk);
-							const normalizedChunk = normalizeCaptureChunk(chunk);
-							options.onChunk?.(normalizedChunk);
-							sink.push(normalizedChunk);
+							// Graphics (Kitty/Sixel) are extracted as image results first; the
+							// remaining text is sanitized before it reaches the capture sink
+							// and live chunk listeners.
+							const clean = graphics.push(chunk);
+							if (clean) {
+								const normalizedChunk = sanitizeText(clean.replace(/\r\n?/gu, "\n"));
+								options.onChunk?.(normalizedChunk);
+								sink.push(normalizedChunk);
+							}
 							tui.requestRender();
 						},
 					)

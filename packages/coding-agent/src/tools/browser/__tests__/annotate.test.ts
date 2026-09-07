@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { BrowserTool, createBrowserAnnotationListener } from "../../browser";
+import { createBrowserAnnotationListener, createBrowserPrelude } from "../../browser";
 import type { BrowserAnnotationEntry, ToolSession } from "../../index";
 import overlayScript from "../../puppeteer/annotate-overlay.txt" with { type: "text" };
 import { validateAnnotationPayload } from "../annotate";
@@ -570,7 +570,7 @@ describe("createBrowserAnnotationListener", () => {
 	});
 });
 
-describe("BrowserTool annotate background delivery", () => {
+describe("browser prelude annotate background delivery", () => {
 	it("re-registers background delivery after a waited submission", async () => {
 		const queued: BrowserAnnotationEntry[] = [];
 		const { tab, emit } = fakeAnnotationTab("review");
@@ -582,8 +582,11 @@ describe("BrowserTool annotate background delivery", () => {
 					queued.push(entry);
 				},
 			};
-			const tool = new BrowserTool(session as ToolSession);
-			const pending = tool.execute("call", { action: "annotate", name: "review", timeout: 1 });
+			const prelude = createBrowserPrelude(session as ToolSession);
+			const pending = prelude.invoke(
+				{ action: "annotate", name: "review", timeout: 1 },
+				{ session: session as ToolSession, toolCallId: "annotate-test" },
+			);
 			await Bun.sleep(0);
 			emit(testSubmission("first"));
 

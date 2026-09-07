@@ -32,6 +32,7 @@ import {
 import { PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import { filterModelsDevCatalogRows } from "../src/provider-models/models-dev-policies";
 import {
+	ABLITERATION_STATIC_MODELS,
 	AIAND_STATIC_MODELS,
 	ALIBABA_TOKEN_PLAN_STATIC_MODELS,
 	ANTHROPIC_CURATED_FALLBACK_MODELS,
@@ -47,6 +48,7 @@ import {
 	isKimiK27CodeModelId,
 	kimiCodeMaxTokens,
 	META_MUSE_STATIC_MODELS,
+	MUSE_CODE_STATIC_MODELS,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
 	mapModelsDevToModels,
 	OPENAI_DAYBREAK_CURATED_FALLBACK_MODELS,
@@ -63,6 +65,7 @@ import {
 } from "../src/provider-models/special";
 import type { Api, Model, ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
+import { mergeCopilotApiHeaders } from "../src/wire/github-copilot";
 import {
 	applyAntigravityPricingFallback,
 	applyCanonicalLimitFallback,
@@ -271,7 +274,10 @@ function applyGlobalModelsDevFallback(
 		if (
 			providerScopedKeys.has(`${model.provider}/${model.id}`) ||
 			model.provider === "devin" ||
-			model.provider === "baseten"
+			model.provider === "baseten" ||
+			// Meta's first-party rows come from the reviewed seed; a same-id
+			// gateway row would overwrite their display names.
+			model.provider === "meta"
 		) {
 			return model;
 		}
@@ -302,6 +308,8 @@ function applyGlobalModelsDevFallback(
 			// provider-specific values when discovery returned them explicitly.
 			contextWindow: model.contextWindow ?? reference.contextWindow,
 			maxTokens: model.maxTokens ?? reference.maxTokens,
+			int: model.int ?? reference.int,
+			tps: model.tps ?? reference.tps,
 		};
 	});
 }
@@ -566,8 +574,11 @@ async function generateModels() {
 	const gitLabDuoModels = getGitLabDuoModels().map(model => toModelSpec(model));
 	// Combine models. stencil.so has priority unless a provider's successful endpoint
 	// discovery is authoritative; those endpoint snapshots replace stencil.so rows.
+	// Meta's reviewed first-party seed goes first: it carries the documented
+	// Responses capabilities and display names, and keeps first-run selection
+	// independent of credentials or live discovery.
 	let allModels = applyGlobalModelsDevFallback(
-		[...bundledModelsDevModels, ...catalogProviderModels, ...gitLabDuoModels],
+		[...META_MUSE_STATIC_MODELS, ...bundledModelsDevModels, ...catalogProviderModels, ...gitLabDuoModels],
 		modelsDevModels,
 	);
 
@@ -629,7 +640,7 @@ async function generateModels() {
 		cost: { input: 0.15, output: 0.5, cacheRead: 0.03, cacheWrite: 0 },
 		contextWindow: 1_000_000,
 		maxTokens: 131_072,
-	} as ModelSpec<"anthropic-messages">);
+	} satisfies ModelSpec<Api>);
 	// Seed Meta's documented Muse models so fresh installs remain usable when
 	// models.dev is unavailable and catalog generation has no live API key.
 	if (!authoritativeCatalogProviders.has("meta")) {
@@ -649,6 +660,12 @@ async function generateModels() {
 	// authoritative and replaces the seed.
 	if (!authoritativeCatalogProviders.has("aiand")) {
 		allModels.push(...AIAND_STATIC_MODELS);
+	}
+	// Seed Abliteration's documented catalog so the provider is usable when
+	// generation has no ABLITERATION_API_KEY. A live `/v1/models` snapshot is
+	// authoritative and replaces the seed.
+	if (!authoritativeCatalogProviders.has("abliteration")) {
+		allModels.push(...ABLITERATION_STATIC_MODELS);
 	}
 	// Seed Yolo-Auto's documented catalog so the provider is usable when
 	// generation has no YOLO_AUTO_API_KEY. A live `/v1/models` snapshot is
@@ -682,6 +699,9 @@ async function generateModels() {
 	// default must resolve synchronously at boot, before credential-scoped
 	// runtime discovery replaces the seed with the account's live catalog.
 	allModels.push(...DEVIN_STATIC_MODELS);
+	// Muse Code discovery is scoped to the signed-in subscription. Bundle the
+	// documented seed, then replace it with the account's live roster at runtime.
+	allModels.push(...MUSE_CODE_STATIC_MODELS);
 	// Seed Fireworks "Fast" serving-path variants (`<id>-fast`). Fast routers are
 	// not enumerated by the serverless control-plane list, so discovery never
 	// surfaces them; the seed projects each base entry into a fast variant.
@@ -738,6 +758,11 @@ async function generateModels() {
 	);
 
 	allModels = applyGlobalModelsDevFallback(allModels, modelsDevModels);
+	// Previous-snapshot fallbacks can retain a retired client fingerprint. Force
+	// every bundled Copilot model onto the same identity used by live discovery.
+	allModels = allModels.map(model =>
+		model.provider === "github-copilot" ? { ...model, headers: mergeCopilotApiHeaders(model.headers) } : model,
+	);
 	// Seed QwenCloud's documented Token Plan models when credentialed
 	// discovery is unavailable. A successful `/models` response is authoritative
 	// for the subscribed edition and must not be widened by the fallback.

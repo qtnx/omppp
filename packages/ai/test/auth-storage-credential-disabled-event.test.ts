@@ -70,14 +70,12 @@ class MemoryAuthCredentialStore implements AuthCredentialStore {
 				row.disabledCause = "replaced by newer credential";
 			}
 		}
-		const rows = credentials.map(
-			(credential): StoredAuthCredential => ({
-				id: this.#nextId++,
-				provider,
-				credential,
-				disabledCause: null,
-			}),
-		);
+		const rows = credentials.map((credential): StoredAuthCredential => ({
+			id: this.#nextId++,
+			provider,
+			credential,
+			disabledCause: null,
+		}));
 		this.#rows.push(...rows);
 		return rows;
 	}
@@ -189,14 +187,12 @@ describe("AuthStorage credential_disabled subscriptions", () => {
 			const store = new MemoryAuthCredentialStore();
 			stores.push(store);
 			const authStorage = new AuthStorage(store);
-			const credentials = [1, 2, 3].map(
-				(index): AuthCredential => ({
-					...expiredOAuth(),
-					access: `expired-access-${index}`,
-					refresh: `stale-refresh-${index}`,
-					accountId: `account-${index}`,
-				}),
-			);
+			const credentials = [1, 2, 3].map((index): AuthCredential => ({
+				...expiredOAuth(),
+				access: `expired-access-${index}`,
+				refresh: `stale-refresh-${index}`,
+				accountId: `account-${index}`,
+			}));
 			await authStorage.set("anthropic", credentials);
 			const transient401 =
 				'OAuthError: Anthropic token refresh request failed. details=ProviderHttpError: HTTP request failed. status=401; url=https://api.anthropic.com/v1/oauth/token; body={"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}';

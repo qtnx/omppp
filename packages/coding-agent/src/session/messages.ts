@@ -255,6 +255,7 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 				output: message.output,
 				exitCode: message.exitCode,
 				cancelled: message.cancelled,
+				images: message.images ? normalizeProviderReplayValue(message.images) : undefined,
 				meta: message.meta
 					? {
 							truncation: normalizeProviderReplayValue(message.meta.truncation),
@@ -822,8 +823,8 @@ function stripImagesFromArrayContent(content: (TextContent | ImageContent)[]): S
 
 /**
  * Strip image content blocks from `message` in place. Returns the count of
- * images removed across `content` (every role that carries `ImageContent`) and
- * any tool-result `details.images` payload. Callers MUST rewrite session
+ * images removed across `content` (every role that carries `ImageContent`),
+ * manual Bash `images`, and any tool-result `details.images` payload. Callers MUST rewrite session
  * entries (`SessionManager.rewriteEntries`) and replay them through
  * `Agent.replaceMessages` afterwards so persisted state and provider-side
  * caches stay aligned with the mutated tree — `stripImagesFromMessage` is a
@@ -839,6 +840,11 @@ export function stripImagesFromMessage(message: AgentMessage): number {
 
 function stripImagesFromMessageContent(message: AgentMessage): number {
 	switch (message.role) {
+		case "bashExecution": {
+			const removed = message.images?.length ?? 0;
+			if (removed > 0) message.images = undefined;
+			return removed;
+		}
 		case "user":
 		case "developer":
 		case "custom":
@@ -1100,6 +1106,8 @@ export interface BashExecutionMessage {
 	exitCode: number | undefined;
 	cancelled: boolean;
 	truncated: boolean;
+	/** Images extracted from terminal graphics in the command's stdout. */
+	images?: ImageContent[];
 	meta?: OutputMeta;
 	timestamp: number;
 	/** Runtime-only stable session entry id, stamped by buildSessionContext for context-extension
@@ -1399,7 +1407,7 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 			return [
 				{
 					role: "user",
-					content: [{ type: "text", text: bashExecutionToText(m) }],
+					content: [{ type: "text", text: bashExecutionToText(m) }, ...(m.images ?? [])],
 					attribution: "user",
 					timestamp: m.timestamp,
 				},

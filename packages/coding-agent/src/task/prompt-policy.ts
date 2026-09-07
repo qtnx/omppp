@@ -1,3 +1,4 @@
+import { type DelegationBias, resolveDelegationBias } from "@oh-my-pi/pi-catalog/compat/delegation";
 import {
 	bareModelId,
 	classifyModel,
@@ -5,6 +6,7 @@ import {
 	parseRevision,
 	type Revision,
 } from "@oh-my-pi/pi-catalog/identity";
+import type { ToolSession } from "..";
 
 /** Model-specific system prompt profile; `undefined` means the default prompt. */
 export type ModelPromptProfile = "openai-gpt";
@@ -39,4 +41,13 @@ export function isOpenAIRevisionAtLeast(modelId: string | undefined, floor: stri
  */
 export function modelPromptProfile(modelId: string | undefined): ModelPromptProfile | undefined {
 	return isOpenAIRevisionAtLeast(modelId, "5.6") ? "openai-gpt" : undefined;
+}
+
+/**
+ * Delegation bias of the session's active model, for tool descriptions that
+ * nudge toward subagents; `eager` before a model is bound.
+ */
+export function sessionDelegationBias(session: ToolSession): DelegationBias {
+	const model = session.getActiveModel?.();
+	return model ? resolveDelegationBias(model) : "eager";
 }

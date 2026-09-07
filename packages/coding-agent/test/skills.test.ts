@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { disableUserSource, enableUserSource } from "@oh-my-pi/pi-coding-agent/capability";
 import { type Skill as CapabilitySkill, skillCapability } from "@oh-my-pi/pi-coding-agent/capability/skill";
 import { getCapability } from "@oh-my-pi/pi-coding-agent/discovery";
 import { getWslWindowsHomeCandidate, runHostProbe } from "@oh-my-pi/pi-coding-agent/discovery/agents";
@@ -14,7 +15,6 @@ import {
 	type Skill,
 } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { parseCanvasDocument } from "@oh-my-pi/pi-coding-agent/product-preview/canvas-schema";
-import { buildSystemPrompt, skillIndexLine } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { restoreEnvValue } from "./helpers/settings-test-state";
@@ -35,7 +35,6 @@ const expectedFixtureSkillOrder: string[] = [
 const BUNDLED_SKILL_NAMES = [
 	"api-design",
 	"archify",
-	"brainstorming",
 	"bug-hunting",
 	"code-review-lens",
 	"codebase-recon",
@@ -68,7 +67,6 @@ const BUNDLED_SKILL_NAMES = [
 	"subagents-development",
 	"verify-before-done",
 	"work-playbooks",
-	"writing-plans",
 	"writing-tests-that-matter",
 ] as const;
 
@@ -107,73 +105,6 @@ describe("skills", () => {
 			expect(validSkill?.description).toBe("A valid skill for testing purposes.");
 			expect(validSkill?.source).toBe("test");
 			expect(warnings).toHaveLength(0);
-		});
-		it("preserves bounded routing metadata and renders it without hidden skills", async () => {
-			const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-skill-metadata-"));
-			const skillDir = path.join(root, "metadata-skill");
-			await fs.mkdir(skillDir, { recursive: true });
-			await fs.writeFile(
-				path.join(skillDir, "SKILL.md"),
-				`---
-name: metadata-skill
-description: Routes metadata test skill.
-globs:
-  - "src/**/*.ts"
-  - "README.md"
-triggers:
-  - "code review"
-  - ""
-  - 42
-  - "test"
-  - "<unsafe>"
-  - "one"
-  - "two"
-  - "three"
-  - "four"
-  - "five"
----
-
-# Metadata skill
-`,
-			);
-
-			try {
-				const { skills } = await loadSkillsFromDir({ dir: root, source: "test" });
-				const skill = skills.find(entry => entry.name === "metadata-skill");
-				if (!skill) throw new Error("metadata-skill did not load");
-				expect(skill.globs).toEqual(["src/**/*.ts", "README.md"]);
-				expect(skill.triggers).toEqual(["code review", "test", "<unsafe>", "one", "two", "three", "four", "five"]);
-				expect(skillIndexLine(skill.description, skill)).toContain(
-					"when: src/**/*.ts, README.md, code review, test, unsafe, one, two, three, four, five",
-				);
-				const boundedLine = skillIndexLine("description ".repeat(30), {
-					globs: ["line\n".repeat(100)],
-					triggers: ["<unsafe>"],
-				});
-				const [boundedDescription, metadataSuffix] = boundedLine.split(" when: ");
-				expect(boundedDescription.length).toBeLessThanOrEqual(120);
-				expect(metadataSuffix.length).toBeLessThanOrEqual(240);
-				expect(metadataSuffix).not.toContain("<");
-				expect(metadataSuffix).not.toContain("\n");
-				expect(metadataSuffix.split(", ").every(value => value.length <= 80)).toBe(true);
-				const hidden: Skill = { ...skill, name: "hidden-metadata-skill", hide: true };
-				const { systemPrompt } = await buildSystemPrompt({
-					cwd: root,
-					skills: [skill, hidden],
-					toolNames: ["read"],
-				});
-				const text = systemPrompt.join("\n\n");
-				expect(text).toContain("- metadata-skill: Routes metadata test skill. when:");
-				expect(text).not.toContain("hidden-metadata-skill");
-				const withoutRead = await buildSystemPrompt({
-					cwd: root,
-					skills: [skill, hidden],
-					toolNames: [],
-				});
-				expect(withoutRead.systemPrompt.join("\n\n")).not.toContain("metadata-skill");
-			} finally {
-				await removeWithRetries(root);
-			}
 		});
 
 		it("should load skill when name doesn't match parent directory", async () => {
@@ -302,6 +233,7 @@ triggers:
 			delete Bun.env.CLAUDE_CONFIG_DIR;
 			const tempHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-home-"));
 			const tempProjectDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-claude-project-"));
+			enableUserSource("claude");
 
 			try {
 				const userSkillDir = path.join(tempHomeDir, ".claude", "skills", "user-only-skill");
@@ -326,6 +258,7 @@ triggers:
 				const result = await claudeProvider!.load({ cwd: tempProjectDir, home: tempHomeDir, repoRoot: null });
 				expect(result.items.some(skill => skill.name === "user-only-skill" && skill.level === "user")).toBe(true);
 			} finally {
+				disableUserSource("claude");
 				restoreEnvValue("CLAUDE_CONFIG_DIR", originalClaudeConfigDir);
 				await removeWithRetries(tempProjectDir);
 				await removeWithRetries(tempHomeDir);

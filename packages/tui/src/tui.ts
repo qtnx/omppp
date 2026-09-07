@@ -2753,7 +2753,7 @@ export class TUI extends Container {
 
 		let output = "";
 		let cells = 0;
-		for (let i = 0; i < raw.length && cells < safeWidth; ) {
+		for (let i = 0; i < raw.length && cells < safeWidth;) {
 			if (raw.charCodeAt(i) === 0x1b) {
 				const end = this.#ansiSequenceEnd(raw, i);
 				if (end < 0) break;
@@ -2849,7 +2849,7 @@ export class TUI extends Container {
 
 	#ansiAsciiLineWidth(line: string, maxWidth: number): number | undefined {
 		let col = 0;
-		for (let i = 0; i < line.length; ) {
+		for (let i = 0; i < line.length;) {
 			const code = line.charCodeAt(i);
 			if (code === 0x1b) {
 				const next = line.charCodeAt(i + 1);

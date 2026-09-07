@@ -5,7 +5,6 @@ import type { BuiltinToolLoadMode, ToolLoopManager, ToolSession } from "@oh-my-p
 import {
 	AskTool,
 	BUILTIN_TOOLS,
-	ComputerTool,
 	computeEssentialBuiltinNames,
 	createTools,
 	DEFAULT_ESSENTIAL_TOOL_NAMES,
@@ -25,7 +24,6 @@ const allToolsSettings = Settings.isolated({
 	"grep.enabled": true,
 	"github.enabled": true,
 	"lsp.enabled": true,
-	"inspect_image.enabled": true,
 	"web_search.enabled": true,
 	"browser.enabled": true,
 	"computer.enabled": true,
@@ -73,9 +71,6 @@ async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summa
 		new KanbanTool(toolSession),
 		// `secrets` is conditional on an open vault, so construct it directly.
 		new SecretsTool(toolSession),
-		// `computer` is registered only while `browser.nativeComputer.enabled` is
-		// off (it and `browser_use` are mutually exclusive), so build it directly.
-		new ComputerTool(toolSession),
 	]) {
 		metadata.set(tool.name, { loadMode: tool.loadMode, summary: tool.summary });
 	}
@@ -143,11 +138,13 @@ describe("computeEssentialBuiltinNames", () => {
 		expect(computeEssentialBuiltinNames(settings).sort()).toEqual([...DEFAULT_ESSENTIAL_TOOL_NAMES].sort());
 	});
 
-	it("keeps todo and browser in the default essential tool set", () => {
+	it("keeps todo and eval in the default essential tool set", () => {
 		const settings = Settings.isolated({});
 		const essential = computeEssentialBuiltinNames(settings);
 		expect(essential).toContain("todo");
-		expect(essential).toContain("browser");
+		// Browser automation now rides the eval prelude, so eval carries it.
+		expect(essential).toContain("eval");
+		expect(essential).not.toContain("browser");
 	});
 
 	it("respects tools.essentialOverride when provided", () => {
@@ -220,11 +217,11 @@ describe("filterInitialToolsForDiscoveryAll", () => {
 	});
 
 	it("keeps default essential tools visible under discovery-all filtering", () => {
-		const result = filterInitialToolsForDiscoveryAll(["read", "bash", "edit", "task", "todo", "browser", "find"], {
+		const result = filterInitialToolsForDiscoveryAll(["read", "bash", "edit", "task", "todo", "eval", "find"], {
 			...base,
 			essentialNames: new Set(DEFAULT_ESSENTIAL_TOOL_NAMES),
 		});
-		expect(result).toEqual(["read", "bash", "edit", "task", "todo", "browser"]);
+		expect(result).toEqual(["read", "bash", "edit", "task", "todo", "eval"]);
 	});
 
 	it("keeps discoverable tools required by a forced tool_choice (eager todo)", () => {

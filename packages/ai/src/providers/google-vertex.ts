@@ -62,8 +62,8 @@ export const streamGoogleVertex: StreamFunction<"google-vertex"> = (
 					];
 				}
 				const baseHeaders: Record<string, string> = {
-					...(model.headers ?? {}),
-					...(options?.headers ?? {}),
+					...model.headers,
+					...options?.headers,
 				};
 				// Vertex AI ignores a `serviceTier` request-body field (unlike the direct
 				// Gemini API); priority must travel as a request header. Only `priority`
@@ -130,8 +130,8 @@ export const streamGoogleVertex: StreamFunction<"google-vertex"> = (
 			return {
 				url: `https://aiplatform.googleapis.com/${INTERACTIONS_API_VERSION}/projects/${project}/locations/global/interactions`,
 				headers: {
-					...(model.headers ?? {}),
-					...(options?.headers ?? {}),
+					...model.headers,
+					...options?.headers,
 					Authorization: `Bearer ${accessToken}`,
 					"Api-Revision": INTERACTIONS_API_REVISION,
 				},
