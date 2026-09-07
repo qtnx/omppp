@@ -32,7 +32,8 @@ async function renderPrompt(cavemanEnabled: boolean, ponytailEnabled = false): P
 		cavemanEnabled,
 		ponytailEnabled,
 	});
-	return systemPrompt[0] ?? "";
+	// Mode overlays live in the session-variant block, after the settings-stable core.
+	return systemPrompt[1] ?? "";
 }
 
 describe("caveman mode in the system prompt", () => {

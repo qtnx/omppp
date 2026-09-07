@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The default system prompt now renders as two globally cacheable blocks: a settings-stable core (role, router, stance, delegation, harness) and a session block (tool inventory, skills, rules, caveman/ponytail overlays, MCP guidance). Sessions that share the same tools but differ in toggles now read the core block from the org-wide Anthropic cache instead of re-writing the whole prompt (measured: 61K cached / 27K written vs 0 / 91K before).
+
 ## [1.8.0] - 2026-09-07
 
 ### Added

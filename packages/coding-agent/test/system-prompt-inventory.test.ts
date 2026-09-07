@@ -253,7 +253,13 @@ describe("system prompt tool inventory", () => {
 			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
 		});
 
-		expect(result.systemPromptCache).toEqual({ globalPrefixBlocks: 1 });
+		// Core (settings-stable) and session (tools/skills/rules/modes) blocks are both
+		// globally shareable; sessions that differ only in toggles still share the core.
+		expect(result.systemPromptCache).toEqual({ globalPrefixBlocks: 2 });
+		expect(result.systemPrompt[0]).toContain("# Role");
+		expect(result.systemPrompt[0]).not.toContain("# Inventory");
+		expect(result.systemPrompt[1]).toContain("# Inventory");
+		expect(result.systemPrompt.join("\n")).not.toContain("@@session-block-boundary@@");
 	});
 
 	it("omits the global cache hint when a custom system prompt is explicit", async () => {
