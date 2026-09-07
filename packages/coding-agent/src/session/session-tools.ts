@@ -932,7 +932,6 @@ export class SessionTools {
 			{ contextWindow: this.#host.model()?.contextWindow ?? undefined },
 			countToolsForAutoDiscovery([...this.#toolRegistry.keys()].filter(isMCPToolName)),
 		);
-		console.error("DEBUG_DISCOVERY_MODES:", { previousMode, nextMode, cw: this.#host.model()?.contextWindow });
 		if (nextMode !== previousMode) {
 			await this.#reconcileDiscoveryMode(nextMode);
 		}
@@ -1203,7 +1202,6 @@ export class SessionTools {
 
 	/** Applies an enabled tool set and reconciles its `xd://` partition. */
 	applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
-		console.error("DEBUG_SYNC_CALLER_STACK:", new Error().stack);
 		return this.runToolRegistryMutation(
 			() => this.#applyActiveToolsByName(toolNames, forcePromptRefresh, signal),
 			signal,
@@ -1211,7 +1209,6 @@ export class SessionTools {
 	}
 
 	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
-		console.error("DEBUG_APPLY_ACTIVE_TOOLS_STACK:", new Error().stack);
 		signal?.throwIfAborted();
 		// Late extension registration passes `forcePromptRefresh` explicitly so a
 		// newly mounted xd:// tool still rebuilds.
