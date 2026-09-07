@@ -21,17 +21,17 @@ const actionSchema = type({
 	"scroll_x?": "number",
 	"scroll_y?": "number",
 	"path?": pointSchema.array(),
+	"save?": type("string").describe(
+		"screenshot only: also write this capture to a file path (relative to cwd). Use sparingly — only states needed as PR/MR or handoff evidence",
+	),
 });
 const nativeComputerSchema = type({
 	"url?": type("string").describe("Open this URL in the browser_use tab before running actions"),
 	"actions?": actionSchema
 		.array()
 		.describe(
-			"Ordered screen actions in 1280x720 viewport pixels. click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} or {keys:['Control','a']} (modifiers are held while the other keys are pressed; aliases like CTRL/CMD/ENTER accepted); type: {text}; wait; screenshot. A screenshot is returned after the last action.",
+			"Ordered screen actions in 1280x720 viewport pixels. click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} or {keys:['Control','a']} (modifiers are held while the other keys are pressed; aliases like CTRL/CMD/ENTER accepted); type: {text}; wait; screenshot ({save?} writes that capture to a file). A screenshot is returned after the last action.",
 		),
-	"save?": type("string").describe(
-		"Also write the final screenshot to this file path (relative to cwd) for PR/MR evidence",
-	),
 	"pending_safety_checks?": type("unknown[]").describe("Safety checks requiring explicit approval"),
 	"+": "reject",
 });
@@ -42,6 +42,7 @@ type NativeDetails = {
 	url?: string;
 	viewport: typeof VIEWPORT;
 	screenshot?: string;
+	savedPaths?: string[];
 	rejected?: boolean;
 };
 
@@ -116,6 +117,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 				}
 				let screenshot = "";
 				let screenshotMimeType = "image/png";
+				const savedPaths: string[] = [];
 				for (const action of actions) {
 					const result = await runInTab("browser_use", {
 						code: actionCode(action),
@@ -129,25 +131,27 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 					if (typeof shot === "string" && shot.length > 0) {
 						screenshotMimeType = "image/jpeg";
 						screenshot = `data:image/jpeg;base64,${shot}`;
+						// Disk writes are opt-in per screenshot action; nothing is persisted otherwise.
+						const save = (action as { save?: string }).save;
+						if (action.type === "screenshot" && typeof save === "string" && save.length > 0) {
+							const dest = resolveToCwd(save, this.session.cwd);
+							await Bun.write(dest, Buffer.from(shot, "base64"));
+							savedPaths.push(dest);
+						}
 					}
-				}
-				let savedPath: string | undefined;
-				if (typeof input.save === "string" && input.save.length > 0 && screenshot) {
-					savedPath = resolveToCwd(input.save, this.session.cwd);
-					await Bun.write(savedPath, Buffer.from(screenshot.slice(screenshot.indexOf(",") + 1), "base64"));
 				}
 				const url = this.#tab.info.url;
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Browser computer action complete. URL: ${url}${savedPath ? ` (screenshot saved: ${savedPath})` : ""}`,
+							text: `Browser computer action complete. URL: ${url}${savedPaths.length ? `\nSaved screenshots:\n${savedPaths.map(p => `- ${p}`).join("\n")}` : ""}`,
 						},
 						...(screenshot
 							? [{ type: "image", data: screenshot.split(",", 2)[1], mimeType: screenshotMimeType } as const]
 							: []),
 					],
-					details: { actionCount: actions.length, url, viewport: VIEWPORT, screenshot },
+					details: { actionCount: actions.length, url, viewport: VIEWPORT, screenshot, savedPaths },
 					providerMetadata: {
 						type: "computer",
 						screenshot: { type: "computer_screenshot", image_url: screenshot },

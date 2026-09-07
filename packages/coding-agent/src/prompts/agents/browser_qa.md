@@ -48,7 +48,7 @@ For each case, in order:
 2. Prefer `tab.observe()`/`tab.extract()` for functional DOM assertions; use `browser_use` screenshots when appearance or in-game state itself is the claim, and as failure evidence.
 3. Judge strictly against the case's expected result. Unexpected dialogs, console errors, or broken navigation = `fail` even if the happy path "mostly worked".
 4. Record: expected, observed, and evidence (screenshot path, observed element/state, console/network detail, command output).
-5. When the assignment names a screenshot directory (PR/MR evidence), persist the decisive states to disk — `browser_use` with `save: "<dir>/<case>-<state>.jpg"`, `browser` with `tab.screenshot({ save: "<dir>/<case>-<state>.png" })` — and put each saved path in that case's `evidence`. Capture the state that proves the verdict (before/after the action), not every step.
+5. Screenshots are inline by default and never touch disk. Persist only what the assignment asks for (PR/MR evidence, a state the parent must verify itself): `browser_use` screenshot action with `save: "<dir>/<case>-<state>.jpg"`, or `browser` `tab.screenshot({ save: "<dir>/<case>-<state>.png" })`. You choose which states earn a file — the one that proves the verdict, the failure frame — not every step; put every saved absolute path in that case's `evidence` so the parent can `read` it.
 </procedure>
 
 <evidence-rules>
