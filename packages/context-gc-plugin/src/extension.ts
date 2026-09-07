@@ -15,6 +15,7 @@ import {
 } from "./active-context";
 import contextGcSystemPrompt from "./context-gc-system-prompt.md" with { type: "text" };
 import { isContextGcInspectionTool, projectUnloadedContext } from "./context-transform";
+import { type DeferredUnloadSessionState, decideDeferredUnloads } from "./deferred-unload";
 import { extractMessagePayload, payloadForMessage, payloadFromContent } from "./extract";
 import { buildContextGcReminder, buildContextUsageReminder } from "./reminder";
 import {
@@ -55,6 +56,8 @@ const LARGE_EXECUTION_TOKENS = 2_000;
 
 export interface ContextGcExtensionOptions {
 	dbPath?: string;
+	/** Clock for prompt-cache idle detection; tests inject a controllable one. */
+	now?: () => number;
 }
 const CONTEXT_GC_DB_PATH_ENV = "OMP_CONTEXT_GC_DB_PATH";
 
@@ -485,6 +488,16 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 
 	const activeSnapshots = new Map<string, ActiveSnapshot>();
 	const compactHintBands = new Map<string, number>();
+	const deferredUnloads = new Map<string, DeferredUnloadSessionState>();
+	const now = options.now ?? Date.now;
+	const deferredUnloadState = (sessionId: string): DeferredUnloadSessionState => {
+		let state = deferredUnloads.get(sessionId);
+		if (!state) {
+			state = { applied: new Set() };
+			deferredUnloads.set(sessionId, state);
+		}
+		return state;
+	};
 
 	function usageHintDue(sessionId: string, percent: number | null | undefined): boolean {
 		if (percent === null || percent === undefined || percent < COMPACT_HINT_CONTEXT_USAGE_PERCENT) {
@@ -527,7 +540,30 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 		const records = branchRecords(store, currentState);
 		const analysis = analyzeActiveContext(event.messages, records);
 		activeSnapshots.set(currentState.sessionId, createActiveSnapshot(currentState, analysis));
-		return { messages: projectUnloadedContext(event.messages, records, analysis) };
+		// Unloads are honored lazily: rewriting an early message re-writes the provider
+		// prompt cache for everything after it, so pending unloads wait until the cache is
+		// cold anyway or the freed share of context is large enough to pay for the rewrite.
+		const unloaded = [...analysis.matches.values()]
+			.filter(match => match.record.status === "unloaded")
+			.map(match => match.record);
+		const decision = decideDeferredUnloads({
+			unloaded,
+			state: deferredUnloadState(currentState.sessionId),
+			contextTokens: ctx.getContextUsage()?.tokens ?? null,
+			now: now(),
+		});
+		if (decision.reason === "deferred" || decision.newlyApplied.length > 0) {
+			logger.debug("Context GC: deferred unload decision", {
+				reason: decision.reason,
+				deferredTokens: decision.deferredTokens,
+				applied: decision.newlyApplied.length,
+			});
+		}
+		return { messages: projectUnloadedContext(event.messages, records, analysis, decision.projectIds) };
+	});
+
+	pi.on("turn_end", (_event, ctx) => {
+		deferredUnloadState(readContextGcSessionState(ctx).sessionId).lastResponseAt = now();
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
@@ -556,6 +592,7 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 	pi.on("session_shutdown", () => {
 		activeSnapshots.clear();
 		compactHintBands.clear();
+		deferredUnloads.clear();
 		store.close();
 	});
 }

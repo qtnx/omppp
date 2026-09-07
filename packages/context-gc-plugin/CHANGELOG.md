@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `context_unload` now applies its projection lazily: pending unloads stay verbatim while the provider prompt cache is warm and are applied once the cache is idle past its TTL or the pending savings reach 30% of the live context, so a small unload no longer rewrites the whole cached prompt.
+
 ## [1.7.3] - 2026-08-15
 
 ### Changed
