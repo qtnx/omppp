@@ -1,11 +1,18 @@
 import type { ContextRecord } from "./schema";
 
 /**
- * Anthropic-style prompt caches expire after 5 minutes without use. Once the
- * cache is cold, rewriting history costs nothing extra, so pending unloads can
- * be applied for free.
+ * Idle time after which the provider prompt cache is assumed cold. OMPx requests
+ * `ttl: "1h"` on Anthropic OAuth (measured: a 7-minute idle still read the full
+ * prefix back), so the default is one hour. Guessing too long only delays a
+ * free rewrite; guessing too short invalidates a live cache, so the default
+ * errs long. `OMP_CONTEXT_GC_CACHE_TTL_MS` overrides for 5-minute providers.
  */
-export const PROMPT_CACHE_TTL_MS = 5 * 60_000;
+export const PROMPT_CACHE_TTL_MS = readCacheTtlMs(process.env.OMP_CONTEXT_GC_CACHE_TTL_MS);
+
+function readCacheTtlMs(raw: string | undefined): number {
+	const parsed = raw === undefined ? Number.NaN : Number(raw);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 60_000;
+}
 
 /**
  * Projecting an unloaded record rewrites every prompt byte after it, which

@@ -785,6 +785,21 @@ export function skillIndexLine(description: string): string {
 	return `${cut.slice(0, lastSpace > 60 ? lastSpace : SKILL_INDEX_MAX_CHARS).trimEnd()}…`;
 }
 
+/**
+ * Marker the default template emits between its settings-stable core and the
+ * session-variant tail. Handlebars comments render to nothing, so the marker is
+ * a literal line the template carries only for this split.
+ */
+const SESSION_BLOCK_BOUNDARY = "@@session-block-boundary@@";
+
+function splitSessionBlock(rendered: string): string[] {
+	const index = rendered.indexOf(SESSION_BLOCK_BOUNDARY);
+	if (index < 0) return [rendered];
+	const core = rendered.slice(0, index).trimEnd();
+	const session = rendered.slice(index + SESSION_BLOCK_BOUNDARY.length).trimStart();
+	return session.length > 0 ? [core, session] : [core];
+}
+
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
 	if ($env.NULL_PROMPT === "true") {
 		return { systemPrompt: [] };
@@ -1170,7 +1185,12 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		writeTransportOnly,
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
-	const systemPrompt = [rendered];
+	// The default template splits into a stable core block (policy that only depends on
+	// user-level settings) and a session block (tool inventory, skills, rules, mode overlays).
+	// Both are provider-cacheable with global scope; sessions that differ only in toggles
+	// still share the core block's cache.
+	const systemPrompt = resolvedCustomPrompt ? [rendered] : splitSessionBlock(rendered);
+	const globalPrefixBlocks = systemPrompt.length;
 	if (computerEnabled) {
 		systemPrompt.push(computerSafetyPrompt.trim());
 	}
@@ -1193,6 +1213,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	return {
 		systemPrompt,
 		xdevCatalogNames,
-		...(!resolvedCustomPrompt && { systemPromptCache: { globalPrefixBlocks: 1 } }),
+		...(!resolvedCustomPrompt && { systemPromptCache: { globalPrefixBlocks } }),
 	};
 }

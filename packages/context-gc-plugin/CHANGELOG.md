@@ -4,7 +4,7 @@
 
 ### Added
 
-- Cold-cache auto-shake: when the provider prompt cache has expired (idle > 5 min, or process start), stale tool output older than the last 12 messages is unloaded automatically before the request, so the unavoidable cache rewrite starts from a smaller prompt. Records stay recallable via `context_recall`; `OMP_CONTEXT_GC_AUTO_SHAKE=0` disables.
+- Cold-cache auto-shake: when the provider prompt cache has expired (idle past the cache TTL — 1h by default, `OMP_CONTEXT_GC_CACHE_TTL_MS` overrides — or process start), stale tool output older than the last 12 messages is unloaded automatically before the request, so the unavoidable cache rewrite starts from a smaller prompt. Records stay recallable via `context_recall`; `OMP_CONTEXT_GC_AUTO_SHAKE=0` disables.
 
 ### Changed
 
