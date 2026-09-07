@@ -5,6 +5,20 @@
 ### Fixed
 
 - Subagent `tok/s` (task/job rows, subagent HUD) now divides output tokens by provider request time instead of the subagent's lifetime wall-clock, so tool execution and setup no longer deflate the figure far below the status line's rate for the same model.
+### Added
+
+- `browser_use` accepts a `navigate` action (`{type:"navigate", url}`) and its description now documents every action shape, the `url` field, and the screenshot-driven flow, so models no longer have to guess arguments.
+- Profanity in a typed message now auto-records a 1/5 feedback entry against the last assistant turn and active model (`[1/5 auto]` in `/feedback list`); the idle rating prompt still asks once.
+- `/feedback stats` tallies negative feedback per model across every stored session, so you can see which model draws the most blame.
+- OpenAI GPT model notes now include a minimal-correct-solution flow with calibration heuristics (proportionality, blast radius, rule of three, scoping to the named population), plus rules for tool failures, answering questions before acting, and starting investigations from code/logs instead of asking.
+
+### Changed
+
+- The system prompt now requires the todo list to track reality: items finished implicitly are marked done, overtaken or re-scoped items are dropped or replaced, and the ledger never lags the diff.
+
+### Fixed
+
+- `browser_use` no longer silently ignores an unknown action type and reports "action complete" on `about:blank`; it fails the call naming the supported actions and how to open a URL.
 
 ## [1.7.14] - 2026-09-06
 
