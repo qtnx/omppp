@@ -62,6 +62,7 @@ import { AskTool } from "./ask";
 import { AstEditTool } from "./ast-edit";
 import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
+import { NativeBrowserComputerTool } from "./browser-native-computer";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { CompactTool } from "./compact";
@@ -758,6 +759,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	codegraph_index: s => new CodeGraphIndexTool(s),
 	codegraph_explore: s => new CodeGraphExploreTool(s),
 	kanban: KanbanTool.createIf,
+	computer: s => new NativeBrowserComputerTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	compact: CompactTool.createIf,
@@ -983,6 +985,14 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "search_tool_bm25") return discoveryActive;
 		if (name === "think") return externalThinkingActive;
 		if (name === "ask") return session.settings.get("ask.enabled");
+		// Native OpenAI Computer Use rides the managed browser; the scriptable
+		// desktop path stays an eval prelude (see getEvalPreludes in sdk.ts).
+		if (name === "computer")
+			return (
+				session.settings.get("computer.enabled") === true &&
+				session.settings.get("browser.enabled") === true &&
+				session.settings.get("browser.nativeComputer.enabled") === true
+			);
 		if (name === "checkpoint" || name === "rewind")
 			return (
 				session.settings.get("checkpoint.enabled") &&

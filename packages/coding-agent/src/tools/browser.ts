@@ -102,7 +102,7 @@ interface BrowserPreludeDetails {
 	value?: unknown;
 }
 
-function resolveBrowserKind(params: BrowserParams, session: ToolSession): BrowserKind {
+export function resolveBrowserKind(params: BrowserParams, session: ToolSession): BrowserKind {
 	const app = params.app;
 	if (app?.cdp_url) {
 		return { kind: "connected", cdpUrl: app.cdp_url.replace(/\/+$/, "") };

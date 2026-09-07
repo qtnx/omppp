@@ -138,11 +138,13 @@ describe("computeEssentialBuiltinNames", () => {
 		expect(computeEssentialBuiltinNames(settings).sort()).toEqual([...DEFAULT_ESSENTIAL_TOOL_NAMES].sort());
 	});
 
-	it("keeps todo and browser in the default essential tool set", () => {
+	it("keeps todo and eval in the default essential tool set", () => {
 		const settings = Settings.isolated({});
 		const essential = computeEssentialBuiltinNames(settings);
 		expect(essential).toContain("todo");
-		expect(essential).toContain("browser");
+		// Browser automation now rides the eval prelude, so eval carries it.
+		expect(essential).toContain("eval");
+		expect(essential).not.toContain("browser");
 	});
 
 	it("respects tools.essentialOverride when provided", () => {
@@ -215,11 +217,11 @@ describe("filterInitialToolsForDiscoveryAll", () => {
 	});
 
 	it("keeps default essential tools visible under discovery-all filtering", () => {
-		const result = filterInitialToolsForDiscoveryAll(["read", "bash", "edit", "task", "todo", "browser", "find"], {
+		const result = filterInitialToolsForDiscoveryAll(["read", "bash", "edit", "task", "todo", "eval", "find"], {
 			...base,
 			essentialNames: new Set(DEFAULT_ESSENTIAL_TOOL_NAMES),
 		});
-		expect(result).toEqual(["read", "bash", "edit", "task", "todo", "browser"]);
+		expect(result).toEqual(["read", "bash", "edit", "task", "todo", "eval"]);
 	});
 
 	it("keeps discoverable tools required by a forced tool_choice (eager todo)", () => {
