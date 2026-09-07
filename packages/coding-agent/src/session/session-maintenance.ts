@@ -2153,22 +2153,6 @@ export class SessionMaintenance {
 			// but keep it on the branch unless promotion or compaction actually runs.
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
 
-			const compactionSettings = this.#host.settings.getGroup("compaction");
-			if (compactionSettings.enabled && hasConfiguredCompactionMethod(compactionSettings)) {
-				const outcome = await this.#host.runRecoveryCompactionWithRollback(
-					"incomplete",
-					assistantMessage,
-					allowDefer,
-					{
-						autoContinue,
-						triggerContextTokens: calculateContextTokens(assistantMessage.usage),
-					},
-				);
-				if (outcome.historyRewritten || outcome.deferredHandoff || outcome.continuationScheduled) {
-					return outcome;
-				}
-			}
-
 			const promoted = await this.#tryContextPromotion(assistantMessage);
 			if (promoted) {
 				await this.#host.dropPersistedAssistantTurn(assistantMessage);

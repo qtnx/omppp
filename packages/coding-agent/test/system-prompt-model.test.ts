@@ -232,7 +232,10 @@ describe("AgentSession model-change prompt refresh", () => {
 				(model.provider !== first.provider || model.id !== first.id) &&
 				usesCodexTaskPrompt(model.id) === usesCodexTaskPrompt(first.id) &&
 				modelPromptProfile(model.id) === modelPromptProfile(first.id) &&
-				resolveDelegationBias(model) === resolveDelegationBias(first),
+				resolveDelegationBias(model) === resolveDelegationBias(first) &&
+				// A context-window change can flip the effective tool-discovery mode,
+				// which legitimately rebuilds the prompt; keep the pair comparable.
+				model.contextWindow === first.contextWindow,
 		);
 		if (!first || !second) throw new Error("Expected two distinct models with the same task prompt policy");
 		return [first, second];
@@ -298,6 +301,7 @@ describe("AgentSession model-change prompt refresh", () => {
 			Settings.isolated({ "compaction.enabled": false, includeModelInPrompt: false }),
 			async () => {
 				rebuildCount++;
+				console.error("DEBUG_REBUILD_STACK:", new Error().stack);
 				return { systemPrompt: ["unchanged"] };
 			},
 		);
