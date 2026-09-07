@@ -22,7 +22,6 @@
 			"@babel/parser": "^7.29.7",
 			"@babel/traverse": "^7.29.7",
 			"@babel/types": "^7.29.7",
-			"@biomejs/biome": "^2.5.3",
 			"@huggingface/transformers": "^4.2.0",
 			"@mozilla/readability": "^0.6.0",
 			"@napi-rs/cli": "3.7.2",
@@ -147,7 +146,7 @@
 		"fix:ts": "bun run fix:tools && bun run --workspaces --if-present fix",
 		"fix:ts:all": "bun run fix:tools:all && bun run --workspaces --if-present fix",
 		"fix:tools": "oxlint --fix --fix-suggestions . && bun run fmt:tools",
-		"fix:tools:all": "biome check --write --unsafe --no-errors-on-unmatched .",
+		"fix:tools:all": "oxlint --fix --fix-suggestions . && bun run fmt:tools",
 		"fix:changelogs": "bun scripts/fix-changelogs.ts",
 		"fix:rs": "bun scripts/run-rs-task.ts fix:rs",
 		"ci:build:native": "bun scripts/ci-build-native.ts",
@@ -209,7 +208,6 @@
 		"check-spoofed-versions": "bun scripts/check-spoofed-versions.ts"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "catalog:",
 		"@oh-my-pi/pi-catalog": "1.7.14",
 		"@oh-my-pi/snapcompact": "1.7.14",
 		"@types/bun": "catalog:",
@@ -220,7 +218,18 @@
 		"typescript": "catalog:"
 	},
 	"lint-staged": {
-		"*.{js,ts,jsx,tsx,json,jsonc,css}": "biome check --write --no-errors-on-unmatched"
+		"packages/*/src/**/*.{ts,tsx}": [
+			"oxlint --fix",
+			"oxfmt"
+		],
+		"packages/*/{test,bench,examples,scripts}/**/*.ts": [
+			"oxlint --fix",
+			"oxfmt"
+		],
+		"scripts/**/*.ts": [
+			"oxlint --fix",
+			"oxfmt"
+		]
 	},
 	"dependencies": {
 		"sherpa-onnx": "1.13.2",
