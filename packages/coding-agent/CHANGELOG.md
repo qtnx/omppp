@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Subagent `tok/s` (task/job rows, subagent HUD) now divides output tokens by provider request time instead of the subagent's lifetime wall-clock, so tool execution and setup no longer deflate the figure far below the status line's rate for the same model.
+
 ## [1.7.14] - 2026-09-06
 
 ### Added

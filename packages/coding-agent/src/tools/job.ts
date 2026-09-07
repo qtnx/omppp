@@ -1071,8 +1071,10 @@ export const jobToolRenderer = {
 };
 
 function formatLiveStats(progress: AgentProgress): string {
-	const durationSeconds = progress.durationMs / 1000;
-	const rate = durationSeconds > 0 ? progress.outputTokens / durationSeconds : 0;
+	// Provider request time, not lifetime wall-clock: tool execution and setup
+	// would otherwise deflate the figure far below the status line's tok/s.
+	const generationSeconds = (progress.modelMs ?? progress.durationMs) / 1000;
+	const rate = generationSeconds > 0 ? progress.outputTokens / generationSeconds : 0;
 	const rateText = rate < 10 ? rate.toFixed(1) : Math.round(rate).toString();
 	const inputText = formatLiveTokenCount(progress.inputTokens);
 	const outputText = formatLiveTokenCount(progress.outputTokens);
