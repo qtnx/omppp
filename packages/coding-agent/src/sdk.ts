@@ -4324,7 +4324,19 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// each LLM HTTP request — not the whole subagent lifecycle — holds the
 		// slot, preventing nested-spawn deadlocks while serving blob URLs when needed.
 		const settingsAwareStreamFn = wrapStreamFnWithBlobUrlFallback(
-			wrapStreamFnWithProviderConcurrency(settings, createSettingsAwareStreamFn(settings)),
+			wrapStreamFnWithProviderConcurrency(
+				settings,
+				createSettingsAwareStreamFn(settings, undefined, { subagent: isSubagentSession }),
+			),
+			blobBroker,
+		);
+		// The advisor is a helper session like a subagent: short-lived request bursts
+		// with no long idles, so it takes the subagent cache-retention policy.
+		const advisorStreamFn = wrapStreamFnWithBlobUrlFallback(
+			wrapStreamFnWithProviderConcurrency(
+				settings,
+				createSettingsAwareStreamFn(settings, undefined, { subagent: true }),
+			),
 			blobBroker,
 		);
 		const codeModeState: { namespacesInfo?: unknown } = {};
@@ -4678,7 +4690,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			onPayload,
 			onResponse,
 			sideStreamFn: settingsAwareStreamFn,
-			advisorStreamFn: settingsAwareStreamFn,
+			advisorStreamFn,
 			preferWebsockets: preferOpenAICodexWebsockets,
 			convertToLlm: convertToLlmFinal,
 			rebuildSystemPrompt,

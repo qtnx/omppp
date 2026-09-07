@@ -163,6 +163,31 @@ describe("createSettingsAwareStreamFn", () => {
 		expect(long.calls[1]?.options?.cacheRetention).toBe("none");
 	});
 
+	it("gives subagent sessions short retention by default and defers to auto", () => {
+		// Default: main stays on provider auto, subagents/advisors take 5m entries.
+		const main = captureBase();
+		createSettingsAwareStreamFn(Settings.isolated({}), main.fn)(stubModel, stubContext, undefined);
+		expect(main.calls[0]?.options?.cacheRetention).toBeUndefined();
+		const sub = captureBase();
+		createSettingsAwareStreamFn(Settings.isolated({}), sub.fn, { subagent: true })(stubModel, stubContext, undefined);
+		expect(sub.calls[0]?.options?.cacheRetention).toBe("short");
+
+		// "auto" for subagents falls back to the main retention setting.
+		const inherit = captureBase();
+		createSettingsAwareStreamFn(
+			Settings.isolated({ "providers.subagentCacheRetention": "auto", "providers.cacheRetention": "long" }),
+			inherit.fn,
+			{ subagent: true },
+		)(stubModel, stubContext, undefined);
+		expect(inherit.calls[0]?.options?.cacheRetention).toBe("long");
+
+		// A caller-supplied retention still wins.
+		createSettingsAwareStreamFn(Settings.isolated({}), sub.fn, { subagent: true })(stubModel, stubContext, {
+			cacheRetention: "none",
+		});
+		expect(sub.calls[1]?.options?.cacheRetention).toBe("none");
+	});
+
 	it("lets caller-supplied options override the session settings", () => {
 		const settings = Settings.isolated({
 			"providers.openrouterVariant": "floor",

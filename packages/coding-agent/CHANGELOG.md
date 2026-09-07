@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `providers.subagentCacheRetention` (default `short`): subagent and advisor sessions request 5-minute prompt-cache entries instead of the 1h entries the main session uses on Anthropic OAuth. Helper sessions run in rapid bursts without long idles (0 gaps over 5 minutes across 468 measured subagent requests), so the 1h write premium bought nothing.
+
 ### Changed
 
 - The default system prompt now renders as two globally cacheable blocks: a settings-stable core (role, router, stance, delegation, harness) and a session block (tool inventory, skills, rules, caveman/ponytail overlays, MCP guidance). Sessions that share the same tools but differ in toggles now read the core block from the org-wide Anthropic cache instead of re-writing the whole prompt (measured: 61K cached / 27K written vs 0 / 91K before).
