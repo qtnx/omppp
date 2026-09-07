@@ -2153,6 +2153,31 @@ export class SessionMaintenance {
 			// but keep it on the branch unless promotion or compaction actually runs.
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
 
+			// Fork: try compaction on the current model before promoting to a larger
+			// one; a compacted context often fits without changing models. Counted
+			// against the same no-progress cap as the no-promotion path below so an
+			// empty `length` loop (#10594) still terminates.
+			const compactionSettings = this.#host.settings.getGroup("compaction");
+			if (
+				compactionSettings.enabled &&
+				hasConfiguredCompactionMethod(compactionSettings) &&
+				this.#incompleteRecoveryAttempts < INCOMPLETE_RECOVERY_MAX_RETRIES
+			) {
+				this.#incompleteRecoveryAttempts++;
+				const outcome = await this.#host.runRecoveryCompactionWithRollback(
+					"incomplete",
+					assistantMessage,
+					allowDefer,
+					{
+						autoContinue,
+						triggerContextTokens: calculateContextTokens(assistantMessage.usage),
+					},
+				);
+				if (outcome.historyRewritten || outcome.deferredHandoff || outcome.continuationScheduled) {
+					return outcome;
+				}
+			}
+
 			const promoted = await this.#tryContextPromotion(assistantMessage);
 			if (promoted) {
 				await this.#host.dropPersistedAssistantTurn(assistantMessage);

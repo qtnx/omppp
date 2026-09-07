@@ -46,6 +46,9 @@ provider "openai-codex" {
 			priority 2.5
 		}
 		context-window-floor 372000
+		// Codex discovery reports max_context_window=872000; keep it as the
+		// `/extended-context` maximum when a live/cached maximum is absent.
+		max-context-window 872000
 	}
 	class "openai" {
 		revision ">=5.3 <5.7" {
