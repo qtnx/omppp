@@ -15,6 +15,7 @@
 ### Changed
 
 - The system prompt now requires the todo list to track reality: items finished implicitly are marked done, overtaken or re-scoped items are dropped or replaced, and the ledger never lags the diff.
+- In git-hosted repositories the system prompt now defines a code change as done only when a PR/MR exists with every CI check green on its current head (plus attached `browser_qa` screenshots for rendered changes); hotfix branching, tagging, and deploying happen only on an explicit user request.
 
 ### Fixed
 
