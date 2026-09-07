@@ -65,7 +65,6 @@ const codexModelEntrySchema = type({
 	"id?": "unknown",
 	"display_name?": "unknown",
 	"context_window?": "unknown",
-	"max_context_window?": "unknown",
 	"default_reasoning_level?": "unknown",
 	"supported_reasoning_levels?": "unknown",
 	"input_modalities?": "unknown",
@@ -294,7 +293,6 @@ interface ParsedCodexModelEntry {
 	slug: string;
 	name: string;
 	contextWindow: number | null;
-	maxContextWindow: number | null;
 	reasoning: boolean;
 	input: ("text" | "image")[];
 	preferWebsockets: boolean;
@@ -324,7 +322,6 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 		slug,
 		name: toNonEmptyString(payload.display_name) ?? slug,
 		contextWindow: toPositiveInt(payload.context_window),
-		maxContextWindow: toPositiveInt(payload.max_context_window),
 		reasoning: supportsReasoning(payload.default_reasoning_level, payload.supported_reasoning_levels),
 		input: normalizeInputModalities(payload.input_modalities),
 		preferWebsockets: toBoolean(payload.prefer_websockets) === true,
@@ -370,7 +367,6 @@ function buildNormalizedCodexModel(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			remoteCompaction: CODEX_REMOTE_COMPACTION,
 			contextWindow,
-			...(parsed.maxContextWindow !== null ? { maxContextWindow: parsed.maxContextWindow } : {}),
 			maxTokens,
 			...(parsed.preferWebsockets ? { preferWebsockets: true } : {}),
 			...(parsed.useResponsesLite ? { useResponsesLite: true } : {}),
