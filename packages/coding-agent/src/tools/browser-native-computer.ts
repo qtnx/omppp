@@ -36,8 +36,8 @@ function actionCode(action: ComputerAction): string {
 }
 
 export class NativeBrowserComputerTool implements AgentTool<typeof nativeComputerSchema, NativeDetails> {
-	readonly name = "computer";
-	readonly label = "Browser Computer";
+	readonly name = "browser_use";
+	readonly label = "Browser Use";
 	readonly loadMode = "essential" as const;
 	readonly concurrency = "exclusive" as const;
 	readonly summary = "Control browser viewport with OpenAI Computer Use actions";
@@ -80,7 +80,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 						signal,
 					});
 					this.#tab = (
-						await acquireTab("computer", browser, {
+						await acquireTab("browser_use", browser, {
 							viewport: VIEWPORT,
 							timeoutMs: 30_000,
 							ownerSessionId: this.session.getSessionId?.() ?? undefined,
@@ -90,7 +90,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 				let screenshot = "";
 				let screenshotMimeType = "image/png";
 				for (const action of actions) {
-					const result = await runInTab("computer", {
+					const result = await runInTab("browser_use", {
 						code: actionCode(action),
 						timeoutMs: 30_000,
 						signal,

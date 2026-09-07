@@ -765,10 +765,8 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	kanban: KanbanTool.createIf,
 	inspect_image: s => new InspectImageTool(s),
 	browser: s => new BrowserTool(s),
-	computer: s =>
-		s.settings.get("browser.nativeComputer.enabled") === true
-			? new NativeBrowserComputerTool(s)
-			: new ComputerTool(s),
+	browser_use: s => new NativeBrowserComputerTool(s),
+	computer: s => new ComputerTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	compact: CompactTool.createIf,
@@ -1022,7 +1020,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "think") return externalThinkingActive;
 		if (name === "ask") return session.settings.get("ask.enabled");
 		if (name === "browser") return session.settings.get("browser.enabled");
-		if (name === "computer") return session.settings.get("computer.enabled");
+		if (name === "browser_use") return session.settings.get("browser.nativeComputer.enabled");
+		if (name === "computer")
+			return session.settings.get("computer.enabled") && !session.settings.get("browser.nativeComputer.enabled");
 		if (name === "checkpoint" || name === "rewind")
 			return (
 				session.settings.get("checkpoint.enabled") &&

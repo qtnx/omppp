@@ -22,6 +22,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"kanban",
 	"inspect_image",
 	"browser",
+	"browser_use",
 	"computer",
 	"checkpoint",
 	"rewind",

@@ -104,6 +104,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	browser: browserToolRenderer as ToolRenderer,
 	compact: compactToolRenderer as ToolRenderer,
 	computer: computerToolRenderer as ToolRenderer,
+	browser_use: computerToolRenderer as ToolRenderer,
 	debug: debugToolRenderer as ToolRenderer,
 	eval: evalToolRenderer as ToolRenderer,
 	edit: editToolRenderer as ToolRenderer,

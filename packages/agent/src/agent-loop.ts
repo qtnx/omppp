@@ -2352,6 +2352,9 @@ function resolveToolForCall(
 	return (
 		tools?.find(t => t.name === toolCall.name) ??
 		tools?.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name) ??
+		// Provider-native computer calls arrive under the wire name `computer`;
+		// the host may expose that native tool under its own name (e.g. `browser_use`).
+		(toolCall.providerMetadata?.type === "computer" ? tools?.find(t => t.native?.type === "computer") : undefined) ??
 		// Not in the advertised set: let the host route side-transport tools
 		// (e.g. xd:// device mounts) called by their top-level name.
 		resolveFallbackTool?.(toolCall.name)

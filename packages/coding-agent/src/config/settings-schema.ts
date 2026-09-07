@@ -5100,8 +5100,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Available Tools",
 			label: "Computer",
-			description:
-				"Enable computer control; browser-native mode uses screenshot actions, otherwise desktop scripting",
+			description: "Enable the desktop computer tool; disabled while browser_use handles native computer actions",
 		},
 	},
 
@@ -5188,7 +5187,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Available Tools",
 			label: "OpenAI Browser Computer Use",
 			description:
-				"Use screenshot-driven Computer Use actions in a managed browser; keep the DOM browser tool available",
+				"Expose browser_use: screenshot-driven Computer Use actions in a managed browser for games and graphic UI",
 		},
 	},
 
