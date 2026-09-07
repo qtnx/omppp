@@ -7,7 +7,8 @@ import { acquireBrowser } from "./browser/registry";
 import { acquireTab, releaseTab, runInTab, type TabSession } from "./browser/tab-supervisor";
 import { ToolAbortError } from "./tool-errors";
 
-const VIEWPORT = { width: 1280, height: 720 } as const;
+// deviceScaleFactor 1 keeps screenshot pixels == viewport CSS pixels so model coordinates map 1:1.
+const VIEWPORT = { width: 1280, height: 720, deviceScaleFactor: 1 } as const;
 const pointSchema = type({ x: "number", y: "number" });
 const actionSchema = type({
 	type: "'click' | 'double_click' | 'drag' | 'keypress' | 'move' | 'scroll' | 'type' | 'wait' | 'screenshot'",
@@ -25,7 +26,7 @@ const nativeComputerSchema = type({
 	"actions?": actionSchema
 		.array()
 		.describe(
-			"Ordered screen actions in 1280x720 viewport pixels. click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} (Playwright key names); type: {text}; wait; screenshot. A screenshot is returned after the last action.",
+			"Ordered screen actions in 1280x720 viewport pixels. click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} or {keys:['Control','a']} (modifiers are held while the other keys are pressed; aliases like CTRL/CMD/ENTER accepted); type: {text}; wait; screenshot. A screenshot is returned after the last action.",
 		),
 	"pending_safety_checks?": type("unknown[]").describe("Safety checks requiring explicit approval"),
 	"+": "reject",
@@ -46,7 +47,7 @@ function actionList(input: NativeComputerInput): ComputerAction[] {
 
 function actionCode(action: ComputerAction): string {
 	const a = JSON.stringify(action);
-	return `(async()=>{const a=${a};switch(a.type){case "click":await page.mouse.click(a.x,a.y,{button:a.button});break;case "double_click":await page.mouse.click(a.x,a.y,{clickCount:2});break;case "drag":{const p=a.path;if(!p.length)break;await page.mouse.move(p[0].x,p[0].y);await page.mouse.down();for(const q of p.slice(1))await page.mouse.move(q.x,q.y);await page.mouse.up();break;}case "keypress":await page.keyboard.press(a.keys.join("+"));break;case "move":await page.mouse.move(a.x,a.y);break;case "scroll":await page.mouse.move(a.x,a.y);await page.mouse.wheel({deltaX:a.scroll_x,deltaY:a.scroll_y});break;case "type":await page.keyboard.type(a.text);break;case "wait":await new Promise(r=>setTimeout(r,500));break;case "screenshot":break;}return await tab.screenshot();})()`;
+	return `(async()=>{const a=${a};switch(a.type){case "click":await page.mouse.click(a.x,a.y,{button:a.button});break;case "double_click":await page.mouse.click(a.x,a.y,{clickCount:2});break;case "drag":{const p=a.path;if(!p.length)break;await page.mouse.move(p[0].x,p[0].y);await page.mouse.down();for(const q of p.slice(1))await page.mouse.move(q.x,q.y);await page.mouse.up();break;}case "keypress":{const m={ctrl:"Control",control:"Control",cmd:"Meta",command:"Meta",meta:"Meta",super:"Meta",win:"Meta",alt:"Alt",option:"Alt",shift:"Shift",enter:"Enter",return:"Enter",esc:"Escape",escape:"Escape",space:"Space",tab:"Tab",backspace:"Backspace",delete:"Delete",del:"Delete",up:"ArrowUp",down:"ArrowDown",left:"ArrowLeft",right:"ArrowRight",arrowup:"ArrowUp",arrowdown:"ArrowDown",arrowleft:"ArrowLeft",arrowright:"ArrowRight",pageup:"PageUp",pagedown:"PageDown",home:"Home",end:"End"};const ks=a.keys.map(k=>{const l=String(k).toLowerCase();if(m[l])return m[l];if(/^fd{1,2}$/.test(l))return l.toUpperCase();return k.length===1?k:k[0].toUpperCase()+k.slice(1)});const mods=new Set(["Control","Meta","Alt","Shift"]);const held=ks.filter(k=>mods.has(k));const main=ks.filter(k=>!mods.has(k));for(const k of held)await page.keyboard.down(k);try{for(const k of main)await page.keyboard.press(k);}finally{for(const k of held.reverse())await page.keyboard.up(k);}break;}case "move":await page.mouse.move(a.x,a.y);break;case "scroll":await page.mouse.move(a.x,a.y);await page.mouse.wheel({deltaX:a.scroll_x,deltaY:a.scroll_y});break;case "type":await page.keyboard.type(a.text);break;case "wait":await new Promise(r=>setTimeout(r,500));break;case "screenshot":break;}return {__shot:await page.screenshot({type:"jpeg",quality:80,encoding:"base64"})};})()`;
 }
 
 export class NativeBrowserComputerTool implements AgentTool<typeof nativeComputerSchema, NativeDetails> {
@@ -118,12 +119,12 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 						signal,
 						session: this.session,
 					});
-					const image = result.displays.find(
-						(item): item is { type: "image"; data: string; mimeType: string } => item.type === "image",
-					);
-					if (image) {
-						screenshotMimeType = image.mimeType;
-						screenshot = `data:${image.mimeType};base64,${image.data}`;
+					// Raw viewport PNG via page.screenshot: tab.screenshot() downsizes to
+					// 1024px, which would break the 1:1 pixel-to-coordinate contract.
+					const shot = (result.returnValue as { __shot?: string } | undefined)?.__shot;
+					if (typeof shot === "string" && shot.length > 0) {
+						screenshotMimeType = "image/jpeg";
+						screenshot = `data:image/jpeg;base64,${shot}`;
 					}
 				}
 				const url = this.#tab.info.url;
