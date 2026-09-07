@@ -87,6 +87,9 @@
 - Fixed Gemini 3 cross-model sessions in Cloud Code Assist when replaying tool calls without a thought signature.
 - Fixed Cursor models behind an authentication gateway incorrectly retrying valid client-declared tool calls.
 - Fixed reasoning from models that prefill `<think>` (including DeepSeek-R1 and hosted Qwen3-Thinking) being shown in the response instead of as a separate thinking block.
+### Fixed
+
+- Fixed OpenAI Codex sessions stalling 60–180s per request on a throttled ChatGPT account: the backend's `server_is_overloaded` (a ~30s server-side park per attempt) was replayed in place up to five times on the same account. It now rotates to a sibling credential immediately and parks the throttled account for five minutes across every session in the pool; single-account setups fall back to the whole-turn retry backoff.
 
 ## [18.1.3] - 2026-09-02
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { scheduler } from "node:timers/promises";
 import { streamSimple } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import {
 	buildTransformedCodexRequestBody,
 	cancelCodexWebSocketBackgroundReconnectsForTesting,
@@ -2651,6 +2652,56 @@ describe.serial("openai-codex streaming", () => {
 		// 401 is what drives streamSimple's onAuthError credential rotation.
 		expect(result.errorStatus).toBe(401);
 		expect((result.errorMessage ?? "").toLowerCase()).toContain("invalidated oauth token");
+	});
+
+	it("surfaces server_is_overloaded once as a rotatable transient error instead of replaying in place", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+
+		const token = createCodexTestToken();
+		// Live shape: the backend parks the request ~30s, then rejects it.
+		const errorSse = `${[
+			`data: ${JSON.stringify({ type: "response.created", response: { id: "resp_overloaded", status: "in_progress" } })}`,
+			`data: ${JSON.stringify({
+				type: "error",
+				error: {
+					type: "service_unavailable_error",
+					code: "server_is_overloaded",
+					message: "Our servers are currently overloaded. Please try again later.",
+				},
+			})}`,
+		].join("\n\n")}\n\n`;
+
+		const fetchMock = vi.fn(
+			async () => new Response(errorSse, { status: 200, headers: { "content-type": "text/event-stream" } }),
+		);
+		global.fetch = fetchMock as unknown as typeof fetch;
+
+		const model: Model<"openai-codex-responses"> = buildModel({
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		});
+		const context: Context = {
+			systemPrompt: ["You are a helpful assistant."],
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		};
+
+		const result = await streamOpenAICodexResponses(model, context, { apiKey: token }).result();
+		// The throttle is per-account: each in-place replay would pay the park
+		// again, so the provider must hand it to the credential-rotation layer.
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(result.stopReason).toBe("error");
+		expect(AIError.isCodexAccountOverloadError(result)).toBe(true);
+		expect(AIError.is(result.errorId, AIError.Flag.AccountPolicy)).toBe(true);
+		expect(AIError.retriable(result.errorId)).toBe(true);
 	});
 
 	it("does not tag a generic invalid_request_error event as a 401", async () => {

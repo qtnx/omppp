@@ -20,7 +20,7 @@ describe("native browser computer tool", () => {
 
 		expect(tool.name).toBe("browser_use");
 		expect(tool.native).toEqual({ type: "computer" });
-		expect(NATIVE_BROWSER_VIEWPORT).toEqual({ width: 1280, height: 720 });
+		expect(NATIVE_BROWSER_VIEWPORT).toEqual({ width: 1280, height: 720, deviceScaleFactor: 1 });
 		expect(tool.description).toContain("1280x720");
 	});
 

@@ -434,7 +434,28 @@ export interface LaunchHeadlessResult {
  * broker-owned shared browser: sandbox/stealth flags, window size, and
  * PUPPETEER_PROXY* env-derived proxy flags.
  */
-export function buildHeadlessLaunchArgs(viewport: { width: number; height: number }, gpu = true): string[] {
+/**
+ * Hardware-GPU ANGLE backend per platform. Vulkan is Linux-only: macOS has no
+ * Vulkan ICD, so forcing `--use-angle=vulkan` there makes ANGLE fall back to
+ * SwiftShader (CPU rendering). Metal is the native macOS backend; Windows keeps
+ * Chrome's default (D3D11).
+ */
+export function gpuLaunchArgs(platform: NodeJS.Platform = process.platform): string[] {
+	switch (platform) {
+		case "linux":
+			return ["--use-angle=vulkan", "--enable-features=Vulkan", "--disable-vulkan-surface"];
+		case "darwin":
+			return ["--use-angle=metal"];
+		default:
+			return [];
+	}
+}
+
+export function buildHeadlessLaunchArgs(
+	viewport: { width: number; height: number },
+	gpu = true,
+	platform: NodeJS.Platform = process.platform,
+): string[] {
 	const launchArgs = [
 		"--no-sandbox",
 		"--disable-setuid-sandbox",
@@ -443,7 +464,7 @@ export function buildHeadlessLaunchArgs(viewport: { width: number; height: numbe
 		"--enable-unsafe-swiftshader",
 	];
 	if (gpu) {
-		launchArgs.push("--use-angle=vulkan", "--enable-features=Vulkan", "--disable-vulkan-surface");
+		launchArgs.push(...gpuLaunchArgs(platform));
 	}
 	const proxy = process.env.PUPPETEER_PROXY;
 	if (proxy) {

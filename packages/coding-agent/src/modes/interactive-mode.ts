@@ -586,8 +586,9 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 				telemetryParts.push(`${formatNumber(progress.toolCount)} tools`);
 				telemetryParts.push(`in ${formatNumber(progress.inputTokens)}`);
 				telemetryParts.push(`out ${formatNumber(progress.outputTokens)}`);
-				if (progress.durationMs > 0 && progress.outputTokens > 0) {
-					const tokensPerSecond = progress.outputTokens / (progress.durationMs / 1000);
+				const generationMs = progress.modelMs ?? progress.durationMs;
+				if (generationMs > 0 && progress.outputTokens > 0) {
+					const tokensPerSecond = progress.outputTokens / (generationMs / 1000);
 					telemetryParts.push(`${tokensPerSecond.toFixed(1)} tok/s`);
 				}
 				return [line, theme.fg("muted", truncateToWidth(telemetryParts.join(theme.sep.dot), columns - 4))];

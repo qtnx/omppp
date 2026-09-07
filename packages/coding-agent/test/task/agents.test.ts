@@ -180,10 +180,10 @@ describe("bundled task agents", () => {
 
 		expect(browserQa).toBeDefined();
 		expect(browserQa?.description).toContain("QA");
-		expect(browserQa?.tools).toEqual(["browser", "read", "grep", "glob", "bash", "irc", "yield"]);
+		expect(browserQa?.tools).toEqual(["browser_use", "browser", "read", "grep", "glob", "bash", "irc", "yield"]);
 		expect(browserQa?.tools).not.toContain("edit");
 		expect(browserQa?.tools).not.toContain("write");
-		expect(browserQa?.model).toEqual(["pi/task"]);
+		expect(browserQa?.model).toEqual(["openai-codex/gpt-6-astra:medium", "pi/task"]);
 		expect(browserQa?.thinkingLevel).toBe(Effort.Medium);
 		expect(browserQa?.output).toEqual({
 			properties: {

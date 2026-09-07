@@ -169,6 +169,14 @@ const ACCOUNT_POLICY_PATTERN = /\bcyber_policy\b|trusted access for cyber/i;
 const CODEX_CHATGPT_ACCOUNT_MODEL_POLICY_PATTERN =
 	/\bThe ['"]([^'"\r\n]+)['"] model is not supported when using Codex with a ChatGPT account\./i;
 const CODEX_CHATGPT_ACCOUNT_MODEL_MAX_LENGTH = 256;
+/**
+ * ChatGPT-backend per-account throttle. The server parks the request ~30s and
+ * then rejects it with `server_is_overloaded` while sibling accounts on the
+ * same model answer in ~1s, so it is an account-scoped outcome (rotate), not a
+ * fleet-wide overload (back off). Matched on the formatted Codex error event
+ * because the classifier only sees message text at the auth-retry layer.
+ */
+const CODEX_ACCOUNT_OVERLOAD_PATTERN = /\bcode=server_is_overloaded\b/i;
 const CURSOR_PLAN_POLICY_MARKER_PATTERN = /\bERROR_RATE_LIMITED_CHANGEABLE\b/i;
 const CURSOR_PLAN_POLICY_PATTERN = /\bNamed models unavailable\b|\bModel unavailable on\b|\bFree plans can only use\b/i;
 
@@ -457,6 +465,10 @@ function classifyText(
 		) {
 			kinds |= Flag.AccountPolicy | Flag.ContentBlocked;
 		}
+		// Transient so the whole-turn retry layer treats it as a same-model
+		// retry; AccountPolicy (without ContentBlocked) so the auth-retry layer
+		// rotates to a sibling credential instead of hammering the throttled one.
+		if (CODEX_ACCOUNT_OVERLOAD_PATTERN.test(errorMessage)) kinds |= Flag.AccountPolicy | Flag.Transient;
 		if (isAuthFailureText(errorMessage)) kinds |= Flag.AuthFailed;
 
 		const statusClean = errorStatus ? errorStatus : (status({ message: errorMessage }) ?? undefined);
@@ -650,6 +662,24 @@ export function isCodexChatGPTAccountPolicyError(
 	const deniedIdentity = normalizeCodexChatGPTAccountPolicyModel(deniedModel);
 	const requestedIdentity = normalizeCodexChatGPTAccountPolicyModel(modelId);
 	return provider === "openai-codex" && deniedIdentity !== undefined && deniedIdentity === requestedIdentity;
+}
+
+/** Whether the ChatGPT backend throttled this account with `server_is_overloaded` (per-account, rotate to a sibling). */
+export function isCodexAccountOverloadError(error: unknown, depth = 0): boolean {
+	if (depth > 6) return false;
+	if (typeof error === "string") return CODEX_ACCOUNT_OVERLOAD_PATTERN.test(error);
+	if (!error || typeof error !== "object") return false;
+	if (
+		"errorMessage" in error &&
+		typeof error.errorMessage === "string" &&
+		CODEX_ACCOUNT_OVERLOAD_PATTERN.test(error.errorMessage)
+	) {
+		return true;
+	}
+	if ("message" in error && typeof error.message === "string" && CODEX_ACCOUNT_OVERLOAD_PATTERN.test(error.message)) {
+		return true;
+	}
+	return "cause" in error && isCodexAccountOverloadError(error.cause, depth + 1);
 }
 
 /** Whether Cursor returned a non-retryable plan entitlement denial for this account. */

@@ -76,6 +76,25 @@ describe("job renderer live stats", () => {
 		expect(output).toContain("20.0s");
 	});
 
+	// A subagent that spent most of its life in tool calls must not report a
+	// deflated rate: throughput divides by provider request time when known.
+	it("derives the output rate from provider request time, not lifetime wall-clock", () => {
+		setJobLiveStatsProvider(jobId =>
+			jobId === "LiveTask" ? { progress: progress({ durationMs: 60_000, modelMs: 20_000 }) } : undefined,
+		);
+
+		const output = renderJob({
+			id: "LiveTask",
+			type: "task",
+			status: "running",
+			label: "LiveTask",
+			durationMs: 60_000,
+		});
+
+		expect(output).toContain("↑12.3k ↓3.2k 161 tok/s");
+		expect(output).not.toContain("54 tok/s");
+	});
+
 	// Without a provider, task rows must stay byte-compatible with the old UI.
 	it("keeps the previous task row format when no provider is registered", () => {
 		const output = renderJob({

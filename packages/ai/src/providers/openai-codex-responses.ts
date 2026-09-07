@@ -284,6 +284,8 @@ const CODEX_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const CODEX_RETRYABLE_EVENT_CODES = new Set(["model_error", "server_error", "internal_error"]);
 const CODEX_RETRYABLE_EVENT_MESSAGE =
 	/processing your request|retry your request|temporar(?:y|ily)|overloaded|service.?unavailable|internal error|server error/i;
+/** ChatGPT-backend per-account throttle; rotated on, never replayed in place (see `#tryRetryProviderError`). */
+const CODEX_ACCOUNT_OVERLOAD_CODE = "server_is_overloaded";
 /**
  * Codex/ChatGPT OAuth-token rejections (error codes + the verbatim
  * "Encountered invalidated oauth token for user, failing request" message).
@@ -3266,6 +3268,15 @@ class CodexStreamProcessor {
 	}
 
 	async #tryRetryProviderError(error: unknown): Promise<boolean> {
+		// `server_is_overloaded` is a per-account throttle: the backend parks the
+		// request ~30s before rejecting it, and every in-place replay on the same
+		// bearer pays that again (observed 60–140s TTFT on throttled accounts
+		// while siblings answered in ~1s). Surface it instead so the auth-retry
+		// layer rotates to a sibling credential; the whole-turn retry layer still
+		// backs off and retries when no sibling exists.
+		if (error instanceof CodexProviderStreamError && error.code?.toLowerCase() === CODEX_ACCOUNT_OVERLOAD_CODE) {
+			return false;
+		}
 		const retryable =
 			error instanceof CodexProviderStreamError ? error.retryable : AIError.isProviderRetryableError(error);
 		// A leading `response.output_item.added` opens an empty block and emits only
