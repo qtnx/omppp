@@ -121,7 +121,7 @@ export async function askImageQuestion(
 		extractExplicitThinkingSelector(selectedPattern, session.settings, {
 			isLiteralModelId: (provider, id) =>
 				availableModels.some(candidate => candidate.provider === provider && candidate.id === id),
-		}),
+		}) ?? extractExplicitThinkingSelector(session.settings.getModelRole("vision"), session.settings),
 	);
 	const reasoning = toReasoningEffort(resolveThinkingLevelForModel(model, configuredThinking));
 

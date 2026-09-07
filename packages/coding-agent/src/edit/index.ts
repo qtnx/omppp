@@ -404,11 +404,34 @@ export class EditTool implements AgentTool<TInput> {
 	}
 
 	readonly approval = (args: unknown) => {
-		const targets = this.#inspect(args).paths;
+		const inspection = this.#approvalInspection(args);
+		const targets = [...inspection.paths];
+		for (const fileOp of inspection.fileOps) {
+			targets.push(fileOp.path);
+			if (fileOp.to) targets.push(fileOp.to);
+		}
 		return targets.length > 0 && targets.every(target => resolveFileWriteApprovalTier(target) === "read")
 			? "read"
 			: "write";
 	};
+
+	#approvalInspection(args: unknown): EditInspection {
+		const inspection = this.#inspect(args);
+		if (inspection.paths.length > 0 || inspection.fileOps.length > 0) return inspection;
+		if (!args || typeof args !== "object" || typeof (args as Record<string, unknown>).input !== "string") {
+			return inspection;
+		}
+		for (const mode of ["hashline", "apply_patch"] as const) {
+			if (mode === this.mode) continue;
+			try {
+				const fallback = editInspect(mode, JSON.stringify(args));
+				if (fallback.paths.length > 0 || fallback.fileOps.length > 0) return fallback;
+			} catch {
+				// The payload does not use this edit mode's syntax.
+			}
+		}
+		return inspection;
+	}
 
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const targets = this.#inspect(args).paths;

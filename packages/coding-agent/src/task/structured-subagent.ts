@@ -593,7 +593,7 @@ function buildExecutorOptions(
 		parentContextFile: contextSnapshot?.path,
 		customTools: request.customTools,
 		workPoolYieldItems: request.workPoolYieldItems,
-		contextFiles: baseContextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
+		contextFiles: baseContextFiles,
 		skills,
 		autoloadSkills,
 		workspaceTree: session.workspaceTree,

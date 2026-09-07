@@ -138,6 +138,7 @@ async function relocateHeadlessSession(
 	resolvedPath: string,
 ): Promise<SlashCommandResult | undefined> {
 	try {
+		await runtime.sessionManager.flush();
 		await runtime.settings.flush();
 	} catch (err) {
 		return usage(`Failed to save pending settings: ${errorMessage(err)}`, runtime);

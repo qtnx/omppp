@@ -35,7 +35,7 @@ describe("AgentSession eval preludes", () => {
 	});
 
 	it("updates enabled preludes without registering browser or computer tools", async () => {
-		const settings = Settings.isolated({ "browser.enabled": false });
+		const settings = Settings.isolated({ "browser.enabled": false, "computer.enabled": false });
 		const { session } = await createAgentSession({
 			cwd: registryDir,
 			agentDir: registryDir,

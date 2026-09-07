@@ -435,7 +435,7 @@ describe("EventController working loader reconciliation", () => {
 		expect(stop).toHaveBeenCalledTimes(1);
 		expect(ctx.statusContainer.disposeChildren).toHaveBeenCalledTimes(1);
 		expect(ctx.flushCompactionQueue).toHaveBeenCalledWith({ willRetry: false });
-		expect(ctx.ensureLoadingAnimation).toHaveBeenCalledTimes(1);
+		expect(ctx.ensureLoadingAnimation).toHaveBeenCalledTimes(2);
 	});
 
 	it("self-heals missing working loader on live tool updates", async () => {

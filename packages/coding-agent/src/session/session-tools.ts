@@ -35,6 +35,7 @@ import {
 	resolveEffectiveToolDiscoveryMode,
 } from "../tool-discovery/tool-index";
 import type { Tool, ToolSession } from "../tools";
+import { modelPromptProfile } from "../task/prompt-policy";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { ConsultTool } from "../tools/consult";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
@@ -115,6 +116,8 @@ interface SessionToolsOptions {
 	setPendingFullWriteDescription?: (enabled: boolean) => void;
 	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
 	ensureGoalRegistered?: () => Promise<boolean>;
+	/** Registers `duo_handoff`/`duo_escalate` when a duo controller goes live after tool creation. */
+	ensureDuoToolsRegistered?: () => Promise<boolean>;
 	rebuildSystemPrompt?: (
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
@@ -157,11 +160,9 @@ function extractSkillsAndRulesSection(systemPromptBlock: string): string | undef
 }
 
 export function buildSystemPromptWithOrchestratorOverlay(baseSystemPrompt: string[]): string[] {
-	const skillsAndRules = extractSkillsAndRulesSection(baseSystemPrompt[0] ?? "");
-	if (!skillsAndRules) return [orchestratorModeActivePrompt, ...baseSystemPrompt.slice(1)];
 	const orchestratorPrompt = prompt.render(orchestratorModeOverlayTemplate, {
+		baseSystemPrompt: baseSystemPrompt[0] ?? "",
 		orchestratorMode: orchestratorModeActivePrompt,
-		skillsAndRules,
 	});
 	return [orchestratorPrompt, ...baseSystemPrompt.slice(1)];
 }
@@ -332,6 +333,7 @@ export class SessionTools {
 	 */
 	readonly #deviceOnlyWriteTransportAvailable: boolean;
 	#ensureGoalRegistered: SessionToolsOptions["ensureGoalRegistered"];
+	#ensureDuoToolsRegistered: SessionToolsOptions["ensureDuoToolsRegistered"];
 	#skills: Skill[];
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
@@ -380,6 +382,7 @@ export class SessionTools {
 		this.#setDeviceOnlyWrite = options.setDeviceOnlyWrite;
 		this.#setPendingFullWriteDescription = options.setPendingFullWriteDescription;
 		this.#ensureGoalRegistered = options.ensureGoalRegistered;
+		this.#ensureDuoToolsRegistered = options.ensureDuoToolsRegistered;
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#systemPromptOverlay = options.systemPromptOverlay;
 		this.#getPinnedRuntimeToolNames = options.getPinnedRuntimeToolNames;
@@ -916,7 +919,7 @@ export class SessionTools {
 		if (!activeModel) return undefined;
 		const model = formatModelString(activeModel);
 		if (this.#host.settings.get("includeModelInPrompt")) return model;
-		return `delegation-bias:${resolveDelegationBias(activeModel)}`;
+		return `delegation-bias:${resolveDelegationBias(activeModel)}|model-notes:${modelPromptProfile(model) ?? "default"}`;
 	}
 
 	/** Reconciles the model-dependent discovery surface after a model change. */

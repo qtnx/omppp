@@ -30,6 +30,7 @@ import ponytailSkill from "./discovery/bundled-skills/ponytail.md" with { type: 
 import { loadSkills, type Skill } from "./extensibility/skills";
 import { hasObsidian } from "./internal-urls/vault-protocol";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
+import openAIGptModelNotes from "./prompts/system/model-notes/openai-gpt.md" with { type: "text" };
 import cavemanModeActiveTemplate from "./prompts/system/caveman-mode-active.md" with { type: "text" };
 import computerSafetyPrompt from "./prompts/system/computer-safety.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
@@ -40,6 +41,7 @@ import ponytailModeActiveTemplate from "./prompts/system/ponytail-mode-active.md
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
+import { modelPromptProfile } from "./task/prompt-policy";
 import { shortenPath } from "./tools/render-utils";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
@@ -172,6 +174,11 @@ function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | nu
 }
 
 /** Bundled caveman skill body (frontmatter stripped) wrapped in the caveman-mode block. */
+/** Model-family guidance block; empty for models without a profile (see `modelPromptProfile`). */
+function renderModelNotesBlock(model: string | undefined): string {
+	return modelPromptProfile(model) === "openai-gpt" ? openAIGptModelNotes.trim() : "";
+}
+
 function renderCavemanModeBlock(): string {
 	const skill = parseFrontmatter(cavemanSkill, { level: "off" }).body.trim();
 	return prompt.render(cavemanModeActiveTemplate, { skill }).trim();
@@ -1151,6 +1158,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		securityEnabled,
 		browserEnabled,
 		computerEnabled,
+		modelNotes: renderModelNotesBlock(model),
 		hasObsidian: hasObsidian(),
 		includeWorkspaceTree,
 		renderMermaid,
