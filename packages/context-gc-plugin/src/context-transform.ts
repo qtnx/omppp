@@ -31,11 +31,14 @@ export function isContextGcInspectionTool(toolName: string): boolean {
 /**
  * Projects only records that the shared active-context analyzer matched by authoritative identity
  * and canonical stored-payload hash. Unmatched and legacy records stay verbatim in the LLM context.
+ * `projectIds` narrows projection to unloaded records whose rewrite has been approved
+ * (see `decideDeferredUnloads`); omitted means every matched unloaded record.
  */
 export function projectUnloadedContext(
 	messages: readonly AgentMessage[],
 	records: readonly ContextRecord[],
 	analysis: ActiveContextAnalysis = analyzeActiveContext(messages, records),
+	projectIds?: ReadonlySet<string>,
 ): AgentMessage[] {
 	let cleanupSeen = false;
 	const staleContextGcInspectionCallIds = new Set<string>();
@@ -53,7 +56,7 @@ export function projectUnloadedContext(
 
 	const unloadedRecordByMessageIndex = new Map<number, ContextRecord>();
 	for (const match of analysis.matches.values()) {
-		if (match.record.status === "unloaded") {
+		if (match.record.status === "unloaded" && (projectIds === undefined || projectIds.has(match.record.id))) {
 			unloadedRecordByMessageIndex.set(match.messageIndex, match.record);
 		}
 	}

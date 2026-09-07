@@ -4,8 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
-import contextGcExtension from "../src/extension";
-import { openContextGcStore } from "../src/storage";
+import contextGcExtension, { createContextGcExtension } from "../src/extension";
+import { PROMPT_CACHE_TTL_MS } from "../src/deferred-unload";
+import { getContextGcDbPath, openContextGcStore } from "../src/storage";
 
 const originalConfigDir = process.env.PI_CONFIG_DIR;
 const originalCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -373,6 +374,56 @@ describe("contextGcExtension", () => {
 		expect(first?.customType).toBe("context-gc-projected");
 		expect(first?.content?.[0]?.text).toContain('context_recall {"id":"python:session-a:python-live-entry');
 		expect(first?.content?.[0]?.text).not.toContain(output);
+		shutdown(fakePi);
+	});
+
+	it("defers a small unload while the prompt cache is warm and applies it once the cache is cold", async () => {
+		let clock = 1_000_000;
+		const fakePi = createFakePi();
+		createContextGcExtension({ dbPath: getContextGcDbPath(tempDir), now: () => clock })(
+			fakePi as unknown as ExtensionAPI,
+		);
+		const contextHandler = getHandler<ContextHandler>(fakePi, "context");
+		const turnEnd = getHandler<(event: unknown, ctx: FakeContext) => void>(fakePi, "turn_end");
+		expect(contextHandler).toBeDefined();
+		expect(turnEnd).toBeDefined();
+		if (!contextHandler || !turnEnd) return;
+
+		const output = "python output\n".repeat(3_000);
+		const pythonMessage = {
+			role: "pythonExecution",
+			entryId: "python-warm-entry",
+			code: "print('hi')",
+			output,
+			exitCode: 0,
+			timestamp: 1,
+		};
+		// A completed turn means the provider prompt cache is warm from here on.
+		const warmUsage = { tokens: 400_000, contextWindow: 1_000_000, percent: 40 };
+		await contextHandler({ type: "context", messages: [pythonMessage] }, createFakeContext(warmUsage));
+		turnEnd({ type: "turn_end" }, createFakeContext(warmUsage));
+		const delta = fakePi.deltas[0] as { data: { id: string } };
+		appendCustomEntry("context-gc", { ...delta.data, op: "unload", status: "unloaded" });
+
+		clock += 30_000;
+		const deferred = await contextHandler(
+			{ type: "context", messages: [pythonMessage] },
+			createFakeContext(warmUsage),
+		);
+		expect((deferred?.messages?.[0] as { role?: string }).role).toBe("pythonExecution");
+
+		clock += PROMPT_CACHE_TTL_MS;
+		const applied = await contextHandler(
+			{ type: "context", messages: [pythonMessage] },
+			createFakeContext(warmUsage),
+		);
+		expect((applied?.messages?.[0] as { customType?: string }).customType).toBe("context-gc-projected");
+
+		// Sticky: a fresh warm turn must not flip the placeholder back to verbatim.
+		turnEnd({ type: "turn_end" }, createFakeContext(warmUsage));
+		clock += 1_000;
+		const sticky = await contextHandler({ type: "context", messages: [pythonMessage] }, createFakeContext(warmUsage));
+		expect((sticky?.messages?.[0] as { customType?: string }).customType).toBe("context-gc-projected");
 		shutdown(fakePi);
 	});
 
