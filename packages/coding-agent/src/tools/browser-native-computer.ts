@@ -1,6 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ComputerAction, ToolExample } from "@oh-my-pi/pi-ai";
+import browserUseDescription from "../prompts/tools/browser-use.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { resolveBrowserKind } from "./browser";
 import { acquireBrowser } from "./browser/registry";
@@ -10,9 +11,22 @@ import { ToolAbortError } from "./tool-errors";
 
 // deviceScaleFactor 1 keeps screenshot pixels == viewport CSS pixels so model coordinates map 1:1.
 const VIEWPORT = { width: 1280, height: 720, deviceScaleFactor: 1 } as const;
+const ACTION_TYPES = [
+	"navigate",
+	"click",
+	"double_click",
+	"drag",
+	"keypress",
+	"move",
+	"scroll",
+	"type",
+	"wait",
+	"screenshot",
+] as const;
 const pointSchema = type({ x: "number", y: "number" });
 const actionSchema = type({
-	type: "'click' | 'double_click' | 'drag' | 'keypress' | 'move' | 'scroll' | 'type' | 'wait' | 'screenshot'",
+	type: "'navigate' | 'click' | 'double_click' | 'drag' | 'keypress' | 'move' | 'scroll' | 'type' | 'wait' | 'screenshot'",
+	"url?": "string",
 	"x?": "number",
 	"y?": "number",
 	"button?": "'left' | 'right' | 'wheel' | 'back' | 'forward'",
@@ -30,7 +44,7 @@ const nativeComputerSchema = type({
 	"actions?": actionSchema
 		.array()
 		.describe(
-			"Ordered screen actions in 1280x720 viewport pixels. click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} or {keys:['Control','a']} (modifiers are held while the other keys are pressed; aliases like CTRL/CMD/ENTER accepted); type: {text}; wait; screenshot ({save?} writes that capture to a file). A screenshot is returned after the last action.",
+			"Ordered screen actions in 1280x720 viewport pixels. navigate: {url}; click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} or {keys:['Control','a']} (modifiers are held while the other keys are pressed; aliases like CTRL/CMD/ENTER accepted); type: {text}; wait; screenshot ({save?} writes that capture to a file). A screenshot is returned after the last action. Any other type fails the call.",
 		),
 	"pending_safety_checks?": type("unknown[]").describe("Safety checks requiring explicit approval"),
 	"+": "reject",
@@ -46,13 +60,17 @@ type NativeDetails = {
 	rejected?: boolean;
 };
 
-function actionList(input: NativeComputerInput): ComputerAction[] {
-	return (input.actions ?? []) as ComputerAction[];
+/** Native OpenAI actions plus the tool-local `navigate` (headless Chromium has no address bar). */
+type BrowserUseAction = ComputerAction | { type: "navigate"; url: string };
+
+function actionList(input: NativeComputerInput): BrowserUseAction[] {
+	return (input.actions ?? []) as BrowserUseAction[];
 }
 
-function actionCode(action: ComputerAction): string {
+function actionCode(action: BrowserUseAction): string {
 	const a = JSON.stringify(action);
-	return `(async()=>{const a=${a};switch(a.type){case "click":await page.mouse.click(a.x,a.y,{button:a.button});break;case "double_click":await page.mouse.click(a.x,a.y,{clickCount:2});break;case "drag":{const p=a.path;if(!p.length)break;await page.mouse.move(p[0].x,p[0].y);await page.mouse.down();for(const q of p.slice(1))await page.mouse.move(q.x,q.y);await page.mouse.up();break;}case "keypress":{const m={ctrl:"Control",control:"Control",cmd:"Meta",command:"Meta",meta:"Meta",super:"Meta",win:"Meta",alt:"Alt",option:"Alt",shift:"Shift",enter:"Enter",return:"Enter",esc:"Escape",escape:"Escape",space:"Space",tab:"Tab",backspace:"Backspace",delete:"Delete",del:"Delete",up:"ArrowUp",down:"ArrowDown",left:"ArrowLeft",right:"ArrowRight",arrowup:"ArrowUp",arrowdown:"ArrowDown",arrowleft:"ArrowLeft",arrowright:"ArrowRight",pageup:"PageUp",pagedown:"PageDown",home:"Home",end:"End"};const ks=a.keys.map(k=>{const l=String(k).toLowerCase();if(m[l])return m[l];if(/^fd{1,2}$/.test(l))return l.toUpperCase();return k.length===1?k:k[0].toUpperCase()+k.slice(1)});const mods=new Set(["Control","Meta","Alt","Shift"]);const held=ks.filter(k=>mods.has(k));const main=ks.filter(k=>!mods.has(k));for(const k of held)await page.keyboard.down(k);try{for(const k of main)await page.keyboard.press(k);}finally{for(const k of held.reverse())await page.keyboard.up(k);}break;}case "move":await page.mouse.move(a.x,a.y);break;case "scroll":await page.mouse.move(a.x,a.y);await page.mouse.wheel({deltaX:a.scroll_x,deltaY:a.scroll_y});break;case "type":await page.keyboard.type(a.text);break;case "wait":await new Promise(r=>setTimeout(r,500));break;case "screenshot":break;}return {__shot:await page.screenshot({type:"jpeg",quality:80,encoding:"base64"})};})()`;
+	const supported = JSON.stringify(ACTION_TYPES.join(", "));
+	return `(async()=>{const a=${a};switch(a.type){case "navigate":if(typeof a.url!=="string"||!a.url)throw new Error("navigate requires {url}");await tab.goto(a.url,{waitUntil:"domcontentloaded"});break;case "click":await page.mouse.click(a.x,a.y,{button:a.button});break;case "double_click":await page.mouse.click(a.x,a.y,{clickCount:2});break;case "drag":{const p=a.path;if(!p.length)break;await page.mouse.move(p[0].x,p[0].y);await page.mouse.down();for(const q of p.slice(1))await page.mouse.move(q.x,q.y);await page.mouse.up();break;}case "keypress":{const m={ctrl:"Control",control:"Control",cmd:"Meta",command:"Meta",meta:"Meta",super:"Meta",win:"Meta",alt:"Alt",option:"Alt",shift:"Shift",enter:"Enter",return:"Enter",esc:"Escape",escape:"Escape",space:"Space",tab:"Tab",backspace:"Backspace",delete:"Delete",del:"Delete",up:"ArrowUp",down:"ArrowDown",left:"ArrowLeft",right:"ArrowRight",arrowup:"ArrowUp",arrowdown:"ArrowDown",arrowleft:"ArrowLeft",arrowright:"ArrowRight",pageup:"PageUp",pagedown:"PageDown",home:"Home",end:"End"};const ks=a.keys.map(k=>{const l=String(k).toLowerCase();if(m[l])return m[l];if(/^fd{1,2}$/.test(l))return l.toUpperCase();return k.length===1?k:k[0].toUpperCase()+k.slice(1)});const mods=new Set(["Control","Meta","Alt","Shift"]);const held=ks.filter(k=>mods.has(k));const main=ks.filter(k=>!mods.has(k));for(const k of held)await page.keyboard.down(k);try{for(const k of main)await page.keyboard.press(k);}finally{for(const k of held.reverse())await page.keyboard.up(k);}break;}case "move":await page.mouse.move(a.x,a.y);break;case "scroll":await page.mouse.move(a.x,a.y);await page.mouse.wheel({deltaX:a.scroll_x,deltaY:a.scroll_y});break;case "type":await page.keyboard.type(a.text);break;case "wait":await new Promise(r=>setTimeout(r,500));break;case "screenshot":break;default:throw new Error("Unknown action type "+JSON.stringify(a.type)+". Supported: "+${supported}+". To open a page pass top-level {url} or {type:\\"navigate\\",url}.");}return {__shot:await page.screenshot({type:"jpeg",quality:80,encoding:"base64"})};})()`;
 }
 
 export class NativeBrowserComputerTool implements AgentTool<typeof nativeComputerSchema, NativeDetails> {
@@ -70,7 +88,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 	#queue = Promise.resolve();
 	constructor(readonly session: ToolSession) {}
 	get description(): string {
-		return "OpenAI Computer Use browser mode for visual browser interaction, including canvas/WebGL games and graphic UI testing. Use screenshots and coordinate actions when DOM selectors are unavailable. Fixed 1280x720 viewport. The DOM browser tool remains available for text and selector-based work. Call with {url} to open a page and get a screenshot; then send {actions:[...]} using coordinates read from that screenshot.";
+		return browserUseDescription.trim();
 	}
 	async execute(
 		_callId: string,

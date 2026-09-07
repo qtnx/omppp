@@ -22,6 +22,7 @@ describe("native browser computer tool", () => {
 		expect(tool.native).toEqual({ type: "computer" });
 		expect(NATIVE_BROWSER_VIEWPORT).toEqual({ width: 1280, height: 720, deviceScaleFactor: 1 });
 		expect(tool.description).toContain("1280x720");
+		expect(tool.description).toContain("`navigate`");
 	});
 
 	it("accepts native calls with no JSON arguments and rejects unknown fields", () => {
@@ -30,5 +31,17 @@ describe("native browser computer tool", () => {
 
 		expect(validateJsonSchemaValue(schema, {}).success).toBe(true);
 		expect(validateJsonSchemaValue(schema, { unexpected: true }).success).toBe(false);
+	});
+
+	it("accepts navigate actions and rejects action types outside the documented set", () => {
+		const tool = new NativeBrowserComputerTool(makeSession());
+		const schema = toolWireSchema(tool);
+
+		expect(
+			validateJsonSchemaValue(schema, { actions: [{ type: "navigate", url: "http://localhost/app" }] }).success,
+		).toBe(true);
+		expect(
+			validateJsonSchemaValue(schema, { actions: [{ type: "goto", url: "http://localhost/app" }] }).success,
+		).toBe(false);
 	});
 });
