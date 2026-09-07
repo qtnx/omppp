@@ -109,6 +109,12 @@ const SESSION_STICKY_CACHE_PREFIX = "session:sticky:";
  * own cache lifetimes are verified.
  */
 const ANTHROPIC_SESSION_STICKY_CACHE_WARM_MS = 60 * 60_000;
+/**
+ * How long a ChatGPT account that answered `server_is_overloaded` is kept out
+ * of rotation. The throttle is account-scoped and outlives the 60s default
+ * backoff; re-probing sooner just re-pays the ~30s server-side park.
+ */
+const CODEX_ACCOUNT_OVERLOAD_BLOCK_MS = 5 * 60_000;
 
 /**
  * Advisory model-headroom probes stay cache-first and side-effect-light:
@@ -7468,11 +7474,17 @@ export class AuthStorage {
 				options?.modelId,
 				modelPolicyScope,
 			);
+			// A throttled ChatGPT account stays throttled for a while; the 60s
+			// default would re-select it and pay the ~30s park again. Block it
+			// long enough that every session in the pool routes around it.
+			const blockMs = AIError.isCodexAccountOverloadError(error)
+				? CODEX_ACCOUNT_OVERLOAD_BLOCK_MS
+				: AuthStorage.#defaultBackoffMs;
 			return this.#blockCredentialForRotation(
 				provider,
 				sessionCredential.type,
 				sessionCredential.index,
-				Date.now() + AuthStorage.#defaultBackoffMs,
+				Date.now() + blockMs,
 				routing,
 			).switched;
 		}

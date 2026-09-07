@@ -1160,6 +1160,8 @@ function isRetryableUpstreamError(
 	// classify as RATE_LIMIT_EXCEEDED in `parseRateLimitReason` and stay in the
 	// provider's own backoff layer instead of burning siblings.
 	if (AIError.isCodexChatGPTAccountPolicyError(error, model.provider, model.id)) return true;
+	// Per-account ChatGPT throttle: siblings answer normally, so rotate.
+	if (AIError.isCodexAccountOverloadError(error)) return true;
 	if (status === 401 || (status === 403 && !isConcurrencyCapExclusion(status, message))) return true;
 	return isUsageLimitOutcome(status, message, extractRotationRetryAfterMs(error, message));
 }

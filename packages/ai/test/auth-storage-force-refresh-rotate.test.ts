@@ -535,6 +535,37 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 		expect(await authStorage.getApiKey(PROVIDER, "cyber-policy")).not.toBe(first);
 	});
 
+	test("rotateSessionCredential(codex server_is_overloaded) parks the throttled account for minutes and rotates", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		registerProvider();
+		await authStorage.set(PROVIDER, [
+			{ type: "oauth", access: "acc-A", refresh: "ref-A", expires: farExpiry() },
+			{ type: "oauth", access: "acc-B", refresh: "ref-B", expires: farExpiry() },
+		]);
+
+		const sessionId = "codex-overloaded";
+		const first = await authStorage.getApiKey(PROVIDER, sessionId);
+		const usageLimitSpy = vi.spyOn(authStorage, "markUsageLimitReached");
+		const blockedBefore = Date.now();
+		const rotated = await authStorage.rotateSessionCredential(PROVIDER, sessionId, {
+			error: new Error(
+				"Codex error event: Our servers are currently overloaded. Please try again later. (code=server_is_overloaded)",
+			),
+		});
+
+		expect(rotated).toBe(true);
+		// Not a quota outcome: no usage-report probe, no auto-reset redemption.
+		expect(usageLimitSpy).not.toHaveBeenCalled();
+		expect(await authStorage.getApiKey(PROVIDER, sessionId)).not.toBe(first);
+
+		// The throttled account stays parked well past the 60s default backoff so
+		// other sessions in the pool route around it instead of re-paying the park.
+		await authStorage.getApiKey(PROVIDER, "block-sibling");
+		const exhausted = await authStorage.markUsageLimitReached(PROVIDER, "block-sibling", { retryAfterMs: 30_000 });
+		expect(exhausted.switched).toBe(false);
+		expect(exhausted.retryAtMs!).toBeGreaterThanOrEqual(blockedBefore + 5 * 60_000);
+	});
+
 	test("Codex ChatGPT model denial blocks only that model and rotates to a sibling", async () => {
 		if (!store) throw new Error("test setup failed");
 		const codexStorage = new AuthStorage(store, { usageProviderResolver: () => undefined });
