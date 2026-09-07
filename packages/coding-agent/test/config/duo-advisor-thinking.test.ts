@@ -6,8 +6,8 @@ import type { ModelRegistry } from "../../src/config/model-registry";
 import { resolveDuoConfig } from "../../src/config/model-resolver";
 import { Settings } from "../../src/config/settings";
 import { getDefault, type SettingPath } from "../../src/config/settings-schema";
-import { parseConfiguredThinkingLevel } from "../../src/thinking";
 import { advisorDefaultsOffForModel, resolveAdvisorEnabled } from "../../src/session/session-advisors";
+import { parseConfiguredThinkingLevel } from "../../src/thinking";
 
 function model(provider: string, id: string, reasoning = false): Model {
 	return buildModel({
