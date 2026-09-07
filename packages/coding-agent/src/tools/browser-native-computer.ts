@@ -5,6 +5,7 @@ import type { ToolSession } from "../sdk";
 import { resolveBrowserKind } from "./browser";
 import { acquireBrowser } from "./browser/registry";
 import { acquireTab, releaseTab, runInTab, type TabSession } from "./browser/tab-supervisor";
+import { resolveToCwd } from "./path-utils";
 import { ToolAbortError } from "./tool-errors";
 
 // deviceScaleFactor 1 keeps screenshot pixels == viewport CSS pixels so model coordinates map 1:1.
@@ -28,6 +29,9 @@ const nativeComputerSchema = type({
 		.describe(
 			"Ordered screen actions in 1280x720 viewport pixels. click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} or {keys:['Control','a']} (modifiers are held while the other keys are pressed; aliases like CTRL/CMD/ENTER accepted); type: {text}; wait; screenshot. A screenshot is returned after the last action.",
 		),
+	"save?": type("string").describe(
+		"Also write the final screenshot to this file path (relative to cwd) for PR/MR evidence",
+	),
 	"pending_safety_checks?": type("unknown[]").describe("Safety checks requiring explicit approval"),
 	"+": "reject",
 });
@@ -127,10 +131,18 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 						screenshot = `data:image/jpeg;base64,${shot}`;
 					}
 				}
+				let savedPath: string | undefined;
+				if (typeof input.save === "string" && input.save.length > 0 && screenshot) {
+					savedPath = resolveToCwd(input.save, this.session.cwd);
+					await Bun.write(savedPath, Buffer.from(screenshot.slice(screenshot.indexOf(",") + 1), "base64"));
+				}
 				const url = this.#tab.info.url;
 				return {
 					content: [
-						{ type: "text", text: `Browser computer action complete. URL: ${url}` },
+						{
+							type: "text",
+							text: `Browser computer action complete. URL: ${url}${savedPath ? ` (screenshot saved: ${savedPath})` : ""}`,
+						},
 						...(screenshot
 							? [{ type: "image", data: screenshot.split(",", 2)[1], mimeType: screenshotMimeType } as const]
 							: []),
