@@ -102,7 +102,7 @@ export function createContextUnloadTool(
 		loadMode: "essential",
 		label: "Unload context",
 		description:
-			"Unload selected Context GC records from the LLM-facing projection while keeping durable payloads in SQLite. Projection is applied lazily: the placeholder replaces the record once the provider prompt cache is cold (idle > 5 min) or the pending savings reach 30% of the live context, so an unload never pays a full cache rewrite for a small gain.",
+			"Unload selected Context GC records from the LLM-facing projection while keeping durable payloads in SQLite. Projection is applied lazily: the placeholder replaces the record once the provider prompt cache is cold (idle past its TTL, 1h by default) or the pending savings reach 30% of the live context, so an unload never pays a full cache rewrite for a small gain.",
 		parameters: unloadInputSchema,
 		async execute(
 			_toolCallId: string,
