@@ -5397,7 +5397,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Grep & Browser",
 			label: "Browser GPU",
 			description:
-				"Use hardware GPU (Vulkan/ANGLE) for WebGL in the headless browser; disable to force software rendering.",
+				"Use the hardware GPU for WebGL in the headless browser (Vulkan on Linux, Metal on macOS); disable to force software rendering.",
 		},
 	},
 
