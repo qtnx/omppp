@@ -1824,7 +1824,7 @@ describe("ModelRegistry", () => {
 		test("toggles bundled Astra between its default and maximum windows without discovery", async () => {
 			const testSettings = Settings.isolated();
 			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(372_000); // OMPx pins Codex Astra at 372K
 
 			testSettings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
@@ -1833,7 +1833,7 @@ describe("ModelRegistry", () => {
 
 			testSettings.set("extendedContext", false);
 			await registry.reapplyModelPolicies();
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(372_000);
 		});
 
 		test("preserves an explicit Astra context override when extended context is enabled", () => {
@@ -1872,7 +1872,7 @@ describe("ModelRegistry", () => {
 
 			testSettings.set("extendedContext", false);
 			await registry.reapplyModelPolicies();
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(372_000);
 
 			testSettings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
