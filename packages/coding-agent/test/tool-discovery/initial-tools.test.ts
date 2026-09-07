@@ -5,6 +5,7 @@ import type { BuiltinToolLoadMode, ToolLoopManager, ToolSession } from "@oh-my-p
 import {
 	AskTool,
 	BUILTIN_TOOLS,
+	ComputerTool,
 	computeEssentialBuiltinNames,
 	createTools,
 	DEFAULT_ESSENTIAL_TOOL_NAMES,
@@ -72,6 +73,9 @@ async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summa
 		new KanbanTool(toolSession),
 		// `secrets` is conditional on an open vault, so construct it directly.
 		new SecretsTool(toolSession),
+		// `computer` is registered only while `browser.nativeComputer.enabled` is
+		// off (it and `browser_use` are mutually exclusive), so build it directly.
+		new ComputerTool(toolSession),
 	]) {
 		metadata.set(tool.name, { loadMode: tool.loadMode, summary: tool.summary });
 	}
