@@ -66,7 +66,8 @@ jobs:
    # in ci.yml — a mismatched scope warms an archive nobody restores.
    warm_darwin:
       name: "Seed darwin release bazel cache: ${{ matrix.target }}"
-      timeout-minutes: 30
+      # Cold Intel builds take ~40 minutes; leave time to upload the cache.
+      timeout-minutes: 60
       strategy:
          fail-fast: false
          matrix:
