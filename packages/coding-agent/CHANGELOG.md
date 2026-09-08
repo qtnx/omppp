@@ -2,13 +2,7 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Show non-PNG tool images received before terminal image support finishes being detected.
-
-### Changed
-
-- Screenshots are now UI/UX evidence, not load checks: `browser_qa` autoloads the `hallmark`/frontend design skills, judges every screen against them, and returns `ui_findings` (severity, guideline, fix) alongside pass/fail cases; `ui_ux_reviewer` gains `browser_use` and `hallmark` so it can review games/canvas; the main agent's first `browser_use` screenshot carries the review checklist in-band and the system prompt requires a judged verdict (or a reviewer pass) before a rendered change counts as verified.
+## [1.8.1] - 2026-09-08
 
 ### Added
 
@@ -16,26 +10,12 @@
 
 ### Changed
 
+- Screenshots are now UI/UX evidence, not load checks: `browser_qa` autoloads the `hallmark`/frontend design skills, judges every screen against them, and returns `ui_findings` (severity, guideline, fix) alongside pass/fail cases; `ui_ux_reviewer` gains `browser_use` and `hallmark` so it can review games/canvas; the main agent's first `browser_use` screenshot carries the review checklist in-band and the system prompt requires a judged verdict (or a reviewer pass) before a rendered change counts as verified.
 - The default system prompt now renders as two globally cacheable blocks: a settings-stable core (role, router, stance, delegation, harness) and a session block (tool inventory, skills, rules, caveman/ponytail overlays, MCP guidance). Sessions that share the same tools but differ in toggles now read the core block from the org-wide Anthropic cache instead of re-writing the whole prompt (measured: 61K cached / 27K written vs 0 / 91K before).
-
-## [1.8.0] - 2026-09-07
-
-### Added
-
-- `browser_use` accepts a `navigate` action (`{type:"navigate", url}`) and its description now documents every action shape, the `url` field, and the screenshot-driven flow, so models no longer have to guess arguments.
-- Profanity in a typed message now auto-records a 1/5 feedback entry against the last assistant turn and active model (`[1/5 auto]` in `/feedback list`); the idle rating prompt still asks once.
-- `/feedback stats` tallies negative feedback per model across every stored session, so you can see which model draws the most blame.
-- OpenAI GPT model notes now include a minimal-correct-solution flow with calibration heuristics (proportionality, blast radius, rule of three, scoping to the named population), plus rules for tool failures, answering questions before acting, and starting investigations from code/logs instead of asking.
-
-### Changed
-
-- The system prompt now requires the todo list to track reality: items finished implicitly are marked done, overtaken or re-scoped items are dropped or replaced, and the ledger never lags the diff.
-- In git-hosted repositories the system prompt now defines a code change as done only when a PR/MR exists with every CI check green on its current head (plus attached `browser_qa` screenshots for rendered changes); hotfix branching, tagging, and deploying happen only on an explicit user request.
 
 ### Fixed
 
-- Subagent `tok/s` (task/job rows, subagent HUD) now divides output tokens by provider request time instead of the subagent's lifetime wall-clock, so tool execution and setup no longer deflate the figure far below the status line's rate for the same model.
-- `browser_use` no longer silently ignores an unknown action type and reports "action complete" on `about:blank`; it fails the call naming the supported actions and how to open a URL.
+- Show non-PNG tool images received before terminal image support finishes being detected.
 
 ## [18.1.12] - 2026-09-06
 
@@ -1870,5 +1850,24 @@
 - Fixed MiMo models using hashline edit mode by default despite needing the same replace-mode fallback as Kimi. ([#3772](https://github.com/can1357/oh-my-pi/issues/3772))
 - Fixed `omp` refusing to start on Windows when no `bash.exe` is discoverable — most visibly with scoop-installed Git, whose manifest shims `sh.exe`/`git.exe` but never `bash.exe`, so PATH lookup missed it. Startup threw `No bash shell found` while merely building the bash tool description, even though bash tool commands always execute in the embedded brush-core shell and need no host bash. Shell discovery now also checks `GIT_INSTALL_ROOT`, scoop and per-user Git for Windows install roots, and `sh.exe` on PATH, then falls back to `cmd.exe` for the spawn-only paths (interactive PTY, ACP client terminals) instead of failing; the cmd fallback is never used to wrap user-shell commands — brush runs the POSIX line directly.
 - Added a selectable voice setting for `/live` realtime sessions ([#6566](https://github.com/can1357/oh-my-pi/issues/6566)).
+
+## [1.8.0] - 2026-09-07
+
+### Added
+
+- `browser_use` accepts a `navigate` action (`{type:"navigate", url}`) and its description now documents every action shape, the `url` field, and the screenshot-driven flow, so models no longer have to guess arguments.
+- Profanity in a typed message now auto-records a 1/5 feedback entry against the last assistant turn and active model (`[1/5 auto]` in `/feedback list`); the idle rating prompt still asks once.
+- `/feedback stats` tallies negative feedback per model across every stored session, so you can see which model draws the most blame.
+- OpenAI GPT model notes now include a minimal-correct-solution flow with calibration heuristics (proportionality, blast radius, rule of three, scoping to the named population), plus rules for tool failures, answering questions before acting, and starting investigations from code/logs instead of asking.
+
+### Changed
+
+- The system prompt now requires the todo list to track reality: items finished implicitly are marked done, overtaken or re-scoped items are dropped or replaced, and the ledger never lags the diff.
+- In git-hosted repositories the system prompt now defines a code change as done only when a PR/MR exists with every CI check green on its current head (plus attached `browser_qa` screenshots for rendered changes); hotfix branching, tagging, and deploying happen only on an explicit user request.
+
+### Fixed
+
+- Subagent `tok/s` (task/job rows, subagent HUD) now divides output tokens by provider request time instead of the subagent's lifetime wall-clock, so tool execution and setup no longer deflate the figure far below the status line's rate for the same model.
+- `browser_use` no longer silently ignores an unknown action type and reports "action complete" on `about:blank`; it fails the call naming the supported actions and how to open a URL.
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@4f7fe1c42826](https://github.com/can1357/oh-my-pi/blob/4f7fe1c428269b10efb4839a29dd44d25a644ad7/packages/coding-agent/CHANGELOG.md).

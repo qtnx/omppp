@@ -2,17 +2,6 @@
 
 ## [Unreleased]
 
-## [1.8.0] - 2026-09-07
-
-### Changed
-
-- Bumped the pinned Codex client version to 0.153.0 so version-gated OpenAI Codex models (e.g. `gpt-6-astra`) appear in discovery and accept requests.
-
-### Fixed
-
-- Fixed Codex model refresh silently keeping a stale catalog when one stored ChatGPT account's token had been revoked; the rejected account is now skipped and remaining accounts are unioned.
-- Fixed GPT-6 Astra showing as free with a 272K-token window in the OpenAI Codex catalog by applying its documented pricing and 1.05M-token context window ([#10852](https://github.com/can1357/oh-my-pi/pull/10852)).
-
 ## [18.1.12] - 2026-09-06
 
 ### Added
@@ -1474,6 +1463,17 @@
 ### Removed
 
 - Removed the runtime enrichment layer: `enrichModelThinking` (and its non-enumerable memo-slot cache), `refreshModelThinking`, `modelOmitsReasoningEffort`, and the `model-thinking` re-exports of generator-only policies. Thinking metadata is resolved exactly once inside `buildModel`; runtime helpers (`getSupportedEfforts`, `clampThinkingLevelForModel`, `requireSupportedEffort`, the effort mappers) are pure field reads.
+
+## [1.8.0] - 2026-09-07
+
+### Changed
+
+- Bumped the pinned Codex client version to 0.153.0 so version-gated OpenAI Codex models (e.g. `gpt-6-astra`) appear in discovery and accept requests.
+
+### Fixed
+
+- Fixed Codex model refresh silently keeping a stale catalog when one stored ChatGPT account's token had been revoked; the rejected account is now skipped and remaining accounts are unioned.
+- Fixed GPT-6 Astra showing as free with a 272K-token window in the OpenAI Codex catalog by applying its documented pricing and 1.05M-token context window ([#10852](https://github.com/can1357/oh-my-pi/pull/10852)).
 
 ## [1.7.14] - 2026-09-06
 

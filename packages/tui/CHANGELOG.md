@@ -2,15 +2,11 @@
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-09-08
+
 ### Fixed
 
 - Automatically detect inline image support in Herdr panes with Kitty graphics enabled, without requiring an environment override.
-
-## [1.8.0] - 2026-09-07
-
-### Fixed
-
-- Fixed notifications never arriving in a Herdr pane. Herdr multiplexes panes like tmux but swallows bare OSC 9 / OSC 99 and has no passthrough envelope, so a backgrounded pane got no signal at all; delivery now goes through `herdr notification show` (a waiting question or an error rings `request`, a settled turn rings `done`), and the in-band write stays as the fallback when the pane id or the `herdr` binary is missing.
 
 ## [18.1.12] - 2026-09-06
 
@@ -2244,6 +2240,12 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.8.0] - 2026-09-07
+
+### Fixed
+
+- Fixed notifications never arriving in a Herdr pane. Herdr multiplexes panes like tmux but swallows bare OSC 9 / OSC 99 and has no passthrough envelope, so a backgrounded pane got no signal at all; delivery now goes through `herdr notification show` (a waiting question or an error rings `request`, a settled turn rings `done`), and the in-band write stays as the fallback when the pane id or the `herdr` binary is missing.
 
 ## [1.6.4] - 2026-07-19
 
