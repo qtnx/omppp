@@ -2,6 +2,7 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ComputerAction, ToolExample } from "@oh-my-pi/pi-ai";
 import browserUseDescription from "../prompts/tools/browser-use.md" with { type: "text" };
+import screenshotReviewNotice from "../prompts/tools/browser-use-screenshot-notice.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { resolveBrowserKind } from "./browser";
 import { acquireBrowser } from "./browser/registry";
@@ -85,6 +86,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 	readonly parameters = nativeComputerSchema;
 	readonly examples: readonly ToolExample<NativeComputerInput>[] = [];
 	#tab?: TabSession;
+	#reviewNoticeShown = false;
 	#queue = Promise.resolve();
 	constructor(readonly session: ToolSession) {}
 	get description(): string {
@@ -159,11 +161,15 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 					}
 				}
 				const url = this.#tab.info.url;
+				// The first screenshot of a session carries the UI/UX review checklist in-band:
+				// a system-prompt rule alone was ignored, a notice next to the image is not.
+				const reviewNotice = screenshot && !this.#reviewNoticeShown ? `\n\n${screenshotReviewNotice.trim()}` : "";
+				if (reviewNotice) this.#reviewNoticeShown = true;
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Browser computer action complete. URL: ${url}${savedPaths.length ? `\nSaved screenshots:\n${savedPaths.map(p => `- ${p}`).join("\n")}` : ""}`,
+							text: `Browser computer action complete. URL: ${url}${savedPaths.length ? `\nSaved screenshots:\n${savedPaths.map(p => `- ${p}`).join("\n")}` : ""}${reviewNotice}`,
 						},
 						...(screenshot
 							? [{ type: "image", data: screenshot.split(",", 2)[1], mimeType: screenshotMimeType } as const]
