@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-09-08
+
+### Fixed
+
+- Aligned package versions and native compatibility checks with the OMPx 1.8.2 release.
+
 ## [18.1.12] - 2026-09-06
 
 - Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.
