@@ -2,21 +2,6 @@
 
 ## [Unreleased]
 
-## [1.8.1] - 2026-09-08
-
-### Added
-
-- `providers.subagentCacheRetention` (default `short`): subagent and advisor sessions request 5-minute prompt-cache entries instead of the 1h entries the main session uses on Anthropic OAuth. Helper sessions run in rapid bursts without long idles (0 gaps over 5 minutes across 468 measured subagent requests), so the 1h write premium bought nothing.
-
-### Changed
-
-- Screenshots are now UI/UX evidence, not load checks: `browser_qa` autoloads the `hallmark`/frontend design skills, judges every screen against them, and returns `ui_findings` (severity, guideline, fix) alongside pass/fail cases; `ui_ux_reviewer` gains `browser_use` and `hallmark` so it can review games/canvas; the main agent's first `browser_use` screenshot carries the review checklist in-band and the system prompt requires a judged verdict (or a reviewer pass) before a rendered change counts as verified.
-- The default system prompt now renders as two globally cacheable blocks: a settings-stable core (role, router, stance, delegation, harness) and a session block (tool inventory, skills, rules, caveman/ponytail overlays, MCP guidance). Sessions that share the same tools but differ in toggles now read the core block from the org-wide Anthropic cache instead of re-writing the whole prompt (measured: 61K cached / 27K written vs 0 / 91K before).
-
-### Fixed
-
-- Show non-PNG tool images received before terminal image support finishes being detected.
-
 ## [18.1.12] - 2026-09-06
 
 - Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.
@@ -1850,6 +1835,21 @@
 - Fixed MiMo models using hashline edit mode by default despite needing the same replace-mode fallback as Kimi. ([#3772](https://github.com/can1357/oh-my-pi/issues/3772))
 - Fixed `omp` refusing to start on Windows when no `bash.exe` is discoverable — most visibly with scoop-installed Git, whose manifest shims `sh.exe`/`git.exe` but never `bash.exe`, so PATH lookup missed it. Startup threw `No bash shell found` while merely building the bash tool description, even though bash tool commands always execute in the embedded brush-core shell and need no host bash. Shell discovery now also checks `GIT_INSTALL_ROOT`, scoop and per-user Git for Windows install roots, and `sh.exe` on PATH, then falls back to `cmd.exe` for the spawn-only paths (interactive PTY, ACP client terminals) instead of failing; the cmd fallback is never used to wrap user-shell commands — brush runs the POSIX line directly.
 - Added a selectable voice setting for `/live` realtime sessions ([#6566](https://github.com/can1357/oh-my-pi/issues/6566)).
+
+## [1.8.1] - 2026-09-08
+
+### Added
+
+- `providers.subagentCacheRetention` (default `short`): subagent and advisor sessions request 5-minute prompt-cache entries instead of the 1h entries the main session uses on Anthropic OAuth. Helper sessions run in rapid bursts without long idles (0 gaps over 5 minutes across 468 measured subagent requests), so the 1h write premium bought nothing.
+
+### Changed
+
+- Screenshots are now UI/UX evidence, not load checks: `browser_qa` autoloads the `hallmark`/frontend design skills, judges every screen against them, and returns `ui_findings` (severity, guideline, fix) alongside pass/fail cases; `ui_ux_reviewer` gains `browser_use` and `hallmark` so it can review games/canvas; the main agent's first `browser_use` screenshot carries the review checklist in-band and the system prompt requires a judged verdict (or a reviewer pass) before a rendered change counts as verified.
+- The default system prompt now renders as two globally cacheable blocks: a settings-stable core (role, router, stance, delegation, harness) and a session block (tool inventory, skills, rules, caveman/ponytail overlays, MCP guidance). Sessions that share the same tools but differ in toggles now read the core block from the org-wide Anthropic cache instead of re-writing the whole prompt (measured: 61K cached / 27K written vs 0 / 91K before).
+
+### Fixed
+
+- Show non-PNG tool images received before terminal image support finishes being detected.
 
 ## [1.8.0] - 2026-09-07
 

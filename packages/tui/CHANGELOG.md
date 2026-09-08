@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.8.1] - 2026-09-08
-
-### Fixed
-
-- Automatically detect inline image support in Herdr panes with Kitty graphics enabled, without requiring an environment override.
-
 ## [18.1.12] - 2026-09-06
 
 ### Fixed
@@ -2240,6 +2234,12 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.8.1] - 2026-09-08
+
+### Fixed
+
+- Automatically detect inline image support in Herdr panes with Kitty graphics enabled, without requiring an environment override.
 
 ## [1.8.0] - 2026-09-07
 
