@@ -125,8 +125,9 @@ describe("bundled task agents", () => {
 
 		const uiUxReviewer = getBundledAgent("ui_ux_reviewer");
 		expect(uiUxReviewer?.name).toBe("ui_ux_reviewer");
-		expect(uiUxReviewer?.tools).toEqual(["browser", "read", "grep", "glob", "irc", "yield"]);
-		expect(uiUxReviewer?.autoloadSkills).toEqual(FRONTEND_SKILLS);
+		// Games/canvas need screenshots, and the taste bar comes from hallmark.
+		expect(uiUxReviewer?.tools).toEqual(["browser_use", "browser", "read", "grep", "glob", "irc", "yield"]);
+		expect(uiUxReviewer?.autoloadSkills).toEqual(["hallmark", ...FRONTEND_SKILLS]);
 		expect(uiUxReviewer?.model).toEqual(FRONTEND_AGENT_MODELS);
 		expect(uiUxReviewer?.description).toMatch(/(UI|UX|design)[\s\S]{0,80}review/i);
 		expect(uiUxReviewer?.systemPrompt).toMatch(/UI\/UX review specialist/i);
@@ -185,6 +186,9 @@ describe("bundled task agents", () => {
 		expect(browserQa?.tools).not.toContain("write");
 		expect(browserQa?.model).toEqual(["openai-codex/gpt-6-astra:medium", "pi/task"]);
 		expect(browserQa?.thinkingLevel).toBe(Effort.Medium);
+		// Screenshots are judged against the design guideline, not only functional expectations.
+		expect(browserQa?.autoloadSkills).toEqual(["hallmark", ...FRONTEND_SKILLS]);
+		expect(browserQa?.systemPrompt).toMatch(/<visual-review>[\s\S]*ui_findings/);
 		expect(browserQa?.output).toEqual({
 			properties: {
 				summary: { type: "string" },
@@ -196,6 +200,18 @@ describe("bundled task agents", () => {
 							expected: { type: "string" },
 							observed: { type: "string" },
 							evidence: { type: "string" },
+						},
+					},
+				},
+				ui_findings: {
+					elements: {
+						properties: {
+							severity: { enum: ["blocker", "major", "minor", "nit"] },
+							screen: { type: "string" },
+							issue: { type: "string" },
+							guideline: { type: "string" },
+							evidence: { type: "string" },
+							fix: { type: "string" },
 						},
 					},
 				},
