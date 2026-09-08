@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex transient stream failures now use exponential backoff with jitter, while account overloads retain credential rotation and whole-turn retry.
+
 ## [18.1.12] - 2026-09-06
 
 ### Added

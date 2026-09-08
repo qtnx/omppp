@@ -2838,6 +2838,55 @@ describe.serial("openai-codex streaming", () => {
 		expect(result.content.find(block => block.type === "text")?.text).toBe("Recovered after watchdog timeout");
 	});
 
+	it("backs off exponentially on Codex server errors and recovers without exposing failed attempts", async () => {
+		const waits = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		vi.spyOn(Math, "random").mockReturnValue(0);
+		let requests = 0;
+		const fetchMock: FetchImpl = async () => {
+			requests++;
+			const body =
+				requests <= 3
+					? `data: ${JSON.stringify({ type: "error", code: "server_error" })}\n\n`
+					: createStatefulCodexSse("Recovered", "resp_server_recovered");
+			return new Response(body, { headers: { "content-type": "text/event-stream" } });
+		};
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+		const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			apiKey: createCodexTestToken(),
+			fetch: fetchMock,
+		}).result();
+		expect(requests).toBe(4);
+		expect(waits.mock.calls.map(call => call[0])).toEqual([375, 750, 1500]);
+		expect(result.stopReason).toBe("stop");
+		expect(result.content.find(block => block.type === "text")?.text).toBe("Recovered");
+	});
+
+	it("bounds Codex server error retries and surfaces the final provider error", async () => {
+		const waits = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		vi.spyOn(Math, "random").mockReturnValue(0);
+		let requests = 0;
+		const fetchMock: FetchImpl = async () => {
+			requests++;
+			return new Response(
+				`data: ${JSON.stringify({
+					type: "error",
+					code: "server_error",
+					message: "Our servers are currently overloaded. Please try again later.",
+				})}\n\n`,
+				{ headers: { "content-type": "text/event-stream" } },
+			);
+		};
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+		const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			apiKey: createCodexTestToken(),
+			fetch: fetchMock,
+		}).result();
+		expect(requests).toBe(6);
+		expect(waits.mock.calls.map(call => call[0])).toEqual([375, 750, 1500, 3000, 6000]);
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("server_error");
+	});
+
 	it("bounds Codex SSE socket-close attempts and preserves the default when omitted", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
 		setAgentDir(tempDir.path());
