@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Show non-PNG tool images received before terminal image support finishes being detected.
+
 ### Changed
 
 - Screenshots are now UI/UX evidence, not load checks: `browser_qa` autoloads the `hallmark`/frontend design skills, judges every screen against them, and returns `ui_findings` (severity, guideline, fix) alongside pass/fail cases; `ui_ux_reviewer` gains `browser_use` and `hallmark` so it can review games/canvas; the main agent's first `browser_use` screenshot carries the review checklist in-band and the system prompt requires a judged verdict (or a reviewer pass) before a rendered change counts as verified.

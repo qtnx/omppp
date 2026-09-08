@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, jest } from "bun:test";
 import { ImageProtocol, setTerminalImageProtocol, TERMINAL, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -16,6 +16,10 @@ const originalWtSession = Bun.env.WT_SESSION;
 const originalWslDistro = Bun.env.WSL_DISTRO_NAME;
 const originalWslInterop = Bun.env.WSL_INTEROP;
 const originalForcedProtocol = Bun.env.PI_FORCE_IMAGE_PROTOCOL;
+const originalHerdrEnv = Bun.env.HERDR_ENV;
+const originalHerdrPane = Bun.env.HERDR_PANE_ID;
+const originalHerdrTab = Bun.env.HERDR_TAB_ID;
+const originalHerdrWorkspace = Bun.env.HERDR_WORKSPACE_ID;
 const stdinIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 
@@ -35,7 +39,12 @@ function restoreEnv(name: string, value: string | undefined): void {
 	else Bun.env[name] = value;
 }
 
-function startProbe(terminal: VirtualTerminal): TUI {
+function startProbe(terminal: VirtualTerminal, herdr = false): TUI {
+	delete Bun.env.HERDR_ENV;
+	delete Bun.env.HERDR_PANE_ID;
+	delete Bun.env.HERDR_TAB_ID;
+	delete Bun.env.HERDR_WORKSPACE_ID;
+	if (herdr) Bun.env.HERDR_ENV = "1";
 	setTerminalImageProtocol(null);
 	terminalInfo.imageProtocol = null;
 	Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
@@ -45,8 +54,13 @@ function startProbe(terminal: VirtualTerminal): TUI {
 	return tui;
 }
 
-describe("TUI SIXEL capability probe", () => {
+describe("TUI image capability probe", () => {
 	afterEach(() => {
+		jest.useRealTimers();
+		restoreEnv("HERDR_ENV", originalHerdrEnv);
+		restoreEnv("HERDR_PANE_ID", originalHerdrPane);
+		restoreEnv("HERDR_TAB_ID", originalHerdrTab);
+		restoreEnv("HERDR_WORKSPACE_ID", originalHerdrWorkspace);
 		setTerminalImageProtocol(originalProtocol);
 		terminalInfo.imageProtocol = originalProtocol;
 		restoreEnv("WT_SESSION", originalWtSession);
@@ -158,5 +172,81 @@ describe("TUI SIXEL capability probe", () => {
 
 		expect(TERMINAL.imageProtocol).toBeNull();
 		tui.stop();
+	});
+
+	it("enables Kitty in Herdr only after a matching successful reply", () => {
+		const terminal = new VirtualTerminal(80, 24);
+		const tui = startProbe(terminal, true);
+		try {
+			expect(TERMINAL.imageProtocol).toBeNull();
+			terminal.sendInput("\x1b_Gi=123;OK\x1b\\");
+			expect(TERMINAL.imageProtocol).toBeNull();
+			terminal.sendInput("\x1b_Gi=314159;OK\x1b\\");
+			expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Kitty);
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("reassembles Kitty replies and preserves adjacent input and Escape", () => {
+		const terminal = new VirtualTerminal(80, 24);
+		const tui = startProbe(terminal, true);
+		const input: string[] = [];
+		tui.addInputListener(data => {
+			input.push(data);
+		});
+		try {
+			terminal.sendInput("before\x1b_Gi=314159;O");
+			expect(TERMINAL.imageProtocol).toBeNull();
+			terminal.sendInput("K\x1b");
+			terminal.sendInput("\\after");
+			terminal.sendInput("\x1b");
+			expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Kitty);
+			expect(input.join("")).toBe("beforeafter\x1b");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps images off when Herdr rejects the graphics query", () => {
+		const terminal = new VirtualTerminal(80, 24);
+		const tui = startProbe(terminal, true);
+		try {
+			terminal.sendInput("\x1b_Gi=314159;ENOTSUP:not supported\x1b\\");
+			expect(TERMINAL.imageProtocol).toBeNull();
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("times out without enabling images and consumes late SSH replies", () => {
+		jest.useFakeTimers();
+		const terminal = new VirtualTerminal(80, 24);
+		const tui = startProbe(terminal, true);
+		const input: string[] = [];
+		tui.addInputListener(data => {
+			input.push(data);
+		});
+		try {
+			jest.advanceTimersByTime(1001);
+			expect(TERMINAL.imageProtocol).toBeNull();
+			terminal.sendInput("\x1b_Gi=314159;OK\x1b\\hello");
+			expect(TERMINAL.imageProtocol).toBeNull();
+			expect(input.join("")).toBe("hello");
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("does not override an explicit off setting in Herdr", () => {
+		Bun.env.PI_FORCE_IMAGE_PROTOCOL = "off";
+		const terminal = new VirtualTerminal(80, 24);
+		const tui = startProbe(terminal, true);
+		try {
+			terminal.sendInput("\x1b_Gi=314159;OK\x1b\\");
+			expect(TERMINAL.imageProtocol).toBeNull();
+		} finally {
+			tui.stop();
+		}
 	});
 });

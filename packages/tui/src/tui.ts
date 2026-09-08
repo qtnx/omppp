@@ -787,10 +787,11 @@ export class TUI extends Container {
 	static readonly #GHOSTTY_INITIAL_IMAGE_DELAY_MS = 100;
 	#hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
 	#hardwareCursorState: HardwareCursorState | null = null;
-	#sixelProbePendingGraphics = false;
-	#sixelProbeBuffer = "";
-	#sixelProbeTimeout?: NodeJS.Timeout;
-	#sixelProbeUnsubscribe?: () => void;
+	#imageProbePending = false;
+	#imageProbeProtocol = ImageProtocol.Sixel;
+	#imageProbeBuffer = "";
+	#imageProbeTimeout?: NodeJS.Timeout;
+	#imageProbeUnsubscribe?: () => void;
 	#showHardwareCursor = $flag("PI_HARDWARE_CURSOR");
 	#synchronizedOutputEnabled = shouldEnableSynchronizedOutputByDefault();
 	#paintBeginSequence = this.#synchronizedOutputEnabled ? PAINT_BEGIN : PAINT_BEGIN_NO_SYNC;
@@ -1162,7 +1163,7 @@ export class TUI extends Container {
 		this.terminal.hideCursor();
 		this.#recordHardwareCursorHidden();
 		if (!this.#inputDeferred) {
-			this.#querySixelSupport();
+			this.#queryImageSupport();
 			this.#queryCellSize();
 		}
 		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
@@ -1470,7 +1471,7 @@ export class TUI extends Container {
 		if (!this.#inputDeferred || this.#stopped) return;
 		this.#inputDeferred = false;
 		this.terminal.enableInput?.();
-		this.#querySixelSupport();
+		this.#queryImageSupport();
 		this.#queryCellSize();
 	}
 
@@ -1492,111 +1493,84 @@ export class TUI extends Container {
 		this.#inputListeners.delete(listener);
 	}
 
-	#querySixelSupport(): void {
-		// A statically known protocol (Kitty/iTerm2 terminals) or an explicit
-		// PI_FORCE_IMAGE_PROTOCOL choice — including its `off` kill switch — wins
-		// over the probe.
-		if (TERMINAL.imageProtocol) return;
-		if (isImageProtocolForced()) return;
+	#queryImageSupport(): void {
+		if (TERMINAL.imageProtocol || isImageProtocolForced()) return;
 		if (!process.stdin.isTTY || !process.stdout.isTTY) return;
 
-		this.#clearSixelProbeState();
-		this.#sixelProbePendingGraphics = true;
-		this.#sixelProbeUnsubscribe = this.addInputListener(data => this.#handleSixelProbeInput(data));
-		// XTSMGRAPHICS item 2 reports the terminal's maximum SIXEL geometry. DA1
-		// attribute 4 advertises SIXEL as well, but ProcessTerminal swallows every
-		// `CSI ? … c` reply for the whole session so a late one cannot leak into the
-		// composer (#8542): those bytes never reach an input listener, so this probe
-		// cannot read them.
-		this.terminal.write("\x1b[?2;1;0S");
-		this.#sixelProbeTimeout = setTimeout(() => {
-			this.#finishSixelProbe(false);
-		}, 250);
+		this.#clearImageProbeState();
+		this.#imageProbeProtocol = isInsideHerdr() ? ImageProtocol.Kitty : ImageProtocol.Sixel;
+		this.#imageProbePending = true;
+		this.#imageProbeUnsubscribe = this.addInputListener(data => this.#handleImageProbeInput(data));
+		// Herdr enables its pane's Kitty decoder only when graphics are opted in.
+		// Query it instead of trusting the outer terminal's inherited identity.
+		// This confirms the pane decoder, not a remote client's physical display.
+		const kitty = this.#imageProbeProtocol === ImageProtocol.Kitty;
+		this.#imageProbeTimeout = setTimeout(
+			() => {
+				this.#imageProbePending = false;
+				this.#imageProbeTimeout = undefined;
+				// Keep consuming late replies so SSH latency cannot type them into the editor.
+			},
+			kitty ? 1000 : 250,
+		);
+		this.terminal.write(kitty ? "\x1b_Ga=q,i=314159,f=24,t=d,s=1,v=1;AAAA\x1b\\" : "\x1b[?2;1;0S");
 	}
 
-	#handleSixelProbeInput(data: string): InputListenerResult {
-		if (!this.#sixelProbePendingGraphics) {
-			return undefined;
-		}
-
-		this.#sixelProbeBuffer += data;
+	#handleImageProbeInput(data: string): InputListenerResult {
+		this.#imageProbeBuffer += data;
 		let passthrough = "";
-		let probeOutcome: boolean | null = null;
-
-		while (this.#sixelProbeBuffer.length > 0) {
-			const graphicsMatch = this.#sixelProbeBuffer.match(/\x1b\[\?2;(\d+);([0-9;]+)S/u);
-			if (!graphicsMatch || graphicsMatch.index === undefined) break;
-
-			passthrough += this.#sixelProbeBuffer.slice(0, graphicsMatch.index);
-			this.#sixelProbeBuffer = this.#sixelProbeBuffer.slice(graphicsMatch.index + graphicsMatch[0].length);
-
-			if (this.#sixelProbePendingGraphics) {
-				this.#sixelProbePendingGraphics = false;
-				// Reply shape `CSI ? 2 ; Ps ; Pv S`: per xterm ctlseqs Ps is the status
-				// (0 = success, 1..3 = error/failure) and Pv the maximum SIXEL geometry,
-				// which a terminal without SIXEL reports as zero.
-				const status = Number.parseInt(graphicsMatch[1] ?? "", 10);
-				const hasGeometry = (graphicsMatch[2] ?? "").split(";").some(part => Number.parseInt(part, 10) > 0);
-				probeOutcome = status === 0 && hasGeometry;
+		const kitty = this.#imageProbeProtocol === ImageProtocol.Kitty;
+		const reply = kitty ? /\x1b_Gi=314159;([^\x1b]*)\x1b\\/u : /\x1b\[\?2;(\d+);([0-9;]+)S/u;
+		while (this.#imageProbeBuffer.length > 0) {
+			const match = this.#imageProbeBuffer.match(reply);
+			if (!match || match.index === undefined) break;
+			passthrough += this.#imageProbeBuffer.slice(0, match.index);
+			this.#imageProbeBuffer = this.#imageProbeBuffer.slice(match.index + match[0].length);
+			if (this.#imageProbePending) {
+				this.#imageProbePending = false;
+				clearTimeout(this.#imageProbeTimeout);
+				this.#imageProbeTimeout = undefined;
+				const supported = kitty
+					? match[1] === "OK"
+					: match[1] === "0" && (match[2] ?? "").split(";").some(part => Number.parseInt(part, 10) > 0);
+				if (supported && !TERMINAL.imageProtocol && !isImageProtocolForced()) {
+					setTerminalImageProtocol(this.#imageProbeProtocol);
+					this.#queryCellSize();
+					this.invalidate();
+					this.requestRender(true);
+				}
 			}
 		}
 
-		if (this.#sixelProbePendingGraphics) {
-			const partialStart = this.#getSixelProbePartialStart(this.#sixelProbeBuffer);
-			if (partialStart >= 0) {
-				passthrough += this.#sixelProbeBuffer.slice(0, partialStart);
-				this.#sixelProbeBuffer = this.#sixelProbeBuffer.slice(partialStart);
-			} else {
-				passthrough += this.#sixelProbeBuffer;
-				this.#sixelProbeBuffer = "";
-			}
+		// Preserve fragmented replies, including a split ST, without holding user input.
+		const prefix = kitty ? "\x1b_Gi=314159;" : "\x1b[?";
+		let partialStart = this.#imageProbeBuffer.lastIndexOf("\x1b");
+		if (kitty && this.#imageProbeBuffer.endsWith("\x1b")) {
+			const start = this.#imageProbeBuffer.lastIndexOf(prefix);
+			if (start >= 0) partialStart = start;
+		}
+		const tail = this.#imageProbeBuffer.slice(Math.max(0, partialStart));
+		const partial =
+			partialStart >= 0 &&
+			((tail.length >= 3 && prefix.startsWith(tail)) ||
+				(kitty ? /^\x1b_Gi=314159;[^\x1b]*\x1b?$/u.test(tail) : /^\x1b\[\?[0-9;]*$/u.test(tail)));
+		if (partial && tail.length <= 4096) {
+			passthrough += this.#imageProbeBuffer.slice(0, partialStart);
+			this.#imageProbeBuffer = tail;
 		} else {
-			passthrough += this.#sixelProbeBuffer;
-			this.#sixelProbeBuffer = "";
+			passthrough += this.#imageProbeBuffer;
+			this.#imageProbeBuffer = "";
 		}
-
-		if (probeOutcome !== null) {
-			this.#finishSixelProbe(probeOutcome);
-		}
-
-		if (passthrough.length === 0) {
-			return { consume: true };
-		}
-
-		return { data: passthrough };
+		return passthrough.length === 0 ? { consume: true } : { data: passthrough };
 	}
 
-	#getSixelProbePartialStart(buffer: string): number {
-		const lastEsc = buffer.lastIndexOf("\x1b");
-		if (lastEsc < 0) return -1;
-		const tail = buffer.slice(lastEsc);
-		if (/^\x1b\[\?[0-9;]*$/u.test(tail)) {
-			return lastEsc;
-		}
-		return -1;
-	}
-
-	#clearSixelProbeState(): void {
-		if (this.#sixelProbeTimeout) {
-			clearTimeout(this.#sixelProbeTimeout);
-			this.#sixelProbeTimeout = undefined;
-		}
-		if (this.#sixelProbeUnsubscribe) {
-			this.#sixelProbeUnsubscribe();
-			this.#sixelProbeUnsubscribe = undefined;
-		}
-		this.#sixelProbePendingGraphics = false;
-		this.#sixelProbeBuffer = "";
-	}
-
-	#finishSixelProbe(supported: boolean): void {
-		this.#clearSixelProbeState();
-		if (!supported || TERMINAL.imageProtocol) return;
-
-		setTerminalImageProtocol(ImageProtocol.Sixel);
-		this.#queryCellSize();
-		this.invalidate();
-		this.requestRender(true);
+	#clearImageProbeState(): void {
+		clearTimeout(this.#imageProbeTimeout);
+		this.#imageProbeTimeout = undefined;
+		this.#imageProbeUnsubscribe?.();
+		this.#imageProbeUnsubscribe = undefined;
+		this.#imageProbePending = false;
+		this.#imageProbeBuffer = "";
 	}
 	#queryCellSize(): void {
 		// Only query if terminal supports images (cell size is only used for image rendering)
@@ -1678,7 +1652,7 @@ export class TUI extends Container {
 		// image data lives, so a delete-by-id here blanks every transcript image
 		// the instant the session exits. The terminal enforces its own store quota
 		// (and live-session ghosts are already bounded by the inline-image budget).
-		this.#clearSixelProbeState();
+		this.#clearImageProbeState();
 		this.#stopped = true;
 		this.#watchdog.stop();
 		if (this.#renderTimer) {
