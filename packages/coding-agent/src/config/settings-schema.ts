@@ -6925,6 +6925,25 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"providers.subagentCacheRetention": {
+		type: "enum",
+		values: ["auto", "short", "long", "none"] as const,
+		default: "short",
+		ui: {
+			tab: "providers",
+			group: "Protocol",
+			label: "Subagent Prompt Cache Retention",
+			description:
+				"Prompt-cache retention for subagent and advisor sessions. Short-lived helpers rarely idle past 5 minutes, so 5m entries save the 1h write premium",
+			options: [
+				{ value: "auto", label: "Auto", description: "Same as Prompt Cache Retention" },
+				{ value: "short", label: "Short (5m)", description: "5m entries: half the cache-write price of 1h" },
+				{ value: "long", label: "Long (1h)", description: "1h TTL where the provider supports it" },
+				{ value: "none", label: "Off", description: "Disable prompt caching for subagents" },
+			],
+		},
+	},
+
 	"providers.streamFirstEventTimeoutSeconds": {
 		type: "number",
 		default: -1,

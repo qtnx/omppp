@@ -28,7 +28,16 @@ function timeoutSecondsToMs(value: number): number | undefined {
  *
  * Caller-supplied `streamOptions` always win — the helper only fills holes.
  */
-export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn = streamSimple): StreamFn {
+export interface SettingsAwareStreamFnOptions {
+	/** Subagent/advisor sessions take `providers.subagentCacheRetention` unless it is "auto". */
+	subagent?: boolean;
+}
+
+export function createSettingsAwareStreamFn(
+	settings: Settings,
+	base: StreamFn = streamSimple,
+	options: SettingsAwareStreamFnOptions = {},
+): StreamFn {
 	return (model, context, streamOptions) => {
 		const openrouterRoutingPreset = settings.get("providers.openrouterVariant");
 		const openrouterVariant =
@@ -51,9 +60,10 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			streamOptions?.thinkingDisplay !== undefined || streamOptions?.hideThinkingSummary !== undefined;
 		// "auto" leaves the option unset so provider defaults and the
 		// PI_CACHE_RETENTION env override keep working; anything else is an
-		// explicit per-request retention (long requests 1h where supported and
-		// implicitly disables the short-entry keep-alive refresh loop).
-		const cacheRetentionSetting = settings.get("providers.cacheRetention");
+		// explicit per-request retention (long requests 1h where supported).
+		const subagentRetention = options.subagent ? settings.get("providers.subagentCacheRetention") : "auto";
+		const cacheRetentionSetting =
+			subagentRetention === "auto" ? settings.get("providers.cacheRetention") : subagentRetention;
 		const cacheRetention = cacheRetentionSetting === "auto" ? undefined : cacheRetentionSetting;
 		const streamFirstEventTimeoutMs = timeoutSecondsToMs(settings.get("providers.streamFirstEventTimeoutSeconds"));
 		const streamIdleTimeoutMs = timeoutSecondsToMs(settings.get("providers.streamIdleTimeoutSeconds"));
