@@ -80,4 +80,25 @@ describe("Tool image rendering", () => {
 
 		expect(component.render(80).join("\n")).toContain("\x1b_G");
 	});
+
+	it("renders a non-PNG result received before the Kitty capability reply", async () => {
+		vi.restoreAllMocks();
+		setTerminalImageProtocol(null);
+		const rendered = Promise.withResolvers<void>();
+		const component = new ToolExecutionComponent("read", { path: "repro.jpg" }, { showImages: true }, undefined, {
+			requestRender: () => rendered.resolve(),
+			requestComponentRender: vi.fn(),
+			resetDisplay: vi.fn(),
+		});
+		try {
+			component.updateResult({ content: [IMAGE] }, false);
+			expect(component.render(80).join("\n")).not.toContain("\x1b_G");
+			setTerminalImageProtocol(ImageProtocol.Kitty);
+			component.invalidate();
+			await rendered.promise;
+			expect(component.render(80).join("\n")).toContain("\x1b_G");
+		} finally {
+			component.dispose();
+		}
+	});
 });

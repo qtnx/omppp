@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Automatically detect inline image support in Herdr panes with Kitty graphics enabled, without requiring an environment override.
+
 ## [1.8.0] - 2026-09-07
 
 ### Fixed

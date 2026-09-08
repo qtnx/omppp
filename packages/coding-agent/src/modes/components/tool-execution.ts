@@ -344,6 +344,7 @@ export class ToolExecutionComponent extends Container {
 	#previewReady?: PromiseWithResolvers<void>;
 	// Cached converted images for Kitty protocol (which requires PNG), keyed by index
 	#convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
+	#imageConversionDeferred = false;
 	#toolImagePayloadsReleased = false;
 	// Probe into the owning transcript (absent outside the interactive
 	// transcript, e.g. in tests): whether this block is still repaintable.
@@ -613,6 +614,7 @@ export class ToolExecutionComponent extends Container {
 	 */
 	#maybeConvertImagesForKitty(): void {
 		// Only needed for Kitty protocol
+		this.#imageConversionDeferred = TERMINAL.imageProtocol === null;
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
 		if (!this.#result) return;
 
@@ -892,6 +894,7 @@ export class ToolExecutionComponent extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		if (this.#imageConversionDeferred) this.#maybeConvertImagesForKitty();
 		this.#updateDisplay();
 	}
 

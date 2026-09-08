@@ -570,9 +570,9 @@ export function resolveImageProtocol(
 	if (imageProtocol !== null && isPaseoEmbedder(env)) {
 		return null;
 	}
-	// Herdr owns the pane grid but does not expose whether the attached client
-	// enabled its experimental Kitty renderer. Outer-terminal identity variables
-	// can leak into the pane, so only the explicit protocol override is safe.
+	// Herdr owns the pane grid, so inherited outer-terminal identity is not
+	// evidence of pane graphics support. Start in text mode; TUI probes the
+	// pane's Kitty decoder after input starts, unless explicitly overridden.
 	if (imageProtocol !== null && isInsideHerdr(env)) {
 		return null;
 	}
