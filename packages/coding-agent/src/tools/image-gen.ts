@@ -767,6 +767,7 @@ function activeImageProvider(model: Model | undefined): Exclude<ImageProviderPre
 }
 
 function imageProviderOrder(activeModel: Model | undefined, requested?: ImageProviderPreference): ImageProvider[] {
+	if (requested !== undefined && requested !== "auto") return [requested];
 	const providers: ImageProvider[] = [];
 	const added = new Set<ImageProvider>();
 	const add = (provider: ImageProvider | null): void => {
@@ -775,12 +776,11 @@ function imageProviderOrder(activeModel: Model | undefined, requested?: ImagePro
 		providers.push(provider);
 	};
 
-	// Per-request provider wins, then the configured priority list, then a
+	// Automatic selection tries the configured priority list, then a
 	// connected Codex subscription, then the active session's provider, then the
 	// built-in auto order. Codex outranks the session provider on purpose: it is
 	// key-free and model-agnostic, so the model a session happens to chat with
 	// must never shadow it (an Anthropic/Gemini session still generates images).
-	if (requested !== undefined && requested !== "auto") add(requested);
 	for (const provider of configuredImageProviderOrder) add(provider);
 	add("openai-codex");
 	add(activeImageProvider(activeModel));
@@ -1271,7 +1271,14 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 
 			for (const preferredProvider of providerOrder) {
 				const apiKey = await findImageApiKey(preferredProvider, ctx.modelRegistry, ctx.model, sessionId);
-				if (!apiKey) continue;
+				if (!apiKey) {
+					if (params.provider && params.provider !== "auto") {
+						throw new Error(
+							`Image generation unavailable for ${params.provider}: no usable credentials or compatible image model. Check this provider's connection and model configuration. No other provider was tried.`,
+						);
+					}
+					continue;
+				}
 				foundCredentials = true;
 				if (!resolvedImageCache) {
 					resolvedImageCache = [];
@@ -1773,7 +1780,11 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 						},
 					};
 				} catch (error) {
-					if (!(error instanceof ProviderHttpError) || requestSignal?.aborted) {
+					if (
+						!(error instanceof ProviderHttpError) ||
+						requestSignal?.aborted ||
+						(params.provider && params.provider !== "auto")
+					) {
 						throw error;
 					}
 					failures.push({ provider, error });

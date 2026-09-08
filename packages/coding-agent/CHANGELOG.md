@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Explicit image-provider selections no longer fall back to another provider; unavailable selections and provider failures are reported directly.
+
 ## [1.8.2] - 2026-09-08
 
 ### Fixed

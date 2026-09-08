@@ -131,11 +131,17 @@ function createCapturingFetch(captured: CapturedRequest[], options: { sse?: bool
 	return fetchImpl;
 }
 
-async function runImageTool(options: { model: Model<Api>; registry: ModelRegistry; fetchImpl: FetchImpl }) {
+async function runImageTool(options: {
+	model: Model<Api>;
+	registry: ModelRegistry;
+	fetchImpl: FetchImpl;
+	provider?: ImageGenParams["provider"];
+}) {
 	const params: ImageGenParams = {
 		subject: "a red cube",
 		style: "clean product render",
 		aspect_ratio: "1:1",
+		provider: options.provider,
 	};
 	return await imageGenTool.execute(
 		"image-call-1",
@@ -153,6 +159,57 @@ describe("imageGenTool provider preference", () => {
 
 	it("recognizes openai-codex as an image provider preference", () => {
 		expect(isImageProviderPreference("openai-codex")).toBe(true);
+	});
+
+	it("does not fall back to xAI when explicitly requested Codex is unavailable", async () => {
+		const activeModel = makeModel("xai", "grok", "openai-completions");
+		const registry = makeRegistry({ available: [activeModel], keys: { xai: "xai-test" } });
+		const fetchImpl = vi.fn(async () => createOpenAIImageJsonResponse());
+		await expect(
+			runImageTool({ model: activeModel, registry, fetchImpl, provider: "openai-codex" }),
+		).rejects.toThrow("Image generation unavailable for openai-codex");
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
+	it("surfaces the explicitly requested Codex HTTP failure without calling xAI", async () => {
+		const activeModel = makeModel("xai", "grok", "openai-completions");
+		const codexModel = makeModel("openai-codex", "gpt-5.5", "openai-codex-responses", {
+			baseUrl: "https://chatgpt.com/backend-api",
+		});
+		const registry = makeRegistry({
+			available: [activeModel, codexModel],
+			keys: { xai: "xai-test", "openai-codex": makeCodexToken("acct_images") },
+		});
+		const urls: string[] = [];
+		const fetchImpl: FetchImpl = async input => {
+			urls.push(String(input));
+			return new Response("Image service unavailable", { status: 503 });
+		};
+		await expect(
+			runImageTool({ model: activeModel, registry, fetchImpl, provider: "openai-codex" }),
+		).rejects.toThrow("Image service unavailable");
+		expect(urls).toEqual(["https://chatgpt.com/backend-api/codex/responses"]);
+	});
+
+	it("uses explicitly requested Codex despite xAI being configured first", async () => {
+		const activeModel = makeModel("xai", "grok", "openai-completions");
+		const codexModel = makeModel("openai-codex", "gpt-5.5", "openai-codex-responses", {
+			baseUrl: "https://chatgpt.com/backend-api",
+		});
+		const registry = makeRegistry({
+			available: [activeModel, codexModel],
+			keys: { xai: "xai-test", "openai-codex": makeCodexToken("acct_images") },
+		});
+		setImageProviderOrder(["xai"]);
+		const captured: CapturedRequest[] = [];
+		const result = await runImageTool({
+			model: activeModel,
+			registry,
+			fetchImpl: createCapturingFetch(captured, { sse: true }),
+			provider: "openai-codex",
+		});
+		expect(captured.map(request => request.url)).toEqual(["https://chatgpt.com/backend-api/codex/responses"]);
+		expect(result.details?.provider).toBe("openai-codex");
 	});
 
 	it("prefers the OpenAI Codex provider default over earlier suitable Codex image candidates", async () => {
