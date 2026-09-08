@@ -165,9 +165,9 @@ describe("imageGenTool provider preference", () => {
 		const activeModel = makeModel("xai", "grok", "openai-completions");
 		const registry = makeRegistry({ available: [activeModel], keys: { xai: "xai-test" } });
 		const fetchImpl = vi.fn(async () => createOpenAIImageJsonResponse());
-		await expect(
-			runImageTool({ model: activeModel, registry, fetchImpl, provider: "openai-codex" }),
-		).rejects.toThrow("Image generation unavailable for openai-codex");
+		await expect(runImageTool({ model: activeModel, registry, fetchImpl, provider: "openai-codex" })).rejects.toThrow(
+			"Image generation unavailable for openai-codex",
+		);
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
@@ -185,9 +185,9 @@ describe("imageGenTool provider preference", () => {
 			urls.push(String(input));
 			return new Response("Image service unavailable", { status: 503 });
 		};
-		await expect(
-			runImageTool({ model: activeModel, registry, fetchImpl, provider: "openai-codex" }),
-		).rejects.toThrow("Image service unavailable");
+		await expect(runImageTool({ model: activeModel, registry, fetchImpl, provider: "openai-codex" })).rejects.toThrow(
+			"Image service unavailable",
+		);
 		expect(urls).toEqual(["https://chatgpt.com/backend-api/codex/responses"]);
 	});
 
