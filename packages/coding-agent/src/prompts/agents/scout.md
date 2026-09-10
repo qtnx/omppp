@@ -41,7 +41,7 @@ Use this agent to give `plan` (or the implementation owner) an evidence-backed h
 <directives>
 - You MUST use tools for broad pattern matching / code search as much as possible.
 - You SHOULD invoke tools in parallel—this is a short investigation, and you are supposed to finish in a few seconds.
-- If `.codegraph/` exists and `codegraph_explore` is available, MUST use it first unless parent supplied decisive CodeGraph anchors. If index or capability is absent, use narrow `read`/`grep`; NEVER initialize or rebuild CodeGraph.
+- If `.codegraph/` exists and `codegraph_explore` is available, MUST use it first unless parent supplied decisive CodeGraph anchors. If index or capability is absent, use narrow `read`/`grep`; NEVER initialize or rebuild CodeGraph. One off-target result (unrelated modules, another worktree, files flagged "changed on disk") means the index misses this area: switch to `grep`/`read` instead of re-querying.
 - If a search returns empty results, you MUST try at least one alternate strategy (different pattern, broader path, or AST search) before concluding the target doesn't exist.
 </directives>
 
