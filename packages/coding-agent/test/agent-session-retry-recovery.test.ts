@@ -28,6 +28,8 @@ type RecoveryRun = {
 const RATE_LIMIT_ERROR =
 	'429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}} retry-after-ms=11180000';
 const RETRIABLE_SERVER_ERROR = "503 service unavailable: overloaded_error";
+const CODEX_ACCOUNT_OVERLOAD_ERROR =
+	"Codex error event: Our servers are currently overloaded. Please try again later. (code=server_is_overloaded)";
 
 function emptyUsage(): Usage {
 	return {
@@ -342,6 +344,68 @@ describe("AgentSession retry recovery", () => {
 			role: "assistant",
 			stopReason: "stop",
 			content: [{ type: "text", text: "recovered after local overlap" }],
+		});
+	});
+
+	it("retries a Codex account-overload throttle on the same model when no sibling credential exists", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) {
+			throw new Error("Expected bundled Anthropic test model to exist");
+		}
+		// One credential only: rotateSessionCredential cannot switch accounts, so
+		// the AccountPolicy branch must not end the turn — `server_is_overloaded`
+		// is also Transient and clears on its own.
+		authStorage.setRuntimeApiKey("anthropic", "anthropic-test-key");
+
+		const mock = createMockModel({
+			responses: [
+				{ throw: CODEX_ACCOUNT_OVERLOAD_ERROR },
+				{ content: ["recovered after overload backoff"], stopReason: "stop" },
+			],
+		});
+		const agent = new Agent({
+			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context, options) => mock.stream(requestedModel, context, options),
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxDelayMs": 100,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+
+		const sessionManager = SessionManager.inMemory();
+		const session = new AgentSession({
+			agent,
+			sessionManager,
+			settings,
+			modelRegistry,
+		});
+		sessions.push(session);
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const retryEndEvents: AutoRetryEndEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_end") retryEndEvents.push(event);
+		});
+
+		await session.prompt("Recover from a per-account overload throttle");
+		await session.waitForIdle();
+
+		expect(mock.calls).toHaveLength(2);
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
+		expect(session.agent.state.messages.at(-1)).toMatchObject({
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: "recovered after overload backoff" }],
 		});
 	});
 

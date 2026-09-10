@@ -2358,7 +2358,21 @@ export class TurnRecovery {
 			// same-route budget: every distinct account must be tried first.
 			if (switchedModel) this.#retryAttempt = 1;
 		}
-		if ((classifierRefusal || accountPolicyDenial) && !switchedCredential && !switchedModel) {
+		// `server_is_overloaded` is classified `AccountPolicy | Transient`: rotate
+		// to a sibling account first (the throttle is per-account), but when no
+		// sibling and no fallback model is available the fleet-level throttle
+		// still clears on its own, so it must take the same-model backoff retry
+		// below instead of ending the turn. That is the contract the Codex
+		// provider relies on when it refuses to replay in place
+		// (`openai-codex-responses.ts#tryRetryProviderError`).
+		const transientAccountThrottle =
+			accountPolicyDenial && !classifierRefusal && AIError.is(id, AIError.Flag.Transient);
+		if (
+			(classifierRefusal || accountPolicyDenial) &&
+			!switchedCredential &&
+			!switchedModel &&
+			!transientAccountThrottle
+		) {
 			// A prior attempt in this saga already announced `auto_retry_start`
 			// (retryAttempt was incremented for each call to this method, so > 1
 			// means at least one earlier attempt started the loop) but this
