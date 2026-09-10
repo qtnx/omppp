@@ -2,15 +2,11 @@
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-09-10
+
 ### Fixed
 
 - Explicit image-provider selections no longer fall back to another provider; unavailable selections and provider failures are reported directly.
-
-## [1.8.2] - 2026-09-08
-
-### Fixed
-
-- Aligned package versions and native compatibility checks with the OMPx 1.8.2 release.
 
 ## [18.1.12] - 2026-09-06
 
@@ -1845,6 +1841,12 @@
 - Fixed MiMo models using hashline edit mode by default despite needing the same replace-mode fallback as Kimi. ([#3772](https://github.com/can1357/oh-my-pi/issues/3772))
 - Fixed `omp` refusing to start on Windows when no `bash.exe` is discoverable — most visibly with scoop-installed Git, whose manifest shims `sh.exe`/`git.exe` but never `bash.exe`, so PATH lookup missed it. Startup threw `No bash shell found` while merely building the bash tool description, even though bash tool commands always execute in the embedded brush-core shell and need no host bash. Shell discovery now also checks `GIT_INSTALL_ROOT`, scoop and per-user Git for Windows install roots, and `sh.exe` on PATH, then falls back to `cmd.exe` for the spawn-only paths (interactive PTY, ACP client terminals) instead of failing; the cmd fallback is never used to wrap user-shell commands — brush runs the POSIX line directly.
 - Added a selectable voice setting for `/live` realtime sessions ([#6566](https://github.com/can1357/oh-my-pi/issues/6566)).
+
+## [1.8.2] - 2026-09-08
+
+### Fixed
+
+- Aligned package versions and native compatibility checks with the OMPx 1.8.2 release.
 
 ## [1.8.1] - 2026-09-08
 
