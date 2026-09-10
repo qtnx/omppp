@@ -6,6 +6,10 @@
 
 - Fixed a Codex `server_is_overloaded` throttle ending the turn instead of retrying when no sibling ChatGPT account and no fallback model are available.
 
+### Changed
+
+- CodeGraph guidance now tells agents to read or grep directly for known paths and to switch to grep when a lookup comes back off-target, instead of re-querying an index that does not cover the area.
+
 ## [1.8.3] - 2026-09-10
 
 ### Fixed
