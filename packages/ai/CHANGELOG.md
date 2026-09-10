@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.8.3] - 2026-09-10
-
-### Fixed
-
-- Codex transient stream failures now use exponential backoff with jitter, while account overloads retain credential rotation and whole-turn retry.
-
 ## [18.1.12] - 2026-09-06
 
 ### Added
@@ -2137,6 +2131,12 @@
 - Fixed `isUsageLimitError` missing Antigravity / Cloud Code Assist's `Individual quota reached` 429 phrasing. The `USAGE_LIMIT_PATTERN` only knew `quota.?exceeded` / `limit_reached`, so `auth-retry` and `AuthStorage.markUsageLimitReached` treated the response as a terminal provider error and pinned sessions to the exhausted OAuth account instead of rotating to a sibling credential. The pattern now also matches `quota.?reached`. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
 - Scoped Antigravity usage blocking and ranking by model family (`gemini-*`/`gemma-*` → Google, `claude-*` → Anthropic, `gpt-*`/`openai/*` → OpenAI), so an exhausted Gemini counter no longer makes a healthy Claude/OpenAI Antigravity credential unavailable until reset. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
 - Fixed no-model Antigravity credential lookups (e.g. image-provider discovery) inheriting provider-wide exhaustion: `scopeLimits` now returns no limits without a concrete backend counter, and `blockScope` always returns a counter scope so missing model context can never fall through to AuthStorage's provider-wide block bucket. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
+
+## [1.8.3] - 2026-09-10
+
+### Fixed
+
+- Codex transient stream failures now use exponential backoff with jitter, while account overloads retain credential rotation and whole-turn retry.
 
 ## [1.8.0] - 2026-09-07
 

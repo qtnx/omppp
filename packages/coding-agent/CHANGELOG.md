@@ -2,20 +2,16 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Fixed a Codex `server_is_overloaded` throttle ending the turn instead of retrying when no sibling ChatGPT account and no fallback model are available.
+## [1.8.4] - 2026-09-10
 
 ### Changed
 
 - CodeGraph guidance now tells agents to read or grep directly for known paths and to switch to grep when a lookup comes back off-target, instead of re-querying an index that does not cover the area.
 - System prompt now enforces the behaviors rated 1/5 most often: an order you already approved is never re-asked or re-argued, mechanical blockers (dirty tree, conflict, busy port, missing local file) are routed around instead of escalated, "merge it"/"hotfix" means the chain runs through merge, tag, deploy and observation, rendered changes require a screenshot you actually looked at, your question is answered before any compaction, and real credentials never land in repo files.
 
-## [1.8.3] - 2026-09-10
-
 ### Fixed
 
-- Explicit image-provider selections no longer fall back to another provider; unavailable selections and provider failures are reported directly.
+- Fixed a Codex `server_is_overloaded` throttle ending the turn instead of retrying when no sibling ChatGPT account and no fallback model are available.
 
 ## [18.1.12] - 2026-09-06
 
@@ -1850,6 +1846,12 @@
 - Fixed MiMo models using hashline edit mode by default despite needing the same replace-mode fallback as Kimi. ([#3772](https://github.com/can1357/oh-my-pi/issues/3772))
 - Fixed `omp` refusing to start on Windows when no `bash.exe` is discoverable — most visibly with scoop-installed Git, whose manifest shims `sh.exe`/`git.exe` but never `bash.exe`, so PATH lookup missed it. Startup threw `No bash shell found` while merely building the bash tool description, even though bash tool commands always execute in the embedded brush-core shell and need no host bash. Shell discovery now also checks `GIT_INSTALL_ROOT`, scoop and per-user Git for Windows install roots, and `sh.exe` on PATH, then falls back to `cmd.exe` for the spawn-only paths (interactive PTY, ACP client terminals) instead of failing; the cmd fallback is never used to wrap user-shell commands — brush runs the POSIX line directly.
 - Added a selectable voice setting for `/live` realtime sessions ([#6566](https://github.com/can1357/oh-my-pi/issues/6566)).
+
+## [1.8.3] - 2026-09-10
+
+### Fixed
+
+- Explicit image-provider selections no longer fall back to another provider; unavailable selections and provider failures are reported directly.
 
 ## [1.8.2] - 2026-09-08
 
