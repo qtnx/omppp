@@ -9,6 +9,7 @@
 ### Changed
 
 - CodeGraph guidance now tells agents to read or grep directly for known paths and to switch to grep when a lookup comes back off-target, instead of re-querying an index that does not cover the area.
+- System prompt now enforces the behaviors rated 1/5 most often: an order you already approved is never re-asked or re-argued, mechanical blockers (dirty tree, conflict, busy port, missing local file) are routed around instead of escalated, "merge it"/"hotfix" means the chain runs through merge, tag, deploy and observation, rendered changes require a screenshot you actually looked at, your question is answered before any compaction, and real credentials never land in repo files.
 
 ## [1.8.3] - 2026-09-10
 
