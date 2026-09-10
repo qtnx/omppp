@@ -32,3 +32,8 @@ reason = "quick-xml 0.39.4 is transitive via inferno + wayland-scanner (both pin
 id = "RUSTSEC-2026-0150"
 ignoreUntil = 2026-12-31
 reason = "audiopus_sys 0.2.2 is unmaintained (transitive via maudio/audiopus); no fixed version exists. Revisit if audiopus publishes a maintained -sys crate."
+
+[[IgnoredVulns]]
+id = "GHSA-vwc7-r8mq-g2x9"
+ignoreUntil = 2026-12-31
+reason = "adm-zip <=0.6.0 is transitive via onnxruntime-node and generative-bayesian-network; the advisory has no patched version (firstPatchedVersion is null) and we never extract untrusted archives through those paths. Revisit when adm-zip ships a fix."
