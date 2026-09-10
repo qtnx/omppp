@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a Codex `server_is_overloaded` throttle ending the turn instead of retrying when no sibling ChatGPT account and no fallback model are available.
+
 ## [1.8.3] - 2026-09-10
 
 ### Fixed
