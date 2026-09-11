@@ -28,8 +28,8 @@ function makeModel(provider: string, id: string, extra: Partial<Model<Api>> = {}
 	} as Model<Api>;
 }
 
-const SUPER_MODEL = makeModel("tnx", "super");
-const FABLE_MODEL = makeModel("anthropic", "claude-fable-5", { api: "anthropic-messages" });
+const SUPER_MODEL = makeModel("anthropic", "claude-opus-5", { api: "anthropic-messages" });
+const FABLE_MODEL = makeModel("anthropic", "claude-fable-5-1", { api: "anthropic-messages" });
 const SOL_MODEL = makeModel("openai-codex", "gpt-5.6-sol");
 
 interface SessionOptions {
@@ -80,8 +80,8 @@ function assistant(options: {
 		role: "assistant",
 		content: options.content,
 		api: "openai-responses",
-		provider: "tnx",
-		model: "super",
+		provider: "anthropic",
+		model: "claude-opus-5",
 		usage: {
 			input: 0,
 			output: 0,
@@ -189,7 +189,7 @@ describe("SuperReviewTool", () => {
 		expect(resultText(result)).toBe("Tighten the exit criteria.");
 		expect(completeSpy).toHaveBeenCalledTimes(1);
 		const [model, context, options, span] = instrumentedCallAt(completeSpy, 0);
-		expect(`${model.provider}/${model.id}`).toBe("tnx/super");
+		expect(`${model.provider}/${model.id}`).toBe("anthropic/claude-opus-5");
 		expect(span.oneshotKind).toBe("super_review");
 		expect(options.maxTokens).toBe(8192);
 		expect(options.toolChoice).toBeUndefined();
@@ -209,18 +209,18 @@ describe("SuperReviewTool", () => {
 		const result = await tool.execute("tc-native", {
 			review_type: "plan",
 			question: "Should this use the native provider?",
-			content: "Do not rewrite tnx/super through the dead auth gateway.",
+			content: "Do not rewrite anthropic/claude-opus-5 through the dead auth gateway.",
 		});
 
 		expect(resultText(result)).toBe("Native review complete.");
 		expect(completeSpy).toHaveBeenCalledTimes(1);
 		const [model, , options] = instrumentedCallAt(completeSpy, 0);
-		expect(`${model.provider}/${model.id}`).toBe("tnx/super");
+		expect(`${model.provider}/${model.id}`).toBe("anthropic/claude-opus-5");
 		expect(model.baseUrl).toBe("https://example.test/v1");
 		expect(await resolveRequestApiKey(options)).toBe("local-upstream-key");
 	});
 
-	it("prefers anthropic/claude-fable-5 from the default chain when it is available and authenticated", async () => {
+	it("prefers anthropic/claude-fable-5-1 from the default chain when it is available and authenticated", async () => {
 		const completeSpy = vi
 			.spyOn(core, "instrumentedCompleteSimple")
 			.mockResolvedValue(assistantWithText("Fable review complete."));
@@ -238,7 +238,7 @@ describe("SuperReviewTool", () => {
 
 		expect(resultText(result)).toBe("Fable review complete.");
 		const [model] = instrumentedCallAt(completeSpy, 0);
-		expect(`${model.provider}/${model.id}`).toBe("anthropic/claude-fable-5");
+		expect(`${model.provider}/${model.id}`).toBe("anthropic/claude-fable-5-1");
 	});
 
 	it("uses the configured modelRoles.super_review override instead of the default chain", async () => {
@@ -271,8 +271,8 @@ describe("SuperReviewTool", () => {
 			makeSession({
 				models: [FABLE_MODEL, SUPER_MODEL, SOL_MODEL],
 				apiKeys: {
-					"anthropic/claude-fable-5": null,
-					"tnx/super": "tnx-key",
+					"anthropic/claude-fable-5-1": null,
+					"anthropic/claude-opus-5": "opus-key",
 					"openai-codex/gpt-5.6-sol": "sol-key",
 				},
 			}),
@@ -281,13 +281,13 @@ describe("SuperReviewTool", () => {
 		const result = await tool.execute("tc-fallback", {
 			review_type: "architecture",
 			question: "Which fallback should run?",
-			content: "Fable is unauthenticated; tnx/super should win.",
+			content: "Fable is unauthenticated; anthropic/claude-opus-5 should win.",
 		});
 
 		expect(resultText(result)).toBe("Fallback review complete.");
 		const [model, , options] = instrumentedCallAt(completeSpy, 0);
-		expect(`${model.provider}/${model.id}`).toBe("tnx/super");
-		expect(await resolveRequestApiKey(options)).toBe("tnx-key");
+		expect(`${model.provider}/${model.id}`).toBe("anthropic/claude-opus-5");
+		expect(await resolveRequestApiKey(options)).toBe("opus-key");
 	});
 
 	it("retries the authenticated default chain after a runtime provider error and reports the successful model", async () => {
@@ -314,11 +314,11 @@ describe("SuperReviewTool", () => {
 		});
 
 		expect(resultText(result)).toBe("TNX review complete.");
-		expect(resultVisiblePayload(result)).toContain('"model":"tnx/super"');
+		expect(resultVisiblePayload(result)).toContain('"model":"anthropic/claude-opus-5"');
 		expect(completeSpy).toHaveBeenCalledTimes(2);
 		for (const index of [0, 1]) {
 			const [model, , options] = instrumentedCallAt(completeSpy, index);
-			expect(`${model.provider}/${model.id}`).toBe(index === 0 ? "anthropic/claude-fable-5" : "tnx/super");
+			expect(`${model.provider}/${model.id}`).toBe(index === 0 ? "anthropic/claude-fable-5-1" : "anthropic/claude-opus-5");
 			expect(options.maxTokens).toBe(8192);
 		}
 	});
@@ -342,7 +342,7 @@ describe("SuperReviewTool", () => {
 				content: "Each authenticated candidate returns a distinct error.",
 			}),
 		).rejects.toThrow(
-			/anthropic\/claude-fable-5: Provider HTTP 402; tnx\/super: TNX provider timeout; openai-codex\/gpt-5\.6-sol: Codex upstream unavailable/,
+			/anthropic\/claude-fable-5-1: Provider HTTP 402; anthropic\/claude-opus-5: TNX provider timeout; openai-codex\/gpt-5\.6-sol: Codex upstream unavailable/,
 		);
 
 		expect(completeSpy).toHaveBeenCalledTimes(3);
@@ -351,7 +351,7 @@ describe("SuperReviewTool", () => {
 				const [model] = instrumentedCallAt(completeSpy, index);
 				return `${model.provider}/${model.id}`;
 			}),
-		).toEqual(["anthropic/claude-fable-5", "tnx/super", "openai-codex/gpt-5.6-sol"]);
+		).toEqual(["anthropic/claude-fable-5-1", "anthropic/claude-opus-5", "openai-codex/gpt-5.6-sol"]);
 	});
 
 	it("throws when no configured or default super_review candidate is available", async () => {
@@ -440,7 +440,7 @@ describe("SuperReviewTool", () => {
 		const completeSpy = vi
 			.spyOn(core, "instrumentedCompleteSimple")
 			.mockResolvedValue(assistantWithText("Ship it after tightening the rollback gate."));
-		const visionSuper = makeModel("tnx", "super", { input: ["text", "image"] });
+		const visionSuper = makeModel("anthropic", "claude-opus-5", { api: "anthropic-messages", input: ["text", "image"] });
 		const tool = new SuperReviewTool(makeSession({ model: visionSuper }));
 
 		const result = await tool.execute("tc-snapcompact-large-inline", {
@@ -482,7 +482,7 @@ describe("SuperReviewTool", () => {
 		const completeSpy = vi
 			.spyOn(core, "instrumentedCompleteSimple")
 			.mockResolvedValue(assistantWithText("Attachment frame reviewed."));
-		const visionSuper = makeModel("tnx", "super", { input: ["text", "image"] });
+		const visionSuper = makeModel("anthropic", "claude-opus-5", { api: "anthropic-messages", input: ["text", "image"] });
 		const tool = new SuperReviewTool(makeSession({ cwd: workspace.path(), model: visionSuper }));
 
 		const result = await tool.execute("tc-snapcompact-large-file-attachment", {
@@ -528,7 +528,7 @@ describe("SuperReviewTool", () => {
 			{ name: "non-vision large content", model: SUPER_MODEL, content: largeContent },
 			{
 				name: "vision small content",
-				model: makeModel("tnx", "super", { input: ["text", "image"] }),
+				model: makeModel("anthropic", "claude-opus-5", { api: "anthropic-messages", input: ["text", "image"] }),
 				content: smallContent,
 			},
 		];

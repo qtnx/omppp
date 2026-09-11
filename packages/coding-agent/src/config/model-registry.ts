@@ -245,6 +245,9 @@ const TNX_DESIGNER_MODEL_PATCH: ModelPatch = {
 	cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 	contextWindow: 1_000_000,
 	maxTokens: 128_000,
+	// Discovered `designer` rows carry no compat; the Anthropic backend behind the
+	// gateway needs explicit `cache_control` breakpoints or every turn is a miss.
+	compat: { cacheControlFormat: "anthropic" },
 };
 
 function tnxRoleModelPatch(model: Model<Api>): ModelPatch | undefined {
@@ -1028,6 +1031,7 @@ export class ModelRegistry {
 					},
 					supportsDisplay: true,
 				},
+				compat: { cacheControlFormat: "anthropic" },
 			}),
 			buildModel({
 				id: TNX_SUPER_MODEL_ID,
@@ -1053,6 +1057,9 @@ export class ModelRegistry {
 					},
 					supportsDisplay: true,
 				},
+				// `designer`/`super` route to Anthropic behind the OpenAI-compatible gateway:
+				// prompt caching only happens when the payload carries `cache_control`.
+				compat: { cacheControlFormat: "anthropic" },
 			}),
 		];
 		// The fork's built-in `tnx` provider is filtered like a bundled one.

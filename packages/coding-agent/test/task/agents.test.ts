@@ -9,7 +9,7 @@ afterEach(() => {
 
 const FRONTEND_SKILLS = ["frontend-design", "frontend-accessibility", "frontend-ui-copy"];
 const REVIEW_COMMENT_PATTERN = /\[REVIEW|# REVIEW/i;
-const FRONTEND_AGENT_MODELS = ["anthropic/claude-opus-4-8", "tnx/designer"];
+const FRONTEND_AGENT_MODELS = ["anthropic/claude-opus-5", "tnx/designer"];
 
 describe("bundled task agents", () => {
 	test("includes heavy_task with strict review gate defaults", () => {
@@ -150,7 +150,7 @@ describe("bundled task agents", () => {
 		expect(presenter).toBeDefined();
 		expect(presenter?.source).toBe("bundled");
 		expect(presenter?.name).toBe("presenter");
-		expect(presenter?.model).toEqual(["tnx/designer"]);
+		expect(presenter?.model).toEqual(FRONTEND_AGENT_MODELS);
 		expect(presenter?.autoloadSkills).toEqual(["preview-templates"]);
 		expect(presenter?.tools ?? []).toEqual(
 			expect.arrayContaining(["read", "grep", "glob", "bash", "edit", "write", "browser", "irc", "yield"]),

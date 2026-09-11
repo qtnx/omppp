@@ -100,19 +100,19 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			await settings.flush();
 
-			expect(settings.get("setupVersion")).toBe(5);
+			expect(settings.get("setupVersion")).toBe(7);
 			expect(settings.get("modelRoles")).toMatchObject({ smol: "cerebras/gpt-oss-120b" });
 			const savedSettings = YAML.parse(await Bun.file(yamlConfigPath).text()) as Record<string, unknown>;
-			expect(savedSettings.setupVersion).toBe(5);
+			expect(savedSettings.setupVersion).toBe(7);
 			expect(savedSettings.modelRoles).toMatchObject({ smol: "cerebras/gpt-oss-120b" });
 			expect(await Bun.file(getConfigPath()).exists()).toBe(false);
 		});
 
 		it("reloads from config.yaml when the selected config.yml disappears", async () => {
-			await writeSettings({ setupVersion: 5, shellPath: "/initial-shell" });
+			await writeSettings({ setupVersion: 7, shellPath: "/initial-shell" });
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			const yamlConfigPath = path.join(agentDir, "config.yaml");
-			await Bun.write(yamlConfigPath, YAML.stringify({ setupVersion: 5, shellPath: "/fallback-shell" }, null, 2));
+			await Bun.write(yamlConfigPath, YAML.stringify({ setupVersion: 7, shellPath: "/fallback-shell" }, null, 2));
 			await fs.promises.unlink(getConfigPath());
 
 			await settings.reloadFromDisk();
@@ -126,7 +126,7 @@ describe("Settings", () => {
 		});
 
 		it("keeps migrated config.yaml values when reload fallback adds modified paths", async () => {
-			await writeSettings({ setupVersion: 5, modelRoles: { smol: "stale/smol" } });
+			await writeSettings({ setupVersion: 7, modelRoles: { smol: "stale/smol" } });
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			const yamlConfigPath = path.join(agentDir, "config.yaml");
 			await Bun.write(
@@ -280,7 +280,7 @@ describe("Settings", () => {
 
 		it("backs up a config corrupted after startup and retains the pending global change for retry", async () => {
 			await writeSettings({
-				setupVersion: 5,
+				setupVersion: 7,
 				auth: { broker: { token: "TOP-SECRET" } },
 				modelRoles: { default: "keep/default" },
 			});
@@ -299,7 +299,7 @@ describe("Settings", () => {
 
 			await settings.flush();
 			expect(await readSettings()).toEqual({
-				setupVersion: 5,
+				setupVersion: 7,
 				auth: { broker: { token: "TOP-SECRET" } },
 				modelRoles: { default: "keep/default" },
 				theme: { dark: "anthracite" },
@@ -312,7 +312,7 @@ describe("Settings", () => {
 		});
 
 		it("backs up a corrupted project config and retains the pending project role for retry", async () => {
-			await writeSettings({ setupVersion: 5 });
+			await writeSettings({ setupVersion: 7 });
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
 				projectConfigPath,
@@ -347,11 +347,11 @@ describe("Settings", () => {
 			await fs.promises.symlink(managedConfigPath, getConfigPath(), "file");
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			settings.set("setupVersion", 5);
+			settings.set("setupVersion", 7);
 			await settings.flush();
 
 			expect(fs.lstatSync(getConfigPath()).isSymbolicLink()).toBe(true);
-			expect(YAML.parse(await Bun.file(managedConfigPath).text())).toEqual({ setupVersion: 5 });
+			expect(YAML.parse(await Bun.file(managedConfigPath).text())).toEqual({ setupVersion: 7 });
 		});
 
 		it("writes through a dangling symlink chain to the final target, preserving every link", async () => {
@@ -474,7 +474,7 @@ describe("Settings", () => {
 				return readlink(target);
 			}) as typeof fs.promises.readlink);
 
-			settings.set("setupVersion", 5);
+			settings.set("setupVersion", 7);
 			await expect(settings.flush()).rejects.toThrow(/ELOOP/);
 			expect(readlinkCalls).toBeLessThanOrEqual(safetyValve);
 		});
@@ -887,18 +887,18 @@ describe("Settings", () => {
 				await rename(source, target);
 			});
 
-			settings.set("setupVersion", 5);
+			settings.set("setupVersion", 7);
 			await settings.flush();
 
 			expect(injected).toBe(true);
-			expect(await readSettings()).toEqual({ setupVersion: 5 });
+			expect(await readSettings()).toEqual({ setupVersion: 7 });
 			expect(fs.readdirSync(agentDir).some(name => name.endsWith(".tmp") || name.endsWith(".bak"))).toBe(false);
 		});
 
 		it("leaves an unreadable main config untouched and retains its pending change", async () => {
 			const original = YAML.stringify(
 				{
-					setupVersion: 5,
+					setupVersion: 7,
 					auth: { broker: { token: "TOP-SECRET" } },
 					modelRoles: { default: "keep/default" },
 				},
@@ -918,7 +918,7 @@ describe("Settings", () => {
 			expect(fs.readdirSync(agentDir).some(name => name.startsWith("config.yml.broken-"))).toBe(false);
 			await settings.flush();
 			expect(await readSettings()).toEqual({
-				setupVersion: 5,
+				setupVersion: 7,
 				auth: { broker: { token: "TOP-SECRET" } },
 				modelRoles: { default: "keep/default" },
 				theme: { dark: "anthracite" },
@@ -1526,7 +1526,7 @@ describe("Settings", () => {
 				smol: "anthropic/claude-haiku-4-5",
 				slow: "openai-codex/gpt-5.6-sol:high",
 				plan: "openai-codex/gpt-5.6-sol:xhigh",
-				designer: "tnx/designer",
+				designer: "anthropic/claude-opus-5",
 				commit: "openai-codex/gpt-5.6-luna:high",
 			});
 			expect(settings.getModelRole("default")).toBe("openai/gpt-5.2-codex");
@@ -1552,7 +1552,7 @@ describe("Settings", () => {
 
 		it("preserves concurrent external per-role edits when saving one global role", async () => {
 			await writeSettings({
-				setupVersion: 5,
+				setupVersion: 7,
 				modelRoles: { default: "anthropic/claude-sonnet-4-5", advisor: "moonshot/kimi-k2" },
 			});
 
@@ -1562,7 +1562,7 @@ describe("Settings", () => {
 			// External edit (another omp instance / manual edit): changes advisor,
 			// adds vision. This process's #global is now stale.
 			await writeSettings({
-				setupVersion: 5,
+				setupVersion: 7,
 				modelRoles: {
 					default: "anthropic/claude-sonnet-4-5",
 					advisor: "moonshot/kimi-k3:max",
@@ -1589,7 +1589,7 @@ describe("Settings", () => {
 
 		it("does not replay a preserved role after the save writes it", async () => {
 			await writeSettings({
-				setupVersion: 5,
+				setupVersion: 7,
 				modelRoles: { default: "anthropic/claude-sonnet-4-5" },
 			});
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
@@ -1618,7 +1618,7 @@ describe("Settings", () => {
 			});
 
 			await writeSettings({
-				setupVersion: 5,
+				setupVersion: 7,
 				modelRoles: {
 					default: "anthropic/claude-sonnet-4-5",
 					smol: "anthropic/claude-haiku-4-5",
@@ -1992,7 +1992,7 @@ describe("Settings", () => {
 				task: "openai-codex/gpt-5.6-terra:medium",
 				slow: "openai-codex/gpt-5.6-sol:high",
 				plan: "openai-codex/gpt-5.6-sol:xhigh",
-				designer: "tnx/designer",
+				designer: "anthropic/claude-opus-5",
 				commit: "openai-codex/gpt-5.6-luna:high",
 			});
 		});
@@ -2356,12 +2356,12 @@ describe("Settings", () => {
 			{
 				name: "bare smol and medium designer aliases",
 				input: { smol: "tnx/smol", designer: "tnx/designer:medium" },
-				expected: { smol: "cerebras/gpt-oss-120b", designer: "tnx/designer" },
+				expected: { smol: "cerebras/gpt-oss-120b", designer: "anthropic/claude-opus-5" },
 			},
 			{
-				name: "medium smol alias and canonical designer",
+				name: "medium smol alias and bare gateway designer alias",
 				input: { smol: "tnx/smol:medium", designer: "tnx/designer" },
-				expected: { smol: "cerebras/gpt-oss-120b", designer: "tnx/designer" },
+				expected: { smol: "cerebras/gpt-oss-120b", designer: "anthropic/claude-opus-5" },
 			},
 			{
 				name: "canonical smol and custom designer",
@@ -2370,8 +2370,8 @@ describe("Settings", () => {
 			},
 			{
 				name: "custom smol and canonical designer",
-				input: { smol: "custom/smol", designer: "tnx/designer" },
-				expected: { smol: "custom/smol", designer: "tnx/designer" },
+				input: { smol: "custom/smol", designer: "anthropic/claude-opus-5" },
+				expected: { smol: "custom/smol", designer: "anthropic/claude-opus-5" },
 			},
 		])(
 			"migrates model-role aliases while preserving canonical and custom values: $name",
@@ -2435,20 +2435,20 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			await settings.flush();
 
-			expect(settings.get("setupVersion")).toBe(5);
+			expect(settings.get("setupVersion")).toBe(7);
 			expect(settings.get("modelRoles")).toEqual({
 				default: "custom/default",
 				task: "openai-codex/gpt-5.6-terra:medium",
 				smol: "cerebras/gpt-oss-120b",
 				slow: "openai-codex/gpt-5.6-sol:high",
 				plan: "openai-codex/gpt-5.6-sol:xhigh",
-				designer: "tnx/designer",
+				designer: "anthropic/claude-opus-5",
 				commit: "openai-codex/gpt-5.6-luna:high",
 			});
 			expect(settings.get("task.agentModelOverrides")).toEqual({
-				designer: "tnx/designer",
+				designer: "anthropic/claude-opus-5",
 				explore: "pi/smol",
-				frontend_ui: "tnx/designer",
+				frontend_ui: "anthropic/claude-opus-5",
 				heavy_task: "openai-codex/gpt-5.6-sol:high",
 				oracle: "openai-codex/gpt-5.6-sol:high",
 				plan: "anthropic/claude-fable-5:high",
@@ -2457,6 +2457,8 @@ describe("Settings", () => {
 				quick_task: "openai-codex/gpt-5.6-luna:high",
 				reviewer: "openai-codex/gpt-5.6-sol:high",
 				task: "openai-codex/gpt-5.6-terra:medium",
+				ui_ux_reviewer: "anthropic/claude-opus-5",
+				ux_copywriter: "anthropic/claude-opus-5",
 			});
 			expect(settings.get("memory.backend")).toBe("local");
 			expect(settings.get("theme.dark")).toBe("custom-dark");
@@ -2479,7 +2481,7 @@ describe("Settings", () => {
 			});
 
 			const onDisk = await readSettings();
-			expect(onDisk.setupVersion).toBe(5);
+			expect(onDisk.setupVersion).toBe(7);
 			expect(onDisk.modelRoles).toEqual(settings.get("modelRoles"));
 			expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual(
 				settings.get("task.agentModelOverrides"),
@@ -2496,7 +2498,7 @@ describe("Settings", () => {
 			resetSettingsForTest();
 			const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
 			await rerunSettings.flush();
-			expect(rerunSettings.get("setupVersion")).toBe(5);
+			expect(rerunSettings.get("setupVersion")).toBe(7);
 			expect(await readSettings()).toEqual(firstMigration);
 		});
 
@@ -2557,14 +2559,14 @@ describe("Settings", () => {
 				smol: "anthropic/claude-sonnet-4-6",
 				slow: "openai-codex/gpt-5.6-sol:high",
 				plan: "openai-codex/gpt-5.6-sol:xhigh",
-				designer: "tnx/designer",
+				designer: "anthropic/claude-opus-5",
 				commit: "openai-codex/gpt-5.6-luna:high",
 				custom: "local/custom-model",
 			};
 			const canonicalAgentOverrides = {
-				designer: "tnx/designer",
+				designer: "anthropic/claude-opus-5",
 				explore: "pi/smol",
-				frontend_ui: "tnx/designer",
+				frontend_ui: "anthropic/claude-opus-5",
 				heavy_task: "openai-codex/gpt-5.6-sol:high",
 				oracle: "openai-codex/gpt-5.6-sol:high",
 				plan: "anthropic/claude-fable-5:high",
@@ -2572,6 +2574,8 @@ describe("Settings", () => {
 				quick_task: "openai-codex/gpt-5.6-luna:high",
 				reviewer: "openai-codex/gpt-5.6-sol:high",
 				task: "openai-codex/gpt-5.6-terra:medium",
+				ui_ux_reviewer: "anthropic/claude-opus-5",
+				ux_copywriter: "anthropic/claude-opus-5",
 				custom_agent: "custom/provider",
 			};
 
@@ -2599,7 +2603,7 @@ describe("Settings", () => {
 					["persisted config", onDisk.setupVersion, onDisk.modelRoles, persistedTask.agentModelOverrides],
 				] as const) {
 					expect({ setupVersion, modelRoles, agentOverrides }, `${fixture.name}: ${surface}`).toEqual({
-						setupVersion: 5,
+						setupVersion: 7,
 						modelRoles: expectedModelRoles,
 						agentOverrides: expectedAgentOverrides,
 					});
@@ -2653,14 +2657,14 @@ describe("Settings", () => {
 				smol: "cerebras/gpt-oss-120b",
 				slow: "openai-codex/gpt-5.6-sol:high",
 				plan: "openai-codex/gpt-5.6-sol:xhigh",
-				designer: "tnx/designer",
+				designer: "anthropic/claude-opus-5",
 				commit: "openai-codex/gpt-5.6-luna:high",
 				custom_role: "custom/role-model",
 			},
 			expectedAgentOverrides: {
-				designer: "tnx/designer",
+				designer: "anthropic/claude-opus-5",
 				explore: "pi/smol",
-				frontend_ui: "tnx/designer",
+				frontend_ui: "anthropic/claude-opus-5",
 				heavy_task: "openai-codex/gpt-5.6-sol:high",
 				oracle: "openai-codex/gpt-5.6-sol:high",
 				plan: "anthropic/claude-fable-5:high",
@@ -2669,11 +2673,13 @@ describe("Settings", () => {
 				quick_task: "openai-codex/gpt-5.6-luna:high",
 				reviewer: "openai-codex/gpt-5.6-sol:high",
 				task: "openai-codex/gpt-5.6-terra:medium",
+				ui_ux_reviewer: "anthropic/claude-opus-5",
+				ux_copywriter: "anthropic/claude-opus-5",
 				custom_agent: "custom/agent-model",
 			},
 		} as const;
 
-		it("migrates setupVersion 3 routes once to the canonical setupVersion 5 matrix", async () => {
+		it("migrates setupVersion 3 routes once to the canonical setupVersion 7 matrix", async () => {
 			await writeSettings(setupVersion3RouteFixture.input);
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
@@ -2695,7 +2701,7 @@ describe("Settings", () => {
 			await reloaded.flush();
 			const secondPersisted = await readSettings();
 			const expected = {
-				setupVersion: 5,
+				setupVersion: 7,
 				modelRoles: setupVersion3RouteFixture.expectedModelRoles,
 				agentOverrides: setupVersion3RouteFixture.expectedAgentOverrides,
 			};
@@ -2710,9 +2716,9 @@ describe("Settings", () => {
 			expect(secondPersisted).toEqual(firstPersisted);
 		});
 
-		it("leaves a current setupVersion 5 canonical route matrix unchanged", async () => {
+		it("leaves a current setupVersion 7 canonical route matrix unchanged", async () => {
 			const canonical = {
-				setupVersion: 5,
+				setupVersion: 7,
 				modelRoles: setupVersion3RouteFixture.expectedModelRoles,
 				task: { agentModelOverrides: setupVersion3RouteFixture.expectedAgentOverrides },
 			};
@@ -2740,12 +2746,12 @@ describe("Settings", () => {
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(settings.get("setupVersion")).toBe(5);
+			expect(settings.get("setupVersion")).toBe(7);
 			expect(settings.get("task.agentModelOverrides")).toMatchObject({
-				designer: "tnx/designer",
-				frontend_ui: "tnx/designer",
-				ui_ux_reviewer: "tnx/designer",
-				ux_copywriter: "tnx/designer",
+				designer: "anthropic/claude-opus-5",
+				frontend_ui: "anthropic/claude-opus-5",
+				ui_ux_reviewer: "anthropic/claude-opus-5",
+				ux_copywriter: "anthropic/claude-opus-5",
 				qa: "custom/qa",
 			});
 		});
@@ -2766,7 +2772,7 @@ describe("Settings", () => {
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(settings.get("setupVersion")).toBe(5);
+			expect(settings.get("setupVersion")).toBe(7);
 			expect(settings.get("task.agentModelOverrides")).toMatchObject({
 				designer: "custom/designer",
 				frontend_ui: "custom/frontend",
