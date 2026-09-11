@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Subagents now get their wall-clock budget in the prompt and a fast-scout rule (about two minutes inside the owned files, then edit); the task tool asks the orchestrator to hand over anchors, contract, and the decisive snippet rather than the whole edit, and to size each `task` slice to ten minutes, splitting anything larger instead of running it longer.
+- Subagents now get their wall-clock budget in the prompt and an ask-don't-scout rule (read only the named anchors and owned files; ask the parent over IPC for anything the brief left out, never search the repo); the task tool asks the orchestrator to hand over anchors, contract, and the decisive snippet rather than the whole edit, and to size each `task` slice to ten minutes, splitting anything larger instead of running it longer.
 - Subagent fallback chains are looked up by the model selector, then the agent name (`retry.fallbackChains.task` now applies to the `task` subagent when `task.agentModelOverrides.task` is an explicit model), then the role alias, then `default`; a subagent whose model has no working credentials at dispatch now walks that chain before borrowing the parent session's model.
 
 ### Removed
