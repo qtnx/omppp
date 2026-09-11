@@ -145,7 +145,10 @@ describe("loop limit parsing", () => {
 
 	test("treats non-limit prose as an unbounded loop with an inline prompt", () => {
 		expect(parseLoopArgs("keep going")).toEqual({ limit: { intervalMs: 800 }, prompt: "keep going" });
-		expect(parseLoopArgs("fix the failing tests")).toEqual({ limit: { intervalMs: 800 }, prompt: "fix the failing tests" });
+		expect(parseLoopArgs("fix the failing tests")).toEqual({
+			limit: { intervalMs: 800 },
+			prompt: "fix the failing tests",
+		});
 	});
 
 	test("rejects zero, negative, and unknown interval-shaped tokens", () => {

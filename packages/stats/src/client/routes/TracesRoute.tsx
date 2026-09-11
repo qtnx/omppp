@@ -121,7 +121,6 @@ export function TracesRoute({ active, session, onOpenSession, refreshTrigger }: 
 				header: "Models",
 				render: (item: TraceSessionSummary) => <ModelChips models={item.models} />,
 			},
-
 		],
 		[],
 	);

@@ -318,7 +318,9 @@ describe("SuperReviewTool", () => {
 		expect(completeSpy).toHaveBeenCalledTimes(2);
 		for (const index of [0, 1]) {
 			const [model, , options] = instrumentedCallAt(completeSpy, index);
-			expect(`${model.provider}/${model.id}`).toBe(index === 0 ? "anthropic/claude-fable-5-1" : "anthropic/claude-opus-5");
+			expect(`${model.provider}/${model.id}`).toBe(
+				index === 0 ? "anthropic/claude-fable-5-1" : "anthropic/claude-opus-5",
+			);
 			expect(options.maxTokens).toBe(8192);
 		}
 	});
@@ -440,7 +442,10 @@ describe("SuperReviewTool", () => {
 		const completeSpy = vi
 			.spyOn(core, "instrumentedCompleteSimple")
 			.mockResolvedValue(assistantWithText("Ship it after tightening the rollback gate."));
-		const visionSuper = makeModel("anthropic", "claude-opus-5", { api: "anthropic-messages", input: ["text", "image"] });
+		const visionSuper = makeModel("anthropic", "claude-opus-5", {
+			api: "anthropic-messages",
+			input: ["text", "image"],
+		});
 		const tool = new SuperReviewTool(makeSession({ model: visionSuper }));
 
 		const result = await tool.execute("tc-snapcompact-large-inline", {
@@ -482,7 +487,10 @@ describe("SuperReviewTool", () => {
 		const completeSpy = vi
 			.spyOn(core, "instrumentedCompleteSimple")
 			.mockResolvedValue(assistantWithText("Attachment frame reviewed."));
-		const visionSuper = makeModel("anthropic", "claude-opus-5", { api: "anthropic-messages", input: ["text", "image"] });
+		const visionSuper = makeModel("anthropic", "claude-opus-5", {
+			api: "anthropic-messages",
+			input: ["text", "image"],
+		});
 		const tool = new SuperReviewTool(makeSession({ cwd: workspace.path(), model: visionSuper }));
 
 		const result = await tool.execute("tc-snapcompact-large-file-attachment", {

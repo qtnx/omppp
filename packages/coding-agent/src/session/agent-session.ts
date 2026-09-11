@@ -702,11 +702,11 @@ export class AgentSession {
 	#pendingNextTurnMessages: CustomMessage[] = [];
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
 	#queuedMessageDrainScheduled = false;
-/** Prompt surfaces persisted before dispatch so Context-GC observes stable entry IDs. */
-#prePersistedPromptMessages = new WeakSet<AgentMessage>();
-#contextGcDbPath: string | undefined;
-/** A single model-only notebook reminder queued for the current prompt generation. */
-#experimentalContextNotesReminder: { prompt: string; generation: number } | undefined;
+	/** Prompt surfaces persisted before dispatch so Context-GC observes stable entry IDs. */
+	#prePersistedPromptMessages = new WeakSet<AgentMessage>();
+	#contextGcDbPath: string | undefined;
+	/** A single model-only notebook reminder queued for the current prompt generation. */
+	#experimentalContextNotesReminder: { prompt: string; generation: number } | undefined;
 	#planModeState: PlanModeState | undefined;
 	#vibeModeState: VibeModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
