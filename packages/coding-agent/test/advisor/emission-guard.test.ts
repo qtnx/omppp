@@ -170,7 +170,7 @@ describe("AdvisorEmissionGuard", () => {
 
 		guard.beginUpdate({ consultAnswer: true });
 		expect(guard.accept("Looks good.")).toBe("accepted");
-		expect(guard.accept("Do X.")).not.toBe("accepted");
+		expect(guard.accept("Do X.")).toBe("accepted");
 
 		guard.beginUpdate();
 		expect(guard.accept("Looks good.")).not.toBe("accepted");

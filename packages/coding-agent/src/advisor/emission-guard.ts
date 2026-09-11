@@ -187,13 +187,14 @@ export class AdvisorEmissionGuard {
 	 */
 	accept(note: string, severity?: AdvisorSeverity): AdvisorEmissionDecision {
 		const key = normalizeAdvisorNote(note);
-		if (!key || SUPPRESSED_NORMALIZED_PHRASES[key]) return "suppressed_noise";
 		if (this.#consultAnswerExempt) {
 			this.#consultAnswerExempt = false;
+			if (!key) return "suppressed_noise";
 			if (this.#consumedThisUpdate) return "rate_limited";
 			this.#consumedThisUpdate = true;
 			return "accepted";
 		}
+		if (!key || SUPPRESSED_NORMALIZED_PHRASES[key]) return "suppressed_noise";
 		if (this.#seen.has(key)) {
 			const lastUpdate = this.#seenUpdate.get(key);
 			if (
