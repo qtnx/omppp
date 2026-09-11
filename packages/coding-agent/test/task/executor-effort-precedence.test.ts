@@ -50,6 +50,7 @@ function yieldEmittingSession(): AgentSession {
 		abort: async () => {},
 		setIrcWakeTurnObserver: () => {},
 		dispose: async () => {},
+		// Executor reads this when attaching the spawned session.
 		isAdvisorActive: () => false,
 	};
 	return session as unknown as AgentSession;
