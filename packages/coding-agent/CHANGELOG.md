@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Subagents now get their wall-clock budget in the prompt and a fast-scout rule (about two minutes inside the owned files, then edit); the task tool asks the orchestrator to hand over anchors, contract, and the decisive snippet rather than the whole edit, and to size each `task` slice to ten minutes, splitting anything larger instead of running it longer.
+- Subagent fallback chains are looked up by the model selector, then the agent name (`retry.fallbackChains.task` now applies to the `task` subagent when `task.agentModelOverrides.task` is an explicit model), then the role alias, then `default`; a subagent whose model has no working credentials at dispatch now walks that chain before borrowing the parent session's model.
+
+### Removed
+
+- Removed the `heavy_task` subagent tier and the built-in subagent review gate on `task`; load-bearing slices run as `task` and the main agent reviews every returned result. Existing `task.agentModelOverrides.heavy_task` entries are dropped on config migration.
+
 ## [1.8.4] - 2026-09-10
 
 ### Changed

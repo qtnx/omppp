@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenRouter's exhausted-credits `402 Prompt tokens limit exceeded` error now counts as a usage limit, so the session rotates to its fallback chain instead of failing the turn.
+
 ## [18.1.12] - 2026-09-06
 
 ### Added

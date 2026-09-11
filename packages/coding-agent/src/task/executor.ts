@@ -263,12 +263,12 @@ function resolveSubagentRetryFallbackCandidates(
  * Chain a single-model subagent inherits when its own model patterns supply no
  * fallbacks of their own. The child is pinned to a `subagent:<id>` role whose
  * chain shadows every configured role chain (see
- * {@link installSubagentRetryFallbackChain}), so a role-alias request (`@smol`,
- * the bundled `task` agent's `@task`) MUST inherit that role's chain —
- * otherwise the pin silently re-routes the child onto the `default` role's
- * chain. Explicit model selectors keep inheriting `default`: they carry no role
- * identity, and a role that happens to be assigned the same model must not
- * capture the child's fallback routing.
+ * {@link installSubagentRetryFallbackChain}), so the chain is looked up by the
+ * most specific key first: the raw model selector the child was given, the
+ * agent name (`task`, `quick_task`), the model role alias it expanded from
+ * (`@task`), then `default`. A `task.agentModelOverrides` selector therefore
+ * still inherits `retry.fallbackChains.<agent>` instead of silently landing on
+ * `default`, and a role-alias request keeps its role chain.
  *
  * Spawn paths preserve the pre-expansion alias as `modelRole` because their
  * model patterns are already expanded. Direct callers may still supply an
@@ -278,12 +278,16 @@ function resolveSubagentRetryFallbackCandidates(
 function resolveSubagentInheritedRetryFallbackChain(
 	settings: Settings,
 	modelRegistry: ModelRegistry,
-	role: string | undefined,
+	keys: { selector: string | undefined; agentName: string; role: string | undefined },
 ): string[] | undefined {
 	const configuredChains = settings.get("retry.fallbackChains");
 	// An explicitly emptied role chain means "no fallbacks", not "inherit
 	// default" — mirrors expandDefaultRetryFallbackChains.
-	const fallbackChain = (role !== undefined ? configuredChains?.[role] : undefined) ?? configuredChains?.default;
+	const fallbackChain =
+		(keys.selector !== undefined ? configuredChains?.[keys.selector] : undefined) ??
+		configuredChains?.[keys.agentName] ??
+		(keys.role !== undefined ? configuredChains?.[keys.role] : undefined) ??
+		configuredChains?.default;
 	if (
 		!Array.isArray(fallbackChain) ||
 		fallbackChain.length === 0 ||
@@ -316,7 +320,10 @@ function installSubagentRetryFallbackChain(args: {
 	const fallbackSelectors = candidates.slice(selectedIndex + 1).map(candidate => candidate.selector);
 	const existingFallbackChains = settings.get("retry.fallbackChains");
 	// A single configured model may reuse its role's (or the default) configured chain, but never an implicit parent fallback.
-	const fallbackChain = fallbackSelectors.length > 0 ? fallbackSelectors : inheritedFallbackChain;
+	// A model that was itself reached by walking the chain keeps only what follows it: re-pinning the whole chain
+	// would put the entries that already failed the dispatch-time auth check back in front.
+	const fallbackChain =
+		fallbackSelectors.length > 0 ? fallbackSelectors : selectedIndex === 0 ? inheritedFallbackChain : undefined;
 	if (
 		!Array.isArray(fallbackChain) ||
 		fallbackChain.length === 0 ||
@@ -3600,12 +3607,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const configuredModelPatterns = resolveConfiguredModelPatterns(modelPatterns, settings);
 			const inheritedRetryFallbackChain =
 				configuredModelPatterns.length === 1
-					? resolveSubagentInheritedRetryFallbackChain(
-							subagentSettings,
-							modelRegistry,
-							modelRole ?? resolveExplicitModelRole(modelPatterns, subagentSettings),
-						)
+					? resolveSubagentInheritedRetryFallbackChain(subagentSettings, modelRegistry, {
+							selector: modelPatterns[0],
+							agentName: agent.name,
+							role: modelRole ?? resolveExplicitModelRole(modelPatterns, subagentSettings),
+						})
 					: undefined;
+			// Dispatch-time auth check walks the SAME chain the child would use at
+			// runtime: requested pattern(s) first, then the configured fallback
+			// chain in order, and only then the parent session's model. Without
+			// this, an unauthenticated override skipped the chain entirely.
+			const dispatchCandidatePatterns = Array.from(
+				new Set([...modelPatterns, ...(inheritedRetryFallbackChain ?? [])]),
+			);
 			const {
 				model,
 				thinkingLevel: resolvedThinkingLevel,
@@ -3614,7 +3628,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				warning: modelResolutionWarning,
 			} = await awaitAbortable(
 				resolveModelOverrideWithAuthFallback(
-					modelPatterns,
+					dispatchCandidatePatterns,
 					options.parentActiveModelPattern,
 					modelRegistry,
 					settings,
@@ -3630,7 +3644,27 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (authFallbackUsed && model) {
 				logger.warn("Subagent model has no working credentials; falling back to parent session model", {
 					requested: modelPatterns,
+					fallbackChain: inheritedRetryFallbackChain,
 					parentModel: options.parentActiveModelPattern,
+					resolvedProvider: model.provider,
+					resolvedModel: model.id,
+				});
+			}
+			const retryFallbackCandidates = resolveSubagentRetryFallbackCandidates(
+				dispatchCandidatePatterns,
+				modelRegistry,
+				subagentSettings,
+			);
+			const primaryCandidate = retryFallbackCandidates[0];
+			if (
+				model &&
+				!authFallbackUsed &&
+				primaryCandidate &&
+				(primaryCandidate.model.provider !== model.provider || primaryCandidate.model.id !== model.id)
+			) {
+				logger.warn("Subagent model has no working credentials; using the next fallback-chain entry", {
+					requested: modelPatterns,
+					fallbackChain: inheritedRetryFallbackChain,
 					resolvedProvider: model.provider,
 					resolvedModel: model.id,
 				});
@@ -3638,7 +3672,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			const retryFallbackRole = installSubagentRetryFallbackChain({
 				settings: subagentSettings,
 				id,
-				candidates: resolveSubagentRetryFallbackCandidates(modelPatterns, modelRegistry, subagentSettings),
+				candidates: retryFallbackCandidates,
 				inheritedFallbackChain: inheritedRetryFallbackChain,
 				model,
 				authFallbackUsed,
@@ -3825,6 +3859,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 						worktree: worktree ?? "",
 						outputSchema: normalizedOutputSchema,
 						contextFile: contextFileForPrompt,
+						runtimeBudgetSeconds: maxRuntimeMs > 0 ? Math.ceil(maxRuntimeMs / 1000) : 0,
 						outputSchemaOverridesAgent: options.outputSchemaOverridesAgent === true,
 						workPoolYieldItems: options.workPoolYieldItems ?? [],
 						ircPeers: ircRoster?.peers ?? [],
