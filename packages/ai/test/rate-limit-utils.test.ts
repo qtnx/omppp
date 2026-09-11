@@ -817,6 +817,13 @@ describe("is402BillingCapBody", () => {
 		expect(is402BillingCapBody("concurrent requests limit reached")).toBe(true);
 	});
 
+	it("returns true for OpenRouter's exhausted-credits wording so the session rotates instead of failing", () => {
+		const body =
+			"Prompt tokens limit exceeded: 58428 > 27009. To increase, visit https://openrouter.ai/settings/credits and add more credits";
+		expect(is402BillingCapBody(body)).toBe(true);
+		expect(isUsageLimit(Object.assign(new Error(`402 ${body}`), { status: 402 }))).toBe(true);
+	});
+
 	it("returns false for non-quota informative bodies", () => {
 		expect(is402BillingCapBody("A subscription is required for this endpoint")).toBe(false);
 		expect(is402BillingCapBody("Rate limit exceeded, too many requests")).toBe(false);

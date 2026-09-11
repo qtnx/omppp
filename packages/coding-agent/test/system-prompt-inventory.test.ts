@@ -1299,7 +1299,7 @@ describe("system prompt tool inventory", () => {
 		expect(selection).not.toMatch(/`designer`\s*\+\s*`frontend_ui`/);
 		expect(selection).not.toMatch(/two independent\s+`ui_ux_reviewer`\s+passes/i);
 
-		const genericTierIndexes = ["`quick_task`", "`task`", "`heavy_task`"]
+		const genericTierIndexes = ["`quick_task`", "`task`"]
 			.map(name => selection.indexOf(name))
 			.filter(index => index >= 0);
 		expect(genericTierIndexes.length).toBeGreaterThan(0);

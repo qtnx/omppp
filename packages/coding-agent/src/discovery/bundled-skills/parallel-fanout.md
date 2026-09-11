@@ -57,8 +57,7 @@ Heavy git conflicts slice by disjoint path cluster, not by feature, and ordinary
 | Tier | Use for | Notes |
 |---|---|---|
 | `quick_task` | mechanical locked perimeter: renames, wiring, boilerplate, config | fastest; fan out widely |
-| `task` | contained senior slice — the default for wave-1 packages | `self_review: true` when you won't verify closely |
-| `heavy_task` | ONLY the indivisible RISK/load-bearing core | slowest; before every `heavy_task`, split off every `task`/`quick_task`-ownable slice — a heavy package with 2+ independent concerns MUST split |
+| `task` | contained senior slice, routine or load-bearing — the default for wave-1 packages | sized to 10 min; a longer package splits into two `task`s; the parent reviews every returned diff |
 | `frontend_ui` (+ `designer`, `ui_ux_reviewer` bundle) | any UI slice | specialist routing overrides tiers |
 | `explore` / `plan` / `librarian` | facts / architecture / external APIs | never implementation |
 

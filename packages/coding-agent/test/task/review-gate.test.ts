@@ -646,12 +646,12 @@ describe("task review gate", () => {
 		expect(single.exitCode).toBe(0);
 	});
 
-	it("uses the heavy_task native review config when self_review is set, even with the global reviewGate setting off", async () => {
+	it("uses a custom agent's native review config when self_review is set, even with the global reviewGate setting off", async () => {
 		mockDiscoveredAgents([
 			{
-				name: "heavy_task",
-				description: "Heavy high-accuracy implementer",
-				systemPrompt: "Implement heavy delegated work.",
+				name: "core_task",
+				description: "Custom high-accuracy implementer",
+				systemPrompt: "Implement custom delegated work.",
 				source: "bundled",
 				model: ["pi/task", "pi/slow"],
 				reviewGate: {
@@ -687,9 +687,9 @@ describe("task review gate", () => {
 				"task.reviewGate.fixerAgent": FIXER_AGENT,
 			}),
 		);
-		const result = await tool.execute("call-heavy-policy", {
+		const result = await tool.execute("call-custom-policy", {
 			...TASK_PARAMS,
-			agent: "heavy_task",
+			agent: "core_task",
 			isolated: true,
 		});
 
@@ -701,9 +701,9 @@ describe("task review gate", () => {
 	it("prefers the configured reviewer agent model over the native review gate default", async () => {
 		mockDiscoveredAgents([
 			{
-				name: "heavy_task",
-				description: "Heavy high-accuracy implementer",
-				systemPrompt: "Implement heavy delegated work.",
+				name: "core_task",
+				description: "Custom high-accuracy implementer",
+				systemPrompt: "Implement custom delegated work.",
 				source: "bundled",
 				model: ["pi/task", "pi/slow"],
 				reviewGate: {
@@ -742,7 +742,7 @@ describe("task review gate", () => {
 		);
 		const result = await tool.execute("call-configured-reviewer-model", {
 			...TASK_PARAMS,
-			agent: "heavy_task",
+			agent: "core_task",
 			isolated: true,
 		});
 

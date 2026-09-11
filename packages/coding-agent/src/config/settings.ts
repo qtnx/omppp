@@ -290,7 +290,7 @@ export type ConfigMigrationApplyResult = {
 	changedPaths: string[];
 };
 
-const SETUP_CONFIG_VERSION = 5;
+const SETUP_CONFIG_VERSION = 6;
 
 const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 	{
@@ -311,7 +311,6 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 			designer: "tnx/designer",
 			explore: "pi/smol",
 			frontend_ui: "tnx/designer",
-			heavy_task: "openai-codex/gpt-5.6-sol:high",
 			oracle: "openai-codex/gpt-5.6-sol:high",
 			plan: "anthropic/claude-fable-5:high",
 			qa: "openai-codex/gpt-5.6-sol:high",
@@ -349,7 +348,6 @@ const SETUP_CONFIG_RECOGNIZED_OLD_VALUES: SetupConfigRecognizedOldValues = {
 	"task.agentModelOverrides": {
 		quick_task: ["openai-codex/gpt-5.5:low"],
 		task: ["openai-codex/gpt-5.5:low", "openai-codex/gpt-5.5:medium"],
-		heavy_task: ["openai-codex/gpt-5.5:high"],
 		oracle: ["openai-codex/gpt-5.5:xhigh"],
 		reviewer: ["openai-codex/gpt-5.5:xhigh"],
 		tester: ["openai-codex/gpt-5.5:medium"],
@@ -2927,6 +2925,11 @@ export class Settings {
 						agentModelOverrides[key] = "tnx/designer";
 						overridesChanged = true;
 					}
+				}
+				// The heavy_task tier was removed; a stale override would only shadow nothing.
+				if ("heavy_task" in agentModelOverrides) {
+					delete agentModelOverrides.heavy_task;
+					overridesChanged = true;
 				}
 				if (overridesChanged) setupModifiedPaths.add("task.agentModelOverrides");
 			}
