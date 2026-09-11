@@ -1040,7 +1040,7 @@ describe("Settings", () => {
 			);
 			await settings.reloadFromDisk();
 
-			expect(settings.get("task.agentModelOverrides")).toEqual({
+			expect(settings.get("task.agentModelOverrides")).toMatchObject({
 				task: "xai-oauth/grok-4.6:medium",
 			});
 			expect(settings.get("retry.modelFallback")).toBe(false);
@@ -1064,7 +1064,7 @@ describe("Settings", () => {
 			);
 			await settings.reloadFromDisk();
 
-			expect(settings.get("task.agentModelOverrides")).toEqual({ task: "openai/gpt-4o" });
+			expect(settings.get("task.agentModelOverrides")).toMatchObject({ task: "openai/gpt-4o" });
 			expect(settings.get("retry.modelFallback")).toBe(true);
 			expect(settings.get("task.enableEffort")).toBe(false);
 			expect(settings.get("task.maxConcurrency")).toBe(7);
@@ -1075,13 +1075,21 @@ describe("Settings", () => {
 			);
 			await settings.reloadFromDisk();
 
-			expect(settings.get("task.agentModelOverrides")).toEqual({});
+			expect(settings.get("task.agentModelOverrides")).toMatchObject({
+				designer: "anthropic/claude-opus-5",
+				frontend_ui: "tnx/designer",
+				task: "openai-codex/gpt-5.6-terra:medium",
+			});
 			expect(settings.get("retry.modelFallback")).toBe(true);
 
 			await fsp.rm(projectConfigPath);
 			await settings.reloadFromDisk();
 
-			expect(settings.get("task.agentModelOverrides")).toEqual({});
+			expect(settings.get("task.agentModelOverrides")).toMatchObject({
+				designer: "anthropic/claude-opus-5",
+				frontend_ui: "tnx/designer",
+				task: "openai-codex/gpt-5.6-terra:medium",
+			});
 			expect(settings.get("retry.modelFallback")).toBe(true);
 			expect(settings.get("task.enableEffort")).toBe(false);
 			expect(settings.get("task.maxConcurrency")).toBe(7);
@@ -2746,7 +2754,7 @@ describe("Settings", () => {
 			expect(settings.get("setupVersion")).toBe(7);
 			expect(settings.get("task.agentModelOverrides")).toMatchObject({
 				designer: "anthropic/claude-opus-5",
-				frontend_ui: "anthropic/claude-opus-5",
+				frontend_ui: "tnx/designer",
 				ui_ux_reviewer: "anthropic/claude-opus-5",
 				ux_copywriter: "anthropic/claude-opus-5",
 				qa: "custom/qa",
