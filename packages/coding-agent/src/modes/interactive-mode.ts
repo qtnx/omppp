@@ -601,9 +601,10 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 				const boundedLine = truncateToWidth(line, rowWidth, "");
 				if (!progress) return boundedLine;
 				const telemetryParts: string[] = [];
-				const modelLabel =
-					progress.resolvedModel ??
-					(Array.isArray(progress.modelOverride) ? progress.modelOverride.join(",") : progress.modelOverride);
+				const modelLabel = showModelBadge
+					? (progress.resolvedModel ??
+						(Array.isArray(progress.modelOverride) ? progress.modelOverride.join(",") : progress.modelOverride))
+					: undefined;
 				if (modelLabel) telemetryParts.push(modelLabel);
 				telemetryParts.push(`${formatNumber(progress.toolCount)} tools`);
 				telemetryParts.push(`in ${formatNumber(progress.inputTokens)}`);

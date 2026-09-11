@@ -100,7 +100,9 @@ describe("status line loop mode segment", () => {
 			}),
 		);
 
-		expect(Bun.stripANSI(rendered.content)).toBe(withIcon(theme.icon.loop, "Loop running 3/3 until: bun test"));
+		expect(Bun.stripANSI(rendered.content)).toBe(
+			withIcon(theme.icon.loop, "Loop running 3 of 3 iterations remaining until: bun test"),
+		);
 	});
 
 	// The command is arbitrary user input; an unbounded one would push every

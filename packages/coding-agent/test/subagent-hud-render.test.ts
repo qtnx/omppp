@@ -391,28 +391,33 @@ describe("subagent HUD lines", () => {
 		}
 	});
 
-	it("renders telemetry for sessions with progress", () => {
-		const out = render([
-			makeSession({
-				id: "TelemetryWorker",
-				description: "running with stats",
-				progress: makeProgress({
+	it("renders telemetry for sessions with progress", async () => {
+		await Settings.init({ inMemory: true, overrides: { "task.showResolvedModelBadge": true } });
+		try {
+			const out = render([
+				makeSession({
 					id: "TelemetryWorker",
-					toolCount: 7,
-					inputTokens: 12_345,
-					outputTokens: 678,
-					durationMs: 2_000,
-					resolvedModel: "openai/gpt-5.5",
+					description: "running with stats",
+					progress: makeProgress({
+						id: "TelemetryWorker",
+						toolCount: 7,
+						inputTokens: 12_345,
+						outputTokens: 678,
+						durationMs: 2_000,
+						resolvedModel: "openai/gpt-5.5",
+					}),
 				}),
-			}),
-		]);
+			]);
 
-		expect(out).toContain("TelemetryWorker: running with stats");
-		expect(out).toContain("openai/gpt-5.5");
-		expect(out).toContain("7 tools");
-		expect(out).toContain("12K");
-		expect(out).toContain("678");
-		expect(out).toContain("339.0 tok/s");
+			expect(out).toContain("TelemetryWorker: running with stats");
+			expect(out).toContain("openai/gpt-5.5");
+			expect(out).toContain("7 tools");
+			expect(out).toContain("12K");
+			expect(out).toContain("678");
+			expect(out).toContain("339.0 tok/s");
+		} finally {
+			resetSettingsForTest();
+		}
 	});
 
 	it("omits the telemetry line when progress is missing", () => {

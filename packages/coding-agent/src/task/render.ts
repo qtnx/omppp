@@ -8,7 +8,6 @@ import path from "node:path";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Container, Markdown, Text, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
-import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
@@ -1028,8 +1027,7 @@ export function renderAgentProgress(
 	}
 
 	const renderOptions = {
-		showResolvedModelBadge:
-			renderProgressOptions?.showResolvedModelBadge ?? settings.get("task.showResolvedModelBadge"),
+		showResolvedModelBadge: false,
 		showAgentName: renderProgressOptions?.showAgentName ?? false,
 	};
 	if (progress.status === "running") {

@@ -50,6 +50,7 @@ function yieldEmittingSession(): AgentSession {
 		abort: async () => {},
 		setIrcWakeTurnObserver: () => {},
 		dispose: async () => {},
+		isAdvisorActive: () => false,
 	};
 	return session as unknown as AgentSession;
 }

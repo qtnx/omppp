@@ -61,6 +61,8 @@ function createLoopContext(options: {
 		},
 		setLoopPrompt,
 		pauseLoop,
+		captureLoopPrompt: vi.fn(async () => {}),
+		settings: { get: () => "steer" },
 		flushPendingBashComponents: vi.fn(),
 		startPendingSubmission: vi.fn((input: { text: string }) => ({ ...input, cancelled: false, started: false })),
 		withLocalSubmission: async (_text: string, fn: () => unknown) => fn(),

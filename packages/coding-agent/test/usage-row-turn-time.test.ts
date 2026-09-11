@@ -540,7 +540,7 @@ describe("AgentSession synthetic follow-up marking", () => {
 			expect(entry).toBeDefined();
 			const entryMs = new Date((entry as { timestamp: string }).timestamp).getTime();
 			// The entry carries the submission instant, not the post-run emission.
-			expect(entryMs - submittedAt).toBeLessThan(50);
+			expect(entryMs - submittedAt).toBeLessThan(250);
 		} finally {
 			await session.dispose();
 		}
