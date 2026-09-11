@@ -5,6 +5,7 @@ import {
 	createLoopLimitRuntime,
 	createLoopRuntime,
 	formatAgentLoopList,
+	isLoopDurationExpired,
 	MAX_LOOP_INTERVAL_MS,
 	parseLoopArgs,
 	parseLoopLimitArgs,
@@ -94,8 +95,8 @@ describe("loop argument parsing", () => {
 
 describe("loop limit parsing", () => {
 	test("empty args produce neither a limit nor a prompt", () => {
-		expect(parseLoopLimitArgs("")).toEqual({});
-		expect(parseLoopLimitArgs("   ")).toEqual({});
+		expect(parseLoopArgs("")).toEqual({});
+		expect(parseLoopArgs("   ")).toEqual({});
 	});
 
 	test("parses a bare positive integer as the iteration count", () => {
@@ -143,8 +144,8 @@ describe("loop limit parsing", () => {
 	});
 
 	test("treats non-limit prose as an unbounded loop with an inline prompt", () => {
-		expect(parseLoopLimitArgs("keep going")).toEqual({ prompt: "keep going" });
-		expect(parseLoopLimitArgs("fix the failing tests")).toEqual({ prompt: "fix the failing tests" });
+		expect(parseLoopArgs("keep going")).toEqual({ prompt: "keep going" });
+		expect(parseLoopArgs("fix the failing tests")).toEqual({ prompt: "fix the failing tests" });
 	});
 
 	test("rejects zero, negative, and unknown interval-shaped tokens", () => {

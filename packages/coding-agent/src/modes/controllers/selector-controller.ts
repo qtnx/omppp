@@ -372,7 +372,11 @@ export class SelectorController {
 					// Re-discover the merged roster (project + user) so the live advisors
 					// reflect cross-level precedence, not just the edited file.
 					const discovered = await discoverAdvisorConfigs(cwd, agentDir);
-					const count = this.ctx.session.applyAdvisorConfigs(discovered.advisors, discovered.sharedInstructions);
+					const count = this.ctx.session.applyAdvisorConfigs(
+						discovered.advisors,
+						discovered.sharedInstructions,
+						discovered.sharedMaxNotesPerUpdate,
+					);
 					this.ctx.statusLine.invalidate();
 					this.ctx.showStatus(
 						count > 0
@@ -543,6 +547,12 @@ export class SelectorController {
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();
 				break;
+			case "advisor.maxNotesPerUpdate":
+				if (this.ctx.session.isAdvisorEnabled()) {
+					this.ctx.session.setAdvisorEnabled(true);
+					this.ctx.ui.requestRender();
+				}
+				break;
 			case "steeringMode":
 				this.ctx.session.setSteeringMode(value as "all" | "one-at-a-time");
 				break;
@@ -578,6 +588,11 @@ export class SelectorController {
 					this.ctx.showError(`Failed to apply external thinking: ${err}`);
 				});
 				break;
+			case "compaction.idleEnabled":
+			case "compaction.idleThresholdTokens":
+			case "compaction.idleTimeoutSeconds":
+				this.ctx.eventController.refreshIdleCompactionTimer();
+				break;
 
 			case "autocompleteMaxVisible":
 				this.ctx.editor.setAutocompleteMaxVisible(typeof value === "number" ? value : Number(value));
@@ -587,6 +602,11 @@ export class SelectorController {
 			case "spelling.autocorrect":
 				this.ctx.syncEditorSpelling();
 				this.ctx.ui.requestRender();
+				break;
+
+			case "tui.vimMode":
+			case "tui.vimModeDisplay":
+				this.ctx.applyVimModeSetting();
 				break;
 
 			// Settings with UI side effects

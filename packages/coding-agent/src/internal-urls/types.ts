@@ -10,6 +10,7 @@ import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp/manager";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { LocalProtocolOptions } from "./local-protocol";
+import type { SessionEntry } from "../session/session-entries";
 
 /**
  * Raw resource payload returned by protocol handlers. The `immutable` flag is
@@ -114,6 +115,18 @@ export interface ResolveContext {
 	settings?: unknown;
 	/** Caller's abort signal. */
 	signal?: AbortSignal;
+	/**
+	 * Whether experimental context-management resources are enabled for this
+	 * caller. This is passed explicitly so resource resolution cannot infer a
+	 * feature gate from process-global settings.
+	 */
+	experimentalContextManagement?: boolean;
+	/**
+	 * Current live branch owned by the caller's session. `history://current/full`
+	 * uses only this callback; it never falls back to a registry entry, session
+	 * file, or on-disk transcript.
+	 */
+	getSessionBranch?: () => readonly SessionEntry[];
 	/**
 	 * Calling session's `local://` root mapping. When present, the local-protocol
 	 * handler resolves the URL against THIS session's artifacts dir instead of

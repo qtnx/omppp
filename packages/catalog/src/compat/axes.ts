@@ -259,6 +259,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"thinking-prefix-binding": { key: "prefixBinding", set: "thinking", shape: "scalar" },
 	"thinking-suppress-when-off": { key: "suppressWhenOff", set: "thinking", shape: "scalar" },
 	"thinking-supports-display": { key: "supportsDisplay", set: "thinking", shape: "scalar" },
+	"thinking-upgrade-neutral": { key: "upgradeNeutral", set: "thinking", shape: "scalar" },
 
 	// ── catalog metadata ──
 	"apply-patch-tool-type": {
@@ -267,6 +268,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 		shape: "scalar",
 		values: ["freeform", "function"],
 	},
+	"clamp-context-override": { key: "clampContextOverride", set: "catalog", shape: "scalar" },
 	"context-promotion-target": { key: "contextPromotionTarget", set: "catalog", shape: "scalar" },
 	"context-window-floor": { key: "contextWindowFloor", set: "catalog", shape: "scalar" },
 	"cost-patch": { key: "costPatch", set: "catalog", shape: "object" },
@@ -285,6 +287,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	},
 	priority: { key: "priority", set: "catalog", shape: "scalar" },
 	"service-tier-cost": { key: "serviceTierCost", set: "catalog", shape: "object" },
+	"time-based-cost": { key: "timeBased", set: "catalog", shape: "object" },
 };
 
 /** Records applicable to each API family; used by `resolve.ts` when applying wire axes. */

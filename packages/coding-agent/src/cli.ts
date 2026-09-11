@@ -10,6 +10,7 @@ import "./cli/preload-env";
  * lightweight CLI runner from pi-utils.
  */
 import { parentPort } from "node:worker_threads";
+import type { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
 import type { CliConfig, CommandMetadata } from "@oh-my-pi/pi-utils/cli";
 import {
 	APP_NAME,
@@ -291,6 +292,11 @@ async function runIpcSubprocessWorker<In, Out>(
 	// always spawns us that way. If it's missing, the parent vanished and
 	// there's no one to talk to.
 	const ipcSend = (): IpcSend | undefined => (process as NodeJS.Process & { send?: IpcSend }).send;
+	if (!ipcSend()) {
+		// Intentional fall-through: shutdown() only resolves the promise;
+		// the await + SIGKILL tail below is what actually exits.
+		shutdown();
+	}
 	const send = (message: Out): void => {
 		const sender = ipcSend();
 		if (!sender) {
@@ -330,6 +336,66 @@ async function runIpcSubprocessWorker<In, Out>(
 			};
 		},
 	});
+	let parentWatchdog: NodeJS.Timeout | undefined;
+	const initialParentPid = process.ppid;
+	if (process.platform === "win32" && initialParentPid <= 0) {
+		shutdown();
+	} else if (initialParentPid > 0) {
+		let parentProcess: Process | null = null;
+		let runningStatus: ProcessStatus | undefined;
+		try {
+			if (!process.env.PI_TEST_NO_NATIVES) {
+				const natives = await import("@oh-my-pi/pi-natives");
+				parentProcess = natives.Process.fromPid(initialParentPid);
+				runningStatus = natives.ProcessStatus.Running;
+			}
+		} catch {}
+
+		// Note on container environments (Docker/Kubernetes): omp often runs as
+		// PID 1, so workers start with process.ppid === 1. Treating ppid <= 1 as
+		// an orphan at boot would break containerized workers. Instead, we allow
+		// PID 1 to boot normally and detect post-spawn reparenting dynamically via
+		// `process.ppid !== initialParentPid`.
+		//
+		// Note on Linux seccomp/kernels: On hosts where pidfd_open is blocked or
+		// unavailable (e.g. pre-5.3 kernels, restrictive seccomp), Process.fromPid
+		// returns null even when the parent is alive. We treat null as the native
+		// handle being unavailable and fall through to the isParentAlive() check
+		// rather than assuming null means dead at boot.
+		const isParentAlive = (): boolean => {
+			if (process.ppid !== initialParentPid) {
+				return false;
+			}
+			if (parentProcess && runningStatus !== undefined) {
+				try {
+					return parentProcess.status() === runningStatus;
+				} catch {}
+			}
+			try {
+				process.kill(initialParentPid, 0);
+				return true;
+			} catch (err: unknown) {
+				return (err as NodeJS.ErrnoException)?.code === "EPERM";
+			}
+		};
+
+		if (!isParentAlive()) {
+			shutdown();
+		} else {
+			if (parentProcess) {
+				void parentProcess.waitForExit().then(
+					() => shutdown(),
+					() => shutdown(),
+				);
+			}
+			parentWatchdog = setInterval(() => {
+				if (!isParentAlive()) {
+					shutdown();
+				}
+			}, 1000);
+			parentWatchdog.unref();
+		}
+	}
 	const keepalive = setInterval(() => {}, 2 ** 30);
 	// Parent went away (crashed, SIGKILL, etc.) — commit suicide so we don't
 	// linger as an orphan. SIGKILL via `process.kill` keeps us symmetrical with
@@ -339,6 +405,7 @@ async function runIpcSubprocessWorker<In, Out>(
 		await shuttingDown;
 	} finally {
 		clearInterval(keepalive);
+		if (parentWatchdog) clearInterval(parentWatchdog);
 	}
 	process.kill(process.pid, "SIGKILL");
 }
@@ -408,13 +475,27 @@ export async function runCli(argv: string[]): Promise<void> {
 	// workspace-sandbox relaunch: a worker thread re-entering this module must
 	// never be wrapped into a detached sandbox/container clone - the clone has no
 	// postMessage channel to the spawning thread, so the worker would hang.
+	// Declare this module as the worker-host entry now that the active profile
+	// is resolved. The worker-host module is side-effect-free; importing
+	// `@oh-my-pi/pi-utils/env` here would snapshot the wrong agent `.env`.
+	// Gated on `isProcessEntry`: only the real CLI process entry is a valid
+	// worker host. Worker-thread re-entry has `!Bun.isMainThread` (isProcessEntry === false),
+	// and importers (`runCli` in profile-CLI tests, SDK embedding) have `import.meta.main === false`
+	// — declaring there would poison `workerHostEntry()` for the whole test process, forcing eval/stats/
+	// browser workers onto the same-realm inline fallback.
+	// This must run before worker selector dispatch so that worker subprocesses
+	// (e.g. stats activity) are registered as hosts and can themselves spawn worker threads.
+	if (isProcessEntry) declareWorkerHostEntry();
+
 	if (resolvedArgv[0] === "--smoke-test") {
-		if (import.meta.main) declareWorkerHostEntry();
 		await runSmokeTest();
 		return;
 	}
-	// Worker-thread entry dispatch must run before the first later import:
-	// the stats sync worker installs its buffering handler synchronously.
+	// Worker-thread entry dispatch must run before the first `await`: the
+	// stats sync worker's buffering onmessage handler is installed in the
+	// synchronous prefix of `runWorkerEntrypoint`, and Bun flushes the
+	// worker's parked initial messages as soon as the entry module's
+	// top-level evaluation finishes.
 	if (isWorkerHostSelector(resolvedArgv[0])) {
 		const dispatched = await runWorkerEntrypoint(resolvedArgv[0]);
 		if (!dispatched) {
@@ -424,22 +505,16 @@ export async function runCli(argv: string[]): Promise<void> {
 		return;
 	}
 
-	// Declare this module as the worker-host entry now that the active profile
-	// is resolved. The worker-host module is side-effect-free; importing
-	// `@oh-my-pi/pi-utils/env` here would snapshot the wrong agent `.env`.
-	// Gated on `isProcessEntry`: only the real CLI process entry is a valid
-	// worker host. Worker-thread re-entry already returned above at the
-	// `__omp_worker_`/legacy dispatch, and importers (`runCli` in profile-CLI tests,
-	// SDK embedding) have `import.meta.main === false` — declaring there would
-	// poison `workerHostEntry()` for the whole test process, forcing eval/stats/
-	// browser workers onto the same-realm inline fallback.
-	if (isProcessEntry) declareWorkerHostEntry();
-
 	// Profile bootstrap must complete before loading omp-command because it imports pi-utils/env eagerly.
 	const { reexecUnderWorkspaceSandboxIfNeeded } = await import("./task/omp-command");
 	if (await reexecUnderWorkspaceSandboxIfNeeded(resolvedArgv)) return;
-	// `PI_PROXY` must reach the bare global `fetch` before any provider call.
-	// OAuth refresh/login and usage probes never pass through `wrapFetchForProxy`.
+	// `PI_PROXY` must reach the bare global `fetch` before any provider call:
+	// OAuth refresh/login and usage probes never pass through
+	// `wrapFetchForProxy`, so without this they bypass the proxy and fail
+	// wherever the provider blocks the caller's region. Dynamically imported
+	// like every other dependency in this entry module: a static `pi-ai` import
+	// would load the provider graph before profile bootstrap and on paths
+	// (`--version`, worker selectors) that never touch the network.
 	const { installGlobalProxyFetch } = await import("@oh-my-pi/pi-ai/utils/proxy");
 	installGlobalProxyFetch();
 	if (resolvedArgv[0] === "--license") {
