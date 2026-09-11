@@ -2394,6 +2394,9 @@ export const SETTINGS_SCHEMA = {
 			group: "Input",
 			label: "Hold Steering During Subagent Waits",
 			description: "Hold user steering messages until a blocking subagent wait ends, then deliver them wrapped.",
+		},
+	},
+
 	"tui.vimMode": {
 		type: "boolean",
 		default: false,

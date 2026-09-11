@@ -225,6 +225,5 @@ export class AdvisorEmissionGuard {
 				this.#seenUpdate.delete(stale);
 			}
 		}
-		return "accepted";
 	}
 }

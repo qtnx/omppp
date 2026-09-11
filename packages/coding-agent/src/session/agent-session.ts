@@ -238,9 +238,14 @@ import {
 } from "../tools";
 import { resolveApproval } from "../tools/approval";
 import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../tools/ask";
-import type { AssistantMessage, Model, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { logger, prompt } from "@oh-my-pi/pi-utils";
-import type { Settings } from "../config/settings";
+import { disableAnnotateHttp } from "../tools/browser/annotate-http";
+import {
+	armIdleCloseForOwner,
+	cancelIdleCloseForOwner,
+	freezeTabsForOwner,
+	releaseIdleTabsForOwner,
+	releaseTabsForOwner,
+} from "../tools/browser/tab-supervisor";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
 import { releaseComputerSessionsForOwner } from "../tools/computer/supervisor";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";

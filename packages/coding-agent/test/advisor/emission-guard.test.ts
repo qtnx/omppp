@@ -136,22 +136,22 @@ describe("AdvisorEmissionGuard", () => {
 
 	it("drops duplicate concrete advice across later update cycles", () => {
 		const guard = new AdvisorEmissionGuard();
-		expect(guard.accept("Still missing verification evidence.")).toBe(true);
+		expect(guard.accept("Still missing verification evidence.")).toBe("accepted");
 		for (let i = 0; i < 8; i++) {
 			guard.beginUpdate();
-			expect(guard.accept("Still missing verification evidence.")).toBe(false);
+			expect(guard.accept("Still missing verification evidence.")).not.toBe("accepted");
 		}
 	});
 
 	it("renews standing reminders after five advisor update cycles", () => {
 		const guard = new AdvisorEmissionGuard();
-		expect(guard.accept("Reminder: keep demanding browser QA evidence.")).toBe(true);
+		expect(guard.accept("Reminder: keep demanding browser QA evidence.")).toBe("accepted");
 		for (let i = 0; i < 4; i++) {
 			guard.beginUpdate();
-			expect(guard.accept("Reminder: keep demanding browser QA evidence.")).toBe(false);
+			expect(guard.accept("Reminder: keep demanding browser QA evidence.")).not.toBe("accepted");
 		}
 		guard.beginUpdate();
-		expect(guard.accept("Reminder: keep demanding browser QA evidence.")).toBe(true);
+		expect(guard.accept("Reminder: keep demanding browser QA evidence.")).toBe("accepted");
 	});
 
 	it("reset clears dedupe and the per-update gate so a re-primed advisor can re-raise old issues", () => {
@@ -169,28 +169,28 @@ describe("AdvisorEmissionGuard", () => {
 		const guard = new AdvisorEmissionGuard();
 
 		guard.beginUpdate({ consultAnswer: true });
-		expect(guard.accept("Looks good.")).toBe(true);
-		expect(guard.accept("Do X.")).toBe(false);
+		expect(guard.accept("Looks good.")).toBe("accepted");
+		expect(guard.accept("Do X.")).not.toBe("accepted");
 
 		guard.beginUpdate();
-		expect(guard.accept("Looks good.")).toBe(false);
+		expect(guard.accept("Looks good.")).not.toBe("accepted");
 
 		const unconsumedGuard = new AdvisorEmissionGuard();
 		unconsumedGuard.beginUpdate({ consultAnswer: true });
 		unconsumedGuard.beginUpdate();
-		expect(unconsumedGuard.accept("Looks good.")).toBe(false);
+		expect(unconsumedGuard.accept("Looks good.")).not.toBe("accepted");
 
 		const unpoisonedGuard = new AdvisorEmissionGuard();
 		unpoisonedGuard.beginUpdate({ consultAnswer: true });
-		expect(unpoisonedGuard.accept("Async answer: retry with the new token.")).toBe(true);
+		expect(unpoisonedGuard.accept("Async answer: retry with the new token.")).toBe("accepted");
 		unpoisonedGuard.beginUpdate();
-		expect(unpoisonedGuard.accept("Async answer: retry with the new token.")).toBe(true);
+		expect(unpoisonedGuard.accept("Async answer: retry with the new token.")).toBe("accepted");
 		unpoisonedGuard.beginUpdate();
-		expect(unpoisonedGuard.accept("Async answer: retry with the new token.")).toBe(false);
+		expect(unpoisonedGuard.accept("Async answer: retry with the new token.")).not.toBe("accepted");
 
 		guard.beginUpdate({ consultAnswer: true });
 		guard.reset();
-		expect(guard.accept("Looks good.")).toBe(false);
+		expect(guard.accept("Looks good.")).not.toBe("accepted");
 	});
 
 	it("evicts oldest entries when dedupe history exceeds capacity", () => {

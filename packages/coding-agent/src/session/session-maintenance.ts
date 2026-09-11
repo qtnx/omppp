@@ -1412,7 +1412,7 @@ export class SessionMaintenance {
 	 * and LLM summaries all rewrite the active representation of raw history.
 	 */
 	async #runExperimentalContextRollover(
-		reason: "overflow" | "threshold" | "idle" | "incomplete",
+		reason: "overflow" | "threshold" | "idle" | "incomplete" | "requested",
 		willRetry: boolean,
 		options: {
 			autoContinue?: boolean;

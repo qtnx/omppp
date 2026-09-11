@@ -506,7 +506,7 @@ describe("InteractiveMode loop auto-submit", () => {
 			idleSession();
 			vi.spyOn(loopCondition, "evaluateLoopCondition").mockResolvedValue({ kind: "halt", message: "stop" });
 			mode.loopCondition = { command: "bun test", until: true };
-			const limit = { kind: "iterations", initial: 3, remaining: 3 } as const;
+			const limit = { intervalMs: 800, initialIterations: 3, remainingIterations: 3 };
 			mode.loopLimit = { ...limit };
 			const observed = mode.loopLimit;
 

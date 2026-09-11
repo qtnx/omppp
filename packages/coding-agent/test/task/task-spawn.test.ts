@@ -509,6 +509,8 @@ describe("task spawn routing", () => {
 					toolCount: 0,
 					requests: 1,
 					tokens: 1,
+					inputTokens: 0,
+					outputTokens: 0,
 					cost: 0,
 					durationMs: 1,
 					resolvedModel: "custom/coding-router:max:high",
@@ -574,7 +576,7 @@ describe("task spawn routing", () => {
 		let publishProgress: ((metadata: Partial<AgentProgress>) => void) | undefined;
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			const progress: AgentProgress = {
-				...makeResult(options.id ?? "?"),
+				...makeProgress(options.id ?? "?"),
 				status: "running",
 				recentTools: [],
 				recentOutput: [],
@@ -648,7 +650,7 @@ describe("task spawn routing", () => {
 			const gate = deferred();
 			vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 				options.onProgress?.({
-					...makeResult(options.id ?? "?"),
+					...makeProgress(options.id ?? "?"),
 					status: "running",
 					recentTools: [],
 					recentOutput: [],

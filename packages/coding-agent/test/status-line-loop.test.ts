@@ -95,7 +95,7 @@ describe("status line loop mode segment", () => {
 			"mode",
 			createContext({
 				state: "running",
-				limit: { kind: "iterations", initial: 3, remaining: 3 },
+				limit: { intervalMs: 800, initialIterations: 3, remainingIterations: 3 },
 				condition: { command: "bun test", until: true },
 			}),
 		);

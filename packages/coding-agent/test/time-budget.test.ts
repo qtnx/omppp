@@ -70,6 +70,7 @@ function createStatusContext(
 		prewalk: null,
 		goalMode: null,
 		vibeMode: null,
+		vim: null,
 		collab: null,
 		usageStats: {
 			input: 0,

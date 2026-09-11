@@ -1815,6 +1815,7 @@ export function renderResult(
 						undefined,
 						0,
 						nowMs,
+						undefined,
 						contentWidth,
 					),
 				);
@@ -1854,6 +1855,7 @@ export function renderResult(
 						undefined,
 						0,
 						nowMs,
+						undefined,
 						contentWidth,
 					),
 				);
@@ -2048,6 +2050,7 @@ function renderNestedTaskTree(
 						seen,
 						depth + 1,
 						nowMs,
+						undefined,
 						maxWidth,
 					),
 				);
