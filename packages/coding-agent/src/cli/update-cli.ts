@@ -1143,10 +1143,21 @@ function resolveOmpPath(): string | undefined {
 }
 
 /**
- * Extract the semver from `ompx --version` output (bare or launcher-prefixed), preserving prerelease suffixes.
+ * Extract the semver from `ompx --version` output.
+ * Accepts bare `X.Y.Z`, optional `v` prefix, and `omp/` / `ompx/` launcher labels.
+ * Other labels (`node/18.0.5`) are foreign binaries and must not parse.
  */
 export function parseReportedVersion(output: string): string | undefined {
-	return output.match(/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/)?.[1];
+	const trimmed = output.trim();
+	const version = /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
+	if (version.test(trimmed)) return trimmed;
+	if (trimmed.startsWith("v") && version.test(trimmed.slice(1))) return trimmed.slice(1);
+	const slash = trimmed.indexOf("/");
+	if (slash <= 0) return undefined;
+	const label = trimmed.slice(0, slash);
+	if (label !== APP_NAME && label !== "omp" && label !== "ompx") return undefined;
+	const rest = trimmed.slice(slash + 1);
+	return version.test(rest) ? rest : undefined;
 }
 
 async function reportedVersionAtPath(binaryPath: string): Promise<string | undefined> {
@@ -1172,6 +1183,13 @@ async function validateExistingUpdateTarget(targetPath: string): Promise<void> {
 	try {
 		hasShebang = (await Bun.file(targetPath).slice(0, 2).text()) === "#!";
 	} catch {}
+
+	const stem = path.basename(targetPath, path.extname(targetPath)).toLowerCase();
+	if (stem === "bun" || stem === "node") {
+		throw new Error(
+			`Refusing to replace ${targetPath}: the resolved foreign symlink target does not report an OMP version when run directly. Point PATH directly at the OMP binary you want to update, or reinstall with: ${installerHint()}`,
+		);
+	}
 
 	if (!hasShebang && (await reportedVersionAtPath(targetPath)) !== undefined) return;
 
