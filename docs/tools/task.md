@@ -36,7 +36,7 @@ The model-facing wire schema is shape-swapped by `task.batch` (default on). One 
 | `context` | `string` | Yes (batch) | Shared background prepended to every spawn of the call via the subagent system prompt. Rejected when `task.batch` is off. |
 | `tasks` | `array` | Yes (batch) | One task item per subagent. Provided names must be unique within the call (case-insensitive). Rejected when `task.batch` is off. |
 | `name` | `string` | No | Stable agent name — becomes the registry/IRC id. Defaults to a generated AdjectiveNoun name. Uniquified per session by `AgentOutputManager`. Item field in batch shape, top-level in flat shape. |
-| `agent` | `string` | No | Agent type to run this item (e.g. `scout`, `task`, `quick_task`, or `heavy_task`). Defaults to the spawn policy's default agent (usually `task`); items in one batch call may use different agent types. Item field in batch shape, top-level in flat shape. |
+| `agent` | `string` | No | Agent type to run this item (e.g. `scout`, `task`, or `quick_task`). Defaults to the spawn policy's default agent (usually `task`); items in one batch call may use different agent types. Item field in batch shape, top-level in flat shape. |
 | `task` | `string` | Yes | Complete, self-contained work instructions. Empty-after-trim is rejected. Item field in batch shape, top-level in flat shape. |
 | `model` | `string \| string[]` | No | Explicit non-empty model selector or non-empty fallback chain for this spawn. Optional `:reasoning` suffixes are preserved. Takes precedence over `task.agentModelOverrides` and agent frontmatter. Item field in batch shape, top-level in flat shape. |
 | `effort` | `"lo" \| "med" \| "hi"` | No | Present only with `task.enableEffort=true`. Per-spawn thinking effort mapped onto the resolved model's supported range; overrides the agent's default thinking selector. Item field in batch shape, top-level in flat shape. |
@@ -133,8 +133,7 @@ Artifacts and side channels:
   - `oracle` — senior-engineer implementation/debugging/general consultation agent.
   - `tester` — test-authoring agent, adopted additively from upstream.
   - `workflow-subagent` — workflow execution helper.
-  - `heavy_task` — high-accuracy worker for load-bearing implementation with a strict built-in review gate.
-  - `task` — medium-complexity implementation worker with a lighter built-in review gate.
+  - `task` — implementation worker for one contained slice (routine or load-bearing) sized to about ten minutes; no built-in review gate — the main agent reviews returned results.
   - `quick_task` — fast worker for light mechanical implementation with no built-in review gate.
 
 ## Side Effects

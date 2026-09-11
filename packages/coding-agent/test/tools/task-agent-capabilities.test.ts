@@ -19,7 +19,7 @@ describe("task agent capability descriptions", () => {
 		expect(explore.systemPrompt).toContain("You MUST operate as read-only");
 		expect(explore.systemPrompt).toContain("You NEVER use `bash` to write, edit, delete, install");
 		expect(isReadOnlyAgent(agentByName(agents, "scout"))).toBe(true);
-		for (const name of ["task", "quick_task", "heavy_task", "plan", "reviewer", "tester", "designer"]) {
+		for (const name of ["task", "quick_task", "plan", "reviewer", "tester", "designer"]) {
 			expect(isReadOnlyAgent(agentByName(agents, name))).toBe(false);
 		}
 	});
@@ -43,7 +43,7 @@ describe("task agent capability descriptions", () => {
 		expect(agentByName(agents, "explore").readSummarize).toBe(false);
 		expect(agentByName(agents, "librarian").readSummarize).toBe(false);
 		expect(agentByName(agents, "scout").readSummarize).toBe(false);
-		for (const name of ["task", "quick_task", "heavy_task", "plan", "reviewer", "tester", "designer"]) {
+		for (const name of ["task", "quick_task", "plan", "reviewer", "tester", "designer"]) {
 			expect(agentByName(agents, name).readSummarize).toBeUndefined();
 		}
 	});

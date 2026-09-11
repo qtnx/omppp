@@ -321,8 +321,7 @@ describe("config update", () => {
 		expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual({
 			designer: "anthropic/claude-opus-5",
 			explore: "pi/smol",
-			frontend_ui: "anthropic/claude-opus-5",
-			heavy_task: "openai-codex/gpt-5.6-sol:high",
+			frontend_ui: "tnx/designer",
 			oracle: "openai-codex/gpt-5.6-sol:high",
 			plan: "anthropic/claude-fable-5:high",
 			qa: "custom/qa",
@@ -441,8 +440,7 @@ describe("config update", () => {
 		expect((firstMigration.task as Record<string, unknown>).agentModelOverrides).toEqual({
 			designer: "anthropic/claude-opus-5",
 			explore: "pi/smol",
-			frontend_ui: "anthropic/claude-opus-5",
-			heavy_task: "openai-codex/gpt-5.6-sol:high",
+			frontend_ui: "tnx/designer",
 			oracle: "openai-codex/gpt-5.6-sol:high",
 			plan: "anthropic/claude-fable-5:high",
 			qa: "openai-codex/gpt-5.6-sol:high",

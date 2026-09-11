@@ -12,37 +12,17 @@ const REVIEW_COMMENT_PATTERN = /\[REVIEW|# REVIEW/i;
 const FRONTEND_AGENT_MODELS = ["anthropic/claude-opus-5", "tnx/designer"];
 
 describe("bundled task agents", () => {
-	test("includes heavy_task with strict review gate defaults", () => {
+	test("no longer bundles heavy_task", () => {
 		const names = loadBundledAgents().map(agent => agent.name);
-		expect(names).toContain("heavy_task");
-
-		const heavy = getBundledAgent("heavy_task");
-		expect(heavy?.description).toContain("heavy");
-		expect(heavy?.model).toEqual(["anthropic/claude-fable-5:low", "openai-codex/gpt-5.5:high", "pi/task", "pi/slow"]);
-		expect(heavy?.reviewGate).toEqual({
-			enabled: true,
-			reviewerAgent: "reviewer",
-			reviewerModel: ["openai-codex/gpt-5.5:xhigh"],
-			fixerAgent: "task",
-			maxFixIterations: 2,
-			failOnPriorities: [0, 1],
-			requireCorrectVerdict: true,
-		});
+		expect(names).not.toContain("heavy_task");
+		expect(getBundledAgent("heavy_task")).toBeUndefined();
 	});
 
-	test("keeps task as the medium worker with a lighter review gate", () => {
+	test("keeps task as the implementer with no built-in review gate", () => {
 		const taskAgent = getBundledAgent("task");
-		expect(taskAgent?.description).toContain("Medium");
+		expect(taskAgent?.description).toContain("Implementer");
 		expect(taskAgent?.model).toEqual(["@task"]);
-		expect(taskAgent?.reviewGate).toEqual({
-			enabled: true,
-			reviewerAgent: "reviewer",
-			reviewerModel: ["openai-codex/gpt-5.5:high"],
-			fixerAgent: "task",
-			maxFixIterations: 1,
-			failOnPriorities: [0, 1],
-			requireCorrectVerdict: true,
-		});
+		expect(taskAgent?.reviewGate).toEqual({ enabled: false });
 	});
 
 	test("keeps quick_task fast and review-gate free", () => {
@@ -53,7 +33,7 @@ describe("bundled task agents", () => {
 	});
 
 	test("autoloads Caveman, Ponytail, and RTK for implementers only", () => {
-		const implementerNames = ["quick_task", "task", "heavy_task"] as const;
+		const implementerNames = ["quick_task", "task"] as const;
 
 		for (const name of implementerNames) {
 			expect(getBundledAgent(name)?.autoloadSkills).toEqual(["caveman", "ponytail", "rtk"]);

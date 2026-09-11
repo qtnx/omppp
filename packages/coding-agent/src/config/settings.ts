@@ -311,8 +311,7 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 		target: {
 			designer: "anthropic/claude-opus-5",
 			explore: "pi/smol",
-			frontend_ui: "anthropic/claude-opus-5",
-			heavy_task: "openai-codex/gpt-5.6-sol:high",
+			frontend_ui: "tnx/designer",
 			oracle: "openai-codex/gpt-5.6-sol:high",
 			plan: "anthropic/claude-fable-5:high",
 			qa: "openai-codex/gpt-5.6-sol:high",
@@ -356,7 +355,6 @@ const SETUP_CONFIG_RECOGNIZED_OLD_VALUES: SetupConfigRecognizedOldValues = {
 		ux_copywriter: ["tnx/designer", "pi/designer"],
 		quick_task: ["openai-codex/gpt-5.5:low"],
 		task: ["openai-codex/gpt-5.5:low", "openai-codex/gpt-5.5:medium"],
-		heavy_task: ["openai-codex/gpt-5.5:high"],
 		oracle: ["openai-codex/gpt-5.5:xhigh"],
 		reviewer: ["openai-codex/gpt-5.5:xhigh"],
 		tester: ["openai-codex/gpt-5.5:medium"],
@@ -2922,6 +2920,29 @@ export class Settings {
 				}
 			}
 
+			const agentModelOverrides = getByPath(raw, SETTING_PATH_SEGMENTS["task.agentModelOverrides"]);
+			if (isRecord(agentModelOverrides)) {
+				const uiSpecialistOverrideKeys = ["designer", "frontend_ui", "ui_ux_reviewer", "ux_copywriter"] as const;
+				let overridesChanged = false;
+				for (const key of uiSpecialistOverrideKeys) {
+					const value = agentModelOverrides[key];
+					if (value === "pi/designer") {
+						agentModelOverrides[key] = "tnx/designer";
+						overridesChanged = true;
+						continue;
+					}
+					if (key === "designer" && value === "anthropic/claude-opus-4-8:xhigh") {
+						agentModelOverrides[key] = "tnx/designer";
+						overridesChanged = true;
+					}
+				}
+				// The heavy_task tier was removed; a stale override would only shadow nothing.
+				if ("heavy_task" in agentModelOverrides) {
+					delete agentModelOverrides.heavy_task;
+					overridesChanged = true;
+				}
+				if (overridesChanged) setupModifiedPaths.add("task.agentModelOverrides");
+			}
 			for (const migration of SETUP_CONFIG_SCALAR_MIGRATIONS) {
 				if (setupScalarPathsWithExplicitValues.has(migration.path)) continue;
 				if (valuesEqual(migration.target, getDefault(migration.path))) continue;

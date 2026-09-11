@@ -2448,8 +2448,7 @@ describe("Settings", () => {
 			expect(settings.get("task.agentModelOverrides")).toEqual({
 				designer: "anthropic/claude-opus-5",
 				explore: "pi/smol",
-				frontend_ui: "anthropic/claude-opus-5",
-				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				frontend_ui: "tnx/designer",
 				oracle: "openai-codex/gpt-5.6-sol:high",
 				plan: "anthropic/claude-fable-5:high",
 				qa: "custom/qa",
@@ -2566,8 +2565,7 @@ describe("Settings", () => {
 			const canonicalAgentOverrides = {
 				designer: "anthropic/claude-opus-5",
 				explore: "pi/smol",
-				frontend_ui: "anthropic/claude-opus-5",
-				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				frontend_ui: "tnx/designer",
 				oracle: "openai-codex/gpt-5.6-sol:high",
 				plan: "anthropic/claude-fable-5:high",
 				tester: "openai-codex/gpt-5.6-sol:medium",
@@ -2664,8 +2662,7 @@ describe("Settings", () => {
 			expectedAgentOverrides: {
 				designer: "anthropic/claude-opus-5",
 				explore: "pi/smol",
-				frontend_ui: "anthropic/claude-opus-5",
-				heavy_task: "openai-codex/gpt-5.6-sol:high",
+				frontend_ui: "tnx/designer",
 				oracle: "openai-codex/gpt-5.6-sol:high",
 				plan: "anthropic/claude-fable-5:high",
 				qa: "openai-codex/gpt-5.6-sol:high",

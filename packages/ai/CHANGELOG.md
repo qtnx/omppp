@@ -33,6 +33,9 @@
 
 - Fixed reasoning-off requests (e.g. GitHub Copilot `gpt-6-astra`) surfacing `400 Unsupported value: 'none' … Supported values are: …` instead of retrying at the lowest allowed effort: the reasoning-effort fallback now recognizes `Supported values` phrasing ([#11128](https://github.com/can1357/oh-my-pi/pull/11128) by [@H4vC](https://github.com/H4vC)).
 - Fixed Cursor GPT off-tier requests sending raw `-none` sibling ids (e.g. `gpt-5.6-sol-none-fast`), which the Run endpoint rejects; they now normalize to the base model id with no reasoning parameter, matching every other effort tier ([#11128](https://github.com/can1357/oh-my-pi/pull/11128) by [@H4vC](https://github.com/H4vC)).
+### Fixed
+
+- OpenRouter's exhausted-credits `402 Prompt tokens limit exceeded` error now counts as a usage limit, so the session rotates to its fallback chain instead of failing the turn.
 
 ## [18.1.12] - 2026-09-06
 

@@ -6,6 +6,12 @@
 
 - Designer, frontend_ui, ui_ux_reviewer, ux_copywriter, and presenter agents plus the `designer` role now route to `anthropic/claude-opus-5` directly, and `super_review` defaults to `anthropic/claude-fable-5-1:high` (then `claude-opus-5`, then Codex), instead of the `tnx/designer`/`tnx/super` gateway aliases, whose Anthropic backend dropped prompt caching and billed every turn at full input price; existing `tnx/designer` and `pi/designer` overrides migrate on startup (setup config v7), and `tnx/designer` stays as an unauthenticated fallback.
 - `tnx/designer` and `tnx/super` requests now carry Anthropic `cache_control` breakpoints so prompt caching works once the gateway forwards them.
+- Subagents now get their wall-clock budget in the prompt and a fast-scout rule (about two minutes inside the owned files, then edit); the task tool asks the orchestrator to hand over anchors, contract, and the decisive snippet rather than the whole edit, and to size each `task` slice to ten minutes, splitting anything larger instead of running it longer.
+- Subagent fallback chains are looked up by the model selector, then the agent name (`retry.fallbackChains.task` now applies to the `task` subagent when `task.agentModelOverrides.task` is an explicit model), then the role alias, then `default`; a subagent whose model has no working credentials at dispatch now walks that chain before borrowing the parent session's model.
+
+### Removed
+
+- Removed the `heavy_task` subagent tier and the built-in subagent review gate on `task`; load-bearing slices run as `task` and the main agent reviews every returned result. Existing `task.agentModelOverrides.heavy_task` entries are dropped on config migration.
 
 ## [1.8.4] - 2026-09-10
 

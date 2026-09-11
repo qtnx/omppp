@@ -12,7 +12,6 @@ import exploreMd from "../prompts/agents/explore.md" with { type: "text" };
 import frontendUiMd from "../prompts/agents/frontend_ui.md" with { type: "text" };
 // Embed agent markdown files at build time
 import agentFrontmatterTemplate from "../prompts/agents/frontmatter.md" with { type: "text" };
-import heavyTaskMd from "../prompts/agents/heavy_task.md" with { type: "text" };
 import librarianMd from "../prompts/agents/librarian.md" with { type: "text" };
 import oracleMd from "../prompts/agents/oracle.md" with { type: "text" };
 import planMd from "../prompts/agents/plan.md" with { type: "text" };
@@ -75,46 +74,17 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "oracle.md", template: oracleMd },
 	{ fileName: "tester.md", template: testerMd },
 	{
-		fileName: "heavy_task.md",
-		frontmatter: {
-			name: "heavy_task",
-			description:
-				"High-accuracy implementer for heavy feature work with concrete deliverables; opt-in reviewer+fixer pass via self_review",
-			spawns: "*",
-			// Rate-limit-aware routing prefers Fable, falls back to GPT-5.5, then session roles.
-			model: ["anthropic/claude-fable-5:low", "openai-codex/gpt-5.5:high", "pi/task", "pi/slow"],
-			thinkingLevel: Effort.High,
-			autoloadSkills: ["caveman", "ponytail", "rtk"],
-			reviewGate: {
-				enabled: true,
-				reviewerAgent: "reviewer",
-				reviewerModel: ["openai-codex/gpt-5.5:xhigh"],
-				fixerAgent: "task",
-				maxFixIterations: 2,
-				failOnPriorities: [0, 1],
-				requireCorrectVerdict: true,
-			},
-		},
-		template: heavyTaskMd,
-	},
-	{
 		fileName: "task.md",
 		frontmatter: {
 			name: "task",
 			description:
-				"Medium-complexity implementer for routine feature work; opt-in reviewer+fixer pass via self_review",
+				"Implementer for one contained slice, routine or load-bearing, sized to about five minutes; the parent reviews the result",
 			spawns: "*",
 			model: "@task",
 			thinkingLevel: AUTO_THINKING,
 			autoloadSkills: ["caveman", "ponytail", "rtk"],
 			reviewGate: {
-				enabled: true,
-				reviewerAgent: "reviewer",
-				reviewerModel: ["openai-codex/gpt-5.5:high"],
-				fixerAgent: "task",
-				maxFixIterations: 1,
-				failOnPriorities: [0, 1],
-				requireCorrectVerdict: true,
+				enabled: false,
 			},
 			// Generic task prewalk is controlled by `task.prewalk` or per-agent `prewalk` overrides.
 		},
@@ -125,7 +95,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 		frontmatter: {
 			name: "quick_task",
 			description:
-				"Fast implementer for light mechanical work; optimized for speed and parallel execution; review opt-in via self_review",
+				"Fast implementer for light mechanical work; optimized for speed and parallel execution; the parent reviews the result",
 			model: "pi/smol",
 			thinkingLevel: Effort.Minimal,
 			autoloadSkills: ["caveman", "ponytail", "rtk"],

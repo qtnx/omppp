@@ -154,7 +154,7 @@ describe("parseAgentFields", () => {
 
 	test("parses reviewGate policy from frontmatter", () => {
 		const fields = parseAgentFields({
-			name: "heavy_task",
+			name: "core_task",
 			description: "desc",
 			reviewGate: {
 				enabled: true,
@@ -183,7 +183,7 @@ describe("parseAgentFields", () => {
 		expect(parseAgentFields({ name: "quick_task", description: "desc", reviewGate: false })?.reviewGate).toEqual({
 			enabled: false,
 		});
-		expect(parseAgentFields({ name: "heavy_task", description: "desc", reviewGate: true })?.reviewGate).toEqual({
+		expect(parseAgentFields({ name: "core_task", description: "desc", reviewGate: true })?.reviewGate).toEqual({
 			enabled: true,
 		});
 	});

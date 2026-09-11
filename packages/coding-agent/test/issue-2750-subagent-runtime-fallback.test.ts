@@ -302,6 +302,89 @@ describe("subagent runtime model resolution", () => {
 		expect(childFallbackChains?.["existing-local-role"]).toEqual(["other-provider/other-model"]);
 	});
 
+	it("inherits the agent-name chain for a task.agentModelOverrides selector, ahead of role and default chains", async () => {
+		const primary = model("openrouter", "deepseek/deepseek-v4.1-flash");
+		const luna = model("openai-codex", "gpt-5.6-luna");
+		const opus = model("anthropic", "claude-opus-5");
+		let childFallbackChains: Record<string, string[]> | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			if (!options) throw new Error("Expected createAgentSession options");
+			childFallbackChains = options.settings?.get("retry.fallbackChains") as Record<string, string[]> | undefined;
+			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
+		});
+
+		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		await runSubprocess({
+			cwd: "/tmp",
+			agent,
+			task: "work",
+			index: 0,
+			id: "agent-name-chain",
+			modelOverride: "openrouter/deepseek/deepseek-v4.1-flash",
+			settings: Settings.isolated({
+				"retry.fallbackChains": {
+					default: ["anthropic/claude-opus-5"],
+					task: ["openai-codex/gpt-5.6-luna", "anthropic/claude-opus-5"],
+				},
+			}),
+			modelRegistry: {
+				refresh: async () => {},
+				getAvailable: () => [primary, luna, opus],
+				getApiKey: async () => "test-key",
+			} as never,
+			enableLsp: false,
+		});
+
+		expect(childFallbackChains?.["subagent:agent-name-chain"]).toEqual([
+			"openai-codex/gpt-5.6-luna",
+			"anthropic/claude-opus-5",
+		]);
+	});
+
+	it("walks the configured fallback chain at dispatch when the requested model has no credentials", async () => {
+		const primary = model("openrouter", "deepseek/deepseek-v4.1-flash");
+		const luna = model("openai-codex", "gpt-5.6-luna");
+		const opus = model("anthropic", "claude-opus-5");
+		const parent = model("parent-provider", "parent-model");
+		let childModel: Model<Api> | undefined;
+		let childFallbackChains: Record<string, string[]> | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			if (!options) throw new Error("Expected createAgentSession options");
+			childModel = options.model as Model<Api> | undefined;
+			childFallbackChains = options.settings?.get("retry.fallbackChains") as Record<string, string[]> | undefined;
+			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
+		});
+
+		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
+		await runSubprocess({
+			cwd: "/tmp",
+			agent,
+			task: "work",
+			index: 0,
+			id: "dispatch-chain-walk",
+			modelOverride: "openrouter/deepseek/deepseek-v4.1-flash",
+			parentActiveModelPattern: "parent-provider/parent-model",
+			settings: Settings.isolated({
+				"retry.fallbackChains": {
+					task: ["openai-codex/gpt-5.6-luna", "anthropic/claude-opus-5"],
+				},
+			}),
+			modelRegistry: {
+				refresh: async () => {},
+				getAvailable: () => [primary, luna, opus, parent],
+				// openrouter and openai-codex have no working credentials; anthropic and the parent do.
+				getApiKey: async (candidate: Model<Api>) =>
+					candidate.provider === "anthropic" || candidate.provider === "parent-provider" ? "test-key" : undefined,
+			} as never,
+			enableLsp: false,
+		});
+
+		expect(childModel?.provider).toBe("anthropic");
+		expect(childModel?.id).toBe("claude-opus-5");
+		// The chain entry that served becomes the pinned primary; nothing remains after it.
+		expect(childFallbackChains?.["subagent:dispatch-chain-walk"]).toBeUndefined();
+	});
+
 	it("inherits the aliased role's chain, not the default chain, for a role-alias subagent model", async () => {
 		const fast = model("fast", "hy3");
 		const slow = model("slow", "opus");

@@ -389,10 +389,11 @@ describe("normal system prompt delegation contract", () => {
 					),
 			},
 			{
-				name: "keeps risky or load-bearing core work on heavy_task",
+				name: "offers exactly two implementer tiers and splits oversized slices instead of up-tiering",
 				satisfied:
-					/heavy_task/i.test(rendered) &&
-					/(?:risk|load-bearing|core)[\s\S]{0,180}(?:remain|stay|keep)[\s\S]{0,180}heavy_task|heavy_task[\s\S]{0,180}(?:remain|stay|keep)[\s\S]{0,180}(?:risk|load-bearing|core)|(?:keep|leave)[\s\S]{0,180}(?:risk|load-bearing|core)[\s\S]{0,180}heavy_task/i.test(
+					!/heavy_task/i.test(rendered) &&
+					/(?:ten|10)[ -]minute[\s\S]{0,400}(?:two briefs|two packages|split)/i.test(rendered) &&
+					/`task`[\s\S]{0,300}load-bearing[\s\S]{0,300}(?:no subagent self-review|you review every returned)/i.test(
 						rendered,
 					),
 			},
