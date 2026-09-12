@@ -1,6 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { untilAborted } from "@oh-my-pi/pi-utils";
+import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import type { EvalPreludeContext, EvalPreludeDefinition } from "../eval/preludes";
 import browserDescription from "../prompts/tools/browser.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -25,9 +25,11 @@ import type { OutputMeta } from "./output-meta";
 import {
 	type AcquireTabResult,
 	acquireTab,
+	cancelIdleCloseForOwner,
 	dropHeadlessTabs,
 	getTab,
 	releaseAllTabs,
+	releaseIdleTabsForOwner,
 	releaseTab,
 	runInTab,
 	setAnnotateMode,
@@ -87,6 +89,7 @@ const browserSchema = type({
 	"kill?": type("boolean").describe("also kill spawned-app browsers"),
 	"enabled?": type("boolean").describe("annotate: enable (default) or disable the overlay"),
 	"wait?": type("boolean").describe("annotate: wait for a human submission (default true)"),
+	"persist?": type("boolean").describe("keep tab live across turn settle and idle close"),
 });
 
 type BrowserParams = typeof browserSchema.infer;
@@ -161,6 +164,27 @@ export function createBrowserPrelude(session: ToolSession): EvalPreludeDefinitio
 /** Drop headless tabs so a browser mode change applies to the next open. */
 export async function restartBrowserForModeChange(): Promise<void> {
 	await dropHeadlessTabs();
+}
+
+/**
+ * Best-effort idle-close sweep for the calling session's owned headless
+ * tabs. Never throws — callers detach it (`void`) so a slow reap cannot
+ * delay the open it follows.
+ */
+function sweepIdleOwnedTabs(session: ToolSession): Promise<number> {
+	const ownerId = session.getSessionId?.() ?? undefined;
+	if (!ownerId) return Promise.resolve(0);
+	const idleSec = session.settings.get("browser.idleCloseSec");
+	if (!(idleSec > 0)) {
+		cancelIdleCloseForOwner(ownerId);
+		return Promise.resolve(0);
+	}
+	return releaseIdleTabsForOwner(ownerId, { idleMs: idleSec * 1000 }).catch((error: unknown) => {
+		logger.debug("Browser idle-close sweep failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return 0;
+	});
 }
 
 async function invokeBrowser(
@@ -275,6 +299,9 @@ async function openBrowser(
 					dialogs: params.dialogs,
 					signal: openSignal,
 					ownerSessionId: session.getSessionId?.() ?? undefined,
+					// Omitted stays undefined: creation defaults it to false
+					// while reuse by the owner leaves a set value alone.
+					persist: params.persist,
 				}),
 			);
 		} catch (error) {
@@ -284,6 +311,13 @@ async function openBrowser(
 			throw error;
 		}
 		await releaseBrowser(browser, { kill: false });
+		// Opportunistic idle-close sweep for long turns that rarely settle:
+		// close owned tabs idle past the timeout. Detached by design (same
+		// as the orphan-target sweep on attach) — failures only log. Freeze
+		// is deliberately NOT done here: freezing a sibling with an
+		// in-flight run would stall it mid-execution, while turn_end is
+		// race-free by construction (all tool results are paired).
+		void sweepIdleOwnedTabs(session);
 
 		const tab = result.tab;
 		const url = tab.info.url;

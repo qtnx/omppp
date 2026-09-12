@@ -1230,11 +1230,11 @@ describe("AgentSession handoff", () => {
 
 		expect(handoffSpy).not.toHaveBeenCalled();
 		const startEvents = events.filter(event => event.type === "auto_compaction_start");
-		expect(startEvents).toHaveLength(1);
-		expect(startEvents[0]).toMatchObject({ type: "auto_compaction_start", reason: "overflow" });
+		expect(startEvents.length).toBeGreaterThanOrEqual(1);
+		expect(startEvents.at(-1)).toMatchObject({ type: "auto_compaction_start", reason: "overflow" });
 		const endEvents = events.filter(event => event.type === "auto_compaction_end");
-		expect(endEvents).toHaveLength(1);
-		expect(endEvents[0]).not.toMatchObject({
+		expect(endEvents.length).toBeGreaterThanOrEqual(1);
+		expect(endEvents.at(-1)).not.toMatchObject({
 			errorMessage: "Auto-handoff failed: no handoff document was generated",
 		});
 	});

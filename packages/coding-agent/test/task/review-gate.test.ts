@@ -169,6 +169,7 @@ function createScriptedSession(script: RoleScript): AgentSession {
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
 		abort: async () => {},
 		dispose: async () => {},
+		isAdvisorActive: () => false,
 	} as unknown as AgentSession;
 }
 

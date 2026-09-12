@@ -3889,7 +3889,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// same-named custom/extension tool is never force-activated when auto-learn is
 		// off) to keep guidance, controller, and the active set consistent.
 		if (!restrictToolNames && explicitlyRequestedToolNames) {
-			for (const name of ["manage_skill", "learn"]) {
+			for (const name of ["manage_skill", "learn", "context_notes", "new_context"]) {
 				if (builtInToolNames.includes(name) && !explicitlyRequestedToolNames.includes(name)) {
 					explicitlyRequestedToolNames.push(name);
 				}
@@ -4619,6 +4619,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorContextPrompt,
 			advisorMemoryPrompt,
 			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
+			advisorSharedMaxNotesPerUpdate: discoveredAdvisors.sharedMaxNotesPerUpdate,
 			advisorConfigs: discoveredAdvisors.advisors,
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,

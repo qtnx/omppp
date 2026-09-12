@@ -26,6 +26,8 @@ export const BUILTIN_TOOL_NAMES = [
 	"compact",
 	"shake",
 	"workflow",
+	"context_notes",
+	"new_context",
 	"security_scan",
 	"task",
 	"hub",

@@ -5,6 +5,7 @@ import {
 	createLoopLimitRuntime,
 	createLoopRuntime,
 	formatAgentLoopList,
+	isLoopDurationExpired,
 	MAX_LOOP_INTERVAL_MS,
 	parseLoopArgs,
 	parseLoopLimitArgs,
@@ -55,25 +56,25 @@ describe("/loop slash command", () => {
 
 describe("loop argument parsing", () => {
 	test("defaults to the existing 800ms interval with unlimited iterations", () => {
-		expect(parseLoopArgs("")).toEqual({ intervalMs: 800 });
+		expect(parseLoopArgs("")).toEqual({ limit: { intervalMs: 800 } });
 	});
 
 	test("parses a bare positive integer as the iteration count at the default interval", () => {
-		expect(parseLoopArgs("10")).toEqual({ intervalMs: 800, iterations: 10 });
+		expect(parseLoopArgs("10")).toEqual({ limit: { intervalMs: 800, iterations: 10 } });
 	});
 
 	test("parses interval aliases with an optional iteration limit in either order", () => {
-		expect(parseLoopArgs("500ms")).toEqual({ intervalMs: 500 });
-		expect(parseLoopArgs("10s 3")).toEqual({ intervalMs: 10_000, iterations: 3 });
-		expect(parseLoopArgs("3 10s")).toEqual({ intervalMs: 10_000, iterations: 3 });
-		expect(parseLoopArgs("2 minutes 5")).toEqual({ intervalMs: 120_000, iterations: 5 });
+		expect(parseLoopArgs("500ms")).toEqual({ limit: { intervalMs: 500 } });
+		expect(parseLoopArgs("10s 3")).toEqual({ limit: { intervalMs: 10_000, iterations: 3 } });
+		expect(parseLoopArgs("3 10s")).toEqual({ limit: { intervalMs: 10_000, iterations: 3 } });
+		expect(parseLoopArgs("2 minutes 5")).toEqual({ limit: { intervalMs: 120_000, iterations: 5 } });
 	});
 
 	test("parses context options with their aliases", () => {
-		expect(parseLoopArgs("clean")).toEqual({ intervalMs: 800, context: "reset" });
-		expect(parseLoopArgs("--clear 5")).toEqual({ intervalMs: 800, iterations: 5, context: "reset" });
-		expect(parseLoopArgs("compact 30s")).toEqual({ intervalMs: 30_000, context: "compact" });
-		expect(parseLoopArgs("--keep")).toEqual({ intervalMs: 800, context: "prompt" });
+		expect(parseLoopArgs("clean")).toEqual({ limit: { intervalMs: 800, context: "reset" } });
+		expect(parseLoopArgs("--clear 5")).toEqual({ limit: { intervalMs: 800, iterations: 5, context: "reset" } });
+		expect(parseLoopArgs("compact 30s")).toEqual({ limit: { intervalMs: 30_000, context: "compact" } });
+		expect(parseLoopArgs("--keep")).toEqual({ limit: { intervalMs: 800, context: "prompt" } });
 		expect(parseLoopArgs("clean compact")).toBe("Loop context option may only be given once.");
 	});
 
@@ -94,8 +95,8 @@ describe("loop argument parsing", () => {
 
 describe("loop limit parsing", () => {
 	test("empty args produce neither a limit nor a prompt", () => {
-		expect(parseLoopLimitArgs("")).toEqual({});
-		expect(parseLoopLimitArgs("   ")).toEqual({});
+		expect(parseLoopArgs("")).toEqual({ limit: { intervalMs: 800 } });
+		expect(parseLoopArgs("   ")).toEqual({ limit: { intervalMs: 800 } });
 	});
 
 	test("parses a bare positive integer as the iteration count", () => {
@@ -143,8 +144,11 @@ describe("loop limit parsing", () => {
 	});
 
 	test("treats non-limit prose as an unbounded loop with an inline prompt", () => {
-		expect(parseLoopLimitArgs("keep going")).toEqual({ prompt: "keep going" });
-		expect(parseLoopLimitArgs("fix the failing tests")).toEqual({ prompt: "fix the failing tests" });
+		expect(parseLoopArgs("keep going")).toEqual({ limit: { intervalMs: 800 }, prompt: "keep going" });
+		expect(parseLoopArgs("fix the failing tests")).toEqual({
+			limit: { intervalMs: 800 },
+			prompt: "fix the failing tests",
+		});
 	});
 
 	test("rejects zero, negative, and unknown interval-shaped tokens", () => {
@@ -203,10 +207,10 @@ describe("agent loop management arguments", () => {
 describe("loop runtime", () => {
 	test("allows exactly the configured number of auto-submitted iterations", () => {
 		const config = parseLoopArgs("1s 3");
-		expect(config).toEqual({ intervalMs: 1_000, iterations: 3 });
+		expect(config).toEqual({ limit: { intervalMs: 1_000, iterations: 3 } });
 		if (typeof config === "string") throw new Error("expected parsed config");
 
-		const runtime = createLoopRuntime(config);
+		const runtime = createLoopRuntime(config.limit);
 		expect(consumeLoopIteration(runtime)).toBe(true);
 		expect(consumeLoopIteration(runtime)).toBe(true);
 		expect(consumeLoopIteration(runtime)).toBe(true);
@@ -216,10 +220,10 @@ describe("loop runtime", () => {
 
 	test("leaves loops unlimited when no iteration count is configured", () => {
 		const config = parseLoopArgs("250ms");
-		expect(config).toEqual({ intervalMs: 250 });
+		expect(config).toEqual({ limit: { intervalMs: 250 } });
 		if (typeof config === "string") throw new Error("expected parsed config");
 
-		const runtime = createLoopRuntime(config);
+		const runtime = createLoopRuntime(config.limit);
 		expect(consumeLoopIteration(runtime)).toBe(true);
 		expect(consumeLoopIteration(runtime)).toBe(true);
 		expect(consumeLoopIteration(runtime)).toBe(true);

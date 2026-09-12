@@ -14,6 +14,8 @@ import {
 	JobTool,
 	SecretsTool,
 	SshTool,
+	ContextNotesTool,
+	NewContextTool,
 } from "@oh-my-pi/pi-coding-agent/tools";
 
 const allToolsSettings = Settings.isolated({
@@ -71,6 +73,8 @@ async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summa
 		new KanbanTool(toolSession),
 		// `secrets` is conditional on an open vault, so construct it directly.
 		new SecretsTool(toolSession),
+		new ContextNotesTool(toolSession),
+		new NewContextTool(toolSession),
 	]) {
 		metadata.set(tool.name, { loadMode: tool.loadMode, summary: tool.summary });
 	}

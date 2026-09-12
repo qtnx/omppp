@@ -11,8 +11,10 @@ import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getSessionAccentAnsi, getSessionAccentHex } from "@oh-my-pi/pi-coding-agent/utils/session-color";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import { StatusLineTestComponents } from "./helpers/status-line";
 
 const originalProjectDir = getProjectDir();
+const statusLines = new StatusLineTestComponents();
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -21,6 +23,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+	statusLines.dispose();
 	resetSettingsForTest();
 	setProjectDir(originalProjectDir);
 });
@@ -59,6 +62,7 @@ function createCtx(overrides?: {
 		prewalk: null,
 		goalMode: null,
 		vibeMode: null,
+		vim: null,
 		collab: null,
 		usageStats: {
 			input: 0,
@@ -139,7 +143,7 @@ function stripAnsi(value: string): string {
 
 describe("status line session accent", () => {
 	function buildComponent(sessionAccent: boolean) {
-		const component = new StatusLineComponent(createStatusLineSession("Named session"));
+		const component = statusLines.track(new StatusLineComponent(createStatusLineSession("Named session")));
 		component.updateSettings({
 			preset: "custom",
 			leftSegments: ["pi"],
@@ -208,7 +212,7 @@ describe("session_name preview-title fallback", () => {
 	});
 
 	it("right-aligns the stand-in title through the box border pipeline", () => {
-		const component = new StatusLineComponent(createStatusLineSession(""));
+		const component = statusLines.track(new StatusLineComponent(createStatusLineSession("")));
 		component.updateSettings({
 			preset: "custom",
 			leftSegments: ["pi"],
@@ -227,7 +231,7 @@ describe("session_name preview-title fallback", () => {
 
 describe("status line focused-agent dimming", () => {
 	it("keeps powerline end caps at full intensity while text stays dimmed", () => {
-		const component = new StatusLineComponent(createStatusLineSession("Focused session"));
+		const component = statusLines.track(new StatusLineComponent(createStatusLineSession("Focused session")));
 		component.updateSettings({
 			preset: "custom",
 			leftSegments: ["pi"],
@@ -479,7 +483,7 @@ describe("overflow: path survives before model", () => {
 
 		const modelName = `MODEL_SHOULD_DROP_${"x".repeat(24)}`;
 		const session = createStatusLineSession("overflow test", modelName);
-		const component = new StatusLineComponent(session);
+		const component = statusLines.track(new StatusLineComponent(session));
 		const pathOptions = {
 			abbreviate: false,
 			maxLength: 32,
