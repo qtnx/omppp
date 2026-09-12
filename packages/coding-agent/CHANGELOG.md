@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Main agents now retain planning, review, and final decisions while subagents execute scoped work; shared guidance clarifies authorized hotfix completion and plain-language explanations, with leaner OpenAI GPT model notes.
 - Designer, frontend_ui, ui_ux_reviewer, ux_copywriter, and presenter agents plus the `designer` role now route to `anthropic/claude-opus-5` directly, and `super_review` defaults to `anthropic/claude-fable-5-1:high` (then `claude-opus-5`, then Codex), instead of the `tnx/designer`/`tnx/super` gateway aliases, whose Anthropic backend dropped prompt caching and billed every turn at full input price; existing `tnx/designer` and `pi/designer` overrides migrate on startup (setup config v7), and `tnx/designer` stays as an unauthenticated fallback.
 - `tnx/designer` and `tnx/super` requests now carry Anthropic `cache_control` breakpoints so prompt caching works once the gateway forwards them.
 - Subagents now get their wall-clock budget in the prompt and a fast-scout rule (about two minutes inside the owned files, then edit); the task tool asks the orchestrator to hand over anchors, contract, and the decisive snippet rather than the whole edit, and to size each `task` slice to ten minutes, splitting anything larger instead of running it longer.
