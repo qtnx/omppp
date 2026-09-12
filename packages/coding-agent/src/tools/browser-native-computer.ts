@@ -1,6 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ComputerAction, ToolExample } from "@oh-my-pi/pi-ai";
+import type { Viewport } from "puppeteer-core";
 import browserUseDescription from "../prompts/tools/browser-use.md" with { type: "text" };
 import screenshotReviewNotice from "../prompts/tools/browser-use-screenshot-notice.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -12,6 +13,18 @@ import { ToolAbortError } from "./tool-errors";
 
 // deviceScaleFactor 1 keeps screenshot pixels == viewport CSS pixels so model coordinates map 1:1.
 const VIEWPORT = { width: 1280, height: 720, deviceScaleFactor: 1 } as const;
+const VIEWPORTS: Record<"desktop" | "mobile" | "mobile-landscape", Viewport> = {
+	desktop: VIEWPORT,
+	mobile: { width: 390, height: 844, deviceScaleFactor: 1, isMobile: true, hasTouch: true, isLandscape: false },
+	"mobile-landscape": {
+		width: 844,
+		height: 390,
+		deviceScaleFactor: 1,
+		isMobile: true,
+		hasTouch: true,
+		isLandscape: true,
+	},
+};
 const ACTION_TYPES = [
 	"navigate",
 	"click",
@@ -42,10 +55,13 @@ const actionSchema = type({
 });
 const nativeComputerSchema = type({
 	"url?": type("string").describe("Open this URL in the browser_use tab before running actions"),
+	"viewport?": type("'desktop' | 'mobile' | 'mobile-landscape'").describe(
+		"Viewport preset: desktop 1280x720 (default), mobile 390x844, mobile-landscape 844x390. Mobile presets enable mobile layout and touch-capability flags; pointer actions remain mouse/wheel input. Omit to retain the current viewport.",
+	),
 	"actions?": actionSchema
 		.array()
 		.describe(
-			"Ordered screen actions in 1280x720 viewport pixels. navigate: {url}; click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} or {keys:['Control','a']} (modifiers are held while the other keys are pressed; aliases like CTRL/CMD/ENTER accepted); type: {text}; wait; screenshot ({save?} writes that capture to a file). A screenshot is returned after the last action. Any other type fails the call.",
+			"Ordered screen actions in current viewport pixels. navigate: {url}; click/double_click/move: {x,y}; scroll: {x,y,scroll_x,scroll_y}; drag: {path:[{x,y},...]}; keypress: {keys:['Enter']} or {keys:['Control','a']} (modifiers are held while the other keys are pressed; aliases like CTRL/CMD/ENTER accepted); type: {text}; wait; screenshot ({save?} writes that capture to a file). A screenshot is returned after the last action. Any other type fails the call.",
 		),
 	"pending_safety_checks?": type("unknown[]").describe("Safety checks requiring explicit approval"),
 	"+": "reject",
@@ -55,7 +71,7 @@ type NativeComputerInput = typeof nativeComputerSchema.infer;
 type NativeDetails = {
 	actionCount: number;
 	url?: string;
-	viewport: typeof VIEWPORT;
+	viewport: Viewport;
 	screenshot?: string;
 	savedPaths?: string[];
 	rejected?: boolean;
@@ -86,6 +102,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 	readonly parameters = nativeComputerSchema;
 	readonly examples: readonly ToolExample<NativeComputerInput>[] = [];
 	#tab?: TabSession;
+	#viewport: Viewport = VIEWPORT;
 	#reviewNoticeShown = false;
 	#queue = Promise.resolve();
 	constructor(readonly session: ToolSession) {}
@@ -114,6 +131,8 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 			const actions = nativeMetadata?.type === "computer" ? [...nativeMetadata.actions] : actionList(input);
 			if (actions.length === 0) actions.push({ type: "screenshot" });
 			try {
+				const viewport = input.viewport ? VIEWPORTS[input.viewport] : this.#viewport;
+				const created = !this.#tab;
 				if (!this.#tab) {
 					const browser = await acquireBrowser(resolveBrowserKind({ action: "open" } as never, this.session), {
 						cwd: this.session.cwd,
@@ -121,11 +140,20 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 					});
 					this.#tab = (
 						await acquireTab("browser_use", browser, {
-							viewport: VIEWPORT,
+							viewport,
 							timeoutMs: 30_000,
 							ownerSessionId: this.session.getSessionId?.() ?? undefined,
 						})
 					).tab;
+				}
+				if (created || viewport !== this.#viewport) {
+					await runInTab("browser_use", {
+						code: `await page.setViewport(${JSON.stringify(viewport)});`,
+						timeoutMs: 30_000,
+						signal,
+						session: this.session,
+					});
+					this.#viewport = viewport;
 				}
 				if (typeof input.url === "string" && input.url.length > 0) {
 					await runInTab("browser_use", {
@@ -175,7 +203,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 							? [{ type: "image", data: screenshot.split(",", 2)[1], mimeType: screenshotMimeType } as const]
 							: []),
 					],
-					details: { actionCount: actions.length, url, viewport: VIEWPORT, screenshot, savedPaths },
+					details: { actionCount: actions.length, url, viewport: this.#viewport, screenshot, savedPaths },
 					providerMetadata: {
 						type: "computer",
 						screenshot: { type: "computer_screenshot", image_url: screenshot },
@@ -191,7 +219,7 @@ export class NativeBrowserComputerTool implements AgentTool<typeof nativeCompute
 						},
 					],
 					isError: true,
-					details: { actionCount: actions.length, viewport: VIEWPORT },
+					details: { actionCount: actions.length, viewport: this.#viewport },
 				};
 			}
 		};

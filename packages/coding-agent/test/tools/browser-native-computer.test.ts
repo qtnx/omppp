@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { toolWireSchema, validateJsonSchemaValue } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
-import { NATIVE_BROWSER_VIEWPORT, NativeBrowserComputerTool } from "../../src/tools/browser-native-computer";
+import { NativeBrowserComputerTool } from "../../src/tools/browser-native-computer";
+import { runInTab } from "../../src/tools/browser/tab-supervisor";
+import { chromiumAvailable } from "./chromium-probe";
+
+const CHROMIUM_AVAILABLE = await chromiumAvailable();
 
 function makeSession(): ToolSession {
 	return {
@@ -15,15 +19,43 @@ function makeSession(): ToolSession {
 }
 
 describe("native browser computer tool", () => {
-	it("uses OpenAI native computer marker and fixed coordinate viewport", () => {
-		const tool = new NativeBrowserComputerTool(makeSession());
-
-		expect(tool.name).toBe("browser_use");
-		expect(tool.native).toEqual({ type: "computer" });
-		expect(NATIVE_BROWSER_VIEWPORT).toEqual({ width: 1280, height: 720, deviceScaleFactor: 1 });
-		expect(tool.description).toContain("1280x720");
-		expect(tool.description).toContain("`navigate`");
+	it("rejects unsupported viewport presets before opening a browser", () => {
+		const schema = toolWireSchema(new NativeBrowserComputerTool(makeSession()));
+		expect(validateJsonSchemaValue(schema, { viewport: "sideways" }).success).toBe(false);
 	});
+
+	it.skipIf(!CHROMIUM_AVAILABLE)(
+		"resizes a live mobile tab, retains its viewport, and returns to desktop",
+		async () => {
+			const tool = new NativeBrowserComputerTool(makeSession());
+			const url = `data:text/html,${encodeURIComponent(`<meta name="viewport" content="width=device-width,initial-scale=1"><button style="position:fixed;left:10px;top:10px;width:100px;height:50px" onclick="document.title='clicked'">Tap</button>`)}`;
+			const metrics = async () =>
+				(
+					await runInTab("browser_use", {
+						code: 'return await page.evaluate(() => ({ width: innerWidth, height: innerHeight, touch: matchMedia("(pointer: coarse)").matches, landscape: matchMedia("(orientation: landscape)").matches, title: document.title }));',
+						timeoutMs: 30_000,
+						session: tool.session,
+					})
+				).returnValue;
+			try {
+				const portrait = await tool.execute("portrait", { url, viewport: "mobile" });
+				expect(portrait.isError).not.toBe(true);
+				expect(portrait.content.some(part => part.type === "image")).toBe(true);
+				expect(await metrics()).toMatchObject({ width: 390, height: 844, touch: true, landscape: false });
+				const landscape = await tool.execute("landscape", { viewport: "mobile-landscape" });
+				expect(landscape.isError).not.toBe(true);
+				expect(await metrics()).toMatchObject({ width: 844, height: 390, touch: true, landscape: true });
+				await tool.execute("click", { actions: [{ type: "click", x: 50, y: 30 }] });
+				expect(await metrics()).toMatchObject({ width: 844, height: 390, title: "clicked" });
+				const desktop = await tool.execute("desktop", { viewport: "desktop" });
+				expect(desktop.isError).not.toBe(true);
+				expect(await metrics()).toMatchObject({ width: 1280, height: 720, touch: false, landscape: true });
+			} finally {
+				await tool.close();
+			}
+		},
+		120_000,
+	);
 
 	it("accepts native calls with no JSON arguments and rejects unknown fields", () => {
 		const tool = new NativeBrowserComputerTool(makeSession());
