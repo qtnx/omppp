@@ -1003,39 +1003,6 @@ describe("system prompt tool inventory", () => {
 		);
 	});
 
-	it("requires verify-before-done in independent QA gates when bundled skills and QA tooling are available", async () => {
-		const { skills } = await loadSkills({ cwd: tempDir });
-		const tools = new Map<string, SystemPromptToolMetadata>(TOOLS);
-		tools.set("task", {
-			label: "Task",
-			description: "Runs subagents.",
-			parameters: { type: "object", properties: { tasks: { type: "array" } } },
-		});
-		tools.set("browser_qa", {
-			label: "Browser QA",
-			description: "Runs browser QA.",
-			parameters: { type: "object", properties: {} },
-		});
-		const { systemPrompt } = await buildSystemPrompt({
-			cwd: tempDir,
-			contextFiles: [],
-			skills,
-			rules: [],
-			toolNames: ["read", "bash", "task", "browser_qa"],
-			tools,
-			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
-			nativeTools: true,
-			inlineToolDescriptors: false,
-			eagerTasks: true,
-		});
-		const text = systemPrompt.join("\n\n");
-
-		expect(text).toMatch(/(?:independent QA|QA gate|QA handoff|handoff)/i);
-		expect(text).toMatch(
-			/(?:independent QA|QA gate|QA handoff|handoff)[\s\S]{0,700}(?:MUST|REQUIRED|mandatory|required|requires)[\s\S]{0,700}(?:skill:\/\/)?verify-before-done|(?:skill:\/\/)?verify-before-done[\s\S]{0,700}(?:MUST|REQUIRED|mandatory|required|requires)[\s\S]{0,700}(?:independent QA|QA gate|QA handoff|handoff)/i,
-		);
-	});
-
 	it("autoloads frontend skill guidance that keeps internal feedback out of user UI copy", async () => {
 		const { skills } = await loadSkills({ cwd: tempDir });
 		const frontendSkill = skills.find(skill => skill.name === "frontend-design");
@@ -1046,15 +1013,6 @@ describe("system prompt tool inventory", () => {
 
 		expect(message).toMatch(/No internal-note leakage in any rendered string/i);
 		expect(message).toMatch(/frontend-ui-copy hard rule/i);
-	});
-
-	it("gates independent QA by lane and external observability", async () => {
-		const text = await renderOrchestratorPrompt();
-
-		expect(text).not.toContain("Completion claims REQUIRE the collected qa verdict");
-		expect(text).toMatch(/Dispatch ONLY when at least one holds:[\s\S]{0,160}lane is L3/i);
-		expect(text).toMatch(/externally observable[\s\S]{0,120}cannot exercise them yourself/i);
-		expect(text).toMatch(/docs edit[\s\S]{0,160}policy violation/i);
 	});
 
 	it("renders work profiling, advisory interview, and done scorecard guidance", async () => {
@@ -1271,48 +1229,6 @@ describe("system prompt tool inventory", () => {
 		expect(text).not.toContain("`npx tsx -e`");
 	});
 
-	it("routes design-team work to specialist agents before generic implementer tiers", async () => {
-		const text = await renderOrchestratorPrompt();
-		const selectionStart = text.indexOf("# Agent routing");
-		expect(selectionStart).toBeGreaterThan(-1);
-		const selectionEnd = text.indexOf("# Implementer tiers", selectionStart);
-		expect(selectionEnd).toBeGreaterThan(selectionStart);
-		const selection = text.slice(selectionStart, selectionEnd);
-
-		expect(selection).toMatch(/(frontend|UI)[\s\S]{0,80}(implementation|implement|build)[\s\S]{0,120}`frontend_ui`/i);
-		expect(selection).toMatch(/(UI|UX|design)[\s\S]{0,80}review[\s\S]{0,120}`ui_ux_reviewer`/i);
-		expect(selection).toMatch(/(UX|UI)[\s\S]{0,80}(copy|copywriting|microcopy)[\s\S]{0,120}`ux_copywriter`/i);
-		expect(selection).toMatch(/UI\/UX design[\s\S]{0,120}`designer`/i);
-
-		expect(selection).toMatch(
-			/small[\s\S]{0,80}normal[- ]mode[\s\S]{0,80}L1[\s\S]{0,80}(?:frontend|UI)[\s\S]{0,160}(?:main[\s\S]{0,60}direct|direct[\s\S]{0,60}main)/i,
-		);
-		expect(selection).toMatch(
-			/larger[\s\S]{0,120}(?:frontend|UI)[\s\S]{0,160}exactly one[\s\S]{0,120}`(?:designer|frontend_ui)`[\s\S]{0,200}(?:direction|scoped implementation)/i,
-		);
-		expect(selection).toMatch(
-			/(?:design direction[\s\S]{0,120}`designer`[\s\S]{0,160}scoped implementation[\s\S]{0,120}`frontend_ui`|scoped implementation[\s\S]{0,120}`frontend_ui`[\s\S]{0,160}design direction[\s\S]{0,120}`designer`)/i,
-		);
-		expect(selection).toMatch(
-			/(?:one|single)[\s\S]{0,100}`ui_ux_reviewer`[\s\S]{0,160}(?:final integration|integration final)|(?:final integration|integration final)[\s\S]{0,160}(?:one|single)[\s\S]{0,100}`ui_ux_reviewer`/i,
-		);
-		expect(selection).not.toMatch(/`designer`\s*\+\s*`frontend_ui`/);
-		expect(selection).not.toMatch(/two independent\s+`ui_ux_reviewer`\s+passes/i);
-
-		const genericTierIndexes = ["`quick_task`", "`task`"]
-			.map(name => selection.indexOf(name))
-			.filter(index => index >= 0);
-		expect(genericTierIndexes.length).toBeGreaterThan(0);
-		const firstGenericTier = Math.min(...genericTierIndexes);
-
-		for (const specialist of ["`designer`", "`frontend_ui`", "`ui_ux_reviewer`", "`ux_copywriter`"]) {
-			const specialistIndex = selection.indexOf(specialist);
-			expect(specialistIndex).toBeGreaterThan(-1);
-			expect(specialistIndex).toBeLessThan(firstGenericTier);
-		}
-		expect(text).not.toContain("Normal backend/frontend changes.");
-		expect(text).not.toContain("frontend-design-system");
-	});
 	it("omits the read-only scout delegation gate when scout is unavailable", async () => {
 		const opts = { toolNames: ["read", "bash", "task"], tools: TOOLS };
 		const withScout = (

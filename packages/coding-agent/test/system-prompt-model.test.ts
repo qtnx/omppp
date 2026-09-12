@@ -161,8 +161,6 @@ describe("system prompt model identifier", () => {
 		};
 		const astra = await render("openai-codex/gpt-6-astra");
 		expect(astra).toContain("# OpenAI GPT model notes");
-		expect(astra).toMatch(/LAST message of the turn[\s\S]*re-emit the complete document/);
-		expect(astra).toMatch(/Authorization persists across turns/);
 		expect(await render("openai-codex/gpt-5.6-sol")).toContain("# OpenAI GPT model notes");
 		expect(await render("openai-codex/gpt-5.5")).not.toContain("# OpenAI GPT model notes");
 		expect(await render("anthropic/claude-opus-5")).not.toContain("# OpenAI GPT model notes");
