@@ -59,6 +59,7 @@ function createYieldingAgentSession(): AgentSession {
 		setIrcWakeTurnObserver: () => {},
 		getLastAssistantMessage: () => undefined,
 		abort: async () => {},
+		isAdvisorActive: () => false,
 		dispose: async () => {},
 	} as unknown as AgentSession;
 }

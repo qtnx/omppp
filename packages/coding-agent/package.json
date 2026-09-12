@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/pi-coding-agent",
-	"version": "1.8.4",
+	"version": "1.8.5",
 	"description": "OMPx, an upgrade for OMP: coding agent CLI with read, bash, edit, write tools and session management",
 	"homepage": "https://github.com/qtnx/omppp",
 	"author": "Can Boluk",
@@ -39,7 +39,7 @@
 		"lint": "oxlint .",
 		"test": "bun ../../scripts/ci-test-ts.ts coding-agent-heavy --full",
 		"fix": "oxlint --fix --fix-suggestions . && bun run fmt",
-		"fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts'",
+		"fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts' && bun run format-prompts",
 		"format-prompts": "bun scripts/format-prompts.ts",
 		"gen:tool-views": "bun --cwd=../collab-web run gen:tool-views",
 		"gen:bundle": "bun scripts/bundle-dist.ts",

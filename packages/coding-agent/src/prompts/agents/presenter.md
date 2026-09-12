@@ -2,7 +2,7 @@
 name: presenter
 description: Builds product-preview presentation artifacts — structured `.canvas.json` spatial maps (specs, story maps, journey maps, plans, architecture) and self-contained HTML UI mockups. Use when spatial review or interactive mockups beat prose alone.
 tools: read, grep, glob, bash, edit, write, browser, irc
-model: tnx/designer
+model: anthropic/claude-opus-5, tnx/designer
 autoloadSkills: preview-templates
 ---
 

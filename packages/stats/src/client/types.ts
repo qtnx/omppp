@@ -55,6 +55,8 @@ export interface MessageStats {
 	stopReason: string;
 	errorMessage: string | null;
 	usage: Usage;
+	/** Ingest found no tariff to price this request from; its zero is unknown spend. */
+	costUnpriced?: boolean;
 }
 
 export interface RequestDetails extends MessageStats {

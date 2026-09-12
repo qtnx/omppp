@@ -303,23 +303,23 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 6,
-			currentVersion: 6,
+			setupVersion: 7,
+			currentVersion: 7,
 		});
 
 		const onDisk = await readSettings();
-		expect(onDisk.setupVersion).toBe(6);
+		expect(onDisk.setupVersion).toBe(7);
 		expect(onDisk.modelRoles).toEqual({
 			default: "custom/default",
 			task: "openai-codex/gpt-5.6-terra:medium",
 			smol: "cerebras/gpt-oss-120b",
 			slow: "openai-codex/gpt-5.6-sol:high",
 			plan: "openai-codex/gpt-5.6-sol:xhigh",
-			designer: "tnx/designer",
+			designer: "anthropic/claude-opus-5",
 			commit: "openai-codex/gpt-5.6-luna:high",
 		});
 		expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual({
-			designer: "tnx/designer",
+			designer: "anthropic/claude-opus-5",
 			explore: "pi/smol",
 			frontend_ui: "tnx/designer",
 			oracle: "openai-codex/gpt-5.6-sol:high",
@@ -329,6 +329,8 @@ describe("config update", () => {
 			quick_task: "openai-codex/gpt-5.6-luna:high",
 			reviewer: "openai-codex/gpt-5.6-sol:high",
 			task: "openai-codex/gpt-5.6-terra:medium",
+			ui_ux_reviewer: "anthropic/claude-opus-5",
+			ux_copywriter: "anthropic/claude-opus-5",
 		});
 		expect(onDisk.memory).toEqual({ backend: "local" });
 		expect(onDisk.retry).toEqual({
@@ -356,10 +358,10 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 6,
-			currentVersion: 6,
+			setupVersion: 7,
+			currentVersion: 7,
 		});
-		expect((await readSettings()).setupVersion).toBe(6);
+		expect((await readSettings()).setupVersion).toBe(7);
 	});
 
 	it("reports unchanged JSON and leaves config stable on a second run", async () => {
@@ -379,8 +381,8 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: false,
-			setupVersion: 6,
-			currentVersion: 6,
+			setupVersion: 7,
+			currentVersion: 7,
 		});
 		expect(await readSettings()).toEqual(firstMigration);
 	});
@@ -409,8 +411,8 @@ describe("config update", () => {
 		const firstPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
 		expect(firstPayload).toEqual({
 			changed: true,
-			setupVersion: 6,
-			currentVersion: 6,
+			setupVersion: 7,
+			currentVersion: 7,
 			changedPaths: [
 				"dev.autoqaConsent",
 				"display.syntaxHighlighting",
@@ -424,19 +426,19 @@ describe("config update", () => {
 			],
 		});
 		const firstMigration = await readSettings();
-		expect(firstMigration.setupVersion).toBe(6);
+		expect(firstMigration.setupVersion).toBe(7);
 		expect(firstMigration.modelRoles).toEqual({
 			default: "openai-codex/gpt-5.6-sol:xhigh",
 			task: "openai-codex/gpt-5.6-terra:medium",
 			smol: "cerebras/gpt-oss-120b",
 			slow: "openai-codex/gpt-5.6-sol:high",
 			plan: "openai-codex/gpt-5.6-sol:xhigh",
-			designer: "tnx/designer",
+			designer: "anthropic/claude-opus-5",
 			commit: "openai-codex/gpt-5.6-luna:high",
 			custom_role: "custom/role-model",
 		});
 		expect((firstMigration.task as Record<string, unknown>).agentModelOverrides).toEqual({
-			designer: "tnx/designer",
+			designer: "anthropic/claude-opus-5",
 			explore: "pi/smol",
 			frontend_ui: "tnx/designer",
 			oracle: "openai-codex/gpt-5.6-sol:high",
@@ -446,6 +448,8 @@ describe("config update", () => {
 			quick_task: "openai-codex/gpt-5.6-luna:high",
 			reviewer: "openai-codex/gpt-5.6-sol:high",
 			task: "openai-codex/gpt-5.6-terra:medium",
+			ui_ux_reviewer: "anthropic/claude-opus-5",
+			ux_copywriter: "anthropic/claude-opus-5",
 			custom_agent: "custom/agent-model",
 		});
 
@@ -454,8 +458,8 @@ describe("config update", () => {
 		const secondPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
 		expect(secondPayload).toEqual({
 			changed: false,
-			setupVersion: 6,
-			currentVersion: 6,
+			setupVersion: 7,
+			currentVersion: 7,
 			changedPaths: [],
 		});
 		expect(await readSettings()).toEqual(firstMigration);

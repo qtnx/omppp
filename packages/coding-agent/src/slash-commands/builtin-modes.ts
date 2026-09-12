@@ -8,6 +8,7 @@ import {
 	type ResolveCliModelResult,
 } from "../config/model-resolver";
 import type { SettingPath, Settings } from "../config/settings";
+import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
@@ -290,13 +291,18 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		name: "loop",
 		icon: "loop",
 		description:
-			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. A bare number is the iteration count (/loop 10), a unit makes it the interval (/loop 30s); add clean or compact to reset or compact context before each run. Esc cancels the current iteration; /loop again to disable. Manage agent loops with /loop list or /loop stop <id|all>.",
-		inlineHint: "[count] [interval] [clean|compact] [prompt] | list | stop <id|all>",
+			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. A bare number is the iteration count (/loop 10), a unit makes it the interval (/loop 30s); add clean or compact to reset or compact context before each run. Bound it with a count/duration, or gate it with `--until '<cmd>'` / `--while '<cmd>'` — the command's exit status decides whether the next iteration runs. Esc cancels the current iteration; /loop again to disable. Manage agent loops with /loop list or /loop stop <id|all>.",
+		inlineHint:
+			"[count|duration] [interval] [--while|--until '<cmd>'] [clean|compact] [prompt] | list | stop <id|all>",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
 			if (!runtime.ctx.loopModeEnabled) return "Loop: off";
 			if (runtime.ctx.loopModePaused) return "Loop: paused";
-			if (runtime.ctx.loopLimit) return `Loop: on (${describeLoopLimitRuntime(runtime.ctx.loopLimit)})`;
+			const bounds = [
+				runtime.ctx.loopLimit ? describeLoopLimitRuntime(runtime.ctx.loopLimit) : undefined,
+				runtime.ctx.loopCondition ? describeLoopCondition(runtime.ctx.loopCondition) : undefined,
+			].filter((part): part is string => part !== undefined);
+			if (bounds.length > 0) return `Loop: on (${bounds.join(", ")})`;
 			if (runtime.ctx.loopPrompt) return "Loop: on (repeating prompt)";
 			return "Loop: on (waiting for next prompt)";
 		},

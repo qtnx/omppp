@@ -94,6 +94,7 @@ function createYieldingSession(onCustomMessage?: (message: CapturedCustomMessage
 		setIrcWakeTurnObserver: () => {},
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
 		abort: async () => {},
+		isAdvisorActive: () => false,
 		dispose: async () => {},
 	} as unknown as AgentSession;
 }

@@ -67,6 +67,7 @@ import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from ".
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
 import { CompactTool } from "./compact";
 import { ConsultTool } from "./consult";
+import { ContextNotesTool, NewContextTool } from "./context-notes";
 import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
@@ -122,6 +123,7 @@ export * from "./checkpoint";
 export * from "./compact";
 export * from "./computer";
 export * from "./computer/supervisor";
+export * from "./context-notes";
 export * from "./debug";
 export * from "./essential-tools";
 export * from "./eval";
@@ -549,8 +551,8 @@ export interface ToolSession {
 	activateDiscoveredTools?: (toolNames: string[]) => Promise<string[]>;
 	/** Active workpool items whose incremental yields complete the current turn. */
 	getWorkPoolYieldItems?: () => readonly WorkPoolYieldItem[];
-	/** Replace the active workpool item contract before a pooled turn starts. */
-	setWorkPoolYieldItems?: (items: readonly WorkPoolYieldItem[]) => void;
+	/** Replace the active workpool item contract and refresh its provider-facing prompt. */
+	setWorkPoolYieldItems?: (items: readonly WorkPoolYieldItem[]) => Promise<void>;
 	/** The tool-choice queue used to force forthcoming tool invocations and carry invocation handlers. */
 	getToolChoiceQueue?(): ToolChoiceQueue;
 	/** Build a model-provider-specific ToolChoice that targets the named tool, or undefined if unsupported. */
@@ -764,6 +766,8 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	rewind: RewindTool.createIf,
 	compact: CompactTool.createIf,
 	shake: ShakeTool.createIf,
+	context_notes: ContextNotesTool.createIf,
+	new_context: NewContextTool.createIf,
 	task: s => TaskTool.create(s),
 	hub: s => new HubTool(s),
 	workflow: s => WorkflowTool.create(s),
@@ -891,6 +895,14 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	// Auto-include AST counterparts when their text-based sibling is present.
 	// Restricted callers own the active list and must not have it widened.
 	if (requestedTools && !restrictToolNames) {
+		if (
+			session.settings.get("compaction.experimentalContextManagement") &&
+			requestedTools.includes("read") &&
+			requestedTools.includes("grep")
+		) {
+			if (!requestedTools.includes("context_notes")) requestedTools.push("context_notes");
+			if (!requestedTools.includes("new_context")) requestedTools.push("new_context");
+		}
 		if (goalModeActive && !requestedTools.includes("goal")) {
 			requestedTools.push("goal");
 		}

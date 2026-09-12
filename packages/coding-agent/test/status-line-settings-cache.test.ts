@@ -11,10 +11,11 @@ import { visibleWidth } from "@oh-my-pi/pi-tui";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
+import { StatusLineTestComponents } from "./helpers/status-line";
 
 let settingsState: SettingsTestState | undefined;
 let projectDir = "";
-const components: StatusLineComponent[] = [];
+const statusLines = new StatusLineTestComponents();
 
 beforeEach(async () => {
 	settingsState = beginSettingsTest();
@@ -25,7 +26,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-	for (const component of components.splice(0)) component.dispose();
+	statusLines.dispose();
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
 	if (projectDir) {
@@ -73,8 +74,7 @@ function makeSession(sessionName = "Cache Session") {
 }
 
 function makeComponent(statusLineSettings: StatusLineSettings): StatusLineComponent {
-	const component = new StatusLineComponent(makeSession());
-	components.push(component);
+	const component = statusLines.track(new StatusLineComponent(makeSession()));
 	component.updateSettings(statusLineSettings);
 	return component;
 }

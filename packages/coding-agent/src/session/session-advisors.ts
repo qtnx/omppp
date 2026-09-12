@@ -36,13 +36,16 @@ import type {
 import { isUsageLimitOutcome, resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { extractHttpStatusFromError, extractRetryHint, logger } from "@oh-my-pi/pi-utils";
+import { extractHttpStatusFromError, extractRetryHint, logger, prompt } from "@oh-my-pi/pi-utils";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
+	ADVISOR_DEFAULT_BUDGET_PER_UPDATE,
+	ADVISOR_MAX_BUDGET_PER_UPDATE,
 	AdviseTool,
 	type AdvisorAgent,
 	type AdvisorConfig,
 	type AdvisorConsultResult,
+	type AdvisorEmissionDecision,
 	AdvisorEmissionGuard,
 	AdvisorLoopGuard,
 	type AdvisorMessageDetails,
@@ -267,6 +270,7 @@ export interface SessionAdvisorsOptions {
 	mcpResources?: CursorMcpResourceAdapter;
 	watchdogPrompt?: string;
 	sharedInstructions?: string;
+	sharedMaxNotesPerUpdate?: number;
 	contextPrompt?: string;
 	/** Active memory backend's developer instructions, wrapped for advisors. */
 	memoryPrompt?: string;
@@ -380,6 +384,7 @@ export class SessionAdvisors {
 	#advisorMcpResources: SessionAdvisorsOptions["mcpResources"];
 	#advisorWatchdogPrompt: string | undefined;
 	#advisorSharedInstructions: string | undefined;
+	#advisorSharedMaxNotesPerUpdate: number | undefined;
 	#advisorContextPrompt: string | undefined;
 	#advisorMemoryPrompt: string | undefined;
 	#advisorStreamFn: StreamFn | undefined;
@@ -428,6 +433,7 @@ export class SessionAdvisors {
 		this.#advisorMcpResources = options.mcpResources;
 		this.#advisorWatchdogPrompt = options.watchdogPrompt;
 		this.#advisorSharedInstructions = options.sharedInstructions;
+		this.#advisorSharedMaxNotesPerUpdate = options.sharedMaxNotesPerUpdate;
 		this.#advisorContextPrompt = options.contextPrompt;
 		this.#toolSession = options.toolSession;
 		this.#advisorMemoryPrompt = options.memoryPrompt;
@@ -450,6 +456,9 @@ export class SessionAdvisors {
 		this.#advisorPrimaryTurnsCompleted++;
 		for (const advisor of this.#advisors) {
 			if (advisor.runtime.disposed) continue;
+			// Only the terminal primary boundary owns the deferred flush. Continuing
+			// tool turns must keep partial-work critiques withheld.
+			if (willContinue !== true) advisor.adviseTool.beginUpdate(false);
 			try {
 				advisor.runtime.onTurnEnd(messages, { willContinue });
 			} catch (error) {
@@ -861,6 +870,19 @@ export class SessionAdvisors {
 		if (!Number.isFinite(immuneTurns) || immuneTurns <= 0) return 0;
 		return Math.trunc(immuneTurns);
 	}
+	#advisorMaxNotesPerUpdate(config?: AdvisorConfig): number {
+		const clamp = (value: unknown): number | undefined =>
+			typeof value === "number" && Number.isFinite(value) && value >= 1
+				? Math.min(ADVISOR_MAX_BUDGET_PER_UPDATE, Math.trunc(value))
+				: undefined;
+
+		return (
+			clamp(config?.maxNotesPerUpdate) ??
+			clamp(this.#advisorSharedMaxNotesPerUpdate) ??
+			clamp(this.#host.settings.get("advisor.maxNotesPerUpdate")) ??
+			ADVISOR_DEFAULT_BUDGET_PER_UPDATE
+		);
+	}
 
 	#isAdvisorInterruptImmuneTurnActive(): boolean {
 		return isAdvisorInterruptImmuneTurnActive({
@@ -1153,6 +1175,7 @@ export class SessionAdvisors {
 						this.#duoAdvisorEscalationThinking,
 					]
 				: [];
+		const budget = this.#advisorMaxNotesPerUpdate(config);
 		return [
 			config.name,
 			slug,
@@ -1160,6 +1183,7 @@ export class SessionAdvisors {
 			thinkingLevel,
 			tools,
 			instructions,
+			budget,
 			...duoEscalation,
 		].join("\u001f");
 	}
@@ -1227,10 +1251,11 @@ export class SessionAdvisors {
 				signature,
 			} = descriptor;
 
-			const emissionGuard = new AdvisorEmissionGuard();
+			const budgetPerUpdate = this.#advisorMaxNotesPerUpdate(config);
+			const emissionGuard = new AdvisorEmissionGuard({ budgetPerUpdate });
 			const adviseTool = new AdviseTool(
 				(note, severity) => this.#routeAdvice(advisorRef, note, severity),
-				note => this.#acceptAdvice(advisorRef, note),
+				(note, severity) => this.#acceptAdvice(advisorRef, note, severity),
 			);
 			const doneVerdictTool = new DoneVerdictTool((verdict: DoneVerdict) => {
 				const pending = this.#pendingDoneVerdict;
@@ -1264,7 +1289,7 @@ export class SessionAdvisors {
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
-			const systemPrompt = [advisorSystemPrompt];
+			const systemPrompt = [prompt.render(advisorSystemPrompt, { max_notes_per_update: budgetPerUpdate })];
 			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorMemoryPrompt) systemPrompt.push(this.#advisorMemoryPrompt);
 			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
@@ -1647,9 +1672,8 @@ export class SessionAdvisors {
 	 * After a deliberate user interrupt auto-resume is suppressed while idle/unwinding
 	 * (the note becomes a preserved card re-entering on resume); a live-streaming turn is
 	 * steered in directly. A plain nit always rides the non-interrupting YieldQueue
-	 * aside. Suppression by the per-advisor emission guard drops the note silently —
-	 * the model still saw `Recorded.`, so it isn't tempted to rephrase the same note
-	 * past the dedupe.
+	 * aside. The emission guard has already accepted the note; rejected calls never
+	 * enter this route and receive their specific policy outcome from `AdviseTool`.
 	 */
 	#hasTerminalTextAnswerWithoutQueuedWork(): boolean {
 		if (this.#host.agent.hasQueuedMessages() || this.#host.hasPendingNextTurnMessages()) return false;
@@ -1659,15 +1683,14 @@ export class SessionAdvisors {
 		return isTerminalTextAssistantAnswer(messages[tail]);
 	}
 
-	/** Emission-guard gate: the noise/empty/dedupe filter plus the
-	 *  one-advise-per-update budget, consumed the moment a note is emitted —
-	 *  whether it is delivered live or held for a deferred flush. A suppressed
-	 *  note never consumes the budget, so it cannot burn an update's slot ahead
-	 *  of a substantive concern. Returns whether the note may reach the primary. */
-	#acceptAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): boolean {
-		if (advisor.emissionGuard.accept(note)) return true;
-		logger.debug("advisor advice suppressed by emission guard", { severity, advisor: advisor.name });
-		return false;
+	/** Emission-guard gate: classify noise, duplicates, and over-budget notes so
+	 *  AdviseTool can report the exact outcome instead of claiming every rejection
+	 *  is a duplicate. Accepted notes consume the current update's budget. */
+	#acceptAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity): AdvisorEmissionDecision {
+		const decision = advisor.emissionGuard.accept(note, severity);
+		if (decision !== "accepted")
+			logger.debug("advisor advice suppressed by emission guard", { decision, severity, advisor: advisor.name });
+		return decision;
 	}
 
 	/** Route an already-accepted advice note to the primary. Never re-runs the
@@ -2299,10 +2322,14 @@ export class SessionAdvisors {
 	 *
 	 * @returns the number of advisors active after the rebuild.
 	 */
-	applyAdvisorConfigs(advisors: AdvisorConfig[], sharedInstructions: string | undefined): number {
+	applyAdvisorConfigs(
+		advisors: AdvisorConfig[],
+		sharedInstructions: string | undefined,
+		sharedMaxNotesPerUpdate?: number,
+	): number {
 		this.#advisorConfigs = advisors;
 		this.#advisorSharedInstructions = sharedInstructions;
-		if (!this.#advisorEnabled) return 0;
+		this.#advisorSharedMaxNotesPerUpdate = sharedMaxNotesPerUpdate;
 		this.#stopAdvisorRuntime();
 		this.#buildAdvisorRuntime(true);
 		return this.#advisors.length;

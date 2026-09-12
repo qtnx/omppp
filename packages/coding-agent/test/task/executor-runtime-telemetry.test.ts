@@ -110,6 +110,7 @@ function createSessionHarness(lastAssistantMessage?: AssistantMessage): SessionH
 			idle.resolve();
 		},
 		setIrcWakeTurnObserver: () => {},
+		isAdvisorActive: () => false,
 		dispose: async () => {
 			disposed = true;
 		},

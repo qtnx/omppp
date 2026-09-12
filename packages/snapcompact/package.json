@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/snapcompact",
-	"version": "1.8.4",
+	"version": "1.8.5",
 	"description": "Bitmap-frame context compression for vision-capable LLMs",
 	"homepage": "https://omp.sh",
 	"author": "Stencil Labs, Inc.",
@@ -32,6 +32,7 @@
 	},
 	"dependencies": {
 		"@oh-my-pi/pi-ai": "catalog:",
+		"@oh-my-pi/pi-catalog": "catalog:",
 		"@oh-my-pi/pi-natives": "catalog:",
 		"@oh-my-pi/pi-utils": "catalog:",
 		"@oh-my-pi/pi-wire": "catalog:"

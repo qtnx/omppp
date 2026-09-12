@@ -1,5 +1,7 @@
 import type { LoopSnapshot } from "../session/loop-manager";
 import { previewLine, TRUNCATE_LENGTHS } from "../tools/render-utils";
+import { readShellWord } from "../tools/shell-tokenize";
+import type { LoopConditionConfig } from "./loop-condition";
 import { sanitizeStatusText } from "./shared";
 
 /** What happens to the session context before each repeated loop turn. */
@@ -21,6 +23,11 @@ export type LoopRuntime = {
 
 export const DEFAULT_LOOP_INTERVAL_MS = 800;
 export const MAX_LOOP_INTERVAL_MS = 2_147_483_647;
+
+const CONDITION_FLAGS: Record<string, boolean | undefined> = {
+	"--while": false,
+	"--until": true,
+};
 
 const LOOP_USAGE =
 	"Usage: /loop [count] [interval] [clean|compact|--keep] [prompt]. A bare number is the iteration count; add a unit (10s, 2m, 1h30m) for the sleep interval. Examples: /loop 10, /loop 10s 5, /loop clean 10 fix the tests, /loop 2m keep going.";
@@ -70,7 +77,9 @@ type ParsedInterval = {
 
 export interface ParsedLoopArgs {
 	/** Repeat cadence / iteration budget / context option, when the user supplied any leading option token. */
-	limit?: LoopConfig;
+	limit: LoopConfig;
+	/** Continue-condition from `--while` / `--until`, re-evaluated before each iteration. */
+	condition?: LoopConditionConfig;
 	/** Inline loop prompt: text after the parsed options, or the whole argument when no option was supplied. */
 	prompt?: string;
 }
@@ -113,24 +122,18 @@ export function formatAgentLoopList(loops: readonly LoopSnapshot[]): string {
 		.join("\n");
 }
 
-export function parseLoopArgs(args: string): LoopConfig | string {
-	const parsed = parseLoopLimitArgs(args);
-	if (typeof parsed === "string") return parsed;
-	if (parsed.prompt) return LOOP_USAGE;
-	return parsed.limit ?? { intervalMs: DEFAULT_LOOP_INTERVAL_MS };
-}
-
 /**
- * Parse `/loop` arguments into OMPx's repeat config plus upstream's optional
- * inline prompt. Leading tokens are consumed in any order: a bare integer is
- * the iteration count, a token with a time unit (or `N <unit>`) is the sleep
- * interval, and `clean` / `compact` / `--keep` pick the context mode. Tokens
- * that look numeric but fail interval parsing are hard errors; the first
- * token that is none of the above starts the prompt.
+ * Parse `/loop` arguments into the fork's repeat config, an optional
+ * continue-condition flag, and an optional inline loop prompt.
+ *
+ * Leading loop options are consumed until the first prompt token. A bare
+ * integer is the iteration count, a token with a time unit (or `N <unit>`)
+ * is the sleep interval, and `clean` / `compact` / `--keep` pick context mode.
+ * Numeric or flag-shaped tokens that fail parsing return an error string.
  */
-export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
+export function parseLoopArgs(args: string): ParsedLoopArgs | string {
 	const trimmed = args.trim();
-	if (!trimmed) return {};
+	if (!trimmed) return { limit: { intervalMs: DEFAULT_LOOP_INTERVAL_MS } };
 
 	const parts = trimmed.split(/\s+/);
 	let index = 0;
@@ -166,14 +169,18 @@ export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
 		index = parsedInterval.nextIndex;
 	}
 
-	const prompt = parts.slice(index).join(" ").trim() || undefined;
-	if (intervalMs === undefined && iterations === undefined && context === undefined) {
-		return { prompt };
-	}
+	const rest = parts.slice(index).join(" ");
+	const conditionResult = takeLoopCondition(rest);
+	if (typeof conditionResult === "string") return conditionResult;
+	const prompt = conditionResult.rest.trim() || undefined;
 	const limit: LoopConfig = { intervalMs: intervalMs ?? DEFAULT_LOOP_INTERVAL_MS };
 	if (iterations !== undefined) limit.iterations = iterations;
 	if (context !== undefined) limit.context = context;
-	return { limit, prompt };
+	return { limit, condition: conditionResult.condition, prompt };
+}
+
+export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
+	return parseLoopArgs(args);
 }
 
 function parseInterval(parts: string[], start: number): ParsedInterval | string {
@@ -205,13 +212,39 @@ function parseInterval(parts: string[], start: number): ParsedInterval | string 
 	return LOOP_USAGE;
 }
 
+/** Split an optional leading `--while` / `--until` flag off the argument string. */
+function takeLoopCondition(input: string): { condition?: LoopConditionConfig; rest: string } | string {
+	let rest = input.trim();
+	let condition: LoopConditionConfig | undefined;
+
+	while (rest.startsWith("--")) {
+		const name = /^(--[a-z][a-z-]*)(?=[\s=]|$)/.exec(rest)?.[1];
+		const until = name === undefined ? undefined : CONDITION_FLAGS[name];
+		if (name === undefined || until === undefined) {
+			return `Unknown /loop flag ${name ?? rest.split(/\s+/, 1)[0]}. ${LOOP_USAGE}`;
+		}
+		if (condition) return "Use only one of --while or --until.";
+
+		const afterName = rest.slice(name.length);
+		const valueText = afterName.startsWith("=") ? afterName.slice(1) : afterName;
+		const value = readShellWord(valueText);
+		if (value === "unterminated") return `${name} has an unterminated quote.`;
+		if (value === undefined || !value.value.trim() || valueText.trim().startsWith("-")) {
+			return `${name} needs a shell command. Quote it when it contains spaces: /loop ${name} 'bun test'.`;
+		}
+		condition = { command: value.value.trim(), until };
+		rest = value.rest;
+	}
+
+	return { condition, rest };
+}
+
 function parseCompoundInterval(token: string, nextIndex: number): ParsedInterval | string | undefined {
 	const segmentPattern = /(\d+)([a-z]+)/g;
 	let match = segmentPattern.exec(token);
 	let nextOffset = 0;
 	let segmentCount = 0;
 	let intervalMs = 0;
-
 	while (match !== null) {
 		if (match.index !== nextOffset) return undefined;
 		segmentCount += 1;
@@ -332,6 +365,10 @@ export const describeLoopLimitRuntime = describeLoopRuntime;
 
 export function isLoopDurationExpired(): false {
 	return false;
+}
+
+export function isLoopLimitExhausted(limit: LoopLimitRuntime | undefined): boolean {
+	return !hasLoopIterationRemaining(limit);
 }
 
 export function formatDuration(durationMs: number): string {

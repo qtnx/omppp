@@ -587,7 +587,7 @@ type UpdateTarget =
 	| { method: "nix" }
 	| { method: "bun"; path?: string }
 	| { method: "npm"; path?: string }
-	| { method: "binary"; path: string; replacesSymlink: boolean };
+	| { method: "binary"; path: string; replacesSymlink: boolean; validateExistingTarget: boolean };
 function resolveUpdateMethod(
 	ompPath: string,
 	bunBinDir: string | undefined,
@@ -711,7 +711,12 @@ export function resolveUpdateTargetFromPath(
 				ompLinkTarget,
 			}) !== "binary";
 		const binaryPath = ompIsSymlink && !managerLauncher ? (ompRealpath ?? ompPath) : ompPath;
-		return { method, path: binaryPath, replacesSymlink: ompIsSymlink && binaryPath === ompPath };
+		return {
+			method,
+			path: binaryPath,
+			replacesSymlink: ompIsSymlink && binaryPath === ompPath,
+			validateExistingTarget: ompIsSymlink && !managerLauncher,
+		};
 	}
 	if (method === "bun" || method === "npm") return { method, path: ompPath };
 	return { method };
@@ -1138,24 +1143,62 @@ function resolveOmpPath(): string | undefined {
 }
 
 /**
- * Extract the semver from `ompx --version` output (bare or launcher-prefixed), preserving prerelease suffixes.
+ * Extract the semver from `ompx --version` output.
+ * Accepts bare `X.Y.Z`, optional `v` prefix, and `omp/` / `ompx/` launcher labels.
+ * Other labels (`node/18.0.5`) are foreign binaries and must not parse.
  */
 export function parseReportedVersion(output: string): string | undefined {
-	return output.match(/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/)?.[1];
+	const trimmed = output.trim();
+	const version = /^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
+	if (version.test(trimmed)) return trimmed;
+	if (trimmed.startsWith("v") && version.test(trimmed.slice(1))) return trimmed.slice(1);
+	const slash = trimmed.indexOf("/");
+	if (slash <= 0) return undefined;
+	const label = trimmed.slice(0, slash);
+	if (label !== APP_NAME && label !== "omp" && label !== "ompx") return undefined;
+	const rest = trimmed.slice(slash + 1);
+	return version.test(rest) ? rest : undefined;
+}
+
+async function reportedVersionAtPath(binaryPath: string): Promise<string | undefined> {
+	try {
+		const result = await $`${binaryPath} --version`.quiet().nothrow();
+		if (result.exitCode !== 0) return undefined;
+		return parseReportedVersion(result.text().trim());
+	} catch {
+		return undefined;
+	}
 }
 
 /**
  * Run a specific OMPx binary and check if it reports the expected version.
  */
 async function verifyBinaryAtPath(binaryPath: string, expectedVersion: string): Promise<InstalledVersionVerification> {
+	const actual = await reportedVersionAtPath(binaryPath);
+	return { ok: actual === expectedVersion, actual, path: binaryPath };
+}
+
+async function validateExistingUpdateTarget(targetPath: string): Promise<void> {
+	let hasShebang = false;
 	try {
-		const result = await $`${binaryPath} --version`.quiet().nothrow();
-		if (result.exitCode !== 0) return { ok: false, path: binaryPath };
-		const actual = parseReportedVersion(result.text());
-		return { ok: actual === expectedVersion, actual, path: binaryPath };
-	} catch {
-		return { ok: false, path: binaryPath };
+		hasShebang = (await Bun.file(targetPath).slice(0, 2).text()) === "#!";
+	} catch {}
+
+	const stem = path.basename(targetPath, path.extname(targetPath)).toLowerCase();
+	if (stem === "bun" || stem === "node") {
+		throw new Error(
+			`Refusing to replace ${targetPath}: the resolved foreign symlink target does not report an OMP version when run directly. Point PATH directly at the OMP binary you want to update, or reinstall with: ${installerHint()}`,
+		);
 	}
+
+	if (!hasShebang && (await reportedVersionAtPath(targetPath)) !== undefined) return;
+
+	const reason = hasShebang
+		? "is a shebang script, not an OMP binary"
+		: "does not report an OMP version when run directly";
+	throw new Error(
+		`Refusing to replace ${targetPath}: the resolved foreign symlink target ${reason}. Point PATH directly at the OMP binary you want to update, or reinstall with: ${installerHint()}`,
+	);
 }
 
 /**
@@ -1164,12 +1207,14 @@ async function verifyBinaryAtPath(binaryPath: string, expectedVersion: string): 
 async function verifyInstalledVersion(expectedVersion: string): Promise<InstalledVersionVerification> {
 	const ompPath = resolveOmpPath();
 	if (!ompPath) return { ok: false };
-	return await verifyBinaryAtPath(ompPath, expectedVersion);
+	const binaryPath = tryRealpath(ompPath) ?? ompPath;
+	return await verifyBinaryAtPath(binaryPath, expectedVersion);
 }
 
-function printVerifiedVersion(expectedVersion: string): void {
+function printVerifiedVersion(expectedVersion: string, binaryPath?: string): void {
 	const icon = theme?.status?.success ?? "✔";
-	console.log(chalk.green(`\n${icon} Updated to ${expectedVersion}`));
+	const location = binaryPath ? ` at ${binaryPath}` : "";
+	console.log(chalk.green(`\n${icon} Updated to ${expectedVersion}${location}`));
 }
 
 function formatVerificationFailure(result: InstalledVersionVerification, expectedVersion: string): string {
@@ -1187,7 +1232,7 @@ function formatVerificationFailure(result: InstalledVersionVerification, expecte
  */
 function printVerificationResult(result: InstalledVersionVerification, expectedVersion: string): void {
 	if (result.ok) {
-		printVerifiedVersion(expectedVersion);
+		printVerifiedVersion(expectedVersion, result.path);
 		return;
 	}
 	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion)}`));
@@ -1687,9 +1732,12 @@ export async function updateViaBinaryAt(
 		fetchImpl?: Fetch;
 		githubToken?: string;
 		allowPrerelease?: boolean;
+		/** Refuse replacement unless the existing path is a non-script OMP executable. */
+		validateExistingTarget?: boolean;
 		verifyInstalledVersion?: typeof verifyInstalledVersion;
 	} = {},
 ): Promise<void> {
+	if (options.validateExistingTarget) await validateExistingUpdateTarget(targetPath);
 	const binaryName = options.binaryName ?? getBinaryNameForPlatform(process.platform, process.arch);
 	// Unique per attempt so two overlapping OMPx updates never share a temp
 	// or backup path. A fixed temp name (`<binary>.new`) let the second run's
@@ -1724,14 +1772,14 @@ export async function updateViaBinaryAt(
 	// overlapping `omp update` runs never replace the same binary concurrently
 	// or reclaim each other's live backup/temp files. The download above writes
 	// to a unique temp path and is safe to overlap; only the swap is shared.
-	await withFileLock(targetPath, async () => {
+	const verification = await withFileLock(targetPath, async () => {
 		console.log(chalk.dim("Installing update..."));
-		await replaceBinaryForUpdate({
+		const result = await replaceBinaryForUpdate({
 			targetPath,
 			tempPath,
 			backupPath,
 			expectedVersion,
-			verifyInstalledVersion: options.verifyInstalledVersion ?? verifyInstalledVersion,
+			verifyInstalledVersion: options.verifyInstalledVersion ?? (version => verifyBinaryAtPath(targetPath, version)),
 		});
 		// The launcher is no longer bun-managed: drop bun's metadata sidecar so
 		// the next update classifies this install as a standalone binary instead
@@ -1745,8 +1793,9 @@ export async function updateViaBinaryAt(
 		} catch {}
 		// Reclaim backups from earlier updates whose owning process has since exited.
 		await sweepStaleUpdateArtifacts(targetPath);
+		return result;
 	});
-	printVerifiedVersion(expectedVersion);
+	printVerifiedVersion(expectedVersion, verification.path ?? targetPath);
 	console.log(chalk.dim(`Restart ${APP_NAME} to use the new version`));
 }
 
@@ -2101,7 +2150,10 @@ export async function runUpdateCommand(opts: {
 			if (forceBinary && target.replacesSymlink) {
 				console.log(chalk.dim("Replacing the package-manager launcher with the standalone binary."));
 			}
-			await updateViaBinaryAt(target.path, release.version, { allowPrerelease });
+			await updateViaBinaryAt(target.path, release.version, {
+				allowPrerelease,
+				validateExistingTarget: target.validateExistingTarget,
+			});
 			if (forceBinary && target.replacesSymlink) {
 				console.log(
 					chalk.yellow(

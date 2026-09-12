@@ -43,7 +43,8 @@ import type { ToolExecutionHandle } from "./components/tool-execution";
 import type { TranscriptContainer } from "./components/transcript-container";
 import type { RecentSession } from "./components/welcome";
 import type { EventController } from "./controllers/event-controller";
-import type { LoopRuntime } from "./loop-limit";
+import type { LoopConditionConfig } from "./loop-condition";
+import type { LoopLimitRuntime, LoopRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
 
@@ -195,7 +196,8 @@ export interface InteractiveModeContext {
 	loopPrompt?: string;
 	loopPromptFilePath?: string;
 	loopRuntime?: LoopRuntime;
-	loopLimit?: LoopRuntime;
+	loopLimit?: LoopLimitRuntime;
+	loopCondition?: LoopConditionConfig;
 	planModePlanFilePath?: string;
 	hideThinkingBlock: boolean;
 	/**
@@ -391,6 +393,11 @@ export interface InteractiveModeContext {
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
 	updateEditorTopBorder(): void;
+	/**
+	 * Re-apply `tui.vimMode` to the live editor and refresh the mode chrome (border, status-line
+	 * segment, cursor shape). Lets the setting take effect without restarting the session.
+	 */
+	applyVimModeSetting(): void;
 	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(source?: AgentSession): Promise<void>;

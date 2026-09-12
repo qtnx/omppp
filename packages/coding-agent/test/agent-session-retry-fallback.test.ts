@@ -1553,6 +1553,8 @@ describe("AgentSession retry fallback", () => {
 		// from the first request — there is no earlier model's work to misattribute.
 		expect(session.servingModel).toEqual({
 			selector: `${firstFallback.provider}/${firstFallback.id}`,
+			modelIdentity: `${firstFallback.provider}/${firstFallback.id}`,
+			thinkingLevel: undefined,
 			isFallback: true,
 		});
 
@@ -1585,9 +1587,18 @@ describe("AgentSession retry fallback", () => {
 		// Nothing had served when the chain advanced, so there was no earlier work
 		// to miscredit and the candidate being attempted is the only answer — but
 		// it is still reported as fallback-routed.
-		expect(swapProbe).toEqual([{ selector: `${secondFallback.provider}/${secondFallback.id}`, isFallback: true }]);
+		expect(swapProbe).toEqual([
+			{
+				selector: `${secondFallback.provider}/${secondFallback.id}`,
+				modelIdentity: `${secondFallback.provider}/${secondFallback.id}`,
+				thinkingLevel: undefined,
+				isFallback: true,
+			},
+		]);
 		expect(session.servingModel).toEqual({
 			selector: `${secondFallback.provider}/${secondFallback.id}`,
+			modelIdentity: `${secondFallback.provider}/${secondFallback.id}`,
+			thinkingLevel: undefined,
 			isFallback: true,
 		});
 	});
@@ -4565,6 +4576,8 @@ describe("AgentSession retry fallback", () => {
 		// The restored primary answered, so attribution moves back with it.
 		expect(session.servingModel).toEqual({
 			selector: `${primaryModel.provider}/${primaryModel.id}`,
+			modelIdentity: `${primaryModel.provider}/${primaryModel.id}`,
+			thinkingLevel: undefined,
 			isFallback: false,
 		});
 	});
@@ -4618,6 +4631,8 @@ describe("AgentSession retry fallback", () => {
 		await session.waitForIdle();
 		expect(session.servingModel).toEqual({
 			selector: `${fallbackModel.provider}/${fallbackModel.id}`,
+			modelIdentity: `${fallbackModel.provider}/${fallbackModel.id}`,
+			thinkingLevel: undefined,
 			isFallback: true,
 		});
 
@@ -4679,13 +4694,23 @@ describe("AgentSession retry fallback", () => {
 		// The degrade swaps models without arming a retry-fallback chain, but it is
 		// still fallback routing — a bare model badge would hide that.
 		expect(requestedModels).toEqual([`${fastModel.provider}/${fastModel.id}`, `fireworks/${baseId}`]);
-		expect(session.servingModel).toEqual({ selector: `fireworks/${baseId}`, isFallback: true });
+		expect(session.servingModel).toEqual({
+			selector: `fireworks/${baseId}`,
+			modelIdentity: `fireworks/${baseId}`,
+			thinkingLevel: undefined,
+			isFallback: true,
+		});
 
 		// How the previous transcript was routed says nothing about a freshly
 		// loaded one: switching sessions in place must not describe the new
 		// session's model as fallback-routed.
 		vi.spyOn(session.sessionManager, "getSessionId").mockReturnValue("some-other-session");
-		expect(session.servingModel).toEqual({ selector: `fireworks/${baseId}`, isFallback: false });
+		expect(session.servingModel).toEqual({
+			selector: `fireworks/${baseId}`,
+			modelIdentity: `fireworks/${baseId}`,
+			thinkingLevel: undefined,
+			isFallback: false,
+		});
 	});
 
 	it("re-checks context before a cooldown-expiry revert onto a smaller-window model in the auto-continue path", async () => {
@@ -5938,6 +5963,8 @@ describe("AgentSession retry fallback", () => {
 		expect(session.servingModel?.isFallback).toBeFalsy();
 		expect(session.servingModel).toEqual({
 			selector: `${primaryModel.provider}/${primaryModel.id}`,
+			modelIdentity: `${primaryModel.provider}/${primaryModel.id}`,
+			thinkingLevel: undefined,
 			isFallback: false,
 		});
 
@@ -5950,6 +5977,8 @@ describe("AgentSession retry fallback", () => {
 		expect(session.servingModel?.isFallback).toBeFalsy();
 		expect(session.servingModel).toEqual({
 			selector: `${primaryModel.provider}/${primaryModel.id}`,
+			modelIdentity: `${primaryModel.provider}/${primaryModel.id}`,
+			thinkingLevel: undefined,
 			isFallback: false,
 		});
 		// Both attribution and how the model was routed belong to the session they
@@ -5960,6 +5989,8 @@ describe("AgentSession retry fallback", () => {
 		vi.spyOn(session.sessionManager, "getSessionId").mockReturnValue("some-other-session");
 		expect(session.servingModel).toEqual({
 			selector: `${fallbackModel.provider}/${fallbackModel.id}`,
+			modelIdentity: `${fallbackModel.provider}/${fallbackModel.id}`,
+			thinkingLevel: undefined,
 			isFallback: false,
 		});
 	});
@@ -5998,6 +6029,8 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.id).toBe(fallbackModel.id);
 		expect(session.servingModel).toEqual({
 			selector: `${fallbackModel.provider}/${fallbackModel.id}`,
+			modelIdentity: `${fallbackModel.provider}/${fallbackModel.id}`,
+			thinkingLevel: undefined,
 			isFallback: true,
 		});
 	});
@@ -6026,6 +6059,8 @@ describe("AgentSession retry fallback", () => {
 		await session.waitForIdle();
 		const served = {
 			selector: `${fallbackModel.provider}/${fallbackModel.id}`,
+			modelIdentity: `${fallbackModel.provider}/${fallbackModel.id}`,
+			thinkingLevel: undefined,
 			isFallback: true,
 		};
 		expect(session.servingModel).toEqual(served);
@@ -6090,6 +6125,8 @@ describe("AgentSession retry fallback", () => {
 		await session.waitForIdle();
 		expect(session.servingModel).toEqual({
 			selector: `${firstFallback.provider}/${firstFallback.id}`,
+			modelIdentity: `${firstFallback.provider}/${firstFallback.id}`,
+			thinkingLevel: undefined,
 			isFallback: true,
 		});
 
@@ -6108,6 +6145,8 @@ describe("AgentSession retry fallback", () => {
 		expect(session.model?.id).toBe(secondFallback.id);
 		expect(session.servingModel).toEqual({
 			selector: `${firstFallback.provider}/${firstFallback.id}`,
+			modelIdentity: `${firstFallback.provider}/${firstFallback.id}`,
+			thinkingLevel: undefined,
 			isFallback: true,
 		});
 		// Never the incoming candidate: mid-swap it has produced nothing.
@@ -6164,6 +6203,8 @@ describe("AgentSession retry fallback", () => {
 		expect(requestedModels).toEqual([`${fallbackModel.provider}/${fallbackModel.id}`]);
 		expect(session.servingModel).toEqual({
 			selector: `${fallbackModel.provider}/${fallbackModel.id}`,
+			modelIdentity: `${fallbackModel.provider}/${fallbackModel.id}`,
+			thinkingLevel: undefined,
 			isFallback: true,
 		});
 	});

@@ -23,6 +23,7 @@ import {
 	getAgentDir,
 	getLastChangelogVersionPath,
 	getProjectDir,
+	getProjectAgentDir,
 	isEnoent,
 	logger,
 	MAIN_CONFIG_FILENAMES,
@@ -290,7 +291,7 @@ export type ConfigMigrationApplyResult = {
 	changedPaths: string[];
 };
 
-const SETUP_CONFIG_VERSION = 6;
+const SETUP_CONFIG_VERSION = 7;
 
 const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 	{
@@ -301,14 +302,14 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 			smol: "cerebras/gpt-oss-120b",
 			slow: "openai-codex/gpt-5.6-sol:high",
 			plan: "openai-codex/gpt-5.6-sol:xhigh",
-			designer: "tnx/designer",
+			designer: "anthropic/claude-opus-5",
 			commit: "openai-codex/gpt-5.6-luna:high",
 		},
 	},
 	{
 		path: "task.agentModelOverrides",
 		target: {
-			designer: "tnx/designer",
+			designer: "anthropic/claude-opus-5",
 			explore: "pi/smol",
 			frontend_ui: "tnx/designer",
 			oracle: "openai-codex/gpt-5.6-sol:high",
@@ -318,6 +319,8 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 			quick_task: "openai-codex/gpt-5.6-luna:high",
 			reviewer: "openai-codex/gpt-5.6-sol:high",
 			task: "openai-codex/gpt-5.6-terra:medium",
+			ui_ux_reviewer: "anthropic/claude-opus-5",
+			ux_copywriter: "anthropic/claude-opus-5",
 		},
 	},
 	{
@@ -342,10 +345,14 @@ const SETUP_CONFIG_RECOGNIZED_OLD_VALUES: SetupConfigRecognizedOldValues = {
 		smol: ["tnx/smol", "tnx/smol:medium"],
 		slow: ["openai-codex/gpt-5.5:xhigh", "openai-codex/gpt-5.5:high"],
 		plan: ["anthropic/claude-fable-5:high", "openai-codex/gpt-5.5:xhigh"],
-		designer: ["tnx/designer:medium"],
+		designer: ["tnx/designer:medium", "tnx/designer"],
 		commit: ["openai-codex/gpt-5.5:low"],
 	},
 	"task.agentModelOverrides": {
+		designer: ["tnx/designer", "pi/designer", "anthropic/claude-opus-4-8:xhigh"],
+		frontend_ui: ["tnx/designer", "pi/designer"],
+		ui_ux_reviewer: ["tnx/designer", "pi/designer"],
+		ux_copywriter: ["tnx/designer", "pi/designer"],
 		quick_task: ["openai-codex/gpt-5.5:low"],
 		task: ["openai-codex/gpt-5.5:low", "openai-codex/gpt-5.5:medium"],
 		oracle: ["openai-codex/gpt-5.5:xhigh"],
@@ -2134,6 +2141,10 @@ export class Settings {
 	}
 
 	async #readProjectSettings(quarantineInvalid: boolean): Promise<ProjectSettingsReadResult> {
+		const projectConfigDir = getProjectAgentDir(this.#cwd);
+		const projectConfigPath = path.join(projectConfigDir, "config.yml");
+		invalidateCapabilityFsCache(projectConfigPath);
+		invalidateCapabilityFsCache(path.join(projectConfigDir, "settings.json"));
 		let shellPathSource: string | undefined;
 		let merged: RawSettings = {};
 		try {
@@ -2171,7 +2182,6 @@ export class Settings {
 			// Capability discovery is best-effort; the native project config below
 			// remains authoritative for its model-role layer and must not be hidden.
 		}
-		const projectConfigPath = path.join(this.#cwd, ".omp", "config.yml");
 		const nativeProject = quarantineInvalid
 			? await this.#loadYaml(projectConfigPath)
 			: (this.#unwrapYamlLoadResult(
@@ -2933,7 +2943,6 @@ export class Settings {
 				}
 				if (overridesChanged) setupModifiedPaths.add("task.agentModelOverrides");
 			}
-
 			for (const migration of SETUP_CONFIG_SCALAR_MIGRATIONS) {
 				if (setupScalarPathsWithExplicitValues.has(migration.path)) continue;
 				if (valuesEqual(migration.target, getDefault(migration.path))) continue;
@@ -3332,7 +3341,7 @@ export class Settings {
 	async #saveProjectNow(): Promise<void> {
 		if (this.#savesCancelled || !this.#persist || this.#modifiedProjectModelRoles.size === 0) return;
 
-		const projectConfigPath = path.join(this.#cwd, ".omp", "config.yml");
+		const projectConfigPath = path.join(getProjectAgentDir(this.#cwd), "config.yml");
 		const modifiedModelRoles = [...this.#modifiedProjectModelRoles];
 		this.#modifiedProjectModelRoles.clear();
 

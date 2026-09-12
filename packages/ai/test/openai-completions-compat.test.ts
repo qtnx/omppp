@@ -638,6 +638,33 @@ describe("openai-completions compatibility", () => {
 		expect(result.usage.totalTokens).toBe(15);
 	});
 
+	it("freezes DeepSeek response pricing across a UTC tariff transition", () => {
+		const model = getBundledModel("deepseek", "deepseek-v4-flash") as Model<"openai-completions">;
+		const peakStart = Date.parse("2026-09-10T03:59:59Z");
+		const offPeakStart = Date.parse("2026-09-10T04:00:00Z");
+		const mid = parseChunkUsage(
+			{ prompt_tokens: 1_000_000, completion_tokens: 100_000 },
+			model,
+			undefined,
+			peakStart,
+		);
+		const first = parseChunkUsage(
+			{ prompt_tokens: 1_000_000, completion_tokens: 200_000 },
+			model,
+			undefined,
+			peakStart,
+		);
+		const second = parseChunkUsage(
+			{ prompt_tokens: 1_000_000, completion_tokens: 200_000 },
+			model,
+			undefined,
+			offPeakStart,
+		);
+		expect(mid.cost.total).toBeCloseTo(0.42, 12);
+		expect(first.cost.total).toBeCloseTo(0.54, 12);
+		expect(second.cost.total).toBeCloseTo(0.27, 12);
+	});
+
 	it("preserves opaque tool-call IDs when replaying a custom Chat Completions turn", async () => {
 		const model: Model<"openai-completions"> = buildModel({
 			id: "gateway-model",
