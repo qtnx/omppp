@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.8.6] - 2026-09-12
+
 ### Added
 
 - `browser_use` now supports mobile portrait (390×844) and landscape (844×390) viewports, including switching orientation without reopening the tab; pointer actions remain mouse/wheel input.
@@ -14,30 +16,6 @@
 ### Fixed
 
 - Displaying cyclic JavaScript objects in `eval` no longer breaks session saving or the next model turn; cyclic metadata already queued for saving preserves the entry with explicit circular-reference markers.
-
-## [1.8.5] - 2026-09-12
-
-### Changed
-
-- Main agents now retain planning, review, and final decisions while subagents execute scoped work; shared guidance clarifies authorized hotfix completion and plain-language explanations, with leaner OpenAI GPT model notes.
-- Designer, frontend_ui, ui_ux_reviewer, ux_copywriter, and presenter agents plus the `designer` role now route to `anthropic/claude-opus-5` directly, and `super_review` defaults to `anthropic/claude-fable-5-1:high` (then `claude-opus-5`, then Codex), instead of the `tnx/designer`/`tnx/super` gateway aliases, whose Anthropic backend dropped prompt caching and billed every turn at full input price; existing `tnx/designer` and `pi/designer` overrides migrate on startup (setup config v7), and `tnx/designer` stays as an unauthenticated fallback.
-- `tnx/designer` and `tnx/super` requests now carry Anthropic `cache_control` breakpoints so prompt caching works once the gateway forwards them.
-- Subagents now get their wall-clock budget in the prompt and a fast-scout rule (about two minutes inside the owned files, then edit); the task tool asks the orchestrator to hand over anchors, contract, and the decisive snippet rather than the whole edit, and to size each `task` slice to ten minutes, splitting anything larger instead of running it longer.
-- Subagents now get their wall-clock budget in the prompt and an ask-don't-scout rule (read only the named anchors and owned files; ask the parent over IPC for anything the brief left out, never search the repo); the task tool asks the orchestrator to hand over anchors, contract, and the decisive snippet rather than the whole edit, and to size each `task` slice to ten minutes, splitting anything larger instead of running it longer.
-- Subagent fallback chains are looked up by the model selector, then the agent name (`retry.fallbackChains.task` now applies to the `task` subagent when `task.agentModelOverrides.task` is an explicit model), then the role alias, then `default`; a subagent whose model has no working credentials at dispatch now walks that chain before borrowing the parent session's model.
-- The agent now treats every request as a goal to finish: the verb you used picks the deliverable (a "fix" ends with the bug shown gone, "implement" with the feature exercised, "plan" with a complete plan that inventories existing code and makes its own decisions), reversible choices are decided and reported as `Assuming:` instead of asked, load-bearing ambiguity goes through one adversarial review round before deciding, and turns no longer end on "shall I continue?", option lists, or "waiting for evidence" while delegated work is still running.
-- Context compaction now follows an explicit phase-boundary formula: when a todo phase or work unit closes and context usage is at or above 40% (60% forces it), the agent restates what the next phase needs, schedules `compact` as the last action of the turn, and starts the next phase on the compacted context instead of drifting toward a forced late compaction. The Context GC reminder now reports the context percentage every turn from 40% usage (previously only above 50% and only when unload candidates existed), so the rule has a number to act on; the hint is emitted once per 20-point band (40, 60, 80) and re-arms after compaction, so it neither bloats history nor nags.
-- Delegation is lane-gated: small single-concern tasks are done directly instead of spawning subagents, reviewers, or testers for them, which roughly halves cost on one-file changes.
-- Live learnings now keep the system prompt cache-stable: the injected block is computed once per conversation and reused across prompt rebuilds; learnings stored or consolidated mid-session appear in the next conversation (or after `/learning consolidate`, `/learning drop`, `/learning clear`, `/new`, or a session switch). Ranking is quantized to the day so rebuilds never reorder entries.
-- Live-learning injection is capped by the new `learning.maxInjectedPerScope` setting (default 20 per scope) instead of the storage cap of 40, cutting prompt size roughly in half for large learning stores.
-- Live learnings track how often they were injected; entries that keep being shown without ever being rated useful sink in rank and are preferred for archival during consolidation. `/learning view` shows the `shown` count.
-- Live-learning consolidation now runs daily by default (`learning.consolidation.intervalDays` 7 → 1), enforces `learning.maxEntriesPerScope` by archiving the lowest-ranked leftovers after the model pass, and archives learnings of repositories idle for `learning.staleRepoDays` (default 90) so abandoned checkouts stop accumulating entries.
-- The live-learning classifier only stores guidance about how the agent does engineering work; product-operations instructions (support replies, marketing copy, game or business operations) are kept out of the global scope.
-- Live-learning consolidation is now reliable on large stores: entries are consolidated in batches of at most 60 with a timeout that scales per entry, the consolidator runs at medium reasoning effort, and each target/batch gets its own agent id (the repo target previously failed with "already owned by another session generation" right after the global one). The consolidator prompt now groups by behavior, caps every entry at one 30-word sentence, keeps repository product decisions, and archives product-operations guidance; `rescope` can move an entry from global to the current repository.
-
-### Removed
-
-- Removed the `heavy_task` subagent tier and the built-in subagent review gate on `task`; load-bearing slices run as `task` and the main agent reviews every returned result. Existing `task.agentModelOverrides.heavy_task` entries are dropped on config migration.
 
 ## [18.1.17] - 2026-09-10
 
@@ -1957,4 +1935,4 @@
 - Added a `/vision [on|off|auto|status]` slash command for session-scoped control of the `inspect_image` vision-delegation tool, modeled on `/computer`: `on`/`off` force the tool for the current session only, `auto` returns to the persisted setting, and `status` reports the effective mode, session override, tool state, and active-model image capability.
 - Replaced the `inspect_image.enabled` boolean with the tri-state `inspect_image.mode` (`auto`|`on`|`off`, default `auto`). In `auto` the tool is registered only when the active model lacks native image input, so vision-capable models (e.g. `kimi-code/k3`) read images inline with their own capabilities instead of delegating to a separate vision model; the tool set is re-evaluated on every model switch with a status notice when it flips. The `read` tool now follows the effective state dynamically rather than the raw setting, so it returns decoded image blocks again whenever `inspect_image` is hidden. Existing `inspect_image.enabled: true/false` configs migrate to `inspect_image.mode: on/off`.
 
-Older entries are archived in [packages/coding-agent/CHANGELOG.md@9c509fef2b32](https://github.com/can1357/oh-my-pi/blob/9c509fef2b325d13f8740b4cc9ff55d66879b70a/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@571c72827015](https://github.com/can1357/oh-my-pi/blob/571c728270155fc5d919d6aa03493bcd0cbb52ca/packages/coding-agent/CHANGELOG.md).
