@@ -565,7 +565,11 @@ describe("executeJs", () => {
 		expect(result.output.trim()).toBe("7");
 	});
 	it("falls back to text display when the final expression value is not structured-cloneable", async () => {
-		const result = await executeJs("({ label: 'callable value', fn: () => 1 });", { sessionId, session, sessionFile });
+		const result = await executeJs("({ label: 'callable value', fn: () => 1 });", {
+			sessionId,
+			session,
+			sessionFile,
+		});
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toContain("callable value");
 		expect(result.output).toContain("fn:");
