@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `browser_use` now supports mobile portrait (390×844) and landscape (844×390) viewports, including switching orientation without reopening the tab; pointer actions remain mouse/wheel input.
+
+### Changed
+
+- Browser QA and UI/UX review guidance now distinguishes blocked checks from product failures, reports mobile-emulation limits, uses the supported browser interface, and requires cleanup of owned test resources.
+
 ## [1.8.5] - 2026-09-12
 
 ### Changed
