@@ -156,7 +156,12 @@ function isArchivedTextBlock(value: unknown): value is { type: "text"; text: str
 	);
 }
 
-function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string): unknown {
+function truncateForPersistence(
+	obj: unknown,
+	blobStore: BlobStore,
+	key?: string,
+	ancestors = new Set<object>(),
+): unknown {
 	if (obj === null || obj === undefined) return obj;
 	if (
 		isImageDataPayload(obj) &&
@@ -193,6 +198,7 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 			{ ...obj, text: resolveArchivedTextForPersistence(obj.text, blobStore) },
 			blobStore,
 			key,
+			ancestors,
 		);
 	}
 	// Anthropic validates native web-search and tool-search history byte-for-byte
@@ -244,7 +250,7 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 			return externalizeImageDataUrlSync(blobStore, obj);
 		}
 		if (isBlobRef(obj) && (key === TEXT_CONTENT_KEY || key === "thinking" || key === "thinkingSignature")) {
-			return truncateForPersistence(resolveArchivedTextForPersistence(obj, blobStore), blobStore, key);
+			return truncateForPersistence(resolveArchivedTextForPersistence(obj, blobStore), blobStore, key, ancestors);
 		}
 		if (obj.length > MAX_PERSIST_CHARS) {
 			// Defensive: signature keys normally sit on blocks the guard above returns
@@ -261,18 +267,25 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 	}
 
 	if (Array.isArray(obj)) {
+		if (ancestors.has(obj)) return "[Circular]";
+		ancestors.add(obj);
 		let changed = false;
 		const result: unknown[] = new Array(obj.length);
 		for (let i = 0; i < obj.length; i++) {
 			const item = obj[i];
-			const newItem = truncateForPersistence(item, blobStore, key);
+			const newItem = truncateForPersistence(item, blobStore, key, ancestors);
 			if (newItem !== item) changed = true;
 			result[i] = newItem;
 		}
+		ancestors.delete(obj);
 		return changed ? result : obj;
 	}
 
 	if (typeof obj === "object") {
+		// Metadata from older eval displays may still be cyclic in RAM. Preserve
+		// the entry and its serializable fields without mutating the live graph.
+		if (ancestors.has(obj)) return "[Circular]";
+		ancestors.add(obj);
 		let changed = false;
 		const entries: Array<readonly [string, unknown]> = [];
 		for (const [childKey, value] of Object.entries(obj)) {
@@ -282,10 +295,11 @@ function truncateForPersistence(obj: unknown, blobStore: BlobStore, key?: string
 				changed = true;
 				continue;
 			}
-			const newValue = truncateForPersistence(value, blobStore, childKey);
+			const newValue = truncateForPersistence(value, blobStore, childKey, ancestors);
 			if (newValue !== value) changed = true;
 			entries.push([childKey, newValue]);
 		}
+		ancestors.delete(obj);
 		if (!changed) return obj;
 
 		const contentEntry = entries.find(([childKey]) => childKey === "content");
