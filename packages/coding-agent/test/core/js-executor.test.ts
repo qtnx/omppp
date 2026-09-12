@@ -565,9 +565,10 @@ describe("executeJs", () => {
 		expect(result.output.trim()).toBe("7");
 	});
 	it("falls back to text display when the final expression value is not structured-cloneable", async () => {
-		const result = await executeJs("({ fn: () => 1 });", { sessionId, session, sessionFile });
+		const result = await executeJs("({ label: 'callable value', fn: () => 1 });", { sessionId, session, sessionFile });
 		expect(result.exitCode).toBe(0);
-		expect(result.output).toContain("[object Object]");
+		expect(result.output).toContain("callable value");
+		expect(result.output).toContain("fn:");
 		// No JSON display because structuredClone fails on the embedded function.
 		expect(result.displayOutputs.filter(o => o.type === "json")).toHaveLength(0);
 	});

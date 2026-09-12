@@ -395,7 +395,7 @@ export class JsRuntime {
 			}
 			try {
 				// Structured clone accepts cycles and bigint; session/provider JSON does not.
-				const serialized = stringifyJson(value);
+				const serialized = stringifyJson(structuredClone(value));
 				if (serialized !== undefined) hooks.onDisplay({ type: "json", data: JSON.parse(serialized) });
 			} catch (err) {
 				logger.debug("js displayValue: value is not JSON-serializable, falling back to text", {
