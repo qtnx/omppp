@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Displaying cyclic JavaScript objects in `eval` no longer breaks session saving or the next model turn; cyclic metadata already queued for saving preserves the entry with explicit circular-reference markers.
+
 ## [1.8.5] - 2026-09-12
 
 ### Changed

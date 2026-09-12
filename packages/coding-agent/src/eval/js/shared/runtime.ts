@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { Writable } from "node:stream";
 import * as util from "node:util";
 
+import { stringifyJson } from "@oh-my-pi/pi-utils/json";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 
 import type { EvalPreludeSource } from "../worker-protocol";
@@ -393,12 +394,14 @@ export class JsRuntime {
 				return;
 			}
 			try {
-				hooks.onDisplay({ type: "json", data: structuredClone(value) });
+				// Structured clone accepts cycles and bigint; session/provider JSON does not.
+				const serialized = stringifyJson(value);
+				if (serialized !== undefined) hooks.onDisplay({ type: "json", data: JSON.parse(serialized) });
 			} catch (err) {
-				logger.debug("js displayValue: value is not structured-cloneable, falling back to text", {
+				logger.debug("js displayValue: value is not JSON-serializable, falling back to text", {
 					error: err instanceof Error ? err.message : String(err),
 				});
-				hooks.onText(`${Object.prototype.toString.call(value)}\n`);
+				hooks.onText(`${util.inspect(value, { depth: 6, colors: false, customInspect: false, getters: false })}\n`);
 			}
 			return;
 		}
