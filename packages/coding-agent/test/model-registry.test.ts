@@ -1963,7 +1963,7 @@ describe("ModelRegistry", () => {
 			// reaches the no-settings fallback: it must match the schema
 			// default (off), never silently elevated windows.
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
-			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(372_000);
 		});
 
 		test("preserves an explicit Astra context override across extended context toggles", async () => {
@@ -2035,7 +2035,7 @@ describe("ModelRegistry", () => {
 			);
 			await registry.reapplyModelPolicies();
 			for (const id of ["gpt-6-astra", "gpt-6-astra-wm"]) {
-				expect(registry.find("openai-codex", id)?.contextWindow).toBe(272_000);
+				expect(registry.find("openai-codex", id)?.contextWindow).toBe(372_000);
 			}
 
 			testSettings.set("extendedContext", true);
@@ -2047,7 +2047,7 @@ describe("ModelRegistry", () => {
 			testSettings.set("extendedContext", false);
 			await registry.reapplyModelPolicies();
 			for (const id of ["gpt-6-astra", "gpt-6-astra-wm"]) {
-				expect(registry.find("openai-codex", id)?.contextWindow).toBe(272_000);
+				expect(registry.find("openai-codex", id)?.contextWindow).toBe(372_000);
 			}
 		});
 
