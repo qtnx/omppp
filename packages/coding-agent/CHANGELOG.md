@@ -9,6 +9,8 @@
 ### Changed
 
 - Browser QA and UI/UX review guidance now distinguishes blocked checks from product failures, reports mobile-emulation limits, uses the supported browser interface, and requires cleanup of owned test resources.
+- Agents now carry authorized tasks through verification and publishing without repeated permission requests, with explicit autonomous-execution rules at both ends of the system prompt.
+
 ### Fixed
 
 - Displaying cyclic JavaScript objects in `eval` no longer breaks session saving or the next model turn; cyclic metadata already queued for saving preserves the entry with explicit circular-reference markers.
