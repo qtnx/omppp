@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.8.5] - 2026-09-12
+
 ### Changed
 
 - Main agents now retain planning, review, and final decisions while subagents execute scoped work; shared guidance clarifies authorized hotfix completion and plain-language explanations, with leaner OpenAI GPT model notes.
@@ -10,21 +12,20 @@
 - Subagents now get their wall-clock budget in the prompt and a fast-scout rule (about two minutes inside the owned files, then edit); the task tool asks the orchestrator to hand over anchors, contract, and the decisive snippet rather than the whole edit, and to size each `task` slice to ten minutes, splitting anything larger instead of running it longer.
 - Subagents now get their wall-clock budget in the prompt and an ask-don't-scout rule (read only the named anchors and owned files; ask the parent over IPC for anything the brief left out, never search the repo); the task tool asks the orchestrator to hand over anchors, contract, and the decisive snippet rather than the whole edit, and to size each `task` slice to ten minutes, splitting anything larger instead of running it longer.
 - Subagent fallback chains are looked up by the model selector, then the agent name (`retry.fallbackChains.task` now applies to the `task` subagent when `task.agentModelOverrides.task` is an explicit model), then the role alias, then `default`; a subagent whose model has no working credentials at dispatch now walks that chain before borrowing the parent session's model.
+- The agent now treats every request as a goal to finish: the verb you used picks the deliverable (a "fix" ends with the bug shown gone, "implement" with the feature exercised, "plan" with a complete plan that inventories existing code and makes its own decisions), reversible choices are decided and reported as `Assuming:` instead of asked, load-bearing ambiguity goes through one adversarial review round before deciding, and turns no longer end on "shall I continue?", option lists, or "waiting for evidence" while delegated work is still running.
+- Context compaction now follows an explicit phase-boundary formula: when a todo phase or work unit closes and context usage is at or above 40% (60% forces it), the agent restates what the next phase needs, schedules `compact` as the last action of the turn, and starts the next phase on the compacted context instead of drifting toward a forced late compaction. The Context GC reminder now reports the context percentage every turn from 40% usage (previously only above 50% and only when unload candidates existed), so the rule has a number to act on; the hint is emitted once per 20-point band (40, 60, 80) and re-arms after compaction, so it neither bloats history nor nags.
+- Delegation is lane-gated: small single-concern tasks are done directly instead of spawning subagents, reviewers, or testers for them, which roughly halves cost on one-file changes.
+- Live learnings now keep the system prompt cache-stable: the injected block is computed once per conversation and reused across prompt rebuilds; learnings stored or consolidated mid-session appear in the next conversation (or after `/learning consolidate`, `/learning drop`, `/learning clear`, `/new`, or a session switch). Ranking is quantized to the day so rebuilds never reorder entries.
+- Live-learning injection is capped by the new `learning.maxInjectedPerScope` setting (default 20 per scope) instead of the storage cap of 40, cutting prompt size roughly in half for large learning stores.
+- Live learnings track how often they were injected; entries that keep being shown without ever being rated useful sink in rank and are preferred for archival during consolidation. `/learning view` shows the `shown` count.
+- Live-learning consolidation now runs daily by default (`learning.consolidation.intervalDays` 7 → 1), enforces `learning.maxEntriesPerScope` by archiving the lowest-ranked leftovers after the model pass, and archives learnings of repositories idle for `learning.staleRepoDays` (default 90) so abandoned checkouts stop accumulating entries.
+- The live-learning classifier only stores guidance about how the agent does engineering work; product-operations instructions (support replies, marketing copy, game or business operations) are kept out of the global scope.
+- Live-learning consolidation is now reliable on large stores: entries are consolidated in batches of at most 60 with a timeout that scales per entry, the consolidator runs at medium reasoning effort, and each target/batch gets its own agent id (the repo target previously failed with "already owned by another session generation" right after the global one). The consolidator prompt now groups by behavior, caps every entry at one 30-word sentence, keeps repository product decisions, and archives product-operations guidance; `rescope` can move an entry from global to the current repository.
 
 ### Removed
 
 - Removed the `heavy_task` subagent tier and the built-in subagent review gate on `task`; load-bearing slices run as `task` and the main agent reviews every returned result. Existing `task.agentModelOverrides.heavy_task` entries are dropped on config migration.
 
-## [1.8.4] - 2026-09-10
-
-### Changed
-
-- CodeGraph guidance now tells agents to read or grep directly for known paths and to switch to grep when a lookup comes back off-target, instead of re-querying an index that does not cover the area.
-- System prompt now enforces the behaviors rated 1/5 most often: an order you already approved is never re-asked or re-argued, mechanical blockers (dirty tree, conflict, busy port, missing local file) are routed around instead of escalated, "merge it"/"hotfix" means the chain runs through merge, tag, deploy and observation, rendered changes require a screenshot you actually looked at, your question is answered before any compaction, and real credentials never land in repo files.
-
-### Fixed
-
-- Fixed a Codex `server_is_overloaded` throttle ending the turn instead of retrying when no sibling ChatGPT account and no fallback model are available.
 ## [18.1.17] - 2026-09-10
 
 ### Added
@@ -421,15 +422,6 @@
 
 ### Changed
 
-- The agent now treats every request as a goal to finish: the verb you used picks the deliverable (a "fix" ends with the bug shown gone, "implement" with the feature exercised, "plan" with a complete plan that inventories existing code and makes its own decisions), reversible choices are decided and reported as `Assuming:` instead of asked, load-bearing ambiguity goes through one adversarial review round before deciding, and turns no longer end on "shall I continue?", option lists, or "waiting for evidence" while delegated work is still running.
-- Context compaction now follows an explicit phase-boundary formula: when a todo phase or work unit closes and context usage is at or above 40% (60% forces it), the agent restates what the next phase needs, schedules `compact` as the last action of the turn, and starts the next phase on the compacted context instead of drifting toward a forced late compaction. The Context GC reminder now reports the context percentage every turn from 40% usage (previously only above 50% and only when unload candidates existed), so the rule has a number to act on; the hint is emitted once per 20-point band (40, 60, 80) and re-arms after compaction, so it neither bloats history nor nags.
-- Delegation is lane-gated: small single-concern tasks are done directly instead of spawning subagents, reviewers, or testers for them, which roughly halves cost on one-file changes.
-- Live learnings now keep the system prompt cache-stable: the injected block is computed once per conversation and reused across prompt rebuilds; learnings stored or consolidated mid-session appear in the next conversation (or after `/learning consolidate`, `/learning drop`, `/learning clear`, `/new`, or a session switch). Ranking is quantized to the day so rebuilds never reorder entries.
-- Live-learning injection is capped by the new `learning.maxInjectedPerScope` setting (default 20 per scope) instead of the storage cap of 40, cutting prompt size roughly in half for large learning stores.
-- Live learnings track how often they were injected; entries that keep being shown without ever being rated useful sink in rank and are preferred for archival during consolidation. `/learning view` shows the `shown` count.
-- Live-learning consolidation now runs daily by default (`learning.consolidation.intervalDays` 7 → 1), enforces `learning.maxEntriesPerScope` by archiving the lowest-ranked leftovers after the model pass, and archives learnings of repositories idle for `learning.staleRepoDays` (default 90) so abandoned checkouts stop accumulating entries.
-- The live-learning classifier only stores guidance about how the agent does engineering work; product-operations instructions (support replies, marketing copy, game or business operations) are kept out of the global scope.
-- Live-learning consolidation is now reliable on large stores: entries are consolidated in batches of at most 60 with a timeout that scales per entry, the consolidator runs at medium reasoning effort, and each target/batch gets its own agent id (the repo target previously failed with "already owned by another session generation" right after the global one). The consolidator prompt now groups by behavior, caps every entry at one 30-word sentence, keeps repository product decisions, and archives product-operations guidance; `rescope` can move an entry from global to the current repository.
 - Improved edit-tool error guidance for operations missing the `»` separator, identifying redundant context-only operations
 - Fixed OAuth provider `modifyModels` projections being silently dropped after a discovery refresh introduced live-config headers.
 - Edit-tool `＋`/`－` line operations now match their anchors leniently across whitespace drift (indentation, blank-line miscounts) instead of failing with a byte-for-byte error; a note reports the lenient match.
@@ -1952,112 +1944,4 @@
 - Added a `/vision [on|off|auto|status]` slash command for session-scoped control of the `inspect_image` vision-delegation tool, modeled on `/computer`: `on`/`off` force the tool for the current session only, `auto` returns to the persisted setting, and `status` reports the effective mode, session override, tool state, and active-model image capability.
 - Replaced the `inspect_image.enabled` boolean with the tri-state `inspect_image.mode` (`auto`|`on`|`off`, default `auto`). In `auto` the tool is registered only when the active model lacks native image input, so vision-capable models (e.g. `kimi-code/k3`) read images inline with their own capabilities instead of delegating to a separate vision model; the tool set is re-evaluated on every model switch with a status notice when it flips. The `read` tool now follows the effective state dynamically rather than the raw setting, so it returns decoded image blocks again whenever `inspect_image` is hidden. Existing `inspect_image.enabled: true/false` configs migrate to `inspect_image.mode: on/off`.
 
-## [17.1.6] - 2026-07-27
-
-### Added
-
-- Added separate Advisor cost visibility to the status line, rendering primary and Advisor spend as `$2.67 (sub) + $0.41 (adv)` while keeping already-incurred Advisor cost across runtime disablement and same-session history rewrites.
-
-### Changed
-
-- Made the task tool's per-spawn `effort` parameter opt-in through `task.enableEffort`, which defaults to false and omits the field from flat and batch schemas and tool guidance until enabled.
-- Reduced terminal-title update overhead by deduplicating unchanged titles on every platform and using `SetConsoleTitleW` through `bun:ffi` instead of OSC writes on Windows. Windows working titles now keep a static `:` separator instead of scheduling spinner updates; other platforms retain the animated separator.
-- Added `task.maxEffort` to cap the task tool's optional per-spawn effort hint after model-specific resolution, so operators can enable effort hints without allowing them to exceed a configured ceiling; the ceiling now also rides into the spawned session so retry-fallback model swaps re-clamp to it instead of escalating past the cap ([#6580](https://github.com/can1357/oh-my-pi/issues/6580), [#6794](https://github.com/can1357/oh-my-pi/pull/6794) by [@wolfiesch](https://github.com/wolfiesch)).
-- Restructured the steering/interjection envelope sent to the model: the injected `<user_interjection>...<message>...</message>...` wrapper around user text is now a `<system-notice>` explaining the interjection followed by the user's raw message unwrapped, matching the existing `<system-notice>`/`<system-directive>` convention instead of nesting the literal message inside its own tag pair, which some models found confusing.
-
-### Fixed
-
-- Fixed a disabled higher-priority MCP server no longer disabling a same-named lower-priority one: disabled servers are now suppressed after key-level dedupe instead of dropped before it, so a project `foo` with `enabled: false` keeps the user-level `foo` off while still not starving a differently-named equivalent connection.
-- Fixed the MCP tool-name collision winner flipping when the current owner reconnects: the winner is now chosen by a stable server+tool key instead of tool-array insertion order, which reconnects reorder.
-- Fixed MCP resources with custom URI schemes being treated as missing filesystem paths. `read` and `omp read` now resolve server-advertised native resource URIs such as `ags://capabilities/current-host`, while preserving the existing `mcp://<resource-uri>` form.
-- Fixed three gaps in native MCP resource URI resolution: server-advertised URIs whose path is exactly `/` (e.g. `catalog://root/`) are now preserved byte-for-byte instead of losing the trailing slash to reconstruction; opaque resource URIs (`urn:example:document`, `custom:item`) are recognized by the `read` and `omp read` resolver gates instead of falling through to filesystem handling; and a failing `resources/templates/list` no longer discards a successful `resources/list`, which previously produced a false missing-resource error.
-- Fixed custom LSP servers sending `languageId: "plaintext"` for extensions outside the built-in language map by honoring an optional per-server `languageId` in `lsp.json` for disk and in-memory document opens ([#6800](https://github.com/can1357/oh-my-pi/issues/6800)).
-- Fixed interactive extension confirmations ignoring `dialogOptions`, and cancelled handler-owned dialogs when the extension watchdog times out so stale approval UI cannot outlive a blocked tool call ([#6805](https://github.com/can1357/oh-my-pi/issues/6805)).
-- Fixed the per-handler extension context snapshotting the live `ctx.model` getter, so a handler calling `pi.setModel()` and then reading `ctx.model` saw the stale model; the scoped context now delegates to the base context instead of spreading it.
-- Fixed Python cell errors (`$` commands and the eval tool) leaking runner-internal traceback frames. Cell syntax errors now render as the bare caret display with a `<cell>` filename instead of a `_handle_request_async`/`ast.parse` stack dump, and runtime tracebacks start at user code, matching the Ruby runner's user-frame filtering.
-- Dropped unavailable forced tool choices through the queue rejection lifecycle and discarded their remaining sequence yields so a skipped force cannot disable tools on the next request ([#6543](https://github.com/can1357/oh-my-pi/pull/6543) by [@paralin](https://github.com/paralin)).
-- Fixed identical MCP server connections discovered under direct and marketplace-plugin names spawning twice and duplicating mounted tool routes; distinct tools whose server names sanitize to the same route now keep the first registration and log both origins ([#6786](https://github.com/can1357/oh-my-pi/issues/6786)).
-- Fixed `/usage` and the other large transcript command panels (`/session`, `/advisor status`, `/jobs`, `/changelog`, `/context`, `/memory view`) duplicating in native scrollback when invoked while an agent turn is streaming. These callsites mounted their finalized panel immediately via `present()` instead of deferring it until the turn ends via `presentCommandOutput()` (the path added in #5427 for `/tools`/`/mcp`), so the panel landed above a still-growing live block and was recommitted lower down ([#6767](https://github.com/can1357/oh-my-pi/issues/6767)).
-- Fixed plan-mode task subagents unregistering extension-provided models, credentials, managers, and custom APIs from the shared parent `ModelRegistry` when restricted sessions intentionally skip extension loading ([#6783](https://github.com/can1357/oh-my-pi/issues/6783)).
-- Fixed `/live` sideband WebSockets ignoring standard proxy environment variables and `NO_PROXY`, which left proxied sessions stuck while the rest of the Codex connection succeeded ([#6770](https://github.com/can1357/oh-my-pi/issues/6770)).
-- Fixed the bash tool's `kill` builtin rejecting numeric signals and multiple process operands, stopping after the first failed target, and defaulting to `SIGKILL` instead of the standard `SIGTERM`. Negative PID operands (process groups per `kill(2)`) and the `--` end-of-options marker are now handled instead of being misparsed as signals ([#6779](https://github.com/can1357/oh-my-pi/issues/6779)).
-- Fixed `learned.md` saves growing a blank line on every write (trailing-newline split artifact) and hoisting all headings/prose above all bullets, which re-scoped lessons under the wrong heading in hand-organized files. Saves are now byte-idempotent and preserve mixed Markdown ordering: non-list lines keep their positions, new lessons insert newest-first at the head of the first bullet run, and dedupe/cap operate on bullet lines in place.
-
-## [17.1.5] - 2026-07-27
-
-### Added
-
-- Added a configurable per-request timeout for the `inspect_image` tool (`inspect_image.timeoutMs`, default 5 minutes; set to 0 to disable) so a stalled vision-model provider fails fast with a clear error instead of blocking until manual abort ([#4165](https://github.com/can1357/oh-my-pi/issues/4165)).
-
-### Changed
-
-- Reduced default startup resident memory by constructing the default-off ComputerTool ArkType schema only on first parameter access, then reusing it across tool instances without changing validation or tool behavior ([#6742](https://github.com/can1357/oh-my-pi/pull/6742) by [@usr-bin-roygbiv](https://github.com/usr-bin-roygbiv)).
-- Reduced startup CPU and memory by loading the bundled changelog only when needed, while preserving source, npm bundle, standalone binary, and native absolute-path fallback resolution.
-- Moved PTY log replay into the shared project launch broker, so normal CLI and Hub startup no longer load the xterm runtime while launch logs return validated rendered terminal rows.
-
-### Fixed
-
-- Fixed DeepSeek V4 Flash and Step 3.7 Flash models using hashline edit mode by default despite repeatedly misreading its range grammar; both now use the simpler replace-mode fallback unless explicitly overridden ([#6671](https://github.com/can1357/oh-my-pi/issues/6671)).
-- Fixed an Ask form appearing while the main prompt contains a draft hiding that text and consuming the next in-flight keystroke. The draft now remains visible and keeps receiving input until it is submitted or cleared; only then do form controls activate ([#6737](https://github.com/can1357/oh-my-pi/issues/6737)).
-- Fixed `glob` rejecting safe `memory://root/<directory>/**` patterns. Memory globs now resolve their directory prefix inside the project memory root while rejecting traversal and percent-encoded path separators across the complete glob path.
-- Fixed `omp --resume <id>` prompting to fork sessions from another existing directory instead of switching the process and cwd-scoped settings into the resumed session's recorded directory ([#6752](https://github.com/can1357/oh-my-pi/issues/6752)).
-- Fixed deferred CLI model roles resolving ambiguous bare model IDs to a preferred but unauthenticated provider instead of the authenticated provider selected by the eager path ([#6727](https://github.com/can1357/oh-my-pi/issues/6727)).
-- Fixed Windows sessions crashing with an unhandled `EPIPE: broken pipe, write` when an LSP server closed its stdin between filesystem mutations; LSP writes now observe asynchronous `FileSink.write()` failures and route them through the existing request/notification failure path.
-- Fixed the bash tool's `stat` builtin failing on native Windows with `stat: unsupported on this platform` (exit 1) for every invocation. The vendored `uu-stat` now ships a Windows-native backend that maps the GNU format directives onto `std::fs::Metadata`, the `windows_by_handle` metadata extensions (inode, hard-link count, and device via `GetFileInformationByHandle`), and the Win32 volume APIs for `--file-system` mode; Unix behavior is unchanged ([#6723](https://github.com/can1357/oh-my-pi/issues/6723)).
-- Fixed auto-retry wedging the session after an assistant-tail removal miss: when a context rebuild recreated the failed turn's message object, the identity-keyed cleanup logged `assistant removal missed` but the retry still scheduled `continue()`, which rejected the terminal assistant error message locally (`Cannot continue from message role: assistant`) before any provider request — `auto_retry_end` never fired, the TUI kept showing retry progress, and the in-flight `prompt()` hung until a manual follow-up. The retry path now strips a still-failed assistant tail positionally after the backoff, and a continuation that still fails locally closes the retry saga with a failed `auto_retry_end` ([#5382](https://github.com/can1357/oh-my-pi/issues/5382)).
-- Fixed native Anthropic web-search history being recursively truncated during session persistence or retained under a different user turn, preserving opaque replay bytes across reload and stripping them on reparent ([#6703](https://github.com/can1357/oh-my-pi/issues/6703)).
-- Fixed malformed or temporarily unreadable `config.yml` files being treated as empty settings and then overwritten by the next setting change, which could permanently erase broker tokens, model roles, and provider configuration. Invalid YAML is now moved to a timestamped `.broken-*` backup, read failures abort without touching the source, pending changes remain retryable with the last successfully loaded settings, atomic writes preserve symlink targets and handle Windows `EPERM` replacement, concurrent startup failures are fully observed and quarantine races fail closed, and `omp config set/reset` waits for persistence before reporting success.
-- Fixed mounted MCP tools being hard to invoke when server or plugin guidance names their original calls: sessions now include one bounded, exact original-name-to-`xd://` route map for every live mounted MCP tool—including servers without initialize instructions—and refresh it as catalogs change without disabling schema virtualization.
-- Fixed `inspect_image` blocking indefinitely when the vision-model API stalls by combining the caller's abort signal with an `AbortSignal.timeout()` and surfacing a distinct timeout `ToolError` (separate from user-triggered abort) ([#4165](https://github.com/can1357/oh-my-pi/issues/4165)).
-- Fixed MiMo models using hashline edit mode by default despite needing the same replace-mode fallback as Kimi. ([#3772](https://github.com/can1357/oh-my-pi/issues/3772))
-- Fixed `omp` refusing to start on Windows when no `bash.exe` is discoverable — most visibly with scoop-installed Git, whose manifest shims `sh.exe`/`git.exe` but never `bash.exe`, so PATH lookup missed it. Startup threw `No bash shell found` while merely building the bash tool description, even though bash tool commands always execute in the embedded brush-core shell and need no host bash. Shell discovery now also checks `GIT_INSTALL_ROOT`, scoop and per-user Git for Windows install roots, and `sh.exe` on PATH, then falls back to `cmd.exe` for the spawn-only paths (interactive PTY, ACP client terminals) instead of failing; the cmd fallback is never used to wrap user-shell commands — brush runs the POSIX line directly.
-- Added a selectable voice setting for `/live` realtime sessions ([#6566](https://github.com/can1357/oh-my-pi/issues/6566)).
-
-## [1.8.3] - 2026-09-10
-
-### Fixed
-
-- Explicit image-provider selections no longer fall back to another provider; unavailable selections and provider failures are reported directly.
-
-## [1.8.2] - 2026-09-08
-
-### Fixed
-
-- Aligned package versions and native compatibility checks with the OMPx 1.8.2 release.
-
-## [1.8.1] - 2026-09-08
-
-### Added
-
-- `providers.subagentCacheRetention` (default `short`): subagent and advisor sessions request 5-minute prompt-cache entries instead of the 1h entries the main session uses on Anthropic OAuth. Helper sessions run in rapid bursts without long idles (0 gaps over 5 minutes across 468 measured subagent requests), so the 1h write premium bought nothing.
-
-### Changed
-
-- Screenshots are now UI/UX evidence, not load checks: `browser_qa` autoloads the `hallmark`/frontend design skills, judges every screen against them, and returns `ui_findings` (severity, guideline, fix) alongside pass/fail cases; `ui_ux_reviewer` gains `browser_use` and `hallmark` so it can review games/canvas; the main agent's first `browser_use` screenshot carries the review checklist in-band and the system prompt requires a judged verdict (or a reviewer pass) before a rendered change counts as verified.
-- The default system prompt now renders as two globally cacheable blocks: a settings-stable core (role, router, stance, delegation, harness) and a session block (tool inventory, skills, rules, caveman/ponytail overlays, MCP guidance). Sessions that share the same tools but differ in toggles now read the core block from the org-wide Anthropic cache instead of re-writing the whole prompt (measured: 61K cached / 27K written vs 0 / 91K before).
-
-### Fixed
-
-- Show non-PNG tool images received before terminal image support finishes being detected.
-
-## [1.8.0] - 2026-09-07
-
-### Added
-
-- `browser_use` accepts a `navigate` action (`{type:"navigate", url}`) and its description now documents every action shape, the `url` field, and the screenshot-driven flow, so models no longer have to guess arguments.
-- Profanity in a typed message now auto-records a 1/5 feedback entry against the last assistant turn and active model (`[1/5 auto]` in `/feedback list`); the idle rating prompt still asks once.
-- `/feedback stats` tallies negative feedback per model across every stored session, so you can see which model draws the most blame.
-- OpenAI GPT model notes now include a minimal-correct-solution flow with calibration heuristics (proportionality, blast radius, rule of three, scoping to the named population), plus rules for tool failures, answering questions before acting, and starting investigations from code/logs instead of asking.
-
-### Changed
-
-- The system prompt now requires the todo list to track reality: items finished implicitly are marked done, overtaken or re-scoped items are dropped or replaced, and the ledger never lags the diff.
-- In git-hosted repositories the system prompt now defines a code change as done only when a PR/MR exists with every CI check green on its current head (plus attached `browser_qa` screenshots for rendered changes); hotfix branching, tagging, and deploying happen only on an explicit user request.
-
-### Fixed
-
-- Subagent `tok/s` (task/job rows, subagent HUD) now divides output tokens by provider request time instead of the subagent's lifetime wall-clock, so tool execution and setup no longer deflate the figure far below the status line's rate for the same model.
-- `browser_use` no longer silently ignores an unknown action type and reports "action complete" on `about:blank`; it fails the call naming the supported actions and how to open a URL.
-
-Older entries are archived in [packages/coding-agent/CHANGELOG.md@4f7fe1c42826](https://github.com/can1357/oh-my-pi/blob/4f7fe1c428269b10efb4839a29dd44d25a644ad7/packages/coding-agent/CHANGELOG.md).
-Older entries are archived in [packages\coding-agent\CHANGELOG.md@82055ba68d58](https://github.com/can1357/oh-my-pi/blob/82055ba68d58c511788bb49ecccdc8e6400aa870/packages\coding-agent\CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@9c509fef2b32](https://github.com/can1357/oh-my-pi/blob/9c509fef2b325d13f8740b4cc9ff55d66879b70a/packages/coding-agent/CHANGELOG.md).
