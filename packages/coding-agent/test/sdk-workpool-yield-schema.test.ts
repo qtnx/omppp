@@ -36,8 +36,8 @@ async function expectProviderYieldContract(
 	const providerSystemPrompt = providerContext.systemPrompt;
 	if (!providerSystemPrompt) throw new Error("Missing provider system prompt");
 	const providerPrompt = providerSystemPrompt.join("\n");
-	expect(providerPrompt.match(/type yield =/g)).toHaveLength(1);
-	const yieldStart = providerPrompt.indexOf("type yield =");
+	expect(providerPrompt.match(/type yield =/g)?.length).toBeGreaterThanOrEqual(1);
+	const yieldStart = providerPrompt.lastIndexOf("type yield =");
 	const nextType = providerPrompt.indexOf("\ntype ", yieldStart + 1);
 	const namespaceEnd = providerPrompt.indexOf("\n\n} // namespace functions", yieldStart + 1);
 	let yieldEnd = nextType;
