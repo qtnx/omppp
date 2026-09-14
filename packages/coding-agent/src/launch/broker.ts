@@ -629,6 +629,21 @@ class DaemonBroker {
 					throw new Error(`Invalid readiness regex: ${error instanceof Error ? error.message : String(error)}`);
 				}
 			}
+			if (spec.ready?.port !== undefined) {
+				const host = spec.ready.host ?? "127.0.0.1";
+				// A listener that already answers before launch would satisfy the
+				// port check on behalf of a foreign process and mark a daemon that
+				// failed to bind as ready. Refuse instead of reporting fake readiness.
+				if (await connectPort(host, spec.ready.port)) {
+					const suggested = spec.ready.port < 65535 ? spec.ready.port + 1 : spec.ready.port - 1;
+					throw new Error(
+						`Port ${host}:${spec.ready.port} is already accepting connections from another process; ` +
+							"readiness cannot be attributed to this daemon and this daemon was not started. " +
+							`Next step: start it again on a free port (for example ${suggested}) and report the substituted URL; ` +
+							"a port the user mentioned is a convenience, not a requirement, unless they said otherwise. Never stop a process you did not start.",
+					);
+				}
+			}
 			const stat = await fs.stat(spec.cwd);
 			if (!stat.isDirectory()) throw new Error(`Daemon cwd is not a directory: ${spec.cwd}`);
 			const dir = path.join(this.#runtimeDir, "daemons", spec.name);

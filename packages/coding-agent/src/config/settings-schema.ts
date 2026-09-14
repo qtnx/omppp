@@ -6258,9 +6258,9 @@ export const SETTINGS_SCHEMA = {
 			group: "Subagents",
 			label: "Max Subagent Runtime",
 			description:
-				"Hard wall-clock limit per subagent (ms). 0 disables it. Defense-in-depth against provider-side stream hangs that escape the inference-layer watchdog; triggers a normal subagent abort with a 'timed out' reason.",
+				"Hard wall-clock limit per subagent (ms). 0 uses the per-tier default (quick_task 5m; task, scout, explore 10m; other agents 15m); a spawn's explicit max_runtime_seconds always wins, and an explicit 0 there runs unlimited. Triggers a normal subagent abort with a 'timed out' reason.",
 			options: [
-				{ value: "0", label: "Unlimited", description: "Default" },
+				{ value: "0", label: "Tier default", description: "Default: 5m / 10m / 15m by agent tier" },
 				{ value: "300000", label: "5 minutes" },
 				{ value: "900000", label: "15 minutes" },
 				{ value: "1800000", label: "30 minutes" },

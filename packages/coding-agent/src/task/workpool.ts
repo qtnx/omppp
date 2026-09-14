@@ -9,6 +9,7 @@ import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../tools/hub";
 import { ToolError } from "../tools/tool-errors";
 import { runSubagentFollowUpTurn } from "./executor";
+import { resolveMaxRuntimeMs } from "./runtime-cap";
 import {
 	type EffectiveSubagentPolicy,
 	reserveStructuredSubagentId,
@@ -407,7 +408,11 @@ export class WorkPool {
 							eventBus: this.session.eventBus,
 							subagentEventBus: this.session.subagentEventBus,
 							artifactsDir: this.session.getSessionFile()?.slice(0, -6),
-							maxRuntimeMs: this.session.settings.get("task.maxRuntimeMs"),
+							maxRuntimeMs: resolveMaxRuntimeMs(
+								this.policy.agent.name,
+								undefined,
+								this.session.settings.get("task.maxRuntimeMs"),
+							),
 						});
 					}
 				} catch (error) {

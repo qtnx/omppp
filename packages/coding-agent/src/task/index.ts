@@ -68,6 +68,7 @@ import { AgentOutputManager } from "./output-manager";
 import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "./render";
 import { repairTaskParams } from "./repair-args";
+import { resolveMaxRuntimeMs } from "./runtime-cap";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
 
 function renderSubagentUserPrompt(assignment: string): string {
@@ -922,11 +923,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 * the model to bound them.
 	 */
 	#effectiveMaxRuntimeMs(params: TaskParams): number | undefined {
-		const requested = toMaxRuntimeMs(params.max_runtime_seconds);
+		// Omitted spawn value falls through to the per-tier default inside the
+		// executor; only an explicit 0 keeps the run unlimited.
+		const capped = resolveMaxRuntimeMs(
+			params.agent,
+			toMaxRuntimeMs(params.max_runtime_seconds),
+			this.session.settings.get("task.maxRuntimeMs"),
+		);
 		const snapshot = this.session.getTimeBudgetSnapshot?.();
-		if (!snapshot?.active) return requested;
-		const settingsMs = Math.max(0, Math.trunc(Number(this.session.settings.get("task.maxRuntimeMs") ?? 0) || 0));
-		return clampRuntimeToBudget(requested ?? settingsMs, snapshot);
+		if (!snapshot?.active) return capped;
+		return clampRuntimeToBudget(capped, snapshot);
 	}
 
 	/**
