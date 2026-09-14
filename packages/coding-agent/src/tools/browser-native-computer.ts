@@ -56,7 +56,7 @@ const actionSchema = type({
 const nativeComputerSchema = type({
 	"url?": type("string").describe("Open this URL in the browser_use tab before running actions"),
 	"viewport?": type("'desktop' | 'mobile' | 'mobile-landscape'").describe(
-		"Viewport preset: desktop 1280x720 (default), mobile 390x844, mobile-landscape 844x390. Mobile presets enable mobile layout and touch emulation. Omit to retain the current viewport.",
+		"Viewport preset: desktop 1280x720 (default), mobile 390x844, mobile-landscape 844x390. Mobile presets enable mobile layout and touch-capability flags; pointer actions remain mouse/wheel input. Omit to retain the current viewport.",
 	),
 	"actions?": actionSchema
 		.array()

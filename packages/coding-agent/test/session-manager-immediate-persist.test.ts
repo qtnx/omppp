@@ -84,6 +84,46 @@ function entryKind(entry: Record<string, unknown>): string {
 }
 
 describe("SessionManager JSONL software-crash durability", () => {
+	it("persists cyclic metadata without dropping later entries or mistaking shared objects for cycles", async () => {
+		const cwd = makeTempDir("@pi-cycle-cwd-");
+		const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
+		const sessionFile = manager.getSessionFile()!;
+		const shared = { name: "shared" };
+		const cyclic: Record<string, unknown> = { name: "deck-layer", left: shared, right: shared };
+		cyclic.self = cyclic;
+		const array: unknown[] = [cyclic];
+		array.push(array);
+		manager.appendMessage(assistantMessage("seed"));
+		manager.appendMessage({
+			...toolResultMessage("cycle", "eval", "layer inspection"),
+			details: { jsonOutputs: array },
+		});
+		manager.appendMessage({ role: "user", content: "after cyclic result", timestamp: Date.now() });
+		await manager.flush();
+		await manager.close();
+
+		const reopened = await SessionManager.open(sessionFile, path.join(cwd, "sessions"));
+		const entries = reopened.getEntries();
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				type: "message",
+				message: expect.objectContaining({
+					role: "toolResult",
+					details: {
+						jsonOutputs: [{ name: "deck-layer", left: shared, right: shared, self: "[Circular]" }, "[Circular]"],
+					},
+				}),
+			}),
+		);
+		expect(entries.at(-1)).toMatchObject({
+			type: "message",
+			message: { role: "user", content: "after cyclic result" },
+		});
+		expect(cyclic.self).toBe(cyclic);
+		expect(array[1]).toBe(array);
+		await reopened.close();
+	});
+
 	it("makes completed entries visible on disk without a microtask or flush", () => {
 		const cwd = makeTempDir("@pi-immediate-cwd-");
 		const sessionDir = path.join(cwd, "sessions");

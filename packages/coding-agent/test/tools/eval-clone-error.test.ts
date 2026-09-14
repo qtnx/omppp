@@ -34,6 +34,25 @@ describe("EvalTool non-serializable tool args", () => {
 		await disposeAllVmContexts();
 	});
 
+	it("renders cyclic display values without poisoning JSON results or kernel state", async () => {
+		const tool = new EvalTool(makeSession());
+		const result = await tool.execute("display-cycle", {
+			language: "js",
+			code: "globalThis.__displayCycle = { name: 'deck-layer' }; __displayCycle.self = __displayCycle; display(__displayCycle);",
+		});
+		const serialized = JSON.stringify(result);
+		expect(JSON.parse(serialized).isError).not.toBe(true);
+		expect(textOf(result)).toContain("deck-layer");
+		expect(textOf(result)).toContain("Circular");
+		const next = await tool.execute("display-cycle-after", {
+			language: "js",
+			code: "display({ intact: __displayCycle.self === __displayCycle, count: 9007199254740993n });",
+		});
+		expect(JSON.parse(JSON.stringify(next)).details.jsonOutputs).toEqual([
+			{ intact: true, count: "9007199254740993" },
+		]);
+	});
+
 	it("fails the tool call inside the cell and keeps kernel state alive", async () => {
 		const tool = new EvalTool(makeSession());
 
