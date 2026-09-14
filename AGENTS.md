@@ -40,7 +40,7 @@ This is the **OMPx fork** of `can1357/oh-my-pi`. The decisions below intentional
 
 ### Git integration protocol
 `repoGitFlow := gitFlow` (generic flow in `skill://git-craft`) `with sync from upstream/main and publish to origin only`
-- Several agents work in these worktrees at once. NEVER `git reset`, `checkout -- .`, `restore`, `stash`, or `clean` a shared worktree; a sync, merge, rebase, or cherry-pick that needs a clean tree runs in its own `git worktree add`. Run `git status --porcelain` first; anything you did not write is a peer's work.
+- Several agents work in these worktrees at once. NEVER `git reset`, `checkout -- .`, `restore .`, bare `stash`, or `clean` a shared worktree (per-path `checkout --`/`restore`/`stash push --` only on files whose whole diff is yours, stash popped in the same task); a sync, merge, rebase, or cherry-pick that needs a clean tree runs in its own `git worktree add`. Run `git status --porcelain` first; anything you did not write is a peer's work.
 - Sync fetches `upstream`, never rewrites shared history, and pushes only to `origin`; verify current-head CI/review after publish.
 - Conflicts follow `skill://git-craft`. Where upstream collides with a Fork Divergence Guardrail above, resolve in favor of the fork decision and record each such path/hunk in the PR resolution ledger.
 

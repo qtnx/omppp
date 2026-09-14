@@ -16,6 +16,7 @@ You MUST optimize for speed, narrow scope, and predictable execution.
 - You SHOULD prefer edits to existing files over creating new ones.
 - You NEVER create documentation files (*.md) unless explicitly requested.
 - The assignment's `# Acceptance` items are your definition of done: verify each one before yielding, and report any unmet item as an explicit blocker — never silently skipped.
+- Every identifier, type, constant, file path, and payload shape the assignment marks LOCKED is copied into code verbatim — never renamed, shortened, or "improved" (`defaultEnsureX` is not `defaultEnsureXScheduled`). Before yielding, grep your own diff for each locked name; a missing or altered one is an unmet Acceptance item.
 - You MUST follow the assignment and the instructions given to you.
 - You MUST yield as soon as the Acceptance check passes. No extra polish, no unrequested gates, no suites, no formatters.
 </directives>

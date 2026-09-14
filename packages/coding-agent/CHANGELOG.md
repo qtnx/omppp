@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- `browser_use` now supports mobile portrait (390×844) and landscape (844×390) viewports, including switching orientation without reopening the tab; pointer actions remain mouse/wheel input.
+
+### Changed
+
+- Browser QA and UI/UX review guidance now distinguishes blocked checks from product failures, reports mobile-emulation limits, uses the supported browser interface, and requires cleanup of owned test resources.
+- Agents now prioritize autonomous, requirement-driven completion, clarify only blocking ambiguity, and reduce unnecessary cost without weakening verification or safety.
+- Subagents now stop at a per-tier wall-clock default when the spawn omits `max_runtime_seconds` and `task.maxRuntimeMs` is 0 (quick_task 5m; task, scout, explore 10m; other agents 15m) instead of running unbounded; an explicit `max_runtime_seconds: 0` still runs unlimited.
+- OpenAI GPT model notes now carry an understand-before-acting flow, an outcome-driven reasoning loop, an "asked for one, deliver ten" coverage checklist, delegation and momentum rules, and a done gate.
+- Orchestrating agents now run the task's own closing gate themselves (all named test files/packages in one invocation, summary line quoted), carry locked contracts verbatim into subagent briefs and grep returned diffs for every locked name, block-wait on their own subagents instead of yielding early, and cap delegation at one implementation wave plus one corrective wave.
+- `task` and `quick_task` workers now copy LOCKED identifiers, paths, and payload shapes into code verbatim and check their own diff for them before yielding.
+- Launch broker now refuses to report readiness on a port already served by a foreign process and names a free alternative instead.
+
 ## [1.8.5] - 2026-09-12
 
 ### Changed

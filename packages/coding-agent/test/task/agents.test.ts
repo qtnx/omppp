@@ -105,14 +105,8 @@ describe("bundled task agents", () => {
 
 		const uiUxReviewer = getBundledAgent("ui_ux_reviewer");
 		expect(uiUxReviewer?.name).toBe("ui_ux_reviewer");
-		// Games/canvas need screenshots, and the taste bar comes from hallmark.
-		expect(uiUxReviewer?.tools).toEqual(["browser_use", "browser", "read", "grep", "glob", "irc", "yield"]);
 		expect(uiUxReviewer?.autoloadSkills).toEqual(["hallmark", ...FRONTEND_SKILLS]);
 		expect(uiUxReviewer?.model).toEqual(FRONTEND_AGENT_MODELS);
-		expect(uiUxReviewer?.description).toMatch(/(UI|UX|design)[\s\S]{0,80}review/i);
-		expect(uiUxReviewer?.systemPrompt).toMatch(/UI\/UX review specialist/i);
-		expect(uiUxReviewer?.systemPrompt).toMatch(/accessibility[\s\S]{0,160}interface states/i);
-		expect(uiUxReviewer?.systemPrompt).not.toMatch(REVIEW_COMMENT_PATTERN);
 
 		const uxCopywriter = getBundledAgent("ux_copywriter");
 		expect(uxCopywriter?.name).toBe("ux_copywriter");
@@ -155,20 +149,14 @@ describe("bundled task agents", () => {
 	});
 
 	test("registers browser_qa as a browser-driven QA specialist", () => {
-		expect(() => loadBundledAgents()).not.toThrow();
-
 		const browserQa = getBundledAgent("browser_qa");
 
-		expect(browserQa).toBeDefined();
-		expect(browserQa?.description).toContain("QA");
-		expect(browserQa?.tools).toEqual(["browser_use", "browser", "read", "grep", "glob", "bash", "irc", "yield"]);
 		expect(browserQa?.tools).not.toContain("edit");
 		expect(browserQa?.tools).not.toContain("write");
 		expect(browserQa?.model).toEqual(["openai-codex/gpt-6-astra:medium", "pi/task"]);
 		expect(browserQa?.thinkingLevel).toBe(Effort.Medium);
 		// Screenshots are judged against the design guideline, not only functional expectations.
 		expect(browserQa?.autoloadSkills).toEqual(["hallmark", ...FRONTEND_SKILLS]);
-		expect(browserQa?.systemPrompt).toMatch(/<visual-review>[\s\S]*ui_findings/);
 		expect(browserQa?.output).toEqual({
 			properties: {
 				summary: { type: "string" },

@@ -222,6 +222,28 @@ describe("task spawn routing", () => {
 		expect(seen).toEqual([12_000, 0]);
 	});
 
+	it("caps an omitted runtime at the tier default instead of running unlimited", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent, { ...taskAgent, name: "quick_task" }, { ...taskAgent, name: "designer" }],
+			projectAgentsDir: null,
+		});
+		const seen: number[] = [];
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			seen.push(options.maxRuntimeMs ?? -1);
+			return makeResult(options.id ?? "?");
+		});
+
+		// Settings default: task.maxRuntimeMs = 0 (unlimited). The parent omitting
+		// max_runtime_seconds must not inherit "unlimited".
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false, "task.batch": false } }));
+
+		for (const agent of ["task", "quick_task", "designer"]) {
+			await tool.execute(`tc-runtime-default-${agent}`, { agent, name: "Omitted", task: "Work." } as TaskParams);
+		}
+
+		expect(seen).toEqual([600_000, 300_000, 900_000]);
+	});
+
 	it("returns immediately on spawn and delivers the follow-up hint when the job completes", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [{ ...taskAgent, model: ["anthropic/claude-sonnet-4"] }],

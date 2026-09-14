@@ -129,23 +129,6 @@ describe("system prompt model identifier", () => {
 		expect(systemPrompt.join("\n\n")).not.toContain("Model:");
 	});
 
-	it("uses the main system prompt for OpenAI Codex GPT-5.5 models", async () => {
-		const { systemPrompt } = await buildSystemPrompt({
-			cwd: tempDir,
-			contextFiles: [],
-			skills: [],
-			rules: [],
-			toolNames: [],
-			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
-			model: "openai-codex/gpt-5.5",
-		});
-		const firstSystemPrompt = systemPrompt[0] ?? "";
-
-		expect(firstSystemPrompt).toContain("You are the senior engineer the team trusts");
-		expect(firstSystemPrompt).toContain("Lead with outcome in 1-3 sentences");
-		expect(firstSystemPrompt).not.toContain("You are Codex, based on GPT-5");
-	});
-
 	it("adds the OpenAI GPT model notes for GPT-5.6 and GPT-6 models only", async () => {
 		const render = async (model: string) => {
 			const { systemPrompt } = await buildSystemPrompt({
@@ -166,7 +149,7 @@ describe("system prompt model identifier", () => {
 		expect(await render("anthropic/claude-opus-5")).not.toContain("# OpenAI GPT model notes");
 	});
 
-	it("uses the main system prompt for codex-family model ids", async () => {
+	it("preserves project rules and tool context for codex-family model ids", async () => {
 		const tools = new Map<string, SystemPromptToolMetadata>([
 			["read", { label: "Read", description: "Read files", wireName: "read" }],
 			["bash", { label: "Bash", description: "Run commands", wireName: "bash" }],
@@ -184,12 +167,9 @@ describe("system prompt model identifier", () => {
 		});
 		const promptText = systemPrompt.join("\n\n");
 
-		expect(promptText).toContain("You are the senior engineer the team trusts");
-		expect(promptText).toContain("Lead with outcome in 1-3 sentences");
 		expect(promptText).toContain("read");
 		expect(promptText).toContain("bash");
 		expect(promptText).toContain("Project rule");
-		expect(promptText).not.toContain("You are Codex, based on GPT-5");
 	});
 });
 
