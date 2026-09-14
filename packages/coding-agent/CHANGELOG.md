@@ -2,35 +2,16 @@
 
 ## [Unreleased]
 
-### Added
-
-- `browser_use` now supports mobile portrait (390×844) and landscape (844×390) viewports, including switching orientation without reopening the tab; pointer actions remain mouse/wheel input.
+## [1.8.7] - 2026-09-14
 
 ### Changed
 
-- Browser QA and UI/UX review guidance now distinguishes blocked checks from product failures, reports mobile-emulation limits, uses the supported browser interface, and requires cleanup of owned test resources.
 - Agents now prioritize autonomous, requirement-driven completion, clarify only blocking ambiguity, and reduce unnecessary cost without weakening verification or safety.
 - Subagents now stop at a per-tier wall-clock default when the spawn omits `max_runtime_seconds` and `task.maxRuntimeMs` is 0 (quick_task 5m; task, scout, explore 10m; other agents 15m) instead of running unbounded; an explicit `max_runtime_seconds: 0` still runs unlimited.
 - OpenAI GPT model notes now carry an understand-before-acting flow, an outcome-driven reasoning loop, an "asked for one, deliver ten" coverage checklist, delegation and momentum rules, and a done gate.
 - Orchestrating agents now run the task's own closing gate themselves (all named test files/packages in one invocation, summary line quoted), carry locked contracts verbatim into subagent briefs and grep returned diffs for every locked name, block-wait on their own subagents instead of yielding early, and cap delegation at one implementation wave plus one corrective wave.
 - `task` and `quick_task` workers now copy LOCKED identifiers, paths, and payload shapes into code verbatim and check their own diff for them before yielding.
 - Launch broker now refuses to report readiness on a port already served by a foreign process and names a free alternative instead.
-
-## [1.8.5] - 2026-09-12
-## [1.8.6] - 2026-09-12
-
-### Added
-
-- `browser_use` now supports mobile portrait (390×844) and landscape (844×390) viewports, including switching orientation without reopening the tab; pointer actions remain mouse/wheel input.
-
-### Changed
-
-- Browser QA and UI/UX review guidance now distinguishes blocked checks from product failures, reports mobile-emulation limits, uses the supported browser interface, and requires cleanup of owned test resources.
-- Agents now carry authorized tasks through verification and publishing without repeated permission requests, with explicit autonomous-execution rules at both ends of the system prompt.
-
-### Fixed
-
-- Displaying cyclic JavaScript objects in `eval` no longer breaks session saving or the next model turn; cyclic metadata already queued for saving preserves the entry with explicit circular-reference markers.
 
 ## [18.1.17] - 2026-09-10
 
@@ -1949,5 +1930,22 @@
 - `xd://` device docs now render the parameter schema as a comment-annotated TypeScript type (via `jsonSchemaToTypeScript`, the same renderer the in-band tool inventory uses) instead of a raw JSON Schema dump, shrinking system-prompt device sections while keeping descriptions inline.
 - Added a `/vision [on|off|auto|status]` slash command for session-scoped control of the `inspect_image` vision-delegation tool, modeled on `/computer`: `on`/`off` force the tool for the current session only, `auto` returns to the persisted setting, and `status` reports the effective mode, session override, tool state, and active-model image capability.
 - Replaced the `inspect_image.enabled` boolean with the tri-state `inspect_image.mode` (`auto`|`on`|`off`, default `auto`). In `auto` the tool is registered only when the active model lacks native image input, so vision-capable models (e.g. `kimi-code/k3`) read images inline with their own capabilities instead of delegating to a separate vision model; the tool set is re-evaluated on every model switch with a status notice when it flips. The `read` tool now follows the effective state dynamically rather than the raw setting, so it returns decoded image blocks again whenever `inspect_image` is hidden. Existing `inspect_image.enabled: true/false` configs migrate to `inspect_image.mode: on/off`.
+
+## [1.8.6] - 2026-09-12
+
+### Added
+
+- `browser_use` now supports mobile portrait (390×844) and landscape (844×390) viewports, including switching orientation without reopening the tab; pointer actions remain mouse/wheel input.
+
+### Changed
+
+- Browser QA and UI/UX review guidance now distinguishes blocked checks from product failures, reports mobile-emulation limits, uses the supported browser interface, and requires cleanup of owned test resources.
+- Agents now carry authorized tasks through verification and publishing without repeated permission requests, with explicit autonomous-execution rules at both ends of the system prompt.
+
+### Fixed
+
+- Displaying cyclic JavaScript objects in `eval` no longer breaks session saving or the next model turn; cyclic metadata already queued for saving preserves the entry with explicit circular-reference markers.
+
+## [1.8.5] - 2026-09-12
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@571c72827015](https://github.com/can1357/oh-my-pi/blob/571c728270155fc5d919d6aa03493bcd0cbb52ca/packages/coding-agent/CHANGELOG.md).
