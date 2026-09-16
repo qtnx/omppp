@@ -46,6 +46,7 @@ import {
 	shouldCompact,
 	shouldDropThinkingFromSummary,
 	shouldUseProviderNativeCompaction,
+	upsertFileOperations,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	DEFAULT_PRUNE_CONFIG,

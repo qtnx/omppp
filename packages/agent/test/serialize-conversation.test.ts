@@ -189,9 +189,9 @@ describe("serializeConversation — useless pairs", () => {
 	});
 
 	test("shouldDropThinkingFromSummary covers Claude ids, Anthropic API, and Anthropic cache_control gateways", () => {
-		expect(
-			shouldDropThinkingFromSummary({ id: "claude-sonnet-4-6", api: "anthropic-messages", compat: {} }),
-		).toBe(true);
+		expect(shouldDropThinkingFromSummary({ id: "claude-sonnet-4-6", api: "anthropic-messages", compat: {} })).toBe(
+			true,
+		);
 		expect(
 			shouldDropThinkingFromSummary({
 				id: "designer",
