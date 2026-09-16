@@ -225,7 +225,7 @@ export function escapeSummaryBoundaryTags(text: string): string {
  * (`cacheControlFormat: "anthropic"`) — those last ones classify as `xml`,
  * so dialect-only dropping still feeds `<thinking>` tags to Claude.
  */
-export function shouldDropThinkingFromSummary(model: { id: string; api: string; compat: object }): boolean {
+export function shouldDropThinkingFromSummary(model: { id: string; api: string; compat?: object }): boolean {
 	if (preferredDialect(model.id) === "anthropic") return true;
 	if (model.api === "anthropic-messages") return true;
 	const compat = model.compat;
