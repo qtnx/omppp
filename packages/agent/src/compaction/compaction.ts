@@ -80,6 +80,7 @@ import {
 	type FileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversationForSummary,
+	shouldDropThinkingFromSummary,
 	stripReadSelector,
 	upsertFileOperations,
 } from "./utils";
@@ -832,12 +833,14 @@ function planSummaryWindows(
 	tokenizer: Tokenizer,
 	dialect: Dialect | undefined,
 	budgetTokens: number,
+	dropThinking: boolean,
 ): Message[][] {
 	const windows: Message[][] = [];
 	let current: Message[] = [];
 	let currentTokens = 0;
+	const serializeOptions = { dropThinking };
 	for (const message of messages) {
-		const tokens = tokenizer.countTokens(serializeConversationForSummary([message], dialect));
+		const tokens = tokenizer.countTokens(serializeConversationForSummary([message], dialect, serializeOptions));
 		if (currentTokens > 0 && currentTokens + tokens > budgetTokens) {
 			windows.push(current);
 			current = [];
@@ -866,8 +869,9 @@ export async function generateSummary(
 	// Convert to LLM messages first (handles custom app messages when caller provides a transformer).
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(currentMessages);
 	const dialect = preferredDialect(model.id);
+	const dropThinking = shouldDropThinkingFromSummary(model);
 	const tokenizer = new Tokenizer(model);
-	const wholeConversation = serializeConversationForSummary(llmMessages, dialect);
+	const wholeConversation = serializeConversationForSummary(llmMessages, dialect, { dropThinking });
 	const budgetTokens = summaryInputBudgetTokens(model, maxTokens);
 	// A span that outgrew the summarizer's window is summarized as a fold: each
 	// window updates the summary carried out of the previous one, which is the
@@ -879,13 +883,16 @@ export async function generateSummary(
 	const wholeConversationFits = tokenizer.checkTokenBudget(wholeConversation, budgetTokens).fits;
 	const pending: SummaryWindow[] = wholeConversationFits
 		? [{ messages: llmMessages, budgetTokens, text: wholeConversation }]
-		: planSummaryWindows(llmMessages, tokenizer, dialect, budgetTokens).map(messages => ({ messages, budgetTokens }));
+		: planSummaryWindows(llmMessages, tokenizer, dialect, budgetTokens, dropThinking).map(messages => ({
+				messages,
+				budgetTokens,
+			}));
 
 	let carriedSummary = previousSummary;
 	let initialSummaryWindow = true;
 	while (pending.length > 0) {
 		const window = pending[0];
-		const text = window.text ?? serializeConversationForSummary(window.messages, dialect);
+		const text = window.text ?? serializeConversationForSummary(window.messages, dialect, { dropThinking });
 		// A budget probe, not a raw count: a window whose bytes already fit needs
 		// neither an exact count nor the clamp, and the bust path hands back the
 		// exact count the proportional clamp needs as its denominator.
@@ -929,7 +936,7 @@ export async function generateSummary(
 			pending.splice(
 				0,
 				1,
-				...planSummaryWindows(window.messages, tokenizer, dialect, halved).map(messages => ({
+				...planSummaryWindows(window.messages, tokenizer, dialect, halved, dropThinking).map(messages => ({
 					messages,
 					budgetTokens: halved,
 				})),
@@ -1205,7 +1212,9 @@ async function generateShortSummary(
 ): Promise<string> {
 	const maxTokens = Math.min(512, Math.floor(0.2 * reserveTokens));
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(recentMessages);
-	const conversationText = serializeConversationForSummary(llmMessages, preferredDialect(model.id));
+	const conversationText = serializeConversationForSummary(llmMessages, preferredDialect(model.id), {
+		dropThinking: shouldDropThinkingFromSummary(model),
+	});
 
 	let promptText = `<conversation>\n${conversationText}\n</conversation>\n\n`;
 	if (historySummary) {
@@ -1961,7 +1970,9 @@ async function generateTurnPrefixSummary(
 	const maxTokens = Math.min(Math.floor(0.5 * reserveTokens), MAX_SUMMARY_TOKENS); // Smaller budget for turn prefix
 
 	const llmMessages = (options?.convertToLlm ?? defaultConvertToLlm)(messages);
-	const conversationText = serializeConversationForSummary(llmMessages, preferredDialect(model.id));
+	const conversationText = serializeConversationForSummary(llmMessages, preferredDialect(model.id), {
+		dropThinking: shouldDropThinkingFromSummary(model),
+	});
 	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
 	const summarizationMessages = [
 		{

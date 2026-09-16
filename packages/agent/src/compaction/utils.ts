@@ -4,6 +4,7 @@
 
 import type { Message, ToolCall } from "@oh-my-pi/pi-ai";
 import { type Dialect, getDialectDefinition } from "@oh-my-pi/pi-ai/dialect";
+import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { escapeHarmonyControlTokens } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { formatGroupedPaths, prompt, stringifyJson } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "../types";
@@ -216,10 +217,41 @@ export function escapeSummaryBoundaryTags(text: string): string {
 }
 
 /**
+ * Whether summary input for `model` must omit assistant reasoning.
+ *
+ * Anthropic's `reasoning_extraction` classifier refuses (or leaks) prior
+ * chain-of-thought replayed as text. That includes Claude ids, native
+ * Anthropic Messages, and OpenAI-compat gateways that terminate on Anthropic
+ * (`cacheControlFormat: "anthropic"`) — those last ones classify as `xml`,
+ * so dialect-only dropping still feeds `<thinking>` tags to Claude.
+ */
+export function shouldDropThinkingFromSummary(model: { id: string; api: string; compat: object }): boolean {
+	if (preferredDialect(model.id) === "anthropic") return true;
+	if (model.api === "anthropic-messages") return true;
+	const compat = model.compat;
+	return (
+		typeof compat === "object" &&
+		compat !== null &&
+		"cacheControlFormat" in compat &&
+		compat.cacheControlFormat === "anthropic"
+	);
+}
+
+/** Options for {@link serializeConversation} / {@link serializeConversationForSummary}. */
+export interface SerializeConversationOptions {
+	/** Override the dialect default: Anthropic-dialect summaries drop thinking. */
+	dropThinking?: boolean;
+}
+
+/**
  * Serialize LLM messages as plain summary input without provider control tokens.
  */
-export function serializeConversationForSummary(messages: Message[], dialect?: Dialect): string {
-	const conversation = serializeConversation(messages, dialect);
+export function serializeConversationForSummary(
+	messages: Message[],
+	dialect?: Dialect,
+	options?: SerializeConversationOptions,
+): string {
+	const conversation = serializeConversation(messages, dialect, options);
 	const escaped = dialect === "harmony" ? escapeHarmonyControlTokens(conversation) : conversation;
 	return escapeSummaryBoundaryTags(escaped);
 }
@@ -228,7 +260,11 @@ export function serializeConversationForSummary(messages: Message[], dialect?: D
  * Serialize LLM messages to transcript text.
  * Call convertToLlm() first to handle custom message types.
  */
-export function serializeConversation(messages: Message[], dialect?: Dialect): string {
+export function serializeConversation(
+	messages: Message[],
+	dialect?: Dialect,
+	options?: SerializeConversationOptions,
+): string {
 	// Tool results flagged contextually useless (and their paired calls) are
 	// dropped from the serialized text: the source region is discarded after
 	// summarization anyway, so excluding them costs nothing and keeps garbage
@@ -239,14 +275,14 @@ export function serializeConversation(messages: Message[], dialect?: Dialect): s
 			uselessCallIds.add(msg.toolCallId);
 		}
 	}
+	const dropThinking = options?.dropThinking ?? dialect === "anthropic";
 	if (dialect) {
 		// Claude's classifier refuses inputs that reproduce the model's own
 		// reasoning as text ("reasoning_extraction"), and the anthropic dialect
 		// otherwise renders thinking verbatim inside <thinking> tags. Reasoning is
 		// ephemeral and low-signal for a summary, so drop it from Anthropic-target
 		// summary input. Other dialects (e.g. Harmony) carry reasoning natively in
-		// their transcript format and keep it.
-		const dropThinking = dialect === "anthropic";
+		// their transcript format and keep it — unless the caller overrides.
 		const processed: Message[] = [];
 		for (const msg of messages) {
 			if (msg.role === "assistant") {
@@ -296,7 +332,7 @@ export function serializeConversation(messages: Message[], dialect?: Dialect): s
 				if (block.type === "text") {
 					textParts.push(block.text);
 				} else if (block.type === "thinking") {
-					thinkingParts.push(block.thinking);
+					if (!dropThinking) thinkingParts.push(block.thinking);
 				} else if (block.type === "toolCall") {
 					if (uselessCallIds.has(block.id)) continue;
 					toolCalls.push(block);

@@ -44,8 +44,8 @@ import {
 	type ShakeRegion,
 	type SummaryOptions,
 	shouldCompact,
+	shouldDropThinkingFromSummary,
 	shouldUseProviderNativeCompaction,
-	upsertFileOperations,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	DEFAULT_PRUNE_CONFIG,
@@ -63,7 +63,6 @@ import type {
 	ProviderSessionState,
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
-import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isRecord, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
@@ -1058,7 +1057,7 @@ export class SessionMaintenance {
 			// ("reasoning_extraction"), and the snapcompact archive is replayed as
 			// text into every later request; drop `¶think:` sections for
 			// Anthropic-dialect targets (issue #6093).
-			const snapcompactIncludeThinking = preferredDialect(this.#model.id) !== "anthropic";
+			const snapcompactIncludeThinking = !shouldDropThinkingFromSummary(this.#model);
 			if (wantsSnapcompact && !this.#model.input.includes("image")) {
 				this.#host.emitNotice(
 					"warning",
@@ -4111,7 +4110,7 @@ export class SessionMaintenance {
 				// Drop `¶think:` sections for Anthropic-dialect targets: the archive
 				// is replayed as text and Claude refuses reproduced reasoning
 				// ("reasoning_extraction", issue #6093).
-				const snapcompactIncludeThinking = preferredDialect(this.#model.id) !== "anthropic";
+				const snapcompactIncludeThinking = !shouldDropThinkingFromSummary(this.#model);
 				const text = snapcompact.serializeConversation(
 					convertToLlm(preparation.messagesToSummarize.concat(preparation.turnPrefixMessages)),
 					{ includeThinking: snapcompactIncludeThinking },

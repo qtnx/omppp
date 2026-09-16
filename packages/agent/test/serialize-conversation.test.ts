@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { serializeConversation, serializeConversationForSummary } from "@oh-my-pi/pi-agent-core/compaction";
+import {
+	serializeConversation,
+	serializeConversationForSummary,
+	shouldDropThinkingFromSummary,
+} from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Message, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
 
 const ZERO_USAGE: Usage = {
@@ -164,5 +168,38 @@ describe("serializeConversation — useless pairs", () => {
 
 		expect(out).toContain(reasoning);
 		expect(out).toContain("<thinking>");
+	});
+
+	test("strips assistant reasoning when dropThinking is set even for non-Anthropic dialects", () => {
+		const reasoning = "PRIVATE chain of thought that must not be replayed to Claude";
+		const out = serializeConversation(
+			[
+				assistantMessage([
+					{ type: "thinking", thinking: reasoning },
+					{ type: "text", text: "The visible answer." },
+				]),
+			],
+			"xml",
+			{ dropThinking: true },
+		);
+
+		expect(out).not.toContain(reasoning);
+		expect(out).not.toContain("<thinking>");
+		expect(out).toContain("The visible answer.");
+	});
+
+	test("shouldDropThinkingFromSummary covers Claude ids, Anthropic API, and Anthropic cache_control gateways", () => {
+		expect(
+			shouldDropThinkingFromSummary({ id: "claude-sonnet-4-6", api: "anthropic-messages", compat: {} }),
+		).toBe(true);
+		expect(
+			shouldDropThinkingFromSummary({
+				id: "designer",
+				api: "openai-completions",
+				compat: { cacheControlFormat: "anthropic" },
+			}),
+		).toBe(true);
+		expect(shouldDropThinkingFromSummary({ id: "gpt-5", api: "openai-responses", compat: {} })).toBe(false);
+		expect(shouldDropThinkingFromSummary({ id: "designer", api: "openai-completions", compat: {} })).toBe(false);
 	});
 });
