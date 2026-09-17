@@ -399,7 +399,11 @@ export class SessionDuoOrchestrator {
 		if (!currentModel) return false;
 		const identity = classifyModel(currentModel.provider, currentModel.id, { lenient: true });
 		if (identity.class === "anthropic" && (identity.family === "fable" || identity.family === "mythos")) return true;
-		const config = resolveDuoConfig(this.#host.settings, this.#host.availableModels(), this.#host.modelRegistry);
+		// Identity check only matters for a non-Anthropic configured planner; skip
+		// it when the host cannot enumerate models (tests with partial registries).
+		const available = this.#host.availableModels();
+		if (!Array.isArray(available) || available.length === 0) return false;
+		const config = resolveDuoConfig(this.#host.settings, available, this.#host.modelRegistry);
 		return config !== undefined && modelsAreEqual(currentModel, config.planner);
 	}
 
