@@ -13,7 +13,6 @@ import {
 	type DuoHandoffResult,
 	type DuoStateSnapshot,
 	type DuoStatus,
-	isDuoPhaseLive,
 	type TakeoverDecision,
 	type TakeoverPurpose,
 } from "../duo";
@@ -324,13 +323,6 @@ export class SessionDuoOrchestrator {
 			if (!wasEnabled) {
 				if (persistModeChange) this.#host.persistModeChange(true);
 				await this.#host.emitModeChanged("orchestrator");
-				// A user-initiated orchestrator entry is a duo `auto` activation
-				// signal (canActivate: orchestratorEnabled); duo-owned toggles pass
-				// persistModeChange=false and never re-enter here.
-				if (persistModeChange && !this.#duoOwnsOrchestrator) {
-					const controller = this.#ensureController();
-					if (controller && !isDuoPhaseLive(controller.status.phase)) await controller.reevaluate();
-				}
 			}
 			return;
 		}
@@ -387,10 +379,9 @@ export class SessionDuoOrchestrator {
 	}
 
 	#couldActivate(): boolean {
-		// Documented `auto` trigger (duo.mode description): orchestrator mode, or
-		// the main model is the planner — by Fable/Mythos family or, for a
-		// non-Anthropic configured planner, by identity. The executor model alone
-		// never auto-starts duo; the state machine only uses it to stay live.
+		// Documented `auto` trigger (duo.mode description): orchestrator mode, or a
+		// Fable/Mythos-family main model. The executor model alone never
+		// auto-starts duo; the state machine only uses it to stay live.
 		const mode = this.#host.settings.get("duo.mode");
 		if (mode === "off") return false;
 		if (mode === "on" || this.#host.settings.get("duo.orchestrator") === "always") return true;
@@ -398,13 +389,7 @@ export class SessionDuoOrchestrator {
 		const currentModel = this.#host.currentModel();
 		if (!currentModel) return false;
 		const identity = classifyModel(currentModel.provider, currentModel.id, { lenient: true });
-		if (identity.class === "anthropic" && (identity.family === "fable" || identity.family === "mythos")) return true;
-		// Identity check only matters for a non-Anthropic configured planner; skip
-		// it when the host cannot enumerate models (tests with partial registries).
-		const available = this.#host.availableModels();
-		if (!Array.isArray(available) || available.length === 0) return false;
-		const config = resolveDuoConfig(this.#host.settings, available, this.#host.modelRegistry);
-		return config !== undefined && modelsAreEqual(currentModel, config.planner);
+		return identity.class === "anthropic" && (identity.family === "fable" || identity.family === "mythos");
 	}
 
 	async #setDuoOrchestratorEnabled(enabled: boolean): Promise<void> {

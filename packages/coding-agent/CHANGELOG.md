@@ -9,7 +9,7 @@
 - Duo planner, advisor, executor, and takeover prompts now share one hold-vs-handoff rule — decide/diagnose/design stays with the planner, edit/run/test/delegate goes to the executor — with explicit takeover-vs-advise criteria and a handback exit for every takeover.
 - `ompx --duo` starts the session in duo mode (session-scoped, like `--advisor`).
 - `/duo on|off` no longer rewrites the persisted `duo.mode`; the toggle is session-scoped, so `auto` survives the next launch.
-- Duo `auto` now activates when the user switches onto the planner model or enters orchestrator mode mid-session, resumes from a suspended model-switch failure on the next re-evaluation, and stays off after `/duo off` across later model switches.
+- Duo `auto` now activates when the user switches onto the planner model mid-session, resumes from a suspended model-switch failure on the next re-evaluation, and stays off after `/duo off` across later model switches.
 
 ### Fixed
 
