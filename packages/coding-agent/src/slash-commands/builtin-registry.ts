@@ -1049,7 +1049,7 @@ function materializeTuiBuiltinSlashCommand(
 	} else if (cmd.name === "move") {
 		materialized.getArgumentCompletions = buildDirectoryArgumentCompletions();
 		if (cmd.inlineHint) materialized.getInlineHint = buildStaticInlineHint(cmd.inlineHint);
-	} else if (cmd.name === "switch" && runtime) {
+	} else if ((cmd.name === "switch" || cmd.name === "model") && runtime) {
 		materialized.getArgumentCompletions = buildModelSelectorCompletions(runtime);
 		if (cmd.inlineHint) materialized.getInlineHint = buildStaticInlineHint(cmd.inlineHint);
 	} else if (cmd.inlineHint) {
