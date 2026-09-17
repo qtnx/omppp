@@ -957,6 +957,54 @@ describe("DuoController", () => {
 		expect(host.persisted.at(-1)).toMatchObject({ phase: "suspended", suspendReason: "set-model-failed" });
 	});
 
+	test("suspended duo resumes on the next reevaluate once the switch succeeds", async () => {
+		const host = fakeHost({ failSwitch: true });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("suspended");
+
+		host.failSwitch = false;
+		await controller.reevaluate();
+
+		expect(controller.status.phase).toBe("executing");
+		expect(host.switches.at(-1)?.model).toBe(executor);
+		expect(host.persisted.at(-1)?.suspendReason).toBeUndefined();
+	});
+
+	test("dormant auto duo activates when the user switches onto the planner, not onto the executor", async () => {
+		const host = fakeHost({ model: otherModel, orchestrator: false, planModeOn: false });
+		const controller = new DuoController(host, duoConfig({ mode: "auto" }));
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("inactive");
+
+		// Executor alone is not the documented auto trigger: no reevaluate is scheduled.
+		host.model = executor;
+		controller.notifyManualModelChange();
+		expect(controller.status.phase).toBe("inactive");
+
+		const switched = Promise.withResolvers<void>();
+		host.onSwitch = () => switched.resolve();
+		host.model = planner;
+		controller.notifyManualModelChange();
+		await switched.promise;
+		expect(controller.status.phase).toBe("executing");
+		expect(host.switches.at(-1)?.model).toBe(executor);
+	});
+
+	test("a live duoMode host overrides the captured config so /duo off stays off across model switches", async () => {
+		let mode: "auto" | "on" | "off" = "auto";
+		const host = fakeHost({ model: otherModel, orchestrator: false, planModeOn: false, duoMode: () => mode });
+		const controller = new DuoController(host, duoConfig({ mode: "auto" }));
+		await controller.reevaluate();
+
+		mode = "off";
+		host.model = planner;
+		controller.notifyManualModelChange();
+
+		expect(controller.status.phase).toBe("inactive");
+		expect(host.switches).toHaveLength(0);
+	});
+
 	test("notifyTurnEnd ticks executor cooldown to zero and persists each transition", async () => {
 		const host = fakeHost();
 		const controller = new DuoController(host, duoConfig({ cooldownTurns: 2 }));

@@ -4,9 +4,12 @@
 
 ### Changed
 
-- Duo now defaults the planner to `anthropic/claude-fable-5-1:medium` and the executor to `tnx/ds/deepseek-v4-flash:high`; when a configured duo model is unavailable the side degrades to the newest Fable/Opus-family model instead of disabling duo, and a non-Anthropic executor or planner still activates duo when it holds the main stream.
+- Duo now defaults the planner to `anthropic/claude-fable-5-1:medium` and the executor to `tnx/ds/deepseek-v4-flash:high`; when a configured duo model is unavailable the side degrades to the newest Fable/Opus-family model instead of disabling duo, and a non-Anthropic pair is recognized by identity so a manual switch onto it no longer disables duo.
 - Duo executor rate-limit and quota failures now fall through to `anthropic/claude-opus-5:high` via the default `retry.fallbackChains` (setup config version 8).
 - Duo planner, advisor, executor, and takeover prompts now share one hold-vs-handoff rule — decide/diagnose/design stays with the planner, edit/run/test/delegate goes to the executor — with explicit takeover-vs-advise criteria and a handback exit for every takeover.
+- `ompx --duo` starts the session in duo mode (session-scoped, like `--advisor`).
+- `/duo on|off` no longer rewrites the persisted `duo.mode`; the toggle is session-scoped, so `auto` survives the next launch.
+- Duo `auto` now activates when the user switches onto the planner model or enters orchestrator mode mid-session, resumes from a suspended model-switch failure on the next re-evaluation, and stays off after `/duo off` across later model switches.
 
 ### Fixed
 

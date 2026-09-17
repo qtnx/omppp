@@ -87,6 +87,11 @@ export class DuoStateMachine {
 			this.#state.executionScope === "single" &&
 			input.plannerResolvable &&
 			input.executorResolvable;
+		if (this.#state.phase === "suspended") {
+			// A re-evaluation (startup, /duo on, revive) is the resume signal; a
+			// suspended session otherwise had no way back except /duo off + on.
+			return this.onResume(input);
+		}
 		if (this.#state.phase === "degraded") {
 			this.#state.phase = canActivate(input) || keepsSingleScopeAutoActive ? "executing" : "inactive";
 			return this.#state.phase;

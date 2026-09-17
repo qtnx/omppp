@@ -100,11 +100,17 @@ describe("DuoStateMachine activation", () => {
 		expect(machine.phase).toBe("executing");
 	});
 
-	it("does not auto-deactivate suspended or takeover phases", () => {
+	it("re-evaluation resumes a suspended machine; takeover is never auto-deactivated", () => {
 		const suspended = new DuoStateMachine(config);
 		suspended.evaluateActivation(input({ mode: "on" }));
 		suspended.onSetModelFailed();
-		expect(suspended.evaluateActivation(input({ mode: "off" }))).toBe("suspended");
+		expect(suspended.evaluateActivation(input({ mode: "off" }))).toBe("inactive");
+
+		const resumed = new DuoStateMachine(config);
+		resumed.evaluateActivation(input({ mode: "on" }));
+		resumed.onSetModelFailed();
+		expect(resumed.evaluateActivation(input({ mode: "on", planModeActive: true }))).toBe("planning");
+		expect(resumed.snapshot.suspendReason).toBeUndefined();
 
 		const takeover = new DuoStateMachine(config);
 		takeover.evaluateActivation(input({ mode: "on" }));
