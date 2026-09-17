@@ -579,14 +579,31 @@ export class DuoController {
 
 	#activationInput(): DuoActivationInput {
 		const currentModel = this.#host.currentModel();
-		const identity = currentModel
-			? classifyModel(currentModel.provider, currentModel.id, { lenient: true })
-			: undefined;
 		let mainModelKind: DuoActivationInput["mainModelKind"] = "other";
-		if (identity?.class === "anthropic" && identity.family === "opus") {
-			mainModelKind = "opus";
-		} else if (identity?.class === "anthropic" && (identity.family === "fable" || identity.family === "mythos")) {
-			mainModelKind = "fable";
+		if (currentModel) {
+			// The configured pair wins over family detection so a non-Anthropic
+			// executor (or planner) still activates duo in `auto` mode.
+			if (
+				modelsAreEqual(currentModel, this.#config.executor) ||
+				modelsAreEqual(currentModel, this.#resolvedExecutor)
+			) {
+				mainModelKind = "opus";
+			} else if (
+				modelsAreEqual(currentModel, this.#config.planner) ||
+				modelsAreEqual(currentModel, this.#resolvedPlanner)
+			) {
+				mainModelKind = "fable";
+			} else {
+				const identity = classifyModel(currentModel.provider, currentModel.id, { lenient: true });
+				if (identity.class === "anthropic" && identity.family === "opus") {
+					mainModelKind = "opus";
+				} else if (
+					identity.class === "anthropic" &&
+					(identity.family === "fable" || identity.family === "mythos")
+				) {
+					mainModelKind = "fable";
+				}
+			}
 		}
 		return {
 			mode: this.#config.mode,
@@ -775,7 +792,7 @@ export class DuoController {
 		void this.#host.setOrchestratorEnabled(false);
 		this.#host.emitNotice(
 			"info",
-			`Duo disabled: main model ${this.#formatModel(model)} is outside the Fable/Opus pair.`,
+			`Duo disabled: main model ${this.#formatModel(model)} is outside the duo planner/executor pair (${this.#formatModel(this.#resolvedPlanner)} / ${this.#formatModel(this.#resolvedExecutor)}).`,
 		);
 		this.#refreshSnapshotMetadata(snapshot.preDuoThinking);
 		this.#persistSnapshot();

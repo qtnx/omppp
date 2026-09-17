@@ -100,19 +100,19 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			await settings.flush();
 
-			expect(settings.get("setupVersion")).toBe(7);
+			expect(settings.get("setupVersion")).toBe(8);
 			expect(settings.get("modelRoles")).toMatchObject({ smol: "cerebras/gpt-oss-120b" });
 			const savedSettings = YAML.parse(await Bun.file(yamlConfigPath).text()) as Record<string, unknown>;
-			expect(savedSettings.setupVersion).toBe(7);
+			expect(savedSettings.setupVersion).toBe(8);
 			expect(savedSettings.modelRoles).toMatchObject({ smol: "cerebras/gpt-oss-120b" });
 			expect(await Bun.file(getConfigPath()).exists()).toBe(false);
 		});
 
 		it("reloads from config.yaml when the selected config.yml disappears", async () => {
-			await writeSettings({ setupVersion: 7, shellPath: "/initial-shell" });
+			await writeSettings({ setupVersion: 8, shellPath: "/initial-shell" });
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			const yamlConfigPath = path.join(agentDir, "config.yaml");
-			await Bun.write(yamlConfigPath, YAML.stringify({ setupVersion: 7, shellPath: "/fallback-shell" }, null, 2));
+			await Bun.write(yamlConfigPath, YAML.stringify({ setupVersion: 8, shellPath: "/fallback-shell" }, null, 2));
 			await fs.promises.unlink(getConfigPath());
 
 			await settings.reloadFromDisk();
@@ -126,7 +126,7 @@ describe("Settings", () => {
 		});
 
 		it("keeps migrated config.yaml values when reload fallback adds modified paths", async () => {
-			await writeSettings({ setupVersion: 7, modelRoles: { smol: "stale/smol" } });
+			await writeSettings({ setupVersion: 8, modelRoles: { smol: "stale/smol" } });
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			const yamlConfigPath = path.join(agentDir, "config.yaml");
 			await Bun.write(
@@ -280,7 +280,7 @@ describe("Settings", () => {
 
 		it("backs up a config corrupted after startup and retains the pending global change for retry", async () => {
 			await writeSettings({
-				setupVersion: 7,
+				setupVersion: 8,
 				auth: { broker: { token: "TOP-SECRET" } },
 				modelRoles: { default: "keep/default" },
 			});
@@ -299,7 +299,7 @@ describe("Settings", () => {
 
 			await settings.flush();
 			expect(await readSettings()).toEqual({
-				setupVersion: 7,
+				setupVersion: 8,
 				auth: { broker: { token: "TOP-SECRET" } },
 				modelRoles: { default: "keep/default" },
 				theme: { dark: "anthracite" },
@@ -312,7 +312,7 @@ describe("Settings", () => {
 		});
 
 		it("backs up a corrupted project config and retains the pending project role for retry", async () => {
-			await writeSettings({ setupVersion: 7 });
+			await writeSettings({ setupVersion: 8 });
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
 				projectConfigPath,
@@ -347,11 +347,11 @@ describe("Settings", () => {
 			await fs.promises.symlink(managedConfigPath, getConfigPath(), "file");
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			settings.set("setupVersion", 7);
+			settings.set("setupVersion", 8);
 			await settings.flush();
 
 			expect(fs.lstatSync(getConfigPath()).isSymbolicLink()).toBe(true);
-			expect(YAML.parse(await Bun.file(managedConfigPath).text())).toEqual({ setupVersion: 7 });
+			expect(YAML.parse(await Bun.file(managedConfigPath).text())).toEqual({ setupVersion: 8 });
 		});
 
 		it("writes through a dangling symlink chain to the final target, preserving every link", async () => {
@@ -431,12 +431,12 @@ describe("Settings", () => {
 			const lexicalSibling = tempDir.join("final-config.yml");
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			settings.set("setupVersion", 7);
+			settings.set("setupVersion", 8);
 			await settings.flush();
 
 			// The write lands on the physical target, recreating it, while the
 			// alias's lexical sibling (the mis-resolution) stays untouched.
-			expect(YAML.parse(await Bun.file(physicalFinal).text())).toEqual({ setupVersion: 7 });
+			expect(YAML.parse(await Bun.file(physicalFinal).text())).toEqual({ setupVersion: 8 });
 			expect(fs.existsSync(lexicalSibling)).toBe(false);
 			// Every user-managed link in the chain survives.
 			expect(fs.lstatSync(getConfigPath()).isSymbolicLink()).toBe(true);
@@ -474,7 +474,7 @@ describe("Settings", () => {
 				return readlink(target);
 			}) as typeof fs.promises.readlink);
 
-			settings.set("setupVersion", 7);
+			settings.set("setupVersion", 8);
 			await expect(settings.flush()).rejects.toThrow(/ELOOP/);
 			expect(readlinkCalls).toBeLessThanOrEqual(safetyValve);
 		});
@@ -887,18 +887,18 @@ describe("Settings", () => {
 				await rename(source, target);
 			});
 
-			settings.set("setupVersion", 7);
+			settings.set("setupVersion", 8);
 			await settings.flush();
 
 			expect(injected).toBe(true);
-			expect(await readSettings()).toEqual({ setupVersion: 7 });
+			expect(await readSettings()).toEqual({ setupVersion: 8 });
 			expect(fs.readdirSync(agentDir).some(name => name.endsWith(".tmp") || name.endsWith(".bak"))).toBe(false);
 		});
 
 		it("leaves an unreadable main config untouched and retains its pending change", async () => {
 			const original = YAML.stringify(
 				{
-					setupVersion: 7,
+					setupVersion: 8,
 					auth: { broker: { token: "TOP-SECRET" } },
 					modelRoles: { default: "keep/default" },
 				},
@@ -918,7 +918,7 @@ describe("Settings", () => {
 			expect(fs.readdirSync(agentDir).some(name => name.startsWith("config.yml.broken-"))).toBe(false);
 			await settings.flush();
 			expect(await readSettings()).toEqual({
-				setupVersion: 7,
+				setupVersion: 8,
 				auth: { broker: { token: "TOP-SECRET" } },
 				modelRoles: { default: "keep/default" },
 				theme: { dark: "anthracite" },
@@ -1560,7 +1560,7 @@ describe("Settings", () => {
 
 		it("preserves concurrent external per-role edits when saving one global role", async () => {
 			await writeSettings({
-				setupVersion: 7,
+				setupVersion: 8,
 				modelRoles: { default: "anthropic/claude-sonnet-4-5", advisor: "moonshot/kimi-k2" },
 			});
 
@@ -1570,7 +1570,7 @@ describe("Settings", () => {
 			// External edit (another omp instance / manual edit): changes advisor,
 			// adds vision. This process's #global is now stale.
 			await writeSettings({
-				setupVersion: 7,
+				setupVersion: 8,
 				modelRoles: {
 					default: "anthropic/claude-sonnet-4-5",
 					advisor: "moonshot/kimi-k3:max",
@@ -1597,7 +1597,7 @@ describe("Settings", () => {
 
 		it("does not replay a preserved role after the save writes it", async () => {
 			await writeSettings({
-				setupVersion: 7,
+				setupVersion: 8,
 				modelRoles: { default: "anthropic/claude-sonnet-4-5" },
 			});
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
@@ -1626,7 +1626,7 @@ describe("Settings", () => {
 			});
 
 			await writeSettings({
-				setupVersion: 7,
+				setupVersion: 8,
 				modelRoles: {
 					default: "anthropic/claude-sonnet-4-5",
 					smol: "anthropic/claude-haiku-4-5",
@@ -1988,6 +1988,7 @@ describe("Settings", () => {
 
 			expect(settings.get("retry.fallbackChains")).toEqual({
 				"openai-codex/gpt-5.6-sol": ["anthropic/claude-opus-5"],
+				"tnx/ds/deepseek-v4-flash": ["anthropic/claude-opus-5:high"],
 				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
 				task: ["openai-codex/gpt-5.5:low", "anthropic/claude-opus-4-8"],
 				plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
@@ -2443,7 +2444,7 @@ describe("Settings", () => {
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 			await settings.flush();
 
-			expect(settings.get("setupVersion")).toBe(7);
+			expect(settings.get("setupVersion")).toBe(8);
 			expect(settings.get("modelRoles")).toEqual({
 				default: "custom/default",
 				task: "openai-codex/gpt-5.6-terra:medium",
@@ -2485,10 +2486,11 @@ describe("Settings", () => {
 				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
 				plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
 				"openai-codex/gpt-5.6-sol": ["anthropic/claude-opus-5"],
+				"tnx/ds/deepseek-v4-flash": ["anthropic/claude-opus-5:high"],
 			});
 
 			const onDisk = await readSettings();
-			expect(onDisk.setupVersion).toBe(7);
+			expect(onDisk.setupVersion).toBe(8);
 			expect(onDisk.modelRoles).toEqual(settings.get("modelRoles"));
 			expect((onDisk.task as Record<string, unknown>).agentModelOverrides).toEqual(
 				settings.get("task.agentModelOverrides"),
@@ -2505,7 +2507,7 @@ describe("Settings", () => {
 			resetSettingsForTest();
 			const rerunSettings = await Settings.init({ cwd: projectDir, agentDir });
 			await rerunSettings.flush();
-			expect(rerunSettings.get("setupVersion")).toBe(7);
+			expect(rerunSettings.get("setupVersion")).toBe(8);
 			expect(await readSettings()).toEqual(firstMigration);
 		});
 
@@ -2609,7 +2611,7 @@ describe("Settings", () => {
 					["persisted config", onDisk.setupVersion, onDisk.modelRoles, persistedTask.agentModelOverrides],
 				] as const) {
 					expect({ setupVersion, modelRoles, agentOverrides }, `${fixture.name}: ${surface}`).toEqual({
-						setupVersion: 7,
+						setupVersion: 8,
 						modelRoles: expectedModelRoles,
 						agentOverrides: expectedAgentOverrides,
 					});
@@ -2684,7 +2686,7 @@ describe("Settings", () => {
 			},
 		} as const;
 
-		it("migrates setupVersion 3 routes once to the canonical setupVersion 7 matrix", async () => {
+		it("migrates setupVersion 3 routes once to the canonical setupVersion 8 matrix", async () => {
 			await writeSettings(setupVersion3RouteFixture.input);
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
@@ -2706,7 +2708,7 @@ describe("Settings", () => {
 			await reloaded.flush();
 			const secondPersisted = await readSettings();
 			const expected = {
-				setupVersion: 7,
+				setupVersion: 8,
 				modelRoles: setupVersion3RouteFixture.expectedModelRoles,
 				agentOverrides: setupVersion3RouteFixture.expectedAgentOverrides,
 			};
@@ -2721,9 +2723,9 @@ describe("Settings", () => {
 			expect(secondPersisted).toEqual(firstPersisted);
 		});
 
-		it("leaves a current setupVersion 7 canonical route matrix unchanged", async () => {
+		it("leaves a current setupVersion 8 canonical route matrix unchanged", async () => {
 			const canonical = {
-				setupVersion: 7,
+				setupVersion: 8,
 				modelRoles: setupVersion3RouteFixture.expectedModelRoles,
 				task: { agentModelOverrides: setupVersion3RouteFixture.expectedAgentOverrides },
 			};
@@ -2751,7 +2753,7 @@ describe("Settings", () => {
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(settings.get("setupVersion")).toBe(7);
+			expect(settings.get("setupVersion")).toBe(8);
 			expect(settings.get("task.agentModelOverrides")).toMatchObject({
 				designer: "anthropic/claude-opus-5",
 				frontend_ui: "tnx/designer",
@@ -2777,7 +2779,7 @@ describe("Settings", () => {
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
 
-			expect(settings.get("setupVersion")).toBe(7);
+			expect(settings.get("setupVersion")).toBe(8);
 			expect(settings.get("task.agentModelOverrides")).toMatchObject({
 				designer: "custom/designer",
 				frontend_ui: "custom/frontend",

@@ -104,6 +104,24 @@ describe("resolveDuoConfig", () => {
 		expect(resolved?.executor.id).toBe("claude-opus-4.8");
 	});
 
+	test("unavailable explicit executor pattern degrades to the newest Opus instead of disabling duo", () => {
+		const resolved = resolveDuoConfig(
+			settings({ "duo.executorModel": "tnx/ds/deepseek-v4-flash:high" }),
+			[fable5, opus47, opus48],
+			registry,
+		);
+
+		expect(resolved?.executor.id).toBe("claude-opus-4.8");
+		expect(resolved?.executorThinking).toBe(ThinkingLevel.Max);
+	});
+
+	test("schema defaults resolve duo from Anthropic-only auth", () => {
+		const resolved = resolveDuoConfig(Settings.isolated(), [fable5, opus48], registry);
+
+		expect(resolved?.planner.id).toBe("claude-fable-5");
+		expect(resolved?.executor.id).toBe("claude-opus-4.8");
+	});
+
 	test("missing planner family returns undefined", () => {
 		const resolved = resolveDuoConfig(settings(), [opus48], registry);
 

@@ -289,7 +289,7 @@ describe("DuoController", () => {
 		expect(host.notices.at(-1)).toMatchObject({
 			level: "info",
 			text: expect.stringMatching(
-				/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the Fable\/Opus pair/,
+				/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the duo planner\/executor pair/,
 			),
 		});
 		const switchCount = host.switches.length;
@@ -318,7 +318,7 @@ describe("DuoController", () => {
 
 		expect(controller.status.phase).toBe("inactive");
 		expect(host.notices.at(-1)?.text).toMatch(
-			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the Fable\/Opus pair/,
+			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the duo planner\/executor pair/,
 		);
 		expect(host.orchestratorEnables.at(-1)).toBe(false);
 		await controller.reevaluate();
@@ -442,7 +442,7 @@ describe("DuoController", () => {
 
 		expect(controller.status.phase).toBe("inactive");
 		expect(host.briefs.filter(brief => brief.text.includes("summons to reason"))).toHaveLength(1);
-		expect(host.notices.at(-1)?.text).toMatch(/outside the Fable\/Opus pair/);
+		expect(host.notices.at(-1)?.text).toMatch(/outside the duo planner\/executor pair/);
 	});
 
 	test("manual planner model change during takeover does not inject summon protocol", async () => {
@@ -487,7 +487,7 @@ describe("DuoController", () => {
 		expect(host.stops).toBe(stopCount + 1);
 		expect(host.resumes).toHaveLength(0);
 		expect(host.notices.at(-1)?.text).toMatch(
-			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the Fable\/Opus pair/,
+			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the duo planner\/executor pair/,
 		);
 		expect(controller.status.phase).toBe("inactive");
 	});
@@ -866,7 +866,7 @@ describe("DuoController", () => {
 		expect(host.persisted.at(-1)?.phase).toBe("inactive");
 		expect(host.notices.at(-1)).toMatchObject({
 			level: "info",
-			text: expect.stringMatching(/outside the Fable\/Opus pair/),
+			text: expect.stringMatching(/outside the duo planner\/executor pair/),
 		});
 	});
 

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Duo now defaults the planner to `anthropic/claude-fable-5-1:medium` and the executor to `tnx/ds/deepseek-v4-flash:high`; when a configured duo model is unavailable the side degrades to the newest Fable/Opus-family model instead of disabling duo, and a non-Anthropic executor or planner still activates duo when it holds the main stream.
+- Duo executor rate-limit and quota failures now fall through to `anthropic/claude-opus-5:high` via the default `retry.fallbackChains` (setup config version 8).
+- Duo planner, advisor, executor, and takeover prompts now share one hold-vs-handoff rule — decide/diagnose/design stays with the planner, edit/run/test/delegate goes to the executor — with explicit takeover-vs-advise criteria and a handback exit for every takeover.
+
 ### Fixed
 
 - Snapcompact now omits `¶think:` sections for Anthropic-backed models whose id does not classify as the Anthropic dialect (OpenAI-compat gateways with Anthropic `cache_control`), matching the compaction summarizer so replayed archives no longer trip `reasoning_extraction`.

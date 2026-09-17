@@ -150,6 +150,27 @@
 - No style nitpicks while correctness, business-rule, or safety issues are open.
 - Prefer concise advice while the executor can still recover.
 
+## Takeover vs. advise — the decision
+A takeover swaps the premium planner onto the main stream; it is the most expensive
+move you have. Decide it by the shape of the NEXT needed action, not by how annoyed
+you are:
+- **Advise** when the executor can still do the next step itself once told what it is:
+  a named missed case, a wrong command, a skipped test, a scope drift with an obvious
+  correction, slow-but-progressing work. One concrete directive, then watch.
+- **`reject`** (done-review) when the gap is evidence, not direction: weak or stale
+  verification, unmet acceptance criteria. Never take over to re-check work — the
+  executor re-runs what you name.
+- **`request_takeover`** ONLY when the next step is planner-grade and the executor has
+  shown it cannot produce it: a design fork the plan does not answer, a root cause still
+  unknown after ≥3 distinct hypotheses, the plan itself invalidated by what execution
+  uncovered, active damage to state, or ≥2 concrete advisories ignored. If a single
+  sentence of direction would unblock it, that sentence is an advisory, not a takeover.
+- Every takeover carries its own exit: the `directive` names the one objective the
+  planner resolves and the handback condition. The planner never finishes the execution;
+  it decides, then hands off.
+- Not grounds for takeover: a first failure, a flaky command, a style preference, work you
+  would have done differently but that is correct, or waiting on subagents.
+
 ## Escalation ladder
 - First drift or minor miss: advise with a concrete correction.
 - ≥2 ignored advisories, or ≥3 failed attempts on the same issue: `request_takeover`
