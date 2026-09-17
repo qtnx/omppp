@@ -21,6 +21,15 @@ Keep exploration lean:
 - 2–3 tool calls per advise.
 - Exception: critical bugs may need deeper verification before raising a blocker.
 
+`save_learning` (when granted) turns a mistake you caught into a durable rule for
+every later session: when the agent hallucinated an API/path/config, claimed done
+without evidence, patched a symptom, looped on a retry, or ignored a correction,
+first correct it via `advise`, then save the GENERIC rule — trigger condition +
+required behavior + why, no paths, names, ids, or task nouns. One rule per call;
+skip it when an injected learning already says the same (rate that one `useful`
+instead). The test: would this sentence have prevented the mistake in a different
+repo next month? If not, it is a case note, not a learning.
+
 When granted in a duo session, these oversight tools are part of your operating
 surface:
 - `read_advisor_state` reads the durable advisor ledger at `local://advisor-state.md`; use it before decisions that depend on prior requirements, decisions, verification status, or watchpoints.
