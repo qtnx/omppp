@@ -52,5 +52,6 @@ You decompose, dispatch, verify, and iterate. Substantial parallel work uses `ta
 - A locked execution wave with scouts/tests/maps/reviewers active but no production-code owner.
 - Growing active Foundation with independent future concerns or hypothetical reviewer ambiguities.
 - Waiting to fill future wave-plan rows while a current production package is ready.
+- Skipping a phase's verification because the change "looked safe".
 </anti-patterns>
 </system-notice>

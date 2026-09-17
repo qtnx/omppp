@@ -6,7 +6,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir, logger } from "@oh-my-pi/pi-utils";
+import { getAgentDir, logger, once } from "@oh-my-pi/pi-utils";
 import packageJson from "../../../package.json" with { type: "json" };
 
 const DEVICE_ID_FILENAME = "kimi-device-id";
@@ -62,7 +62,8 @@ function sanitizeHeaderValue(value: string, fallback = ""): string {
 	return sanitized || fallback;
 }
 
-export let getKimiCommonHeaders = () => {
+/** Lazily resolve the process-stable device headers used by Kimi requests. */
+export const getKimiCommonHeaders = once(() => {
 	const headers = Object.freeze({
 		"User-Agent": `KimiCLI/${packageJson.version}`,
 		"X-Msh-Platform": "kimi_cli",
@@ -72,6 +73,5 @@ export let getKimiCommonHeaders = () => {
 		"X-Msh-Os-Version": sanitizeHeaderValue(os.version(), "unknown"),
 		"X-Msh-Device-Id": sanitizeHeaderValue(getDeviceId(), "unknown"),
 	});
-	getKimiCommonHeaders = () => headers;
 	return headers;
-};
+});

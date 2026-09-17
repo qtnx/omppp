@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import { isEnoent, logger, ptree } from "@oh-my-pi/pi-utils";
 import { NON_INTERACTIVE_ENV } from "../exec/non-interactive-env";
-import { MessageFramer } from "../jsonrpc/message-framing";
+import { MessageFramer, MessageFramingError } from "../jsonrpc/message-framing";
 import { ToolAbortError } from "../tools/tool-errors";
 import type {
 	DapCapabilities,
@@ -601,6 +601,7 @@ export class DapClient {
 		const framer = new MessageFramer(this.#messageBuffer);
 
 		let closeError: Error | undefined;
+		let framingFailed = false;
 		try {
 			while (true) {
 				const { done, value } = await reader.read();
@@ -640,6 +641,7 @@ export class DapClient {
 				}
 			}
 		} catch (error) {
+			framingFailed = error instanceof MessageFramingError;
 			closeError = new Error(`DAP connection closed: ${toErrorMessage(error)}`);
 		} finally {
 			// Persist any unparsed remainder so a restarted reader resumes mid-message.
@@ -653,6 +655,14 @@ export class DapClient {
 		// in-flight request and event waiter so callers see an immediate error
 		// instead of waiting out their own timeout.
 		this.#failConnection(closeError ?? new Error(`DAP connection closed: ${this.adapter.name} transport ended`));
+		if (framingFailed) {
+			await this.dispose().catch(error => {
+				logger.warn("Failed to dispose DAP adapter after invalid framing", {
+					adapter: this.adapter.name,
+					error: toErrorMessage(error),
+				});
+			});
+		}
 	}
 
 	#handleResponse(message: DapResponseMessage): void {

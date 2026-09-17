@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { providerEntry } from "@oh-my-pi/pi-catalog/compat/providers";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import MODELS_JSON from "@oh-my-pi/pi-catalog/models.json" with { type: "json" };
-import { CATALOG_PROVIDERS, DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
+import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 import {
 	buildXaiOAuthStaticSeed,
 	xaiOAuthModelManagerOptions,
@@ -10,11 +11,10 @@ import {
 import type { FetchImpl, ModelSpec } from "@oh-my-pi/pi-catalog/types";
 
 // Pins the invariant: bundled `models.json` carries every entry the runtime
-// curated catalog (XAI_OAUTH_CURATED_MODELS, surfaced via
-// buildXaiOAuthStaticSeed) emits. Without this, editing the curated list
-// without regenerating `models.json` silently regresses the boot-time
-// default-model resolver — the registry sees the runtime seed only after
-// `refresh()`, but interactive boot resolves the persisted default
+// xai-oauth KDL seed (surfaced via buildXaiOAuthStaticSeed) emits. Without
+// this, editing the seed without regenerating `models.json` silently regresses
+// the boot-time default-model resolver — the registry sees the runtime seed
+// only after `refresh()`, but interactive boot resolves the persisted default
 // synchronously from `#loadModels()`, which reads only `models.json`.
 //
 // Failure here means: run `bun run gen:models` and commit the diff.
@@ -58,7 +58,7 @@ describe("xai-oauth bundled catalog (regression)", () => {
 	});
 
 	it("defaults SuperGrok selection to grok-4.6", () => {
-		const entry = CATALOG_PROVIDERS.find(provider => provider.id === "xai-oauth");
+		const entry = providerEntry("xai-oauth");
 		expect(entry?.defaultModel).toBe("grok-4.6");
 		expect(DEFAULT_MODEL_PER_PROVIDER["xai-oauth"]).toBe("grok-4.6");
 		expect(bundled["grok-4.6"], "xai-oauth/grok-4.6 must be bundled for the default").toBeDefined();

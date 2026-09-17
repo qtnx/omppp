@@ -15,6 +15,7 @@ import {
 	isSqliteBusyError,
 	isSqliteCorruptionError,
 	logger,
+	openSqliteDatabase,
 } from "@oh-my-pi/pi-utils";
 import type {
 	AuthCredential,
@@ -543,6 +544,7 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		);
 	}
 
+	/** Opens credential storage with bounded busy retries and one-shot corruption recovery. */
 	static async open(dbPath: string = getAgentDbPath()): Promise<SqliteAuthCredentialStore> {
 		const dir = path.dirname(dbPath);
 		const dirExists = await fs
@@ -559,6 +561,15 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		// exponential backoff before surfacing the failure. See issue #2421.
 		const maxAttempts = 4;
 		const baseDelayMs = 100;
+		const initialize = async (db: Database): Promise<SqliteAuthCredentialStore> => {
+			try {
+				await fs.chmod(dbPath, 0o600);
+			} catch {
+				// Ignore chmod failures (e.g., Windows)
+			}
+			SqliteAuthCredentialStore.#ensureAuthCredentialRefreshLeasesTable(db);
+			return new SqliteAuthCredentialStore(db);
+		};
 		let lastTransientError: Error | undefined;
 		for (let attempt = 0; attempt < maxAttempts; attempt++) {
 			let db: Database | undefined;
@@ -570,15 +581,17 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 				// non-zero `busy_timeout` they fail immediately with SQLITE_BUSY.
 				// See issue #2421.
 				SqliteAuthCredentialStore.#installBusyTimeout(db);
-				try {
-					await fs.chmod(dbPath, 0o600);
-				} catch {
-					// Ignore chmod failures (e.g., Windows)
-				}
-				SqliteAuthCredentialStore.#ensureAuthCredentialRefreshLeasesTable(db);
-				return new SqliteAuthCredentialStore(db);
+				return await initialize(db);
 			} catch (err) {
 				db?.close();
+				if (isSqliteCorruptionError(err)) {
+					// Corruption never clears by retrying: hand the damaged store to
+					// the shared opener, which preserves it under a cross-process
+					// lock and recreates the database before initializing again.
+					return openSqliteDatabase<SqliteAuthCredentialStore>(dbPath, initialize, {
+						recoverCorruption: true,
+					});
+				}
 				if (!isSqliteTransientError(err)) {
 					throw err;
 				}
