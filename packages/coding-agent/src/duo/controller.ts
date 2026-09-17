@@ -126,7 +126,7 @@ export class DuoController {
 			executor: snapshot.executorId ?? this.#formatModel(this.#config.executor),
 			takeoverPurpose: snapshot.takeoverPurpose,
 			takeoverCount: snapshot.takeoverCount,
-			executionScope: snapshot.executionScope ?? "multi",
+			executionScope: snapshot.executionScope ?? "single",
 			advisorPaused: this.#advisorPaused,
 		};
 	}

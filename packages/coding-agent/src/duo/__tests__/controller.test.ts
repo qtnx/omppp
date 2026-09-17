@@ -226,7 +226,7 @@ describe("DuoController", () => {
 		});
 	});
 
-	test("planning engages plan mode; handoff releases it and enters orchestrator mode", async () => {
+	test("planning engages plan mode; a default handoff releases it without orchestrator mode, multi opts in", async () => {
 		const host = fakeHost({ model: planner, planModeOn: true, orchestrator: false });
 		const controller = new DuoController(host, duoConfig());
 
@@ -238,8 +238,16 @@ describe("DuoController", () => {
 		const handedOff = await controller.handoffToExecutor("plan locked");
 		expect(handedOff).toBe("ok");
 		expect(controller.status.phase).toBe("executing");
+		expect(controller.status.executionScope).toBe("single");
 		expect(host.planModeEnables).toEqual([true, false]);
-		expect(host.orchestratorEnables).toEqual([true]);
+		expect(host.orchestratorEnables).toEqual([false]);
+
+		const multiHost = fakeHost({ model: planner, planModeOn: true, orchestrator: false });
+		const multiController = new DuoController(multiHost, duoConfig());
+		await multiController.reevaluate();
+		expect(await multiController.handoffToExecutor("plan locked", "multi")).toBe("ok");
+		expect(multiController.status.executionScope).toBe("multi");
+		expect(multiHost.orchestratorEnables).toEqual([true]);
 	});
 
 	test("restored planning session re-engages plan mode on reevaluate", async () => {

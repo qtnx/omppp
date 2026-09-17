@@ -77,7 +77,7 @@ describe("DuoStateMachine activation", () => {
 		expect(missingExecutor.evaluateActivation(input({ mode: "on", executorResolvable: false }))).toBe("inactive");
 	});
 
-	it("auto-deactivates inactive, planning, and multi-scope executing phases when activation condition is lost", () => {
+	it("auto-deactivates inactive, planning, and executing phases when activation condition is lost", () => {
 		const planning = new DuoStateMachine(config);
 		planning.evaluateActivation(input({ mainModelKind: "fable", planModeActive: true }));
 		expect(planning.evaluateActivation(input({ mode: "off" }))).toBe("inactive");
@@ -89,13 +89,13 @@ describe("DuoStateMachine activation", () => {
 		).toBe("inactive");
 	});
 
-	it("keeps active single-scope auto mode executing after orchestrator mode is disabled", () => {
+	it("keeps single-scope auto executing after orchestrator mode is disabled while the executor holds the stream", () => {
 		const machine = new DuoStateMachine(config);
 		machine.evaluateActivation(input({ mainModelKind: "fable", planModeActive: true }));
 		expect(machine.onHandoffToExecutor("single")).toBe(true);
 
 		expect(
-			machine.evaluateActivation(input({ mode: "auto", orchestratorEnabled: false, mainModelKind: "other" })),
+			machine.evaluateActivation(input({ mode: "auto", orchestratorEnabled: false, mainModelKind: "opus" })),
 		).toBe("executing");
 		expect(machine.phase).toBe("executing");
 	});
@@ -129,11 +129,11 @@ describe("DuoStateMachine transitions", () => {
 		expect(machine.onPlanApproved()).toBe(false);
 	});
 
-	it("defaults execution scope to multi", () => {
+	it("defaults execution scope to single", () => {
 		const machine = new DuoStateMachine(config);
 
-		expect(machine.executionScope).toBe("multi");
-		expect(machine.snapshot.executionScope).toBe("multi");
+		expect(machine.executionScope).toBe("single");
+		expect(machine.snapshot.executionScope).toBe("single");
 	});
 
 	it("records single scope on handoff to executor", () => {
@@ -172,7 +172,7 @@ describe("DuoStateMachine transitions", () => {
 		expect(machine.onReplanRequested()).toBe(true);
 		expect(machine.snapshot).toMatchObject({
 			phase: "planning",
-			executionScope: "multi",
+			executionScope: "single",
 			takeoverCount: 0,
 			consecutiveTakeovers: 0,
 		});
@@ -404,7 +404,7 @@ describe("DuoStateMachine transitions", () => {
 		expect(machine.phase).toBe("takeover");
 	});
 
-	it("defaults missing restored execution scope to multi", () => {
+	it("defaults missing restored execution scope to single", () => {
 		const restored: DuoStateSnapshot = {
 			phase: "executing",
 			takeoverCount: 0,
@@ -413,8 +413,8 @@ describe("DuoStateMachine transitions", () => {
 		};
 		const machine = new DuoStateMachine(config, restored);
 
-		expect(machine.executionScope).toBe("multi");
-		expect(machine.snapshot.executionScope).toBe("multi");
+		expect(machine.executionScope).toBe("single");
+		expect(machine.snapshot.executionScope).toBe("single");
 	});
 });
 
