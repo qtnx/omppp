@@ -10,6 +10,7 @@
 - `ompx --duo` starts the session in duo mode (session-scoped, like `--advisor`).
 - `/duo on|off` no longer rewrites the persisted `duo.mode`; the toggle is session-scoped, so `auto` survives the next launch.
 - Duo `auto` now activates when the user switches onto the planner model mid-session, resumes from a suspended model-switch failure on the next re-evaluation, and stays off after `/duo off` across later model switches.
+- The advisor now acts as the senior beside the executor: it sets the business frame and work order for each task, gives direction and domain opinions, makes the small calls a senior would make instead of sending the executor to the user, and reviews landed diffs like a merge reviewer with one decisive change per verdict.
 
 ### Fixed
 
