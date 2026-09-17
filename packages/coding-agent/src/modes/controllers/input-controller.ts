@@ -228,10 +228,7 @@ export class InputController {
 	/** Click-candidate id the hover band currently tracks; repaint only on change. */
 	#lastHoverClickId: string | undefined;
 
-	/** Return the last full editor snapshot delivered by its change contract. */
-	getDraftText(): string {
-		return this.#draftText ?? this.ctx.editor.getText();
-	}
+
 	// Tap counter for the double-← gesture; reset whenever a quiet gap
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.

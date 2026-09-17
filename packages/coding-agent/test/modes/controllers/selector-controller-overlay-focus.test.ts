@@ -370,6 +370,8 @@ describe("AgentTranscriptViewer workflow transcript submission", () => {
 		} finally {
 			viewer.dispose();
 		}
+	});
+});
 
 describe("SelectorController.showSelector", () => {
 	it("restores an ask dialog and its draft editor after history search closes", () => {

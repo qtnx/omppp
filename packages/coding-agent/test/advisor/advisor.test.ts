@@ -7342,13 +7342,6 @@ describe("advisor", () => {
 						throw new Error("flaky");
 					}
 					state.messages.push(text("follow-up-answer"));
-			const hookErrors: unknown[] = [];
-			let quotaNotified = false;
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => [],
-				onTurnError: async error => {
-					hookErrors.push(error);
-					return hookErrors.length === 1 ? true : undefined;
 				},
 				abort: () => {},
 				reset: () => {
@@ -7401,13 +7394,6 @@ describe("advisor", () => {
 				prompt: async () => {
 					markStarted();
 					await hold;
-			const hookErrors: unknown[] = [];
-			let quotaNotified = false;
-			const host: AdvisorRuntimeHost = {
-				snapshotMessages: () => [],
-				onTurnError: async error => {
-					hookErrors.push(error);
-					return true;
 				},
 				abort: () => {},
 				reset: () => {},
@@ -8836,4 +8822,5 @@ describe("advisor", () => {
 			expect(runtime.hasFreshBacklog).toBe(false);
 		});
 	});
+});
 });

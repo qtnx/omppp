@@ -3876,11 +3876,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
 				},
 			});
-			if (options.appendSystemPrompt) {
-				appendPrompt = appendPrompt
-					? `${appendPrompt}\n\n${options.appendSystemPrompt}`
-					: options.appendSystemPrompt;
-			}
+
 			const defaultPrompt = await buildSystemPromptInternal({
 				cwd: promptCwd,
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),
