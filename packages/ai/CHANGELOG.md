@@ -2,11 +2,12 @@
 
 ## [Unreleased]
 
-## [1.8.9] - 2026-09-18
+## [1.9.0] - 2026-09-18
 
 ### Fixed
 
-- Fixed the auth-gateway sending a model's own reasoning back to Anthropic as demoted plain text, which tripped the `reasoning_extraction` classifier on Fable, leaked reasoning into visible answers on Opus, Sonnet and Haiku, and broke the prompt cache prefix on every tool-calling turn. Replayed assistant turns now carry the model id the request resolves to and a `stopReason` derived from the turn's own tool calls, so same-model thinking blocks keep their signatures and replay natively ([#12115](https://github.com/can1357/oh-my-pi/pull/12115) by [@Zhu-Aemon](https://github.com/Zhu-Aemon)).
+- Fixed multi-account rotation stalling after logging an account out: a long-running session kept the removed account's rate-limit deadline at its old list position and applied it to whichever sibling took that slot on its next 429, so a healthy account stayed parked for hours and the pool reported "no sibling available" instead of rotating.
+
 ## [18.2.3] - 2026-09-17
 
 ### Added
@@ -122,7 +123,6 @@
 - GitHub Copilot streams remember the working `Copilot-Integration-Id` per credential after a denied chat identity retries as the Copilot CLI, so later streams start at the working shape instead of replaying the denial ([#11669](https://github.com/can1357/oh-my-pi/issues/11669)).
 - Fixed Anthropic OAuth requests omitting the tool-array cache breakpoint, so tool definitions are now cached across session rewrites and sibling subagents ([#11660](https://github.com/can1357/oh-my-pi/pull/11660) by [@camjac251](https://github.com/camjac251)).
 - Fixed Amazon Bedrock OpenAI models rejecting image-bearing tool results by sending each image as a sibling user content block ([#11681](https://github.com/can1357/oh-my-pi/issues/11681)).
-- Fixed multi-account rotation stalling after logging an account out: a long-running session kept the removed account's rate-limit deadline at its old list position and applied it to whichever sibling took that slot on its next 429, so a healthy account stayed parked for hours and the pool reported "no sibling available" instead of rotating.
 
 ## [18.1.17] - 2026-09-10
 
@@ -2275,73 +2275,4 @@
 - Made the openai-completions non-strict retry reachable for `"mixed"` strict mode (previously gated to `all_strict`, i.e. Cerebras only) and taught it to recognize upstream tool-schema validation 400s (`Invalid tool parameters schema …`, `Invalid schema for function …`). A matching rejection now retries the request with base (non-strict) schemas and persists `strictToolsDisabled` on the provider session, so later requests skip the doomed strict attempt instead of paying a 400 + retry round-trip each turn. ([#2270](https://github.com/can1357/oh-my-pi/issues/2270))
 - Cross-model `anthropic-messages → anthropic-messages` continuations now preserve prior assistant turns' reasoning chains end-to-end: every prior `thinking`/`redactedThinking` block survives (not just the latest surviving assistant), and third-party ↔ third-party replays keep their signatures intact so the reasoning chain stays signed for the next turn. Signatures are stripped (and any `redacted_thinking` sibling without a native landing spot is dropped) only when an official Anthropic endpoint is on either end of the replay — official Anthropic cryptographically binds reasoning signatures to its key+session+model, while compatible reasoning endpoints (Z.AI, DeepSeek, custom anthropic-messages providers configured via `models.yaml`) treat them as opaque continuation hints. Source-side official detection uses the canonical catalog provider id `"anthropic"` (assistant messages carry no `baseUrl`); target-side detection reuses the baked `compat.officialEndpoint` flag. Latest-turn byte-for-byte behavior (Anthropic's "thinking blocks in the latest assistant message cannot be modified" rule) and existing aborted/errored last-block sanitization are unchanged. ([#2257](https://github.com/can1357/oh-my-pi/issues/2257), [#2265](https://github.com/can1357/oh-my-pi/issues/2265))
 
-## [15.10.12] - 2026-06-10
-
-### Added
-
-- Added `antigravityRankingStrategy` and registered it for `google-antigravity` in `DEFAULT_RANKING_STRATEGIES`, so new sessions are routed to OAuth credentials with quota headroom for the requested model backend (lowest relevant `remainingFraction` counter as the sole ranked window, 24h `windowDefaults` matching `daily-cloudcode-pa.googleapis.com` resets). Without it, the existing `antigravityUsageProvider` data never reached credential selection. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
-
-### Changed
-
-- Updated MiniMax and MiniMax Token Plan defaults to `MiniMax-M3` and refreshed Token Plan login copy/links ([#1725](https://github.com/can1357/oh-my-pi/issues/1725)).
-
-### Fixed
-
-- Fixed OpenAI Responses and Azure OpenAI Responses streams silently surfacing incomplete output as successful when a custom/proxy provider drops the connection without sending a terminal `response.completed`/`response.incomplete` event. Both providers now detect premature stream closure and throw with `stopReason: "error"` ([#2184](https://github.com/can1357/oh-my-pi/pull/2184))
-- Fixed `isUsageLimitError` missing Antigravity / Cloud Code Assist's `Individual quota reached` 429 phrasing. The `USAGE_LIMIT_PATTERN` only knew `quota.?exceeded` / `limit_reached`, so `auth-retry` and `AuthStorage.markUsageLimitReached` treated the response as a terminal provider error and pinned sessions to the exhausted OAuth account instead of rotating to a sibling credential. The pattern now also matches `quota.?reached`. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
-- Scoped Antigravity usage blocking and ranking by model family (`gemini-*`/`gemma-*` → Google, `claude-*` → Anthropic, `gpt-*`/`openai/*` → OpenAI), so an exhausted Gemini counter no longer makes a healthy Claude/OpenAI Antigravity credential unavailable until reset. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
-- Fixed no-model Antigravity credential lookups (e.g. image-provider discovery) inheriting provider-wide exhaustion: `scopeLimits` now returns no limits without a concrete backend counter, and `blockScope` always returns a counter scope so missing model context can never fall through to AuthStorage's provider-wide block bucket. ([#2198](https://github.com/can1357/oh-my-pi/issues/2198))
-
-## [1.8.8] - 2026-09-18
-
-### Fixed
-
-- Fixed the auth-gateway sending a model's own reasoning back to Anthropic as demoted plain text, which tripped the `reasoning_extraction` classifier on Fable, leaked reasoning into visible answers on Opus, Sonnet and Haiku, and broke the prompt cache prefix on every tool-calling turn. Replayed assistant turns now carry the model id the request resolves to and a `stopReason` derived from the turn's own tool calls, so same-model thinking blocks keep their signatures and replay natively ([#12115](https://github.com/can1357/oh-my-pi/pull/12115) by [@Zhu-Aemon](https://github.com/Zhu-Aemon)).
-
-## [1.8.5] - 2026-09-12
-
-### Fixed
-
-- OpenRouter's exhausted-credits `402 Prompt tokens limit exceeded` error now counts as a usage limit, so the session rotates to its fallback chain instead of failing the turn.
-
-## [1.8.3] - 2026-09-10
-
-### Fixed
-
-- Codex transient stream failures now use exponential backoff with jitter, while account overloads retain credential rotation and whole-turn retry.
-
-## [1.8.0] - 2026-09-07
-
-### Changed
-
-- OpenAI Codex requests now send the `x-codex-routing-hint` header (model and service tier) on Responses, WebSocket, and remote-compaction calls, matching codex-rs.
-
-### Fixed
-
-- Fixed OpenAI Codex sessions stalling 60–180s per request on a throttled ChatGPT account: the backend's `server_is_overloaded` (a ~30s server-side park per attempt) was replayed in place up to five times on the same account. It now rotates to a sibling credential immediately and parks the throttled account for five minutes across every session in the pool; single-account setups fall back to the whole-turn retry backoff.
-
-## [1.7.12] - 2026-09-05
-
-### Added
-
-- Added GPT-6 Astra support for preserving prompt caching when changing the thinking level during a conversation across the OpenAI and OpenAI Codex providers.
-
-### Changed
-
-- OpenAI Codex requests now send the `x-codex-routing-hint` header (model and service tier) on Responses, WebSocket, and remote-compaction calls, matching codex-rs.
-
-## [1.7.11] - 2026-09-04
-
-### Changed
-
-- Anthropic prompt-cache diagnostics now also report partial misses (a request that read back less than the previous prompt), attribute the change to the first differing system block, tool, or previously-sent message, and no longer count appended messages as a history change.
-- The per-block "dropped thinking block after conversation prefix changed" warning is now one debug line per request with a count.
-
-### Fixed
-
-- Fixed Anthropic prompt-cache rewrites after a conversation prefix change: thinking blocks the API drops with `prefix_mismatch_behavior: drop_block` are now kept on the wire unchanged (the API discards them for free), instead of being omitted from the next request, which changed the bytes at that message and rewrote the entire cached conversation behind it.
-- Fixed Anthropic advisor and side requests contaminating the main conversation: a signature rejected under a side request's different system prompt is now remembered per prompt prefix, so the main conversation keeps its preserved thinking and its prompt cache.
-
-Older entries are archived in [packages/ai/CHANGELOG.md@351a0dcc8796](https://github.com/can1357/oh-my-pi/blob/351a0dcc8796d8d7bd139d3d4b94080e0b968537/packages/ai/CHANGELOG.md).
-
-Older entries are archived in [packages/ai/CHANGELOG.md@8a9097246135](https://github.com/can1357/oh-my-pi/blob/8a9097246135bd572ff96fb552121fe1194d2906/packages/ai/CHANGELOG.md).
+Older entries are archived in [packages/ai/CHANGELOG.md@34dd8243c6a4](https://github.com/can1357/oh-my-pi/blob/34dd8243c6a4f0724fcda7a85158289df212aac3/packages/ai/CHANGELOG.md).
