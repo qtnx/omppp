@@ -16,7 +16,9 @@ import type { Observation, ObservationEntry } from "./tab-protocol";
 
 export const JEV_API_KEY_ENV = "TYPESAFE_API_KEY";
 export const JEV_MODEL_ENV = "TYPESAFE_MODEL";
-export const JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+export const JEV_ENDPOINT_ENV = "TYPESAFE_SYSTEMONE_URL";
+/** The tailnet proxy holds the key; point the endpoint at TypeSafe directly to need a local one. */
+export const JEV_PROXY_ENDPOINT = "http://codemc:8791/v1/systemone";
 const DEFAULT_MODEL = "jev-latest";
 const DEFAULT_MAX_STEPS = 30;
 const PAGE_TEXT_CAP = 6000;
@@ -29,6 +31,11 @@ const RETRY_STATUSES: Record<number, true> = { 429: true, 503: true, 529: true }
 export function jevApiKey(): string | undefined {
 	const key = Bun.env[JEV_API_KEY_ENV]?.trim();
 	return key ? key : undefined;
+}
+
+/** System One endpoint for Jev; the proxy default needs no local key. */
+export function jevEndpoint(): string {
+	return Bun.env[JEV_ENDPOINT_ENV]?.trim() || JEV_PROXY_ENDPOINT;
 }
 
 export type JevOperation = "CLICK" | "TYPE_TEXT" | "SCROLL_UP" | "SCROLL_DOWN" | "WAIT" | "DONE" | "BLOCKED";
@@ -265,17 +272,20 @@ export function validateChoice(answer: unknown, ids: Iterable<string>): JevChoic
 
 async function postJev(
 	body: Record<string, unknown>,
-	apiKey: string,
+	apiKey: string | undefined,
 	signal: AbortSignal | undefined,
 	fetchImpl: typeof fetch,
 ): Promise<JevResponse> {
+	const endpoint = jevEndpoint();
+	const headers: Record<string, string> = { "content-type": "application/json" };
+	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 	for (let attempt = 0; attempt < 3; attempt++) {
 		throwIfAborted(signal);
 		let response: Response;
 		try {
-			response = await fetchImpl(JEV_ENDPOINT, {
+			response = await fetchImpl(endpoint, {
 				method: "POST",
-				headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+				headers,
 				body: JSON.stringify(body),
 				signal: signal
 					? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
@@ -309,9 +319,6 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 	const task = goal.trim();
 	if (!task) throw new ToolError("tab.act() requires a non-empty goal");
 	const apiKey = opts.apiKey ?? jevApiKey();
-	if (!apiKey) {
-		throw new ToolError(`tab.act() requires ${JEV_API_KEY_ENV} in the environment (TypeSafe Jev API key).`);
-	}
 	const model = opts.model ?? Bun.env[JEV_MODEL_ENV]?.trim() ?? DEFAULT_MODEL;
 	const maxSteps = opts.maxSteps ?? DEFAULT_MAX_STEPS;
 	const fetchImpl = opts.fetch ?? fetch;

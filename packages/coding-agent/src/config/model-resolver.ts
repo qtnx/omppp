@@ -36,6 +36,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { DuoMode } from "../duo/state";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import type { AuthStorage } from "../session/auth-storage";
+import { isWorkPhase, type WorkPhase } from "../signals/types";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -619,6 +620,8 @@ export interface ModelMatchPreferences {
 }
 
 export type CanonicalModelRegistry = object & {
+	/** Lookup by provider + id, including models the session snapshot omits. */
+	find?: (provider: string, modelId: string) => Model<Api> | undefined;
 	resolveCanonicalModel?: (
 		canonicalId: string,
 		options?: { availableOnly?: boolean; candidates?: readonly Model<Api>[] },
@@ -1850,6 +1853,14 @@ export function resolveAdvisorRoleSelection(
 	return resolved.model ? { model: resolved.model, thinkingLevel: resolved.thinkingLevel } : undefined;
 }
 
+/** One configured `duo.phaseModels` selector plus the model it resolved to. */
+export interface DuoPhaseModelCandidate {
+	/** `provider/model-id`, without any thinking suffix. */
+	selector: string;
+	model: Model;
+	thinkingLevel?: ConfiguredThinkingLevel;
+}
+
 export interface DuoResolvedConfig {
 	mode: DuoMode;
 	orchestrator: "auto" | "always";
@@ -1866,6 +1877,8 @@ export interface DuoResolvedConfig {
 	maxConsecutive: number;
 	doneGate: "strict" | "inherit";
 	manualSwitchIntent: "plan" | "summon";
+	/** Configured per-phase candidates; a phase absent here falls back to planner/executor. */
+	phaseModels: Partial<Record<WorkPhase, DuoPhaseModelCandidate[]>>;
 	signals: {
 		enabled: boolean;
 		sentiment: boolean;
@@ -1892,7 +1905,16 @@ function resolveExplicitDuoModel(
 	const resolved = parseModelPattern(pattern, availableModels, getModelMatchPreferences(settings), {
 		modelRegistry,
 	});
-	return resolved.model ? { model: resolved.model, thinkingLevel: resolved.thinkingLevel } : undefined;
+	if (resolved.model) return { model: resolved.model, thinkingLevel: resolved.thinkingLevel };
+
+	// A discovered provider model (e.g. a gateway's own /v1/models list) is not in
+	// the session snapshot; the registry lookup the main model selector uses still
+	// finds it, so an explicit duo selector is honoured the same way.
+	const { base, level } = splitThinkingSuffix(pattern, -1, MAX_THINKING_SUFFIX_OPTIONS);
+	const slash = base.indexOf("/");
+	if (slash <= 0 || slash === base.length - 1) return undefined;
+	const model = modelRegistry.find?.(base.slice(0, slash), base.slice(slash + 1));
+	return model ? { model, thinkingLevel: level } : undefined;
 }
 
 function resolveNewestAnthropicDuoModel(
@@ -1913,6 +1935,45 @@ function resolveNewestAnthropicDuoModel(
 }
 
 /**
+ * Resolve `duo.phaseModels` into per-phase candidates. Only explicitly
+ * configured selectors count here: unlike the planner/executor sides, a phase
+ * entry that does not resolve is skipped instead of degrading to a detected
+ * family (the consumer falls back to the planner/executor model).
+ */
+function resolveDuoPhaseModels(
+	settings: Settings,
+	availableModels: Model<Api>[],
+	modelRegistry: CanonicalModelRegistry,
+): Partial<Record<WorkPhase, DuoPhaseModelCandidate[]>> {
+	const phaseModels: Partial<Record<WorkPhase, DuoPhaseModelCandidate[]>> = {};
+	for (const [key, value] of Object.entries(settings.get("duo.phaseModels"))) {
+		if (!isWorkPhase(key)) {
+			logger.debug("Ignoring unknown duo.phaseModels phase", { phase: key });
+			continue;
+		}
+		const candidates: DuoPhaseModelCandidate[] = [];
+		const seenSelectors = new Set<string>();
+		const patterns = (Array.isArray(value) ? value : [value])
+			.map(pattern => (typeof pattern === "string" ? pattern.trim() : ""))
+			.filter(pattern => pattern.length > 0);
+		for (const pattern of patterns) {
+			const resolved = resolveExplicitDuoModel(pattern, availableModels, settings, modelRegistry);
+			if (!resolved) continue;
+			const selector = `${resolved.model.provider}/${resolved.model.id}`;
+			if (seenSelectors.has(selector)) continue;
+			seenSelectors.add(selector);
+			candidates.push({
+				selector,
+				model: resolved.model,
+				...(resolved.thinkingLevel !== undefined ? { thinkingLevel: resolved.thinkingLevel } : {}),
+			});
+		}
+		if (candidates.length > 0) phaseModels[key] = candidates;
+	}
+	return phaseModels;
+}
+
+/**
  * Resolve one duo side. An explicit pattern wins when it resolves; when it does
  * not (provider unauthenticated, model not discovered) the side degrades to the
  * newest authenticated model of the role's Anthropic family instead of
@@ -1929,6 +1990,7 @@ function resolveDuoSide(
 	if (normalized) {
 		const explicit = resolveExplicitDuoModel(normalized, availableModels, settings, modelRegistry);
 		if (explicit) return explicit;
+		logger.debug("duo model pattern unavailable; auto-detecting", { pattern: normalized });
 	}
 	const model = resolveNewestAnthropicDuoModel(availableModels, matchesKind);
 	return model ? { model } : undefined;
@@ -1956,12 +2018,10 @@ export function resolveDuoConfig(
 		registry,
 		kind => kind === "opus",
 	);
-	const advisor = resolveExplicitDuoModel(
-		settings.get("duo.advisorModel") ?? "gpt-5.6-sol",
-		availableModels,
-		settings,
-		registry,
-	);
+	const advisorPattern = (settings.get("duo.advisorModel") ?? "").trim();
+	const advisor = advisorPattern
+		? resolveExplicitDuoModel(advisorPattern, availableModels, settings, registry)
+		: undefined;
 	const advisorEscalationPattern = (settings.get("duo.advisorEscalationModel") ?? "").trim();
 	const advisorEscalation = advisorEscalationPattern
 		? resolveExplicitDuoModel(advisorEscalationPattern, availableModels, settings, registry)
@@ -1969,6 +2029,14 @@ export function resolveDuoConfig(
 	if (!planner || !executor) return undefined;
 
 	const orchestrator = settings.get("duo.orchestrator");
+	const phaseModels = resolveDuoPhaseModels(settings, availableModels, registry);
+
+	logger.debug("duo config resolved", {
+		planner: `${planner.model.provider}/${planner.model.id}`,
+		executor: `${executor.model.provider}/${executor.model.id}`,
+		advisor: `${(advisor?.model ?? planner.model).provider}/${(advisor?.model ?? planner.model).id}`,
+		phaseModels: Object.keys(phaseModels ?? {}).length,
+	});
 
 	return {
 		mode: settings.get("duo.mode"),
@@ -1996,6 +2064,7 @@ export function resolveDuoConfig(
 		doneGate: settings.get("duo.doneGate"),
 		orchestrator: orchestrator === "always" ? "always" : "auto",
 		manualSwitchIntent: settings.get("duo.manualSwitchIntent"),
+		phaseModels,
 		signals: {
 			enabled: settings.get("duo.takeover.signals.enabled"),
 			sentiment: settings.get("duo.takeover.signals.sentiment"),

@@ -16,6 +16,7 @@ import plannerNotice from "./prompts/planner-notice.md" with { type: "text" };
 import plannerSummon from "./prompts/planner-summon.md" with { type: "text" };
 import planningSignalNudge from "./prompts/planning-signal-nudge.md" with { type: "text" };
 import takeoverBrief from "./prompts/takeover-brief.md" with { type: "text" };
+import type { TurnSignals, WorkPhase } from "../signals/index";
 import {
 	type DuoActivationInput,
 	type DuoExecutionScope,
@@ -57,7 +58,22 @@ export interface DuoControllerHost {
 	syncToolSurface?(): Promise<void> | void;
 	/** Live `duo.mode`; falls back to the resolved config's mode when absent. Keeps `/duo off` authoritative after the controller was built. */
 	duoMode?(): DuoMode;
+	/** Whether a configured selector is currently suppressed (rate-limit or auth cooldown). */
+	isSelectorSuppressed?(selector: string): boolean;
+	/** Register the remaining phase candidates as rate-limit fallbacks of the chosen selector. */
+	installFallbackChain?(selector: string, chain: string[]): void;
+	/** Phase-switch policy thresholds (`duo.phaseSwitch.minConfidence`, `signals.stuckThreshold`). */
+	phasePolicy?(): DuoPhasePolicy;
 }
+
+/** Hysteresis and stuck thresholds the controller reads from settings through the host. */
+export interface DuoPhasePolicy {
+	minConfidence: number;
+	stuckThreshold: number;
+}
+
+/** Mirrors the `duo.phaseSwitch.minConfidence` / `signals.stuckThreshold` defaults for hosts that omit `phasePolicy`. */
+const DEFAULT_PHASE_POLICY: DuoPhasePolicy = { minConfidence: 0.7, stuckThreshold: 0.6 };
 
 export type DuoHandoffResult = "ok" | "no-controller" | "wrong-phase" | "already-executor" | "switch-failed";
 
@@ -69,6 +85,10 @@ export interface DuoStatus {
 	executionScope?: DuoExecutionScope;
 	takeoverCount: number;
 	advisorPaused: boolean;
+	/** Last TypeSafe-classified work phase, when signals are available. */
+	workPhase?: WorkPhase;
+	/** Selector of the phase model currently holding the executor stream; absent means the resolved executor. */
+	phaseModelId?: string;
 }
 
 interface PendingSwitch {
@@ -103,6 +123,13 @@ export class DuoController {
 	#optedOutByManualSwitch = false;
 	/** Advisor-selected executor effort; persisted separately from the user's configured default. */
 	#executorThinkingOverride: ThinkingLevel | undefined;
+	/** Last classified work phase plus how many consecutive turns reported it (phase-switch hysteresis). */
+	#lastWorkPhase: WorkPhase | undefined;
+	#phaseStreak = 0;
+	/** Consecutive turns whose stuck score crossed `signals.stuckThreshold`. */
+	#stuckStreak = 0;
+	/** Selector of the phase model currently holding the executor stream. */
+	#phaseModelSelector: string | undefined;
 
 	constructor(host: DuoControllerHost, config: DuoResolvedConfig, restored?: DuoStateSnapshot) {
 		this.#host = host;
@@ -128,6 +155,8 @@ export class DuoController {
 			takeoverCount: snapshot.takeoverCount,
 			executionScope: snapshot.executionScope ?? "single",
 			advisorPaused: this.#advisorPaused,
+			workPhase: snapshot.workPhase,
+			phaseModelId: this.#phaseModelSelector,
 		};
 	}
 
@@ -227,6 +256,23 @@ export class DuoController {
 		this.#host.emitNotice("info", "Duo returned to planning: the planner holds the main stream again.");
 		this.#persistSnapshot();
 		return true;
+	}
+
+	/** TypeSafe classification of the turn that just ended (see plan: phase models, stuck). */
+	notifyTurnSignals(signals: TurnSignals): void {
+		const policy = this.#host.phasePolicy?.() ?? DEFAULT_PHASE_POLICY;
+		this.#phaseStreak = this.#lastWorkPhase === signals.phase ? this.#phaseStreak + 1 : 1;
+		this.#lastWorkPhase = signals.phase;
+		this.#stuckStreak = signals.stuck >= policy.stuckThreshold ? this.#stuckStreak + 1 : 0;
+		if (this.#machine.workPhase !== signals.phase) {
+			this.#machine.setWorkPhase(signals.phase);
+			this.#persistSnapshot();
+		}
+		if (this.#machine.phase !== "executing") {
+			return;
+		}
+		this.#switchPhaseModel(signals, policy.minConfidence);
+		this.#triggerStuckTakeover();
 	}
 
 	async notifyTurnEnd(): Promise<void> {
@@ -575,6 +621,7 @@ export class DuoController {
 		this.#host.stopDuoAdvisor();
 		this.#advisorPaused = false;
 		this.#executorThinkingOverride = undefined;
+		this.#phaseModelSelector = undefined;
 		this.#plannerDwellTurns = 0;
 		const restoredThinking = parseConfiguredThinkingLevel(snapshot.preDuoThinking);
 		if (restoredThinking !== undefined) {
@@ -637,6 +684,49 @@ export class DuoController {
 
 	#executorThinking(): ConfiguredThinkingLevel {
 		return this.#executorThinkingOverride ?? this.#config.executorThinking;
+	}
+
+	/** Phase-model selection: hysteresis, suppressed candidates skipped, and restore to the resolved executor. */
+	#switchPhaseModel(signals: TurnSignals, minConfidence: number): void {
+		const candidates = this.#config.phaseModels[signals.phase];
+		if (candidates && candidates.length > 0) {
+			if (signals.phaseConfidence < minConfidence) return;
+			if (signals.phase !== "blocked" && this.#phaseStreak < 2) return;
+			const chosen = candidates.find(candidate => !this.#host.isSelectorSuppressed?.(candidate.selector));
+			if (!chosen || chosen.selector === this.#phaseModelSelector) return;
+			// A suppressed selector stays out of the chain: it is in a rate-limit/auth cooldown,
+			// and the chain is a runtime override that would outlive that suppression.
+			const chain = candidates
+				.filter(
+					candidate =>
+						candidate.selector !== chosen.selector && !this.#host.isSelectorSuppressed?.(candidate.selector),
+				)
+				.map(candidate => candidate.selector);
+			if (chain.length > 0) this.#host.installFallbackChain?.(chosen.selector, chain);
+			this.#phaseModelSelector = chosen.selector;
+			void this.#applySwitch(chosen.model, chosen.thinkingLevel ?? this.#executorThinking());
+			return;
+		}
+		// Unlisted phase (or no available candidate): the planner/executor models are authoritative.
+		if (this.#phaseModelSelector === undefined) return;
+		if (signals.phaseConfidence < minConfidence || this.#phaseStreak < 2) return;
+		this.#phaseModelSelector = undefined;
+		void this.#applySwitch(this.#resolvedExecutor, this.#executorThinking());
+	}
+
+	/** Two consecutive stuck turns hand the stream to the planner; the streak resets so the takeover cooldown governs repeats. */
+	#triggerStuckTakeover(): void {
+		if (this.#stuckStreak < 2) return;
+		this.#stuckStreak = 0;
+		this.notifyAutoSignals({
+			sentiment: false,
+			consecutiveFailures: 0,
+			loop: true,
+			doneClaimWithoutEvidence: false,
+			planningShapedWork: false,
+			strong: false,
+			evidence: ["TypeSafe stuck score ≥ threshold for 2 turns"],
+		});
 	}
 
 	#phaseShouldHavePlannerAdvisor(): boolean {
@@ -791,6 +881,7 @@ export class DuoController {
 		this.#plannerDwellTurns = 0;
 		this.#planningHandoffNudges = 0;
 		this.#executorThinkingOverride = undefined;
+		this.#phaseModelSelector = undefined;
 		const restoredThinking = parseConfiguredThinkingLevel(snapshot.preDuoThinking);
 		if (restoredThinking !== undefined) this.#host.setThinkingLevel(restoredThinking);
 		void this.#host.setOrchestratorEnabled(false);

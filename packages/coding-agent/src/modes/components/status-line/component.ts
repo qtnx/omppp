@@ -2213,6 +2213,8 @@ export class StatusLineComponent implements Component {
 		const gitStatus = includeGit ? this.#getStatus(activeRepoCache) : null;
 		const gitPr = includePr ? this.#lookupPr(activeRepoCache) : null;
 		const compactionSpeculation = this.session.compactionSpeculation ?? "idle";
+		const turnSignals = this.session.turnSignals;
+		const signals = turnSignals?.connected ? turnSignals.latest : undefined;
 		this.#syncSpeculationBlink(compactionSpeculation);
 		const sessionAccentEnabled = this.#resolveSettings().sessionAccent !== false;
 		const turnElapsedMs = this.getTurnElapsedMs();
@@ -2237,6 +2239,7 @@ export class StatusLineComponent implements Component {
 			vibeMode: this.#vibeModeStatus,
 			vim: this.#vimStatus,
 			collab: this.#collabStatus,
+			workPhase: signals ? { phase: signals.phase, confidence: signals.phaseConfidence } : null,
 			usageStats,
 			contextPercent,
 			contextTokens,

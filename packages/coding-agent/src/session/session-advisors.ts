@@ -106,6 +106,7 @@ import type { PlanModeState } from "../plan-mode/state";
 import doneReviewMd from "../prompts/advisor/done-review.md" with { type: "text" };
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import type { TurnSignals, TurnSignalService } from "../signals/index";
 import {
 	AUTO_THINKING,
 	concreteThinkingLevel,
@@ -137,6 +138,8 @@ import { buildSessionMetadata } from "./session-metadata";
 import type { YieldQueue } from "./yield-queue";
 
 const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
+/** Classifier `doneWithoutEvidence` at or above which the done gate rejects without a consult. */
+const DONE_WITHOUT_EVIDENCE_REJECT_SCORE = 0.85;
 
 /**
  * Buffer added to a sibling credential's unblock deadline before the advisor
@@ -396,6 +399,10 @@ export interface SessionAdvisorsOptions {
 	restoredDuoSnapshot?: DuoStateSnapshot;
 	/** Advisor spend already persisted for this session, restored on resume. */
 	initialCosts?: ReadonlyMap<string, number>;
+	/** TypeSafe turn classifier shared by the session; undefined when disabled. */
+	turnSignals?: TurnSignalService;
+	/** Forwarded from the advisor runtime for every resolved classification. */
+	onTurnSignals?(signals: TurnSignals): void;
 }
 
 /** Options accepted when an advisor injects a primary-session message. */
@@ -540,6 +547,8 @@ export class SessionAdvisors {
 	#duoAdvisorEscalationModel?: Model;
 	#duoAdvisorEscalationThinking?: ThinkingLevel;
 	#initialDuoPhase: DuoStatus["phase"] | undefined;
+	readonly #turnSignals: TurnSignalService | undefined;
+	readonly #onTurnSignals: ((signals: TurnSignals) => void) | undefined;
 
 	constructor(host: SessionAdvisorsHost, options: SessionAdvisorsOptions) {
 		this.#host = host;
@@ -559,6 +568,8 @@ export class SessionAdvisors {
 		this.#advisorConfigWarnings = options.configWarnings ?? [];
 		this.#advisorStreamFn = options.streamFn;
 		this.#transformProviderContext = options.transformProviderContext;
+		this.#turnSignals = options.turnSignals;
+		this.#onTurnSignals = options.onTurnSignals;
 		this.#initialDuoPhase = options.restoredDuoSnapshot?.phase;
 		this.#restoreDuoAdvisorPin(options.restoredDuoSnapshot);
 		if (options.initialCosts) this.#advisorCosts = new Map(options.initialCosts);
@@ -670,6 +681,20 @@ export class SessionAdvisors {
 		if (!hasMutationsSinceLastUserPrompt(this.#host.agent.state.messages)) return false;
 
 		const generation = this.#host.promptGeneration();
+		// A turn the classifier already read as "claims done without evidence" is
+		// rejected without spending an advisor consult on it. Bounded by the same
+		// rejection cap as the advisor path so the continuation loop still ends.
+		// `settled()` waits for the final turn's own classification (started from
+		// the advisor's onTurnEnd) instead of reading the previous turn's.
+		const latest = await this.#turnSignals?.settled();
+		if (
+			latest &&
+			latest.doneWithoutEvidence >= DONE_WITHOUT_EVIDENCE_REJECT_SCORE &&
+			this.#advisorDoneGateRejections < 2
+		) {
+			logger.debug("done gate pre-rejected by turn signals", { score: latest.doneWithoutEvidence });
+			return this.#rejectDoneGate(generation, ["evidence for the completion claim (command run + decisive output)"]);
+		}
 		const passiveCanRun = advisor !== undefined && !advisor.runtime.disposed && this.#advisorDoneGateRejections < 2;
 		if (passiveCanRun) {
 			this.#host.emitNotice("info", "Advisor reviewing completion…", "advisor");
@@ -713,32 +738,41 @@ export class SessionAdvisors {
 			if (!verdict) {
 				this.#host.emitNotice("warning", "Advisor done-review unavailable — proceeding without verdict", "advisor");
 			} else if (verdict.verdict === "reject") {
-				this.#advisorDoneGateRejections++;
-				const items = [
-					...(verdict.missing ?? [])
-						.map(item => item.trim())
-						.filter(Boolean)
-						.map(item => `- ${item}`),
-					...(verdict.note?.trim() ? [verdict.note.trim()] : []),
-				];
-				const body = items.length > 0 ? `\n${items.join("\n")}` : "";
-				const reminder =
-					`<system-reminder>Advisor done-review REJECTED the completion claim. Missing:${body}\n` +
-					`Address each with evidence, then conclude. (Review ${this.#advisorDoneGateRejections}/2 — after the final rejected review ` +
-					`you must surface any unresolved objection to the user.)</system-reminder>`;
-				const reminderMessage: Message = {
-					role: "developer",
-					content: [{ type: "text", text: reminder }],
-					attribution: "agent",
-					timestamp: Date.now(),
-				};
-				this.#host.agent.appendMessage(reminderMessage);
-				this.#host.sessionManager.appendMessage(reminderMessage);
-				this.#host.scheduleAgentContinue({ generation });
-				return true;
+				return this.#rejectDoneGate(generation, verdict.missing ?? [], verdict.note);
 			}
 		}
 		return this.#host.hasRunningQaJobs();
+	}
+
+	/**
+	 * Reject a completion claim: persist the missing-evidence reminder and
+	 * schedule one continuation. Shared by the advisor verdict path and the
+	 * turn-signal pre-check so both are bounded by the same rejection budget.
+	 */
+	#rejectDoneGate(generation: number, missing: readonly string[], note?: string): true {
+		this.#advisorDoneGateRejections++;
+		const items = [
+			...missing
+				.map(item => item.trim())
+				.filter(Boolean)
+				.map(item => `- ${item}`),
+			...(note?.trim() ? [note.trim()] : []),
+		];
+		const body = items.length > 0 ? `\n${items.join("\n")}` : "";
+		const reminder =
+			`<system-reminder>Advisor done-review REJECTED the completion claim. Missing:${body}\n` +
+			`Address each with evidence, then conclude. (Review ${this.#advisorDoneGateRejections}/2 — after the final rejected review ` +
+			`you must surface any unresolved objection to the user.)</system-reminder>`;
+		const reminderMessage: Message = {
+			role: "developer",
+			content: [{ type: "text", text: reminder }],
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		this.#host.agent.appendMessage(reminderMessage);
+		this.#host.sessionManager.appendMessage(reminderMessage);
+		this.#host.scheduleAgentContinue({ generation });
+		return true;
 	}
 
 	/** Add the advisor pin metadata Duo needs to restore a live paired session. */
@@ -1449,7 +1483,9 @@ export class SessionAdvisors {
 			const tools = (this.#advisorTools ?? []).filter(t => names.has(t.name));
 			// `save_learning` is an oversight tool like `advise`: every advisor with a
 			// tool session may record a caught mistake as a generic rule for later runs.
-			const saveLearningTool = this.#toolSession ? SaveLearningTool.createIf(this.#toolSession) : null;
+			const saveLearningTool = this.#toolSession
+				? SaveLearningTool.createIf(this.#toolSession, this.#turnSignals)
+				: null;
 			const advisorLoopTools: AgentTool<any>[] = [
 				adviseTool,
 				doneVerdictTool,
@@ -1749,6 +1785,13 @@ export class SessionAdvisors {
 							.emitSessionEvent({ type: "advisor_yielded" })
 							.catch(err => logger.debug("advisor yield notification failed", { err: String(err) }));
 					},
+					turnSignals: this.#turnSignals,
+					onTurnSignals: this.#onTurnSignals,
+					advisorGate: () => ({
+						enabled: this.#host.settings.get("signals.advisorGate.enabled"),
+						reviewThreshold: this.#host.settings.get("signals.advisorGate.reviewThreshold"),
+						maxDeferredTurns: this.#host.settings.get("signals.advisorGate.maxDeferredTurns"),
+					}),
 				},
 				1000,
 				{

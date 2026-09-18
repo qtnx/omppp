@@ -216,6 +216,7 @@ import {
 	obfuscateProviderContext,
 } from "../secrets/message-transform";
 import { type SecretEntry, SecretObfuscator } from "../secrets/obfuscator";
+import { createTurnSignalService, TURN_SIGNALS_CHANNEL, type TurnSignalService } from "../signals/index";
 import { maskSecretValue, normalizeSecretName, type SecretVaultLike, vaultSecretEntry } from "../secrets/vault";
 import { releaseSharpshooterSession } from "../sharpshooter/backend";
 import { flushSharpshooterExtraction } from "../sharpshooter/extract";
@@ -755,6 +756,8 @@ export class AgentSession {
 	#goalRuntime: GoalRuntime;
 	readonly #advisors: SessionAdvisors;
 	readonly #duoOrchestrator: SessionDuoOrchestrator;
+	/** TypeSafe turn classifier; undefined when signals are disabled or no key is configured. */
+	readonly #turnSignals: TurnSignalService | undefined;
 	/** Resolves once the resume-time advisor spend backfill settles (issue #9553). */
 	#advisorCostRestore: Promise<void> = Promise.resolve();
 	#goalTurnCounter = 0;
@@ -2117,6 +2120,7 @@ export class AgentSession {
 			[advisorSkillsAndRulesPrompt, config.advisorContextPrompt]
 				.filter((value): value is string => typeof value === "string" && value.length > 0)
 				.join("\n\n") || undefined;
+		this.#turnSignals = createTurnSignalService(this.settings);
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: resolveAdvisorEnabled(this.settings, this.model),
 			tools: config.advisorTools,
@@ -2136,6 +2140,14 @@ export class AgentSession {
 			toolSession: config.toolSession,
 			restoredDuoSnapshot,
 			initialCosts: config.initialAdvisorCosts,
+			turnSignals: this.#turnSignals,
+			onTurnSignals: signals => {
+				this.#duoOrchestrator.onTurnSignals(signals);
+				// Publish to the session bus so extensions that gate on the
+				// classification (delegation-reminder plugin) can read values this
+				// session already paid for. No bus, no subscriber: a no-op.
+				config.toolSession?.eventBus?.emit(TURN_SIGNALS_CHANNEL, signals);
+			},
 		});
 		const duoHost: SessionDuoOrchestratorHost = {
 			settings: this.settings,
@@ -6647,6 +6659,11 @@ export class AgentSession {
 
 	duoForceExec(): Promise<boolean> {
 		return this.#duoOrchestrator.forceExecutor();
+	}
+
+	/** TypeSafe turn classifier for tools that judge text outside the turn loop (handoff, save_learning). */
+	get turnSignals(): TurnSignalService | undefined {
+		return this.#turnSignals;
 	}
 
 	duoHandoffToExecutor(resolution: string, scope?: DuoExecutionScope): Promise<DuoHandoffResult> {
