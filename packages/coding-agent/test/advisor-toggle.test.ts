@@ -59,7 +59,7 @@ describe("AgentSession advisor toggle", () => {
 				messages: [],
 			},
 		});
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		const settings = Settings.isolated({ "compaction.enabled": false, "signals.enabled": false });
 		session = new AgentSession({
 			agent,
 			sessionManager,
@@ -334,7 +334,11 @@ describe("AgentSession advisor toggle", () => {
 		// construction (discovery-backed provider still loading), so the advisor
 		// starts `no_model`. Regression for the startup ordering race in #9010.
 		const advisorSelector = `${replacementModel.provider}/${replacementModel.id}`;
-		const settings = Settings.isolated({ "compaction.enabled": false, "advisor.enabled": true });
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"advisor.enabled": true,
+			"signals.enabled": false,
+		});
 		settings.setModelRole("advisor", advisorSelector);
 
 		const fullCatalog = modelRegistry.getAvailable();
@@ -380,7 +384,7 @@ describe("AgentSession advisor toggle", () => {
 	});
 
 	it("keeps sessions isolated when sharing a Settings instance", async () => {
-		const sharedSettings = Settings.isolated({ "compaction.enabled": false });
+		const sharedSettings = Settings.isolated({ "compaction.enabled": false, "signals.enabled": false });
 		sharedSettings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
 		expect(sharedSettings.get("advisor.enabled")).toBe(true);
 
@@ -453,7 +457,7 @@ describe("AgentSession advisor toggle", () => {
 			},
 			streamFn: mock.stream,
 		});
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		const settings = Settings.isolated({ "compaction.enabled": false, "signals.enabled": false });
 		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
 		const reviewSession = new AgentSession({
 			agent: primaryAgent,
@@ -648,6 +652,7 @@ describe("AgentSession advisor toggle", () => {
 		const settings = Settings.isolated({
 			"async.enabled": false,
 			"advisor.enabled": true,
+			"signals.enabled": false,
 			"compaction.enabled": false,
 		});
 		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
@@ -930,7 +935,7 @@ describe("AgentSession advisor toggle", () => {
 				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 			}),
 			sessionManager: branchManager,
-			settings: Settings.isolated({ "compaction.enabled": false }),
+			settings: Settings.isolated({ "compaction.enabled": false, "signals.enabled": false }),
 			modelRegistry,
 			advisorTools: [],
 			extensionRunner,
@@ -973,7 +978,7 @@ describe("AgentSession advisor toggle", () => {
 				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 			}),
 			sessionManager: branchManager,
-			settings: Settings.isolated({ "compaction.enabled": false }),
+			settings: Settings.isolated({ "compaction.enabled": false, "signals.enabled": false }),
 			modelRegistry,
 			advisorTools: [],
 			extensionRunner,
@@ -1014,6 +1019,7 @@ describe("AgentSession advisor toggle", () => {
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
 			"retry.enabled": true,
+			"signals.enabled": false,
 			"retry.baseDelayMs": 0,
 			"retry.maxDelayMs": 100,
 			"retry.maxRetries": 1,
@@ -1090,7 +1096,7 @@ describe("AgentSession advisor toggle", () => {
 			},
 			streamFn: mock.stream,
 		});
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		const settings = Settings.isolated({ "compaction.enabled": false, "signals.enabled": false });
 		settings.setModelRole("advisor", `${model.provider}/${model.id}`);
 		const quotaSession = new AgentSession({
 			agent: primaryAgent,
