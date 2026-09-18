@@ -119,6 +119,7 @@ describe("TurnSignalService", () => {
 
 		expect(await service.classifyTurn("x", { wip: true })).toBeUndefined();
 		expect(calls).toBe(6);
+		expect(service.connected).toBe(false);
 	});
 
 	test("fails open on HTTP errors, malformed bodies, and unknown phases", async () => {

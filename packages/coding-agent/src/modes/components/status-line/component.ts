@@ -1994,7 +1994,8 @@ export class StatusLineComponent implements Component {
 		const gitStatus = includeGit ? this.#getStatus(activeRepoCache) : null;
 		const gitPr = includePr ? this.#lookupPr(activeRepoCache) : null;
 		const compactionSpeculation = this.session.compactionSpeculation ?? "idle";
-		const signals = this.session.turnSignals?.latest;
+		const turnSignals = this.session.turnSignals;
+		const signals = turnSignals?.connected ? turnSignals.latest : undefined;
 		this.#syncSpeculationBlink(compactionSpeculation);
 		const sessionAccentEnabled = this.#resolveSettings().sessionAccent !== false;
 		const turnElapsedMs = this.getTurnElapsedMs();

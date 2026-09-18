@@ -58,6 +58,11 @@ export class TurnSignalService {
 		return this.#latest;
 	}
 
+	/** False once this session spent its failure budget; derived UI must not show a stale classification. */
+	get connected(): boolean {
+		return !this.#unavailable;
+	}
+
 	/** `latest` once any in-flight turn classification has resolved (bounded by the client timeout). */
 	async settled(): Promise<TurnSignals | undefined> {
 		await this.#inFlight;
