@@ -2,6 +2,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"orchestrator_mode",
 	"duo_handoff",
 	"duo_escalate",
+	"duo_change_phase",
 	"read",
 	"bash",
 	"launch",

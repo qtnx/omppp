@@ -359,6 +359,10 @@ describe("resolveDuoConfig", () => {
 			registryWithAuth,
 		);
 
+		expect(resolved?.phaseModels.preplanning?.map(candidate => candidate.selector)).toEqual([
+			"anthropic/claude-opus-5",
+		]);
+		expect(resolved?.phaseModels.preplanning?.[0]?.thinkingLevel).toBe(ThinkingLevel.High);
 		expect(resolved?.phaseModels.planning?.map(candidate => candidate.selector)).toEqual([
 			"openai-codex/gpt-6-astra",
 			"anthropic/claude-fable-5-1",

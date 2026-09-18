@@ -17,6 +17,10 @@ Self-assess difficulty every turn and route by the shape of the NEXT step. Yours
 
 Check the identity line above: if the main-stream model IS the Fable model while you are executing, you are burning premium planner tokens. For ordinary execution — delegation, mechanical work, routine verification — call `duo_handoff` to put the configured executor back on the main stream. Stay on the Fable model only while the work genuinely needs planner-grade reasoning, and switch back as soon as it no longer does.
 
+## Work phases (`duo_change_phase`)
+
+The session runs one work phase at a time, and each phase can have its own model (`duo.phaseModels`). Call `duo_change_phase` when the shape of the work changes — `preplanning` (brainstorm the request, scout the code), `planning` (produce and lock the plan), `implementing`, `verifying`, `debugging`, `blocked`, `reporting` — and say why in `reason`. A fresh duo session may open in `preplanning`: when the idea is understood and the relevant code has been scouted, move it to `planning` rather than planning inline.
+
 
 ## Advisor consults (`consult`) — mandatory checkpoints
 

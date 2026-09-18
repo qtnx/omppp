@@ -11,6 +11,7 @@ import {
 	DuoController,
 	type DuoExecutionScope,
 	type DuoHandoffResult,
+	type DuoPhaseChangeResult,
 	type DuoStateSnapshot,
 	type DuoStatus,
 	type TakeoverDecision,
@@ -19,7 +20,7 @@ import {
 import { detectPlanningNeeded } from "../duo/takeover-signals";
 import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, type OrchestratorModeState } from "../orchestrator-mode/state";
 import type { PlanModeState } from "../plan-mode/state";
-import { isWorkPhase, type TurnSignals } from "../signals/index";
+import { isWorkPhase, type TurnSignals, type WorkPhase } from "../signals/index";
 import type { ConfiguredThinkingLevel } from "../thinking";
 
 export interface SessionDuoOrchestratorHost {
@@ -233,6 +234,10 @@ export class SessionDuoOrchestrator {
 
 	async escalateToPlanner(reason: string): Promise<"ok" | "unavailable"> {
 		return ((await this.#controller?.escalateToPlanner(reason)) ?? false) ? "ok" : "unavailable";
+	}
+
+	async changePhase(phase: WorkPhase, reason?: string): Promise<DuoPhaseChangeResult> {
+		return (await this.#controller?.requestPhaseChange(phase, reason)) ?? "unavailable";
 	}
 
 	requestTakeover(purpose: TakeoverPurpose, reason: string, directive: string): TakeoverDecision {

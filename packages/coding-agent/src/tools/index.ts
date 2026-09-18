@@ -10,8 +10,8 @@ import { CodeGraphExploreTool, CodeGraphIndexTool, CodeGraphInitTool } from "../
 import type { EvalPreludeDefinition } from "../eval/preludes";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
-import type { DuoExecutionScope, DuoHandoffResult, DuoStatus } from "../duo";
-import { DuoEscalateTool, DuoHandoffTool, isDuoPhaseLive } from "../duo";
+import type { DuoExecutionScope, DuoHandoffResult, DuoPhaseChangeResult, DuoStatus } from "../duo";
+import { DuoChangePhaseTool, DuoEscalateTool, DuoHandoffTool, isDuoPhaseLive } from "../duo";
 import { EditTool } from "../edit";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
@@ -41,7 +41,7 @@ import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
 import type { TimeBudgetSnapshot } from "../session/time-budget";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
-import type { TurnSignalService } from "../signals/index";
+import type { TurnSignalService, WorkPhase } from "../signals/index";
 import { TaskTool } from "../task";
 import type { MacOSSandboxRelaunchResult } from "../task/omp-command";
 import type { AgentOutputManager } from "../task/output-manager";
@@ -673,6 +673,8 @@ export interface ToolSession {
 	turnSignals?: TurnSignalService;
 	/** Escalate an executor turn back to the duo planner. */
 	duoEscalateToPlanner?: (reason: string) => Promise<"ok" | "unavailable">;
+	/** Move the duo session into another work phase (`duo_change_phase`). */
+	duoChangePhase?: (phase: WorkPhase, reason?: string) => Promise<DuoPhaseChangeResult>;
 	/** Session-scoped loop scheduler for the `loop` tool. Iterations are delivered as
 	 *  follow-up turns; all loops are cancelled on session dispose/reset. Undefined in
 	 *  sessions that cannot host loops (e.g. secondary in-process sessions). */
@@ -683,7 +685,7 @@ export type ToolFactory = (session: ToolSession) => Tool | null | Promise<Tool |
 
 export type BuiltinToolLoadMode = "essential" | "discoverable";
 
-export const DUO_TOOL_NAMES = ["duo_handoff", "duo_escalate"] as const;
+export const DUO_TOOL_NAMES = ["duo_handoff", "duo_escalate", "duo_change_phase"] as const;
 export type DuoToolName = (typeof DUO_TOOL_NAMES)[number];
 export function isDuoToolName(name: string): name is DuoToolName {
 	return (DUO_TOOL_NAMES as readonly string[]).includes(name);
@@ -762,6 +764,8 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 			return (await s.duoHandoffToExecutor?.(resolution, scope)) ?? "no-controller";
 		}, s.turnSignals),
 	duo_escalate: s => new DuoEscalateTool(async reason => (await s.duoEscalateToPlanner?.(reason)) ?? "unavailable"),
+	duo_change_phase: s =>
+		new DuoChangePhaseTool(async (phase, reason) => (await s.duoChangePhase?.(phase, reason)) ?? "unavailable"),
 	read: s => new ReadTool(s),
 	security_scan: s => new SecurityScanTool(s),
 	bash: s => new BashTool(s),
