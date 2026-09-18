@@ -1609,3 +1609,93 @@ describe("DuoController phase models from turn signals", () => {
 		expect(controller.status.phaseModelId).toBeUndefined();
 	});
 });
+describe("DuoController planner auto-return watch", () => {
+	test("takeover returns the stream once two confident turns classify as implementing", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("executing");
+		expect(controller.requestTakeover("recover", "drift", "recover now")).toBe("accepted");
+		expect(controller.status.phase).toBe("takeover");
+		host.switches = [];
+		host.notices = [];
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
+		expect(controller.status.phase).toBe("takeover");
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
+
+		await Bun.sleep(10);
+		expect(controller.status.phase).toBe("executing");
+		expect(host.switches.at(-1)?.model).toEqual(executor);
+		expect(host.notices.some(notice => notice.text.includes("returned the stream to the executor"))).toBe(true);
+	});
+
+	test("planning phase auto-returns when turns classify as verifying", async () => {
+		const host = fakeHost({ model: planner, planModeOn: true, thinking: ThinkingLevel.High });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("planning");
+		host.switches = [];
+
+		controller.notifyTurnSignals(turnSignals({ phase: "verifying", phaseConfidence: 0.8 }));
+		controller.notifyTurnSignals(turnSignals({ phase: "verifying", phaseConfidence: 0.8 }));
+
+		await Bun.sleep(10);
+		expect(controller.status.phase).toBe("executing");
+		expect(host.switches.at(-1)?.model).toEqual(executor);
+		expect(controller.status.planner).toBe("anthropic/claude-fable-5");
+	});
+
+	test("a single implementing turn or a low-confidence one never returns the stream", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		controller.requestTakeover("recover", "drift", "recover now");
+		host.switches = [];
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
+		expect(controller.status.phase).toBe("takeover");
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.3 }));
+
+		await Bun.sleep(10);
+		expect(controller.status.phase).toBe("takeover");
+		expect(host.switches).toEqual([]);
+	});
+
+	test("a failed executor switch keeps the planner and warns", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		controller.requestTakeover("recover", "drift", "recover now");
+		host.failSwitch = true;
+		host.notices = [];
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
+
+		await Bun.sleep(10);
+		expect(host.notices.some(notice => notice.text.includes("could not auto-return"))).toBe(true);
+	});
+
+	test("a stuck-triggered takeover is not flipped back by the first implementing turn", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("executing");
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", stuck: 0.8 }));
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", stuck: 0.8 }));
+		expect(controller.status.phase).toBe("takeover");
+		host.switches = [];
+
+		// First planner turn still classified implementing: the streak is reset
+		// when the planner took the stream, so no immediate flip back.
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
+		expect(controller.status.phase).toBe("takeover");
+		expect(host.switches).toEqual([]);
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
+		await Bun.sleep(10);
+		expect(controller.status.phase).toBe("executing");
+	});
+});
