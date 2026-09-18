@@ -12,6 +12,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Context, Message, TextContent } from "@oh-my-pi/pi-ai";
 import {
 	builtinCredentialSecretEntries,
+	collectEnvSecrets,
 	getExistingSecretPlaceholderKey,
 	getSecretPlaceholderKey,
 	getSecretPlaceholderKeySync,
@@ -52,6 +53,34 @@ describe("compileSecretRegex", () => {
 	});
 	it("rejects invalid regex flags", () => {
 		expect(() => compileSecretRegex("x", "zz")).toThrow();
+	});
+});
+
+describe("collectEnvSecrets", () => {
+	// With secrets on by default, a path-shaped value under a secret-looking
+	// name (SSH_AUTH_SOCK, *_KEY_FILE) would otherwise turn every tool result
+	// mentioning that path into a placeholder; only real credential values are
+	// registered.
+	it("registers credential values but skips filesystem-path values", () => {
+		const token = "envtoken-0123456789abcdef";
+		const names = ["OMP_TEST_ENV_TOKEN", "OMP_TEST_SSH_AUTH_SOCK", "OMP_TEST_KEY_FILE", "OMP_TEST_WIN_KEY_PATH"];
+		const previous = names.map(name => process.env[name]);
+		process.env.OMP_TEST_ENV_TOKEN = token;
+		process.env.OMP_TEST_SSH_AUTH_SOCK = "/run/user/1000/keyring/ssh";
+		process.env.OMP_TEST_KEY_FILE = "~/.ssh/id_ed25519";
+		process.env.OMP_TEST_WIN_KEY_PATH = "C:\\Users\\me\\key.pem";
+		try {
+			const contents = collectEnvSecrets().map(entry => entry.content);
+			expect(contents).toContain(token);
+			expect(contents).not.toContain("/run/user/1000/keyring/ssh");
+			expect(contents).not.toContain("~/.ssh/id_ed25519");
+			expect(contents).not.toContain("C:\\Users\\me\\key.pem");
+		} finally {
+			for (const [i, name] of names.entries()) {
+				if (previous[i] === undefined) delete process.env[name];
+				else process.env[name] = previous[i];
+			}
+		}
 	});
 });
 

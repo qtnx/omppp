@@ -52,6 +52,15 @@ describe("detectSecretsInText", () => {
 		]);
 	});
 
+	it("accepts the short <sec> alias but not <s> or JSX fragments", () => {
+		const named = '<sec name="DB_PASS">abcdefghijklmnop</sec>';
+		const text = `${named} <s>qrstuvwxyzabcdef</s> <>rstuvwxyzabcdefg</>`;
+
+		expect(detectSecretsInText(text)).toEqual([
+			{ start: 0, end: named.length, value: "abcdefghijklmnop", name: "DB_PASS", kind: "tag" },
+		]);
+	});
+
 	it("detects a hex key only when its line is keyword-gated", () => {
 		const detected = detectSecretsInText(`private wallet key: ${hexKey}\n${hexKey}`);
 

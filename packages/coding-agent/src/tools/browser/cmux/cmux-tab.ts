@@ -21,6 +21,7 @@ import {
 import { ToolAbortError, ToolError, throwIfAborted } from "../../tool-errors";
 import { type AriaSnapshotOptions, assertSelectorString, buildAriaSnapshotScript } from "../aria/aria-snapshot";
 import { DEFAULT_VIEWPORT } from "../launch";
+import { fieldTextViaBridge, type JevActOptions, type JevActResult, runJevAct } from "../jev";
 import { extractReadableFromHtml, type ReadableFormat } from "../readable";
 import { cloneSafe, RunOutput } from "../run-output";
 import type { Observation, ReadyInfo, RunResultOk, ScreenshotResult, SessionSnapshot } from "../tab-protocol";
@@ -52,6 +53,7 @@ interface ObserveOptions {
 
 interface RunContext {
 	session: SessionSnapshot;
+	toolSession: ToolSession;
 	output: RunOutput;
 	screenshots: ScreenshotResult[];
 	signal: AbortSignal;
@@ -434,6 +436,31 @@ export class CmuxTab {
 		this.#lastTitle = observation.title;
 		this.#rememberObservedElements(observation);
 		return observation;
+	}
+
+	/** Goal-driven DOM loop (TypeSafe Jev); every target resolves from an observed element id. */
+	async act(goal: string, opts?: Pick<JevActOptions, "maxSteps">): Promise<JevActResult> {
+		const context = this.#runContext;
+		if (!context) throw new ToolError("tab.act() requires an active browser run");
+		const signal = context.signal;
+		return await runJevAct(
+			{
+				observe: () => this.observe(),
+				pageText: () => this.#evalScript<string>("document.body ? document.body.innerText : ''"),
+				click: async id => (await this.id(id)).click(),
+				fill: async (id, text) => (await this.id(id)).fill(text),
+				scroll: deltaY => this.scroll(0, deltaY),
+				wait: ms => untilAborted(signal, () => Bun.sleep(ms)),
+				fieldText: (fieldContext, rules) =>
+					fieldTextViaBridge(
+						(name, args) => callSessionTool(name, args, { session: context.toolSession, signal }),
+						fieldContext,
+						rules,
+					),
+			},
+			goal,
+			{ maxSteps: opts?.maxSteps, signal },
+		);
 	}
 
 	async ariaSnapshot(selector?: string, opts?: AriaSnapshotOptions): Promise<string> {
@@ -1376,7 +1403,14 @@ export async function runCmuxCode(tab: CmuxTab, opts: RunCmuxCodeOptions): Promi
 	const filename = `cmux-run-${runId}.js`;
 	const activeRun: ActiveCmuxRun = { filename, floatingRejections: [] };
 	activeCmuxRuns.set(filename, activeRun);
-	tab.setRunContext({ session: opts.snapshot, output, screenshots, signal, timeoutMs: opts.timeoutMs });
+	tab.setRunContext({
+		session: opts.snapshot,
+		toolSession: opts.session,
+		output,
+		screenshots,
+		signal,
+		timeoutMs: opts.timeoutMs,
+	});
 
 	const { promise: cancelRejection, reject } = Promise.withResolvers<never>();
 	// If the synchronous setup below throws (same-realm ownership conflict)

@@ -10,6 +10,9 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - Direct tab helpers:
   - Navigation: `url`, `title`, `goto`.
   - Inspection: `observe`, `ariaSnapshot`, `screenshot`, `extract`.
+{{#if jev}}
+  - Goal-driven: `tab.act(goal, { maxSteps? })` — DEFAULT for multi-step DOM interaction (forms, search, login, filters, navigation). TypeSafe Jev observes the page, picks one operation and one observed element per step (CLICK / TYPE_TEXT / SCROLL / WAIT), and loops until `status` is `done`, `blocked`, or `max_steps` (default 30). Returns `{ status, steps: [{ operation, target: { id, role, name }, text?, pageChanged, url }], url, title, elapsedMs }`. Put every requirement and every value in `goal`; a small helper model derives typed text from it and never invents personal data. `done` is Jev's claim, not proof: verify with `observe`/`extract` afterwards. Fall back to manual helpers when Jev returns `blocked`, for canvas/iframe/shadow-root widgets, or for one obvious click.
+{{/if}}
   - Interaction: `click`, `type`, `fill`, `press`, `scroll`, `drag`, `scrollIntoView`, `select`, `uploadFile`.
   - Waiting: `waitFor`, `waitForSelector`, `waitForUrl`.
   - Page execution: `evaluate`. `tab.evaluate(string)` evaluates the string as a page-global expression; top-level `return` is invalid. Pass a function or invoke an IIFE string to use `return`.
@@ -51,7 +54,7 @@ await tab.close()
 
 <critical>
 - MUST open a tab before direct use; `browser.tab(name)` does not open one.
-- Default to `tab.observe()`; use screenshots for visual confirmation.
+- Default to {{#if jev}}`tab.act(goal)` for multi-step interaction and {{/if}}`tab.observe()`{{#if jev}} for inspection{{/if}}; use screenshots for visual confirmation.
 - `tab.run` has full Bun/Node and tool-bridge access; it is not sandboxed.
 - Relay and CDP actions operate on real user sessions.
 </critical>
@@ -60,6 +63,11 @@ await tab.close()
 # Open a tab and read structured page data
 `{"action":"open","name":"docs","url":"https://example.com"}`
 `{"action":"run","name":"docs","code":"const obs = await tab.observe(); display(obs); return obs.elements.length;"}`
+{{#if jev}}
+
+# Drive a multi-step flow by goal (Jev), then verify the outcome yourself
+`{"action":"run","name":"docs","code":"const r = await tab.act('Search for \"wireless headphones\" and open the first result'); display(r.status, r.steps.length); return (await tab.observe()).url;"}`
+{{/if}}
 
 # Click an observed element by id
 `{"action":"run","name":"docs","code":"const obs = await tab.observe(); const link = obs.elements.find(e => e.role === 'link' && e.name === 'Sign in'); assert(link, 'Sign in link missing'); await (await tab.id(link.id)).click();"}`
