@@ -21,6 +21,7 @@ import {
 import { ToolAbortError, ToolError, throwIfAborted } from "../../tool-errors";
 import { type AriaSnapshotOptions, assertSelectorString, buildAriaSnapshotScript } from "../aria/aria-snapshot";
 import { DEFAULT_VIEWPORT } from "../launch";
+import { elementCenter, selectObservedOptionInPage } from "../jev-dom";
 import { fieldTextViaBridge, type JevActOptions, type JevActResult, runJevAct } from "../jev";
 import { extractReadableFromHtml, type ReadableFormat } from "../readable";
 import { cloneSafe, RunOutput } from "../run-output";
@@ -447,8 +448,20 @@ export class CmuxTab {
 			{
 				observe: () => this.observe(),
 				pageText: () => this.#evalScript<string>("document.body ? document.body.innerText : ''"),
-				click: async id => (await this.id(id)).click(),
+				// Activation, not a raw click: a native <option> commits through its select.
+				click: async id => {
+					const handle = await this.id(id);
+					const committed = await handle.evaluate(selectObservedOptionInPage);
+					if (committed !== true) await handle.click();
+				},
 				fill: async (id, text) => (await this.id(id)).fill(text),
+				hover: async id => (await this.id(id)).hover(),
+				pressEnter: async id => (await this.id(id)).press("Enter"),
+				drag: async (fromId, toId) => {
+					const from = await elementCenter(await this.id(fromId), "DRAG source");
+					const to = await elementCenter(await this.id(toId), "DRAG target");
+					await this.drag(from, to);
+				},
 				scroll: deltaY => this.scroll(0, deltaY),
 				wait: ms => untilAborted(signal, () => Bun.sleep(ms)),
 				fieldText: (fieldContext, rules) =>

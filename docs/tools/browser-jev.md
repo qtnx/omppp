@@ -33,14 +33,19 @@ Unknown fields are rejected.
 ## How one run works
 
 1. Observe the page through the accessibility snapshot and build an indexed element table.
-2. One TypeSafe request per step returns the operation (`CLICK`, `TYPE_TEXT`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`) and, speculatively, a target for each applicable head; only the head matching the chosen operation can execute.
+2. One TypeSafe request per step returns the operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `HOVER`, `PRESS_ENTER`, `DRAG`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`) and, speculatively, a target for each applicable head; only the head(s) matching the chosen operation can execute. `DRAG` answers two heads — the element to pick up and the drop target — in the same request.
 3. `TYPE_TEXT` resolves its value through the session `completion()` bridge — the `smol` tier first, the session `default` tier if that fails.
 4. Execute against the observed element id, re-observe, repeat. Model output never becomes a selector, coordinate, or script.
 5. Stop on `DONE`, `BLOCKED`, three consecutive non-`WAIT` actions that leave the page unchanged, or the step budget.
+
+## Limits
+
+- `DRAG` endpoints must be observed elements (button, link, option, field, listitem). Drag between plain `<div>`/`<p>` nodes is invisible to the accessibility snapshot and returns `blocked`; use `browser_use` for pixel-level drags and canvas surfaces.
+- Shadow roots, iframes, file uploads, and arbitrary keyboard widgets are outside the loop; they surface as `blocked`.
+- The loop sees the current page plus its last ten actions — cross-page bookkeeping (comparing prices across results, collecting a list) stays with the calling model, one `browser_jev` leg at a time.
 
 ## Result
 
 - Text report: `status` with the action count and elapsed time, the goal, final URL and title, the executed steps (operation, target role/name, typed value, `page unchanged` marker), and the readable page text of the final page.
 - `blocked` and `max_steps` append the takeover instruction (`browser_use` for canvas/gesture, the `browser` prelude for selectors/JS) and set `isError: true`.
 - `details`: `{ status?, stepCount, url?, title?, elapsedMs?, goal }`.
-- `status: done` is the policy's claim, not proof — verify against the returned URL, steps, and page text, or through the application's own state.

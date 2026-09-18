@@ -30,6 +30,8 @@ export interface JevStepReport {
 	step: number;
 	operation: string;
 	target?: { id: number; role: string; name?: string };
+	/** DRAG only: the element the source was dropped onto. */
+	dropTarget?: { id: number; role: string; name?: string };
 	text?: string;
 	pageChanged: boolean;
 	url: string;
@@ -73,12 +75,13 @@ export function jevRunCode(params: BrowserJevParams): string {
 }
 
 function describeStep(step: JevStepReport): string {
-	const target = step.target
-		? ` ${step.target.role}${step.target.name ? ` ${JSON.stringify(step.target.name)}` : ""}`
-		: "";
+	const describe = (part: { role: string; name?: string }): string =>
+		`${part.role}${part.name ? ` ${JSON.stringify(part.name)}` : ""}`;
+	const target = step.target ? ` ${describe(step.target)}` : "";
+	const drop = step.dropTarget ? ` onto ${describe(step.dropTarget)}` : "";
 	const typed = step.text === undefined ? "" : ` = ${JSON.stringify(step.text)}`;
 	const changed = step.pageChanged ? "" : " (page unchanged)";
-	return `${step.step}. ${step.operation}${target}${typed}${changed}`;
+	return `${step.step}. ${step.operation}${target}${drop}${typed}${changed}`;
 }
 
 export function renderJevReport(goal: string, report: JevRunReport): string {
