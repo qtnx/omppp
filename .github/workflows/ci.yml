@@ -328,9 +328,33 @@ jobs:
               arch: x64
               variant: baseline
               glibc: ${{ env.GLIBC_FLOOR }}
-              rust_checks: "true"
+              rust_checks: "false"
               skip_validation: ${{ needs.release_metadata.outputs.is-release }}
               save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+   # Rust validation (clippy/rustfmt + the native test suite) runs in its own
+   # job, in parallel with the baseline addon build. Serializing ~20 minutes of
+   # checks behind the build kept the merge-cold baseline job at ~38m; the two
+   # tracks now finish in about the build time. Skip together with the build
+   # when the artifact lookup already found validated artifacts.
+   native_linux_x64_checks:
+      name: "Rust checks & tests (linux x64)"
+      needs: [release_metadata, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || needs.native_artifact_lookup.outputs.linux-x64-run-id == '') }}
+      runs-on: ubuntu-22.04
+      timeout-minutes: 40
+      steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/build-native
+           if: ${{ needs.native_artifact_lookup.outputs.linux-x64-baseline-run-id == '' }}
+           with:
+              hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
+              platform: linux
+              arch: x64
+              variant: baseline
+              rust_checks: "true"
+              rust_checks_only: "true"
+              skip_validation: ${{ needs.release_metadata.outputs.is-release }}
 
    native_linux_x64_modern:
       name: "Native: Linux x64 (modern)"
