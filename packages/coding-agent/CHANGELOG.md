@@ -4,7 +4,7 @@
 
 ### Added
 
-- TypeSafe turn signals: every primary turn is classified by TypeSafe System One into a work phase (planning, implementing, verifying, debugging, blocked, reporting) plus needs-review, stuck, done-without-evidence, and parallel-slices scores; when the endpoint is unavailable nothing changes. Tunable under `signals.*`.
+- TypeSafe turn signals are on by default: each primary turn's transcript is classified by TypeSafe System One into a work phase (planning, implementing, verifying, debugging, blocked, reporting) plus needs-review, stuck, done-without-evidence, and parallel-slices scores, and the classification adjusts the advisor, duo phase, takeover, handoff, learning, and delegation-reminder behavior. Tunable under `signals.*`; `signals.baseUrl: ""` (or `signals.enabled: false`) opts out, and an unreachable endpoint costs three failed requests per session before signals go quiet.
 - Signals default to the TypeSafe proxy on the tailnet (`signals.baseUrl` = `http://codemc:8791/v1/systemone`), which holds the API key, so a session needs no `TYPESAFE_API_KEY`; point `signals.baseUrl` at `https://api.typesafe.ai/v1/systemone` to call TypeSafe directly, or leave it empty to require a local key.
 - Browser `tab.act(goal)` (TypeSafe Jev) now calls the same tailnet proxy by default, so it works without a local `TYPESAFE_API_KEY`; set `TYPESAFE_SYSTEMONE_URL` to point Jev at TypeSafe directly (which then needs the key).
 - `duo.phaseModels` maps each detected work phase to one model selector or an ordered fallback list; duo switches the executor at the next turn boundary once the phase holds (immediately for `blocked`) and registers the rest of the list as rate-limit fallbacks. Unlisted phases keep the planner/executor models. `/duo status` shows the detected phase and active phase model.
@@ -13,7 +13,7 @@
 
 - The advisor now skips in-progress turns TypeSafe rates as not worth reviewing (`signals.advisorGate.*`); final yields, user prompts, consults, and every fourth held turn still reach it, and a completion claim TypeSafe scores as evidence-free is bounced back to the executor without an advisor consult.
 - The duo advisor now follows the planner model (Fable) instead of defaulting to a codex model whose rate-limit chain landed it on Opus; set `duo.advisorModel` to pin a different advisor.
-- An explicit `duo.*Model` / `duo.phaseModels` selector now also resolves through the registry lookup, so a model served by a discovered provider (a gateway's own `/v1/models` list) is honoured instead of silently degrading the side to its family fallback; when a side still cannot resolve, the reason (`duo model pattern unavailable`) and the models duo settled on are logged.
+- An explicit `duo.*Model` / `duo.phaseModels` selector that matches nothing in the session's available models now also tries the provider/id registry lookup before falling back, and duo logs the reason (`duo model pattern unavailable`) plus the planner/executor/advisor it settled on, so a degraded side is visible instead of silent.
 - Duo raises an automatic recover takeover after two consecutive turns TypeSafe scores as stuck (`signals.stuckThreshold`), `duo_handoff` without an explicit scope lets TypeSafe pick `multi` for genuinely multi-phase briefs and notes when a brief reads unlocked, `save_learning` rejects case-specific notes, and the delegation reminder stays quiet on turns judged to hold a single slice.
 
 ## [1.8.9] - 2026-09-18

@@ -95,7 +95,7 @@ describe("TurnSignalService", () => {
 		const capture = (async (_url: string | URL | Request, init?: RequestInit) => {
 			seen.push(init?.headers as Record<string, string>);
 			return Response.json(TURN_ANSWERS);
-		}) as typeof fetch;
+		}) as unknown as typeof fetch;
 		await new TurnSignalService(new TypeSafeClient({ fetch: capture })).classifyTurn("x", { wip: true });
 		await new TurnSignalService(new TypeSafeClient({ apiKey: "k", fetch: capture })).classifyTurn("x", {
 			wip: true,
@@ -103,6 +103,22 @@ describe("TurnSignalService", () => {
 		expect(seen[0]?.Authorization).toBeUndefined();
 		expect(seen[1]?.Authorization).toBe("Bearer k");
 		expect(seen[0]?.["Content-Type"]).toBe("application/json");
+	});
+
+	test("gives up after three consecutive failures and resumes the budget on success", async () => {
+		let calls = 0;
+		const scripted = (async () => {
+			calls += 1;
+			return calls === 3 ? Response.json(TURN_ANSWERS) : new Response("nope", { status: 503 });
+		}) as unknown as typeof fetch;
+		const service = new TurnSignalService(new TypeSafeClient({ fetch: scripted }));
+
+		for (let i = 0; i < 6; i++) await service.classifyTurn("x", { wip: true });
+		expect(calls).toBe(6);
+		expect(service.latest).toBeDefined();
+
+		expect(await service.classifyTurn("x", { wip: true })).toBeUndefined();
+		expect(calls).toBe(6);
 	});
 
 	test("fails open on HTTP errors, malformed bodies, and unknown phases", async () => {

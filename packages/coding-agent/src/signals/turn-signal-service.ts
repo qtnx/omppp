@@ -16,6 +16,9 @@ import {
 /** API state cap is 32k tokens (state + longest question); keep a margin. */
 export const DEFAULT_MAX_STATE_CHARS = 80_000;
 
+/** Consecutive unusable responses before the session stops calling the endpoint. */
+const FAILURE_BUDGET = 3;
+
 const TURN_QUESTIONS = turnQuestions as Record<string, Question>;
 const HANDOFF_QUESTIONS = handoffQuestions as Record<string, Question>;
 const LEARNING_QUESTIONS = learningQuestions as Record<string, Question>;
@@ -42,6 +45,8 @@ export class TurnSignalService {
 	readonly #maxStateChars: number;
 	#latest: TurnSignals | undefined;
 	#inFlight: Promise<TurnSignals | undefined> | undefined;
+	#failures = 0;
+	#unavailable = false;
 
 	constructor(client: TypeSafeClient, options: { maxStateChars?: number } = {}) {
 		this.#client = client;
@@ -63,6 +68,19 @@ export class TurnSignalService {
 		return text.length <= this.#maxStateChars ? text : text.slice(text.length - this.#maxStateChars);
 	}
 
+	/** A dead or unreachable endpoint must not cost every turn the request timeout. */
+	#record(ok: boolean): void {
+		if (ok) {
+			this.#failures = 0;
+			return;
+		}
+		this.#failures += 1;
+		if (this.#failures >= FAILURE_BUDGET && !this.#unavailable) {
+			this.#unavailable = true;
+			logger.debug("turn signals disabled for this session", { failures: this.#failures });
+		}
+	}
+
 	classifyTurn(
 		deltaText: string,
 		context: { wip: boolean; duoPhase?: string },
@@ -78,6 +96,7 @@ export class TurnSignalService {
 		context: { wip: boolean; duoPhase?: string },
 		signal?: AbortSignal,
 	): Promise<TurnSignals | undefined> {
+		if (this.#unavailable) return undefined;
 		const state = {
 			turn_status: context.wip
 				? "in progress: the agent will keep working after this slice"
@@ -86,6 +105,7 @@ export class TurnSignalService {
 			transcript: this.#clip(deltaText),
 		};
 		const response = await this.#client.systemOne(state, TURN_QUESTIONS, signal);
+		this.#record(response !== undefined);
 		if (!response) return undefined;
 		const phaseAnswer = response.answers.phase;
 		const needsReview = noul(response.answers.needs_review);
@@ -118,7 +138,9 @@ export class TurnSignalService {
 	}
 
 	async classifyHandoff(planText: string, signal?: AbortSignal): Promise<HandoffSignals | undefined> {
+		if (this.#unavailable) return undefined;
 		const response = await this.#client.systemOne(this.#clip(planText), HANDOFF_QUESTIONS, signal);
+		this.#record(response !== undefined);
 		if (!response) return undefined;
 		const scope = response.answers.scope;
 		const planLocked = noul(response.answers.plan_locked);
@@ -133,7 +155,9 @@ export class TurnSignalService {
 	}
 
 	async classifyLearning(content: string, signal?: AbortSignal): Promise<LearningSignals | undefined> {
+		if (this.#unavailable) return undefined;
 		const response = await this.#client.systemOne(this.#clip(content), LEARNING_QUESTIONS, signal);
+		this.#record(response !== undefined);
 		const genericRule = noul(response?.answers.generic_rule);
 		return genericRule === undefined ? undefined : { genericRule };
 	}
