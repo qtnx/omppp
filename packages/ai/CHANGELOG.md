@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-09-18
+
 ### Fixed
 
 - Fixed Anthropic OAuth requests failing with `A maximum of 4 blocks with cache_control may be provided. Found 5.` and, before that, losing prompt-cache writes: the tool anchor is no longer added on the Claude Code OAuth layout (its system anchors already cover tools in wire order) and the request-level automatic cache now reserves one of the four `cache_control` slots, so long sessions keep reading their cached tail instead of re-billing it every turn.

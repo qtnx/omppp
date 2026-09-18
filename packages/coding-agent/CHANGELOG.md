@@ -2,25 +2,16 @@
 
 ## [Unreleased]
 
-## [1.10.0] - 2026-09-18
-
-### Added
-
-- `duo_change_phase` lets the model move the duo session between work phases itself (`preplanning`, `planning`, `implementing`, `verifying`, `debugging`, `blocked`, `reporting`) with a one-line rationale, putting that phase's configured model on the main stream without waiting for the classifier's confidence/streak gates.
-- New `preplanning` work phase, default `anthropic/claude-opus-5:high`: a fresh duo session opens on it to brainstorm the request and scout the code, then the model moves on to `planning`. The classifier never emits this phase — it holds until `duo_change_phase` (or a four-turn dwell) releases it.
-- Live learning novelty check: before storing a new guideline, Jev judges whether an existing learning already covers the lesson; a confident duplicate reinforces the existing entry instead of writing another one (`learning.novelty.*`).
+## [1.10.1] - 2026-09-18
 
 ### Changed
 
 - The default duo executor thinking level is now `high` (was `max`), in `duo.executorThinking` and the `duo.phaseModels` defaults that inherit it.
-- The default duo/executor DeepSeek model is now `tnx/openrouter/deepseek/deepseek-v4.1-flash` (was `tnx/openrouter/~deepseek/deepseek-v4-flash-latest`), in `duo.executorModel`, the `duo.phaseModels` default map, and the setup default `retry.fallbackChains` key.
 - The advisor review gate now asks TypeSafe whether the advisor is actually needed on each turn — including turns that just yielded — so chit-chat, short answers, and routine progress no longer wake the advisor; only consults and unclassified turns still reach it unconditionally.
 
 ### Fixed
 
 - Turn classification now sends the live duo work phase (`duo_phase`) with each turn, so the classifier judges a turn against the phase the session is actually in; it was accepted by the client but never populated.
-- A usage-limit failure now falls through to the configured `retry.fallbackChains` after one sibling-credential wait instead of retrying the capped model until the retry budget runs out. A pool whose "sibling" claim never freed a fresh window previously re-hit the spent quota up to `retry.maxRetries` times before the chain was consulted; the chain's cross-provider candidate is now used, with the exhausted provider excluded.
-- Live learnings are injected per request instead of as a static system-prompt block: Jev (TypeSafe System One) scores each stored learning against the current request and only the relevant ones are added — once per conversation, as a hidden context message — so the provider prompt cache stays byte-stable. Falls back to the stored rank when Jev is unavailable (`learning.relevance.*`).
 
 ## [18.2.3] - 2026-09-17
 
@@ -1706,5 +1697,22 @@
 - `/retry` and `/handoff` now work over ACP, so editor clients (Zed) list them and can run them instead of sending the text to the model.
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
+
+## [1.10.0] - 2026-09-18
+
+### Added
+
+- `duo_change_phase` lets the model move the duo session between work phases itself (`preplanning`, `planning`, `implementing`, `verifying`, `debugging`, `blocked`, `reporting`) with a one-line rationale, putting that phase's configured model on the main stream without waiting for the classifier's confidence/streak gates.
+- New `preplanning` work phase, default `anthropic/claude-opus-5:high`: a fresh duo session opens on it to brainstorm the request and scout the code, then the model moves on to `planning`. The classifier never emits this phase — it holds until `duo_change_phase` (or a four-turn dwell) releases it.
+- Live learning novelty check: before storing a new guideline, Jev judges whether an existing learning already covers the lesson; a confident duplicate reinforces the existing entry instead of writing another one (`learning.novelty.*`).
+
+### Changed
+
+- The default duo/executor DeepSeek model is now `tnx/openrouter/deepseek/deepseek-v4.1-flash` (was `tnx/openrouter/~deepseek/deepseek-v4-flash-latest`), in `duo.executorModel`, the `duo.phaseModels` default map, and the setup default `retry.fallbackChains` key.
+
+### Fixed
+
+- A usage-limit failure now falls through to the configured `retry.fallbackChains` after one sibling-credential wait instead of retrying the capped model until the retry budget runs out. A pool whose "sibling" claim never freed a fresh window previously re-hit the spent quota up to `retry.maxRetries` times before the chain was consulted; the chain's cross-provider candidate is now used, with the exhausted provider excluded.
+- Live learnings are injected per request instead of as a static system-prompt block: Jev (TypeSafe System One) scores each stored learning against the current request and only the relevant ones are added — once per conversation, as a hidden context message — so the provider prompt cache stays byte-stable. Falls back to the stored rank when Jev is unavailable (`learning.relevance.*`).
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@2be877ff6a46](https://github.com/can1357/oh-my-pi/blob/2be877ff6a4614e7347edae25edb5f413da8a47d/packages/coding-agent/CHANGELOG.md).
