@@ -11,6 +11,9 @@ export const TOOL_TIMEOUTS = {
 	bash: { default: 300, min: 1, max: 3600 },
 	eval: { default: 30, min: 1, max: 3600 },
 	browser: { default: 30, min: 1, max: 300 },
+	// One call runs a whole multi-step goal (model decision + action per step),
+	// so it needs a far larger budget than a single `browser` helper call.
+	browser_jev: { default: 300, min: 5, max: 900 },
 	computer: { default: 120, min: 1, max: 300 },
 	ssh: { default: 60, min: 1, max: 3600 },
 	fetch: { default: 20, min: 1, max: 45 },

@@ -57,9 +57,27 @@ export function jevDebugSummary(): string {
 	return `Jev: model ${model} ${override ? `(${JEV_MODEL_ENV})` : "(default)"}, maxSteps ${DEFAULT_MAX_STEPS}, endpoint ${jevEndpoint()} ${route}, ${auth}${gate}`;
 }
 
-export type JevOperation = "CLICK" | "TYPE_TEXT" | "SCROLL_UP" | "SCROLL_DOWN" | "WAIT" | "DONE" | "BLOCKED";
+export type JevOperation =
+	| "CLICK"
+	| "TYPE_TEXT"
+	| "SELECT"
+	| "HOVER"
+	| "PRESS_ENTER"
+	| "DRAG"
+	| "SCROLL_UP"
+	| "SCROLL_DOWN"
+	| "WAIT"
+	| "DONE"
+	| "BLOCKED";
 
+/** Roles whose value a TYPE_TEXT operation may replace. */
 const FILL_ROLES: Record<string, true> = { textbox: true, searchbox: true, combobox: true, spinbutton: true };
+/** Roles that carry a chooseable value inside a listbox/menu/select. */
+const OPTION_ROLES: Record<string, true> = { option: true, menuitemradio: true, treeitem: true };
+/** Target heads Jev answers alongside the operation head. */
+const TARGET_OPERATIONS = ["CLICK", "TYPE_TEXT", "SELECT", "HOVER", "PRESS_ENTER", "DRAG_FROM", "DRAG_TO"] as const;
+
+type JevTargetHead = (typeof TARGET_OPERATIONS)[number];
 
 /** One row of the element table sent to Jev. */
 export interface JevElement {
@@ -75,14 +93,16 @@ export interface JevElement {
 
 export interface JevActionSpace {
 	elements: JevElement[];
-	/** Operation → offered target index → observed entry. */
-	targets: Partial<Record<"CLICK" | "TYPE_TEXT", Map<string, ObservationEntry>>>;
+	/** Target head → offered target index → observed entry. */
+	targets: Partial<Record<JevTargetHead, Map<string, ObservationEntry>>>;
 }
 
 export interface JevStep {
 	step: number;
 	operation: JevOperation;
 	target?: { id: number; role: string; name?: string };
+	/** DRAG only: the element the source was dropped onto. */
+	dropTarget?: { id: number; role: string; name?: string };
 	text?: string;
 	confidence: number;
 	probability: number;
@@ -110,8 +130,18 @@ export interface JevFieldContext {
 export interface JevDriver {
 	observe(): Promise<Observation>;
 	pageText(): Promise<string>;
+	/**
+	 * Activate an observed element: an ordinary click, except a native `<option>`,
+	 * which commits through its owning `<select>` because Chromium refuses to
+	 * click an option node. Both CLICK and SELECT route here.
+	 */
 	click(id: number): Promise<void>;
 	fill(id: number, text: string): Promise<void>;
+	hover(id: number): Promise<void>;
+	/** Focus the field, then press Enter on it. */
+	pressEnter(id: number): Promise<void>;
+	/** Drag the first element's center onto the second element's center. */
+	drag(fromId: number, toId: number): Promise<void>;
 	scroll(deltaY: number): Promise<void>;
 	wait(ms: number): Promise<void>;
 	/** Resolve the value to type; `null` means the goal does not supply one. */
@@ -146,16 +176,33 @@ function stateValue(entry: ObservationEntry, key: string): string | undefined {
 /** Map an observation to Jev's indexed element table and per-operation target heads. */
 export function buildActionSpace(observation: Observation): JevActionSpace {
 	const elements: JevElement[] = [];
-	const click = new Map<string, ObservationEntry>();
-	const typeText = new Map<string, ObservationEntry>();
+	const heads: Record<JevTargetHead, Map<string, ObservationEntry>> = {
+		CLICK: new Map(),
+		TYPE_TEXT: new Map(),
+		SELECT: new Map(),
+		HOVER: new Map(),
+		PRESS_ENTER: new Map(),
+		DRAG_FROM: new Map(),
+		DRAG_TO: new Map(),
+	};
 	for (const entry of observation.elements) {
 		if (entry.states.includes("disabled")) continue;
 		const index = String(elements.length + 1);
 		const operations: JevOperation[] = ["CLICK"];
-		click.set(index, entry);
+		heads.CLICK.set(index, entry);
+		// Every observed element is a legal hover and drag endpoint; only the
+		// operation head decides whether those matter on this page.
+		heads.HOVER.set(index, entry);
+		heads.DRAG_FROM.set(index, entry);
+		heads.DRAG_TO.set(index, entry);
 		if (FILL_ROLES[entry.role] && !entry.states.includes("readonly")) {
-			operations.push("TYPE_TEXT");
-			typeText.set(index, entry);
+			operations.push("TYPE_TEXT", "PRESS_ENTER");
+			heads.TYPE_TEXT.set(index, entry);
+			heads.PRESS_ENTER.set(index, entry);
+		}
+		if (OPTION_ROLES[entry.role]) {
+			operations.push("SELECT");
+			heads.SELECT.set(index, entry);
 		}
 		const element: JevElement = {
 			index,
@@ -173,14 +220,21 @@ export function buildActionSpace(observation: Observation): JevActionSpace {
 		elements.push(element);
 	}
 	const targets: JevActionSpace["targets"] = {};
-	if (click.size > 0) targets.CLICK = click;
-	if (typeText.size > 0) targets.TYPE_TEXT = typeText;
+	for (const head of TARGET_OPERATIONS) {
+		if (heads[head].size > 0) targets[head] = heads[head];
+	}
 	return { elements, targets };
 }
 
 const OPERATION_LABELS: Record<JevOperation, string> = {
 	CLICK: "Click an element, button, link, menu option, autocomplete suggestion, or calendar day.",
 	TYPE_TEXT: "Enter or replace text in an editable field. A helper will supply the value from the goal.",
+	SELECT:
+		"Choose an observed option/value inside a select, listbox, menu, or tree instead of clicking it — required for a native <select>.",
+	HOVER: "Hover an element to reveal a menu, tooltip, or hover-only control.",
+	PRESS_ENTER:
+		"Press Enter on an editable field to submit it or confirm the highlighted suggestion, when no Submit control is visible.",
+	DRAG: "Drag one observed element onto another (reorder, drag-and-drop target, slider handle onto a track position).",
 	SCROLL_DOWN: "Scroll the page down to reveal content below the current viewport.",
 	SCROLL_UP: "Scroll the page up to reveal content above the current viewport.",
 	WAIT: "Wait briefly because a needed control is absent/disabled or results are still loading.",
@@ -216,7 +270,14 @@ export function buildJevRequest(
 	const space = buildActionSpace(observation);
 	const operations: Record<string, string> = {};
 	if (space.targets.CLICK) operations.CLICK = OPERATION_LABELS.CLICK;
-	if (space.targets.TYPE_TEXT) operations.TYPE_TEXT = OPERATION_LABELS.TYPE_TEXT;
+	if (space.targets.TYPE_TEXT) {
+		operations.TYPE_TEXT = OPERATION_LABELS.TYPE_TEXT;
+		operations.PRESS_ENTER = OPERATION_LABELS.PRESS_ENTER;
+	}
+	if (space.targets.SELECT) operations.SELECT = OPERATION_LABELS.SELECT;
+	if (space.targets.HOVER) operations.HOVER = OPERATION_LABELS.HOVER;
+	// DRAG needs both endpoints; a single observed element cannot be dragged onto itself.
+	if ((space.targets.DRAG_FROM?.size ?? 0) > 1) operations.DRAG = OPERATION_LABELS.DRAG;
 	const { scroll } = observation;
 	if (scroll.y + scroll.height < scroll.scrollHeight - 1) operations.SCROLL_DOWN = OPERATION_LABELS.SCROLL_DOWN;
 	if (scroll.y > 0) operations.SCROLL_UP = OPERATION_LABELS.SCROLL_UP;
@@ -231,13 +292,21 @@ export function buildJevRequest(
 			instructions: { goal, rules: nextActionRules },
 		},
 	};
-	for (const operation of ["CLICK", "TYPE_TEXT"] as const) {
-		const entries = space.targets[operation];
+	for (const head of TARGET_OPERATIONS) {
+		const entries = space.targets[head];
 		if (!entries) continue;
-		questions[`${operation.toLowerCase()}_target`] = {
+		// A head only costs tokens when its operation is actually offered.
+		const operation = head === "DRAG_FROM" || head === "DRAG_TO" ? "DRAG" : head;
+		if (operations[operation] === undefined) continue;
+		questions[`${head.toLowerCase()}_target`] = {
 			type: "choice",
 			criteria: targetCriteria(entries),
-			instructions: { goal, operation, rules: [nextActionRules, targetRules] },
+			instructions: {
+				goal,
+				operation:
+					head === "DRAG_FROM" ? "DRAG (element to pick up)" : head === "DRAG_TO" ? "DRAG (drop target)" : head,
+				rules: [nextActionRules, targetRules],
+			},
 		};
 	}
 	const body = {
@@ -260,7 +329,10 @@ export function buildJevRequest(
 function describeStep(step: JevStep): string {
 	if (!step.target) return step.operation;
 	const name = step.target.name ? ` ${step.target.name}` : "";
-	return `${step.operation} ${step.target.role}${name}`;
+	const drop = step.dropTarget
+		? ` onto ${step.dropTarget.role}${step.dropTarget.name ? ` ${step.dropTarget.name}` : ""}`
+		: "";
+	return `${step.operation} ${step.target.role}${name}${drop}`;
 }
 
 /** Reject any answer whose choice, probability set, or normalization is off — no action executes on it. */
@@ -377,15 +449,37 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 			pageChanged: false,
 			url: observation.url,
 		};
-		if (operation === "CLICK" || operation === "TYPE_TEXT") {
-			const entries = space.targets[operation]!;
-			const targetAnswer = validateChoice(answers[`${operation.toLowerCase()}_target`], entries.keys());
-			const entry = entries.get(targetAnswer.choice)!;
+		const resolveTarget = (head: JevTargetHead): ObservationEntry => {
+			const entries = space.targets[head]!;
+			const answer = validateChoice(answers[`${head.toLowerCase()}_target`], entries.keys());
+			step.probability = answer.probabilities[answer.choice]!;
+			return entries.get(answer.choice)!;
+		};
+		if (operation === "DRAG") {
+			const from = resolveTarget("DRAG_FROM");
+			const to = resolveTarget("DRAG_TO");
+			if (from.id === to.id) {
+				throw new ToolError(
+					`tab.act(): DRAG chose the same element (${from.id}) as source and target; nothing dragged.`,
+				);
+			}
+			step.target = { id: from.id, role: from.role, name: from.name };
+			step.dropTarget = { id: to.id, role: to.role, name: to.name };
+			await driver.drag(from.id, to.id);
+			await driver.wait(SETTLE_MS);
+		} else if (
+			operation === "CLICK" ||
+			operation === "TYPE_TEXT" ||
+			operation === "SELECT" ||
+			operation === "HOVER" ||
+			operation === "PRESS_ENTER"
+		) {
+			const entry = resolveTarget(operation);
 			step.target = { id: entry.id, role: entry.role, name: entry.name };
-			step.probability = targetAnswer.probabilities[targetAnswer.choice]!;
-			if (operation === "CLICK") {
-				await driver.click(entry.id);
-			} else {
+			if (operation === "CLICK" || operation === "SELECT") await driver.click(entry.id);
+			else if (operation === "HOVER") await driver.hover(entry.id);
+			else if (operation === "PRESS_ENTER") await driver.pressEnter(entry.id);
+			else {
 				const text = await driver.fieldText(
 					{
 						goal: task,

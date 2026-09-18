@@ -38,6 +38,7 @@ import {
 } from "../run-scope";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tool-errors";
 import { disableAnnotationMode, enableAnnotationMode } from "./annotate";
+import { elementCenter, selectObservedOptionInPage } from "./jev-dom";
 import { fieldTextViaBridge, type JevActOptions, type JevActResult, runJevAct } from "./jev";
 import {
 	type AriaSnapshotOptions,
@@ -581,6 +582,15 @@ async function fillViaHandle(
 		}),
 	);
 	await untilAborted(signal, () => type(value));
+}
+
+/**
+ * Commit an observed option element (SELECT) via the shared page function, then
+ * fall back to a click when the element is an ARIA option rather than a native one.
+ */
+async function selectObservedOption(handle: ElementHandle, signal?: AbortSignal): Promise<void> {
+	const committed = (await untilAborted(signal, () => handle.evaluate(selectObservedOptionInPage))) as boolean;
+	if (!committed) await untilAborted(signal, () => handle.click());
 }
 
 /**
@@ -1720,11 +1730,23 @@ export class WorkerCore {
 										return doc.body?.innerText ?? "";
 									}),
 								) as Promise<string>,
-							click: async id => {
-								const handle = await this.#resolveCachedHandle(id);
-								await untilAborted(sig, () => handle.click());
-							},
+							// Activation, not a raw click: a native <option> commits through its select.
+							click: async id => selectObservedOption(await this.#resolveCachedHandle(id), sig),
 							fill: async (id, text) => fillViaHandle(await this.#resolveCachedHandle(id), text, sig),
+							hover: async id => {
+								const handle = await this.#resolveCachedHandle(id);
+								await untilAborted(sig, () => handle.hover());
+							},
+							pressEnter: async id => {
+								const handle = await this.#resolveCachedHandle(id);
+								await untilAborted(sig, () => handle.focus());
+								await untilAborted(sig, () => page.keyboard.press("Enter"));
+							},
+							drag: async (fromId, toId) => {
+								const from = await elementCenter(await this.#resolveCachedHandle(fromId), "DRAG source");
+								const to = await elementCenter(await this.#resolveCachedHandle(toId), "DRAG target");
+								await this.#drag(from, to, sig);
+							},
 							scroll: deltaY =>
 								untilAborted(sig, () => dispatchScroll(() => page.mouse.wheel({ deltaX: 0, deltaY }))),
 							wait: ms => untilAborted(sig, () => Bun.sleep(ms)),

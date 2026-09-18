@@ -99,6 +99,10 @@ const browserSchema = type({
 	"enabled?": type("boolean").describe("annotate: enable (default) or disable the overlay"),
 	"wait?": type("boolean").describe("annotate: wait for a human submission (default true)"),
 	"persist?": type("boolean").describe("keep tab live across turn settle and idle close"),
+	"profile?": type("string").describe(
+		"named isolated browser session (own cookies/storage/login); reused by later opens with the same name",
+	),
+	"fresh?": type("boolean").describe("discard the named profile's stored state before opening"),
 });
 
 type BrowserParams = typeof browserSchema.infer;
@@ -112,6 +116,24 @@ interface BrowserPreludeDetails {
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
 	screenshots?: ScreenshotResult[];
 	value?: unknown;
+}
+
+/**
+ * Sanitize a caller-supplied profile name into a filesystem- and
+ * daemon-name-safe slug. The name reaches a Chromium `--user-data-dir` and a
+ * broker daemon name, so anything outside `[a-z0-9_-]` is rejected rather than
+ * silently rewritten into a different profile.
+ */
+export function normalizeBrowserProfile(profile: string | undefined): string | undefined {
+	if (profile === undefined) return undefined;
+	const name = profile.trim().toLowerCase();
+	if (name.length === 0) return undefined;
+	if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(name)) {
+		throw new ToolError(
+			`browser profile ${JSON.stringify(profile)} must be 1-40 chars of a-z, 0-9, "-" or "_" and start alphanumeric.`,
+		);
+	}
+	return name;
 }
 
 export function resolveBrowserKind(params: BrowserParams, session: ToolSession): BrowserKind {
@@ -152,7 +174,7 @@ export function resolveBrowserKind(params: BrowserParams, session: ToolSession):
 		return cmuxKind;
 	}
 	const headless = session.settings.get("browser.headless");
-	return { kind: "headless", headless };
+	return { kind: "headless", headless, profile: normalizeBrowserProfile(params.profile), fresh: params.fresh };
 }
 
 /** Create the enabled-only browser host prelude for one tool session. */

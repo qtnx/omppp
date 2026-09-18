@@ -34,9 +34,14 @@ export interface SharedBrowserEndpoint {
 	projectDir: string;
 }
 
-/** Stable broker daemon name for the shared automation browser. */
-export function sharedBrowserDaemonName(headless: boolean): string {
-	return headless ? "omp.browser.headless" : "omp.browser.headed";
+/**
+ * Stable broker daemon name for the shared automation browser. A named profile
+ * gets its OWN daemon (and therefore its own Chromium process, profile
+ * directory, and cookie jar) so several accounts can be driven side by side.
+ */
+export function sharedBrowserDaemonName(headless: boolean, profile?: string): string {
+	const base = headless ? "omp.browser.headless" : "omp.browser.headed";
+	return profile ? `${base}.p-${profile}` : base;
 }
 
 function wsEndpointOf(snapshot: DaemonSnapshot | undefined): string | undefined {
@@ -66,12 +71,16 @@ async function probeEndpoint(wsEndpoint: string): Promise<boolean> {
 export async function ensureSharedBrowser(opts: {
 	projectDir: string;
 	headless: boolean;
+	/** Named isolated profile; omitted shares the project's default browser. */
+	profile?: string;
+	/** Discard the named profile's stored state (cookies, storage) before starting. */
+	fresh?: boolean;
 	viewport?: { width: number; height: number };
 	gpu?: boolean;
 	signal?: AbortSignal;
 }): Promise<SharedBrowserEndpoint | null> {
 	const client = await daemonClientForProject(opts.projectDir);
-	const name = sharedBrowserDaemonName(opts.headless);
+	const name = sharedBrowserDaemonName(opts.headless, opts.profile);
 	// Stable profile under the broker's runtime dir: reused across launches, and
 	// never contended by pre-daemon Chromiums that used throwaway temp profiles.
 	const userDataDir = path.join(daemonRuntimeDir(client.projectDir), `${name}.profile`);
@@ -82,6 +91,12 @@ export async function ensureSharedBrowser(opts: {
 		gpu: opts.gpu,
 	});
 	if (!launch) return null;
+	if (opts.fresh && opts.profile) {
+		// A fresh profile must not reuse the running Chromium: stop the daemon
+		// holding the directory, then drop the stored state before relaunching.
+		await stopQuietly(client, name, "Shared browser", opts.signal);
+		await fs.rm(userDataDir, { recursive: true, force: true });
+	}
 	await fs.mkdir(userDataDir, { recursive: true });
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		throwIfAborted(opts.signal);
