@@ -4176,7 +4176,6 @@ function applyPromptCaching(
 	if (!cacheControl) return;
 
 	let cacheBreakpointsUsed = countHeadBreakpoints(params);
-	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
 	if (params.system && Array.isArray(params.system) && params.system.length > 0) {
 		const isCCLayout = params.system[0]?.text?.startsWith(CLAUDE_BILLING_HEADER_PREFIX) === true;
 		// Prefix sharing is a secondary anchor: it caches the same block range the
@@ -4201,12 +4200,15 @@ function applyPromptCaching(
 			);
 		}
 	}
-	const messageBudget = Math.max(0, MAX_CACHE_BREAKPOINTS - cacheBreakpointsUsed);
-	if (messageBudget <= 0 || params.messages.length === 0) return;
+	// The automatic conversation cache is a request-level flag, not one of the
+	// four block breakpoints: a fully anchored head (three system blocks plus the
+	// tool anchor) must never starve it, or every turn re-bills the whole tail.
 	if (useAutomaticConversationCache && messageBoundary === undefined) {
-		params.cache_control = cloneAnthropicCacheControl(cacheControl);
+		if (params.messages.length > 0) params.cache_control = cloneAnthropicCacheControl(cacheControl);
 		return;
 	}
+	const messageBudget = Math.max(0, MAX_CACHE_BREAKPOINTS - cacheBreakpointsUsed);
+	if (messageBudget <= 0 || params.messages.length === 0) return;
 
 	// `convertAnthropicMessages` appends this neutral pad after a trailing
 	// assistant because Anthropic rejects assistant-prefill endings. It is absent
@@ -4471,8 +4473,14 @@ function applyHeadCaching(
 	// 4-breakpoint budget because applyPromptCaching counts every breakpoint.
 	const systemAnchored = systemBlocks?.some(block => block.cache_control != null) ?? false;
 	const toolsAnchored = tools?.some(tool => tool.cache_control != null) ?? false;
+	// The OAuth Claude Code layout keeps first-party wire parity: its system
+	// breakpoints already cache every preceding tool (canonical tools → system
+	// order), so no tool anchor is added there — and the request-level automatic
+	// cache spends the fourth slot, which a tool anchor would push to five
+	// ("A maximum of 4 blocks with cache_control may be provided. Found 5.").
+	const isOAuthLayout = systemBlocks?.[0]?.text?.startsWith(CLAUDE_BILLING_HEADER_PREFIX) === true;
 
-	if (tools && tools.length > 0 && !toolsAnchored) {
+	if (tools && tools.length > 0 && !toolsAnchored && !isOAuthLayout) {
 		// Deferred tools are not part of the checked prefix until referenced, so
 		// anchor the last tool that actually sits in the stable prefix.
 		for (let index = tools.length - 1; index >= 0; index--) {
@@ -5172,7 +5180,9 @@ function buildParams(
 	disableThinkingIfToolChoiceForced(params, model);
 	ensureMaxTokensForThinking(params, maxOutputTokens);
 	applyPromptCaching(params, cacheControl, options?.anthropicCacheMessageBoundary, useAutomaticConversationCache);
-	enforceCacheControlLimit(params, MAX_CACHE_BREAKPOINTS);
+	// The request-level automatic cache occupies one of Anthropic's four
+	// cache_control slots, so the block breakpoints must leave room for it.
+	enforceCacheControlLimit(params, useAutomaticConversationCache ? MAX_CACHE_BREAKPOINTS - 1 : MAX_CACHE_BREAKPOINTS);
 	normalizeCacheControlTtlOrdering(params);
 
 	return { params, controlState, prefixDroppedThinking };

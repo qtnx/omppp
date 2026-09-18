@@ -458,6 +458,38 @@ describe("Anthropic request fingerprint alignment", () => {
 		for (const control of controls) expect(control).not.toHaveProperty("ttl");
 	});
 
+	it("keeps OAuth requests within the four cache_control slots while caching the tail", async () => {
+		// Regression: the tool anchor added on the OAuth layout spent the fourth
+		// slot the request-level automatic cache needs, so Anthropic rejected the
+		// request outright — "A maximum of 4 blocks with cache_control may be
+		// provided. Found 5." The OAuth layout must keep three system anchors plus
+		// the automatic tail cache and no tool anchor (tools precede system in wire
+		// order, so the system anchors already cover them).
+		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
+			systemPrompt: ["Stay concise.", "Project context.", "Repository context."],
+			tools: [
+				{
+					name: "lookup",
+					description: "Lookup a value",
+					parameters: { type: "object", properties: {}, additionalProperties: false },
+				},
+			],
+			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+		})) as {
+			tools?: Array<{ cache_control?: unknown }>;
+			system?: Array<{ cache_control?: unknown }>;
+			cache_control?: unknown;
+		};
+
+		const blockAnchors = [...(payload.system ?? []), ...(payload.tools ?? [])].filter(
+			block => block.cache_control != null,
+		);
+		expect(blockAnchors).toHaveLength(3);
+		expect((payload.tools ?? []).some(tool => tool.cache_control != null)).toBe(false);
+		expect(payload.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+		expect(blockAnchors.length + (payload.cache_control != null ? 1 : 0)).toBeLessThanOrEqual(4);
+	});
+
 	it("uses global scope only on the stable OAuth system prefix", async () => {
 		const request = await captureAnthropicRequest(ANTHROPIC_MODEL, {
 			systemPrompt: ["Stable instructions.", "Middle instructions.", "Project footer.", "Repository context."],
@@ -2196,11 +2228,13 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.tools?.[0]?.name).toBe(`${claudeToolPrefix}bash`);
 		expect(payload.tools?.[0]?.strict).toBe(true);
 		expect(payload.tools?.[0]?.eager_input_streaming).toBe(true);
-		// Sole tool is also the last tool, so it carries the head breakpoint.
-		expect(payload.tools?.[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+		// The OAuth Claude Code layout spends its slots on system anchors plus the
+		// request-level automatic cache; a tool anchor here would be the fifth and
+		// Anthropic rejects the request. The system anchors already cover the tools.
+		expect(payload.tools?.[0]?.cache_control).toBeUndefined();
 	});
 
-	it("breakpoints the last tool definition so the stable head gets its own cache entry", async () => {
+	it("keeps the OAuth stable head cached without spending the tail's slot", async () => {
 		const tools: Tool[] = ["search", "fetch", "run"].map(name => ({
 			name,
 			description: `${name} tool`,
@@ -2222,30 +2256,28 @@ describe("Anthropic request fingerprint alignment", () => {
 			messages?: Array<{ content?: Array<{ cache_control?: unknown }> | string }>;
 		};
 
-		// Only the last tool is marked: it caches every definition before it as a
-		// single prefix, so earlier markers would spend breakpoints for nothing.
-		expect(payload.tools?.[0]?.cache_control).toBeUndefined();
-		expect(payload.tools?.[1]?.cache_control).toBeUndefined();
-		expect(payload.tools?.at(-1)?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
-
 		// OMPx divergence: the fork covers the tail with the automatic top-level
 		// anchor and keeps the request-specific OAuth identity blocks uncached, so the
 		// long-cache anchor sits on the trailing caller block instead of the trailing
-		// message. The head breakpoint count is what bounds the message budget, so the
-		// tool anchor must not leave the tail unanchored.
+		// message. On this layout the system anchors already cache the tools that
+		// precede them, and a tool anchor would push the request past Anthropic's
+		// four cache_control slots.
+		expect(payload.tools?.every(tool => tool.cache_control == null)).toBe(true);
 		expect(payload.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		const content = payload.messages?.at(-1)?.content;
 		expect(Array.isArray(content) ? content.at(-1)?.cache_control : undefined).toBeUndefined();
 		expect(payload.system?.[1]?.cache_control).toBeUndefined();
 		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h", scope: "global" });
-		// Anthropic rejects a fifth breakpoint, so the total must stay in budget.
+		// Anthropic rejects a fifth breakpoint — including the request-level
+		// automatic one — so the total must stay within the budget.
 		const marked = (blocks: Array<{ cache_control?: unknown }> | undefined) =>
 			(blocks ?? []).filter(block => block.cache_control != null).length;
 		const messageBreakpoints = (payload.messages ?? []).reduce(
 			(total, message) => total + (Array.isArray(message.content) ? marked(message.content) : 0),
 			0,
 		);
-		expect(marked(payload.tools) + marked(payload.system) + messageBreakpoints).toBeLessThanOrEqual(4);
+		const total = marked(payload.tools) + marked(payload.system) + messageBreakpoints;
+		expect(total + (payload.cache_control != null ? 1 : 0)).toBeLessThanOrEqual(4);
 	});
 
 	it("marks only the Anthropic strict allowlist strict", async () => {
