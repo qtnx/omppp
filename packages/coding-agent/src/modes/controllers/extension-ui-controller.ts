@@ -35,6 +35,7 @@ import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from ".
 import { normalizeCustomMessagePayload, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { disambiguateDisplayLabels, sanitizeCarriageReturns } from "../../tools/render-utils";
 import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
+import type { ContextTrimInput, ContextTrimSignals } from "../../signals/types";
 
 const MAX_WIDGET_LINES = 10;
 const ASK_OTHER_OPTION = "Other (type your own)";
@@ -216,6 +217,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			classifyContextTrim: input => this.#classifyContextTrim(input),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -450,6 +452,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			classifyContextTrim: input => this.#classifyContextTrim(input),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -582,6 +585,7 @@ export class ExtensionUiController {
 						},
 						getSystemPrompt: () => this.ctx.session.systemPrompt,
 						compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
+						classifyContextTrim: input => this.#classifyContextTrim(input),
 					});
 				} catch (err) {
 					this.showToolError(registeredTool.definition.name, err instanceof Error ? err.message : String(err));
@@ -1256,6 +1260,11 @@ export class ExtensionUiController {
 		const options =
 			instructionsOrOptions && typeof instructionsOrOptions === "object" ? instructionsOrOptions : undefined;
 		await this.ctx.session.compact(instructions, options);
+	}
+
+	/** Jev context-trim judgment for extensions; undefined while signals are off or unavailable. */
+	async #classifyContextTrim(input: ContextTrimInput): Promise<ContextTrimSignals | undefined> {
+		return await this.ctx.session.turnSignals?.classifyContextTrim(input);
 	}
 
 	async #updateSessionName(name: string): Promise<void> {

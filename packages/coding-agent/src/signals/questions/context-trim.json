@@ -1,0 +1,27 @@
+{
+	"action": {
+		"type": "choice",
+		"instructions": "The state has `upcoming_request` (what the coding session is about to work on next), `session_digest` (what it has been doing: title, latest summary, recent requests), `context_tokens` (size of the current prompt), and `candidates` (large records already in the prompt: id, kind, age in turns, token count, short summary). The prompt is about to be rebuilt from scratch for a different model, so nothing already cached is lost by rewriting it. Which treatment of the prior history serves the upcoming work best?",
+		"criteria": {
+			"shake": "Drop the stale raw outputs (old tool results, file reads, command output) that the upcoming work will not consult again, and keep the dialogue and instructions as they are",
+			"compact": "Replace the whole history with a summary: the upcoming request already states what to do and the details of how the session got here would only cost tokens",
+			"nothing": "Keep everything: the prompt is small, or the upcoming work still relies on most of the raw material in it"
+		}
+	},
+	"handoff_sufficient": {
+		"type": "noul",
+		"instructions": "Does `upcoming_request` on its own state what to do next clearly enough that the work could start from it plus a short summary, without re-reading the earlier tool outputs in `candidates`?",
+		"criteria": {
+			"true": "It names the concrete goal, the files or areas involved, and the acceptance or verification expected",
+			"false": "It is a short follow-up, a reaction, or a question that only makes sense against the earlier outputs"
+		}
+	},
+	"keep": {
+		"type": "noul",
+		"instructions": "Consider the candidate record whose `id` is `{{id}}` in `candidates`. Will the work described by `upcoming_request` need this record's full content — the exact lines, values, or output — rather than the one-line summary shown?",
+		"criteria": {
+			"true": "The upcoming work edits, verifies, or reasons over the specific content of this record, or it is the direct evidence the request refers to",
+			"false": "The record was already acted on, is superseded by later outputs, belongs to a finished sub-task, or its summary is all that could matter now"
+		}
+	}
+}

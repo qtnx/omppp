@@ -52,6 +52,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 		trackAgentInvokingMessage,
 	} = options;
 	const shutdown = onShutdown ?? (() => {});
+	const turnSignals = session.turnSignals;
 
 	runner.initialize(
 		// ExtensionActions
@@ -129,6 +130,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			getContextUsage: () => session.getContextUsage(),
 			getSystemPrompt: () => session.systemPrompt,
 			compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
+			...(turnSignals ? { classifyContextTrim: input => turnSignals.classifyContextTrim(input) } : {}),
 		},
 		// ExtensionCommandContextActions — commands invokable via prompt("/command")
 		{

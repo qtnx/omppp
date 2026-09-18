@@ -1,4 +1,5 @@
 /// <reference path="./bun-imports.d.ts" />
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type {
 	ContextEvent,
 	ExtensionAPI,
@@ -6,8 +7,10 @@ import type {
 	ExtensionFactory,
 	ToolResultEvent,
 } from "@oh-my-pi/pi-coding-agent";
+import { contentToText } from "@oh-my-pi/pi-coding-agent";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
+	type ActiveContextAnalysis,
 	type ActiveSnapshot,
 	analyzeActiveContext,
 	createActiveSnapshot,
@@ -17,9 +20,12 @@ import contextGcSystemPrompt from "./context-gc-system-prompt.md" with { type: "
 import { isContextGcInspectionTool, projectUnloadedContext } from "./context-transform";
 import {
 	type DeferredUnloadSessionState,
+	type TrimCandidate,
 	decideDeferredUnloads,
 	isCacheCold,
 	selectAutoShakeRecords,
+	selectTrimByJudgment,
+	trimPaysOff,
 } from "./deferred-unload";
 import { extractMessagePayload, payloadForMessage, payloadFromContent } from "./extract";
 import { buildContextGcReminder, buildContextUsageReminder } from "./reminder";
@@ -129,6 +135,163 @@ interface PersistPayloadInput {
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return value as Record<string, unknown>;
+}
+
+/** `provider/id` key for per-model cache warmth. */
+function modelKeyOf(model: { provider: string; id: string } | undefined): string {
+	return model ? `${model.provider}/${model.id}` : "unknown";
+}
+
+/** Cache read/write tokens of an assistant message, or zeros when it carries no usage. */
+function readCacheUsage(message: unknown): { cacheRead: number; cacheWrite: number } {
+	if (!message || typeof message !== "object" || !("usage" in message)) return { cacheRead: 0, cacheWrite: 0 };
+	const usage = message.usage;
+	if (!usage || typeof usage !== "object") return { cacheRead: 0, cacheWrite: 0 };
+	const read = "cacheRead" in usage && typeof usage.cacheRead === "number" ? usage.cacheRead : 0;
+	const write = "cacheWrite" in usage && typeof usage.cacheWrite === "number" ? usage.cacheWrite : 0;
+	return { cacheRead: read, cacheWrite: write };
+}
+
+/** Records at the very tail are the live exchange; a trim never touches them. */
+const TRIM_KEEP_TAIL_MESSAGES = 2;
+/** Candidates per judgment request: shedding value concentrates in the largest records. */
+export const TRIM_MAX_CANDIDATES = 30;
+/** Below this keep-probability the upcoming work does not need the record's full content. */
+export const TRIM_KEEP_THRESHOLD = 0.35;
+/** The instruction the per-candidate questions carry; `{{id}}` is replaced per record. */
+const TRIM_SUMMARY_CHARS = 300;
+
+/**
+ * Records to shed before a prompt rewrite: jev judges each candidate against the
+ * upcoming work, and the economic gate prices the shed tokens against the prefix
+ * of the model that just answered. Falls back to the kind-based heuristic when
+ * signals are unavailable, so a dead classifier keeps today's behavior.
+ */
+async function selectTrimRecords(input: {
+	analysis: ActiveContextAnalysis;
+	messages: readonly AgentMessage[];
+	ctx: ExtensionContext;
+	state: DeferredUnloadSessionState;
+	modelKey: string;
+}): Promise<ContextRecord[]> {
+	const { analysis, messages, ctx, state, modelKey } = input;
+	const candidates = buildTrimCandidates(analysis, messages);
+	if (candidates.length === 0) return [];
+	const target = ctx.model;
+	const contextTokens = ctx.getContextUsage()?.tokens ?? null;
+	const judgment = ctx.classifyContextTrim
+		? await ctx.classifyContextTrim({
+				upcomingRequest: latestRequestText(messages),
+				sessionDigest: sessionDigest(ctx, messages),
+				contextTokens,
+				candidates: candidates.map(candidate => ({
+					id: candidate.id,
+					kind: candidate.kind,
+					ageTurns: candidate.ageTurns,
+					tokens: candidate.tokens,
+					summary: candidate.summary.slice(0, TRIM_SUMMARY_CHARS),
+				})),
+			})
+		: undefined;
+	if (!judgment) {
+		return selectAutoShakeRecords(
+			candidates.map(candidate => ({
+				record: candidate.record,
+				messageIndex: candidate.messageIndex,
+				netTokens: candidate.tokens,
+			})),
+			messages.length,
+		);
+	}
+	const shed = selectTrimByJudgment(candidates, judgment, TRIM_KEEP_THRESHOLD);
+	if (shed.length === 0) return [];
+	const shedTokens = shed.reduce((sum, candidate) => sum + candidate.tokens, 0);
+	const writePrice = target?.cost.cacheWrite ?? 0;
+	const pays = trimPaysOff(state, Date.now(), modelKey, shedTokens, writePrice);
+	logger.debug("Context GC: trim judgment", {
+		model: modelKey,
+		action: judgment.action,
+		actionConfidence: judgment.actionConfidence,
+		candidates: candidates.length,
+		shed: shed.length,
+		shedTokens,
+		pays,
+	});
+	// `compact` is the session's own pre-prompt path: a context hook cannot
+	// rewrite the prompt it is building, so the recommendation is logged and the
+	// recoverable shed (recall-able) runs instead.
+	if (!pays) return [];
+	return shed.map(candidate => candidate.record);
+}
+
+interface TrimCandidateRecord extends TrimCandidate {
+	record: ContextRecord;
+}
+
+function buildTrimCandidates(
+	analysis: ActiveContextAnalysis,
+	messages: readonly AgentMessage[],
+): TrimCandidateRecord[] {
+	const cutoff = messages.length - TRIM_KEEP_TAIL_MESSAGES;
+	const turnsAfter = (index: number): number => {
+		let turns = 0;
+		for (let i = index + 1; i < messages.length; i++) {
+			if (messages[i]?.role === "user") turns += 1;
+		}
+		return turns;
+	};
+	return [...analysis.matches.values()]
+		.filter(match => match.record.status === "candidate" && match.messageIndex < cutoff)
+		.map(match => ({
+			record: match.record,
+			id: match.record.id,
+			kind: match.record.kind,
+			ageTurns: turnsAfter(match.messageIndex),
+			tokens: match.estimate.netTokens,
+			summary: match.record.summary,
+			messageIndex: match.messageIndex,
+		}))
+		.filter(candidate => candidate.tokens > 0)
+		.sort((a, b) => b.tokens - a.tokens)
+		.slice(0, TRIM_MAX_CANDIDATES);
+}
+
+/** The latest duo handoff brief, else the last user request — what work comes next. */
+function latestRequestText(messages: readonly AgentMessage[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message?.role !== "toolResult" || message.toolName !== "duo_handoff") continue;
+		const text = contentToText(message.content).trim();
+		if (text) return text;
+	}
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message?.role !== "user") continue;
+		const text = contentToText(message.content).trim();
+		if (text) return text;
+	}
+	return "";
+}
+
+function sessionDigest(ctx: ExtensionContext, messages: readonly AgentMessage[]): string {
+	const parts: string[] = [];
+	const title = ctx.sessionManager.getSessionName();
+	if (title) parts.push(`Title: ${title}`);
+	const requests: string[] = [];
+	for (let i = messages.length - 1; i >= 0 && requests.length < 3; i--) {
+		const message = messages[i];
+		if (message?.role !== "user") continue;
+		const text = contentToText(message.content).slice(0, 500).trim();
+		if (text) requests.push(text);
+	}
+	if (requests.length > 0)
+		parts.push(
+			`Recent requests:\n${requests
+				.reverse()
+				.map(text => `- ${text}`)
+				.join("\n")}`,
+		);
+	return parts.join("\n\n");
 }
 
 function nowIso(): string {
@@ -509,7 +672,7 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 	const deferredUnloadState = (sessionId: string): DeferredUnloadSessionState => {
 		let state = deferredUnloads.get(sessionId);
 		if (!state) {
-			state = { applied: new Set() };
+			state = { applied: new Set(), lastResponseByModel: new Map() };
 			deferredUnloads.set(sessionId, state);
 		}
 		return state;
@@ -556,32 +719,35 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 		let records = branchRecords(store, currentState);
 		let analysis = analyzeActiveContext(event.messages, records);
 		const deferred = deferredUnloadState(currentState.sessionId);
-		// Cold-cache auto-shake: the provider will re-write the whole prompt on this request
-		// regardless, so stale tool output is shed first and the new cache starts smaller.
-		if (autoShake && isCacheCold(deferred, now())) {
-			const shaken = selectAutoShakeRecords(
-				[...analysis.matches.values()].map(match => ({
-					record: match.record,
-					messageIndex: match.messageIndex,
-					netTokens: match.estimate.netTokens,
-				})),
-				event.messages.length,
-			);
-			if (shaken.length > 0) {
-				const reason = "auto-shake: prompt cache cold";
+		const modelKey = modelKeyOf(ctx.model);
+		// Cold-cache trim: the target model's prompt cache holds nothing, so the
+		// provider rewrites the whole prompt on this request regardless and anything
+		// shed now is free. A duo phase switch lands here — the other model keeps its
+		// own live prefix, which the economic gate below prices before shedding.
+		if (autoShake && isCacheCold(deferred, now(), modelKey)) {
+			const shed = await selectTrimRecords({
+				analysis,
+				messages: event.messages,
+				ctx,
+				state: deferred,
+				modelKey,
+			});
+			if (shed.length > 0) {
+				const reason = "auto-trim: prompt cache cold";
 				const result = await runContextUnload(
 					store,
 					currentState.sessionId,
-					{ ids: shaken.map(record => record.id), summary: "", reason },
+					{ ids: shed.map(record => record.id), summary: "", reason },
 					deriveBranchStatuses(currentState.deltas.filter(delta => delta.sessionId === currentState.sessionId)),
 				);
-				for (const record of shaken) {
+				for (const record of shed) {
 					if (!result.unloaded.includes(record.id)) continue;
 					pi.appendEntry(CONTEXT_GC_CUSTOM_TYPE, buildContextGcDelta(record, "unload", reason, record.summary));
 				}
-				logger.debug("Context GC: auto-shake on cold cache", {
+				logger.debug("Context GC: auto-trim on cold cache", {
+					model: modelKey,
 					unloaded: result.unloaded.length,
-					tokens: shaken.reduce((sum, record) => sum + record.tokenEstimate, 0),
+					tokens: shed.reduce((sum, record) => sum + record.tokenEstimate, 0),
 				});
 				currentState = readContextGcSessionState(ctx);
 				records = branchRecords(store, currentState);
@@ -599,6 +765,7 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 			unloaded,
 			state: deferred,
 			contextTokens: ctx.getContextUsage()?.tokens ?? null,
+			modelKey,
 			now: now(),
 		});
 		if (decision.reason === "deferred" || decision.newlyApplied.length > 0) {
@@ -611,8 +778,21 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 		return { messages: projectUnloadedContext(event.messages, records, analysis, decision.projectIds) };
 	});
 
-	pi.on("turn_end", (_event, ctx) => {
-		deferredUnloadState(readContextGcSessionState(ctx).sessionId).lastResponseAt = now();
+	pi.on("turn_end", (event, ctx) => {
+		const state = deferredUnloadState(readContextGcSessionState(ctx).sessionId);
+		const model = ctx.model;
+		const { cacheRead, cacheWrite } = readCacheUsage(event.message);
+		const modelKey = modelKeyOf(model);
+		const wasCold = isCacheCold(state, now(), modelKey);
+		state.lastResponseByModel.set(modelKey, {
+			at: now(),
+			prefixTokens: cacheRead + cacheWrite,
+			writePricePerToken: model?.cost.cacheWrite ?? 0,
+		});
+		// The first turn on a cold prefix is the one a trim was meant to shrink.
+		if (wasCold && cacheWrite > 0) {
+			logger.debug("Context GC: cold-prefix write", { model: modelKey, cacheWrite, cacheRead });
+		}
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Context trim at a cold-cache model switch: when a session changes model (duo phase switch, manual switch) the provider prompt cache is cold for the new model anyway, so before the first request Jev judges every large prompt record against the upcoming work and the stale ones are shed — priced against the previous model's still-live prefix, so a flip-back inside its cache TTL is never paid for twice. Falls back to the kind-based cold-cache heuristic when Jev is unavailable.
+
 ## [1.10.1] - 2026-09-18
 
 ### Changed

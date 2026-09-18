@@ -25,8 +25,23 @@ export const DEFERRED_UNLOAD_APPLY_RATIO = 0.3;
 export interface DeferredUnloadSessionState {
 	/** Unloaded record ids already projected; sticky so the prefix never flips back. */
 	applied: Set<string>;
-	/** Wall-clock of the last completed model turn in this process. */
-	lastResponseAt?: number;
+	/**
+	 * Wall-clock and prompt size of the last completed turn per model key
+	 * (`provider/id`). Anthropic prompt caches are per model, so warmth must be
+	 * tracked per model: a duo planner/executor switch reads cold for the target
+	 * while the model that just answered keeps a live prefix.
+	 */
+	lastResponseByModel: Map<string, ModelResponseRecord>;
+}
+
+/** What one completed turn proved about its model's prompt cache. */
+export interface ModelResponseRecord {
+	/** Wall-clock of the last completed turn for this model. */
+	at: number;
+	/** Tokens the response proved cacheable: its cache read plus its cache write. */
+	prefixTokens: number;
+	/** Cache-write price per token, used to price the rewrite a trim would force. */
+	writePricePerToken: number;
 }
 
 export interface DeferredUnloadDecisionInput {
@@ -35,6 +50,8 @@ export interface DeferredUnloadDecisionInput {
 	state: DeferredUnloadSessionState;
 	/** Live context size in tokens, or `null` when unknown. */
 	contextTokens: number | null;
+	/** Model that will serve this request, as `provider/id`. */
+	modelKey: string;
 	now: number;
 }
 
@@ -54,7 +71,7 @@ export function decideDeferredUnloads(input: DeferredUnloadDecisionInput): Defer
 		return { projectIds: new Set(state.applied), newlyApplied: [], reason: "none", deferredTokens: 0 };
 	}
 	const deferredTokens = pending.reduce((sum, record) => sum + record.tokenEstimate, 0);
-	const cacheCold = isCacheCold(state, input.now);
+	const cacheCold = isCacheCold(state, input.now, input.modelKey);
 	const worthRewrite =
 		input.contextTokens === null ||
 		input.contextTokens <= 0 ||
@@ -100,8 +117,81 @@ export interface AutoShakeCandidate {
 	netTokens: number;
 }
 
-export function isCacheCold(state: DeferredUnloadSessionState, now: number): boolean {
-	return state.lastResponseAt === undefined || now - state.lastResponseAt >= PROMPT_CACHE_TTL_MS;
+/**
+ * Probability the session flips back to the other model inside the remaining
+ * TTL. Shedding at a switch rewrites the target model's prompt for free, but it
+ * also invalidates the model that just answered; the gate below prices both.
+ */
+export const FLIP_BACK_P = 0.5;
+
+/** One record offered to the trim judgment. */
+export interface TrimCandidate {
+	id: string;
+	kind: string;
+	/** Conversational turns between the record and the tail. */
+	ageTurns: number;
+	tokens: number;
+	summary: string;
+	messageIndex: number;
+}
+
+export interface TrimJudgment {
+	/** Probability per candidate id that the upcoming work needs the record's full content. */
+	keep: Record<string, number>;
+	action: "shake" | "compact" | "nothing";
+	actionConfidence: number;
+}
+
+/**
+ * Records the judgment says the upcoming work no longer needs in full. Only ids
+ * the model actually answered count — a missing verdict is not a drop, so a
+ * truncated or partially failed answer can never shed a record by omission.
+ */
+export function selectTrimByJudgment<T extends TrimCandidate>(
+	candidates: readonly T[],
+	judgment: TrimJudgment,
+	keepThreshold: number,
+): T[] {
+	if (judgment.action === "nothing") return [];
+	return candidates.filter(candidate => {
+		const keep = judgment.keep[candidate.id];
+		return keep !== undefined && keep < keepThreshold;
+	});
+}
+
+/**
+ * Whether shedding pays: the target model's cache is cold, so its next write is
+ * a full rewrite either way — the saving is the shed tokens priced at that
+ * model's cache-write rate. The loss is the other model's still-live prefix,
+ * which this rewrite would invalidate, discounted by how likely the session is
+ * to flip back before that prefix expires.
+ */
+export function trimPaysOff(
+	state: DeferredUnloadSessionState,
+	now: number,
+	targetModelKey: string,
+	shedTokens: number,
+	targetWritePricePerToken: number,
+): boolean {
+	const saving = shedTokens * targetWritePricePerToken;
+	let loss = 0;
+	for (const [modelKey, record] of state.lastResponseByModel) {
+		if (modelKey === targetModelKey) continue;
+		loss += livePrefixTokens(state, now, modelKey) * record.writePricePerToken * FLIP_BACK_P;
+	}
+	return saving > loss;
+}
+
+export function isCacheCold(state: DeferredUnloadSessionState, now: number, modelKey: string): boolean {
+	const record = state.lastResponseByModel.get(modelKey);
+	return record === undefined || now - record.at >= PROMPT_CACHE_TTL_MS;
+}
+
+/** Live prefix the given model could still read back, or 0 when its cache expired. */
+export function livePrefixTokens(state: DeferredUnloadSessionState, now: number, modelKey: string): number {
+	const record = state.lastResponseByModel.get(modelKey);
+	if (record === undefined || now - record.at >= PROMPT_CACHE_TTL_MS) return 0;
+	return record.prefixTokens;
 }
 
 /**

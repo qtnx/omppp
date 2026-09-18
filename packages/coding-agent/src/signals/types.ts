@@ -67,6 +67,34 @@ export interface TopicSignals {
 	topicSwitch: number;
 }
 
+/** One prompt record offered to the context-trim judgment. */
+export interface ContextTrimCandidate {
+	id: string;
+	kind: string;
+	/** Conversational turns since the record entered the prompt. */
+	ageTurns: number;
+	tokens: number;
+	/** One-line summary; clipped by the caller. */
+	summary: string;
+}
+
+export interface ContextTrimInput {
+	upcomingRequest: string;
+	sessionDigest: string;
+	contextTokens: number | null;
+	candidates: ContextTrimCandidate[];
+}
+
+/** Judgments over the prompt about to be rebuilt for a model whose cache is cold. */
+export interface ContextTrimSignals {
+	/** Probability, per candidate id, that the upcoming work needs the record's full content. */
+	keep: Record<string, number>;
+	action: "shake" | "compact" | "nothing";
+	actionConfidence: number;
+	/** Probability the upcoming request alone is enough to start from. */
+	handoffSufficient: number;
+}
+
 /** TypeSafe System One question shapes (subset used here). */
 export type NoulQuestion = {
 	type: "noul";

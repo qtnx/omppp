@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Prompt-cache warmth is tracked per model instead of per session: switching model (duo planner/executor, manual switch) reads cold only for the model that will serve the next request, so a switch trims stale prompt records while the model that just answered keeps its live prefix. The cold-cache trim is now judged by Jev against the upcoming work when signals are available, and falls back to the previous kind-based heuristic otherwise.
+
 ## [1.8.1] - 2026-09-08
 
 ### Added

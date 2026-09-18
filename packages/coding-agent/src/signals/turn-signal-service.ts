@@ -1,5 +1,6 @@
 import { $env, logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import contextTrimQuestions from "./questions/context-trim.json";
 import handoffQuestions from "./questions/handoff.json";
 import learningQuestions from "./questions/learning.json";
 import topicQuestions from "./questions/topic.json";
@@ -7,6 +8,8 @@ import turnQuestions from "./questions/turn.json";
 import { TypeSafeClient } from "./typesafe-client";
 import {
 	type Answer,
+	type ContextTrimInput,
+	type ContextTrimSignals,
 	type HandoffSignals,
 	isWorkPhase,
 	type LearningSignals,
@@ -25,6 +28,15 @@ const TURN_QUESTIONS = turnQuestions as Record<string, Question>;
 const HANDOFF_QUESTIONS = handoffQuestions as Record<string, Question>;
 const LEARNING_QUESTIONS = learningQuestions as Record<string, Question>;
 const TOPIC_QUESTIONS = topicQuestions as Record<string, Question>;
+const CONTEXT_TRIM_QUESTIONS = contextTrimQuestions as Record<string, Question> & { keep: Question };
+
+/** Candidate summaries are clipped so a large candidate set stays inside the state cap. */
+const CONTEXT_TRIM_SUMMARY_CHARS = 300;
+const CONTEXT_TRIM_ACTIONS: Record<string, true> = { shake: true, compact: true, nothing: true };
+
+function isContextTrimAction(value: string): value is ContextTrimSignals["action"] {
+	return CONTEXT_TRIM_ACTIONS[value] === true;
+}
 
 function noul(answer: Answer | undefined): number | undefined {
 	return answer?.type === "noul" && Number.isFinite(answer.noul) ? answer.noul : undefined;
@@ -186,6 +198,60 @@ export class TurnSignalService {
 		this.#record(response !== undefined);
 		const topicSwitch = noul(response?.answers.topic_switch);
 		return topicSwitch === undefined ? undefined : { topicSwitch };
+	}
+
+	/**
+	 * Judge what the prompt about to be rebuilt for a cold-cache model still
+	 * needs: one noul per candidate record plus the overall treatment. One
+	 * request; the per-record questions fan out in parallel server-side.
+	 * `keep` only carries ids the model answered, so callers treat a missing id
+	 * as "no verdict" rather than "drop".
+	 */
+	async classifyContextTrim(input: ContextTrimInput, signal?: AbortSignal): Promise<ContextTrimSignals | undefined> {
+		if (this.#unavailable || input.candidates.length === 0) return undefined;
+		const candidates = input.candidates.map(candidate => ({
+			id: candidate.id,
+			kind: candidate.kind,
+			age_turns: candidate.ageTurns,
+			tokens: candidate.tokens,
+			summary: candidate.summary.slice(0, CONTEXT_TRIM_SUMMARY_CHARS),
+		}));
+		const state = {
+			upcoming_request: this.#clip(input.upcomingRequest),
+			session_digest: this.#clip(input.sessionDigest),
+			context_tokens: input.contextTokens,
+			candidates,
+		};
+		const questions: Record<string, Question> = {
+			action: CONTEXT_TRIM_QUESTIONS.action,
+			handoff_sufficient: CONTEXT_TRIM_QUESTIONS.handoff_sufficient,
+		};
+		const keepTemplate = CONTEXT_TRIM_QUESTIONS.keep;
+		for (const candidate of candidates) {
+			questions[`keep:${candidate.id}`] = {
+				...keepTemplate,
+				instructions: keepTemplate.instructions.replaceAll("{{id}}", candidate.id),
+			};
+		}
+		const response = await this.#client.systemOne(state, questions, signal);
+		this.#record(response !== undefined);
+		if (!response) return undefined;
+		const action = response.answers.action;
+		const handoffSufficient = noul(response.answers.handoff_sufficient);
+		if (action?.type !== "choice" || !isContextTrimAction(action.choice) || handoffSufficient === undefined) {
+			return undefined;
+		}
+		const keep: Record<string, number> = {};
+		for (const candidate of candidates) {
+			const value = noul(response.answers[`keep:${candidate.id}`]);
+			if (value !== undefined) keep[candidate.id] = value;
+		}
+		return {
+			keep,
+			action: action.choice,
+			actionConfidence: action.confidence,
+			handoffSufficient,
+		};
 	}
 }
 
