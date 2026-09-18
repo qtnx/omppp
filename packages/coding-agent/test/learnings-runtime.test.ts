@@ -10,11 +10,18 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	buildLearningDeveloperInstructions,
 	clearLearningData,
-	invalidateLearningInjection,
+	createLearningTurnContextProvider,
 	startLearningStartupTask,
 } from "@oh-my-pi/pi-coding-agent/learnings";
 import * as consolidation from "@oh-my-pi/pi-coding-agent/learnings/consolidate";
-import { openLearningDb, recordLearningFeedback, upsertLearning } from "@oh-my-pi/pi-coding-agent/learnings/storage";
+import * as noveltyChecks from "@oh-my-pi/pi-coding-agent/learnings/novelty";
+import {
+	openLearningDb,
+	recordLearningFeedback,
+	type LearningEntry,
+	upsertLearning,
+} from "@oh-my-pi/pi-coding-agent/learnings/storage";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SingleResult } from "@oh-my-pi/pi-coding-agent/task";
 import * as taskExecutor from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -56,6 +63,7 @@ async function createFixture(overrides?: Partial<Record<string, unknown>>): Prom
 	const models = [smolModel, nanoModel, planModel];
 	const settings = Settings.isolated({
 		"learning.enabled": true,
+		"learning.novelty.enabled": false,
 		modelRoles: {
 			smol: "openai/smol-model",
 			plan: "openai/plan-model",
@@ -266,13 +274,11 @@ async function readJsonFile(filePath: string): Promise<Record<string, unknown>> 
 
 describe("live learnings runtime", () => {
 	beforeEach(() => {
-		invalidateLearningInjection();
 		vi.clearAllMocks();
 		vi.restoreAllMocks();
 	});
 
 	afterEach(async () => {
-		invalidateLearningInjection();
 		vi.restoreAllMocks();
 		for (const dir of createdDirs) {
 			await fs.rm(dir, { recursive: true, force: true });
@@ -330,7 +336,7 @@ describe("live learnings runtime", () => {
 		});
 
 		await waitFor(async () => {
-			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
+			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
 			expect(payload).toContain("When the user complains about missing verification");
 			expect(payload).toContain("Repository-specific learnings");
 		});
@@ -760,7 +766,7 @@ describe("live learnings runtime", () => {
 		});
 
 		await waitFor(async () => {
-			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
+			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
 			expect(payload).toContain("Treat user reminders about verification");
 		});
 		expect(completeSpy).toHaveBeenCalledTimes(1);
@@ -818,7 +824,7 @@ describe("live learnings runtime", () => {
 		});
 
 		await waitFor(async () => {
-			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
+			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
 			expect(payload).toContain("configured classifier fallback chain");
 		});
 		expect(completeSpy).toHaveBeenCalledTimes(2);
@@ -932,7 +938,7 @@ describe("live learnings runtime", () => {
 		});
 
 		await waitFor(async () => {
-			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
+			const payload = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
 			expect(payload).toContain("Global learnings");
 			expect(payload).toContain("Keep responses concise");
 		});
@@ -1030,6 +1036,158 @@ describe("live learnings runtime", () => {
 		});
 		expect(writerSpy.mock.calls[0]?.[0]?.task).toContain(`[l:${alias}]`);
 		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
+	});
+
+	test("reinforces an existing learning via the Jev novelty check without starting the writer", async () => {
+		const fx = await createFixture({ "learning.novelty.enabled": true });
+		const content = "Kim bảo verify thật trước khi claim xong.";
+		const db = openLearningDb(getAgentDbPath(fx.agentDir));
+		let seededId = "";
+		try {
+			upsertLearning(db, {
+				scope: "repo",
+				cwd: fx.cwd,
+				content,
+				sourceMessageHash: "seed",
+				trigger: "guideline",
+				confidence: 0.9,
+				nowSec: Math.floor(Date.now() / 1000),
+			});
+			const row = db.prepare("SELECT id FROM live_learnings WHERE content = ?").get(content) as { id: string };
+			seededId = row.id;
+		} finally {
+			db.close();
+		}
+
+		const noveltySpy = vi.spyOn(noveltyChecks, "checkLearningNovelty").mockResolvedValueOnce({
+			kind: "duplicate",
+			target: {
+				id: seededId,
+				scope: "repo",
+				cwd: fx.cwd,
+				content,
+				contentHash: "abcdef1234567890",
+				sourceMessageHash: "seed",
+				trigger: "guideline",
+				confidence: 0.9,
+				createdAt: 1_700_000_000,
+				updatedAt: 1_700_000_000,
+				status: "active",
+				statusChangedAt: null,
+				strength: 1,
+				usefulCount: 0,
+				notUsefulCount: 0,
+				lastReinforcedAt: 1_700_000_000,
+				mergedInto: null,
+				repoKey: fx.cwd,
+				shownCount: 0,
+				lastShownAt: null,
+			} as LearningEntry,
+			probability: 0.8,
+			isNew: 0.2,
+		});
+		vi.spyOn(ai, "completeSimple").mockResolvedValueOnce(
+			toolUseMessage([
+				{
+					type: "toolCall",
+					id: "novelty-decision",
+					name: "record_learning_decision",
+					arguments: {
+						store: true,
+						scope: "repo",
+						trigger: "guideline",
+						confidence: 0.9,
+						reason: "The user restates a durable guideline.",
+					},
+				},
+			]),
+		);
+		const writerSpy = vi.spyOn(taskExecutor, "runSubprocess");
+
+		startLearningStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+		fx.emit({
+			type: "agent_end",
+			messages: [
+				{
+					role: "user",
+					content,
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		await waitFor(() => {
+			expect(noveltySpy).toHaveBeenCalledTimes(1);
+		});
+		expect(writerSpy).not.toHaveBeenCalled();
+		const resultDb = new Database(getAgentDbPath(fx.agentDir));
+		try {
+			const row = resultDb.prepare("SELECT strength FROM live_learnings WHERE id = ?").get(seededId) as {
+				strength: number;
+			} | null;
+			expect(row?.strength).toBe(2);
+		} finally {
+			resultDb.close();
+		}
+		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
+	});
+
+	test("falls through to the writer when the novelty check answers none", async () => {
+		const fx = await createFixture({ "learning.novelty.enabled": true });
+		vi.spyOn(noveltyChecks, "checkLearningNovelty").mockResolvedValueOnce({
+			kind: "new",
+			isNew: 0.9,
+			noneProbability: 0.95,
+		});
+		vi.spyOn(ai, "completeSimple").mockResolvedValueOnce(
+			toolUseMessage([
+				{
+					type: "toolCall",
+					id: "novelty-new-decision",
+					name: "record_learning_decision",
+					arguments: {
+						store: true,
+						scope: "repo",
+						trigger: "guideline",
+						confidence: 0.9,
+						reason: "The user restates a durable guideline.",
+					},
+				},
+			]),
+		);
+		const writerSpy = vi
+			.spyOn(taskExecutor, "runSubprocess")
+			.mockResolvedValueOnce(agentWriterResult("Nové lesson: don't skip verification."));
+
+		startLearningStartupTask({
+			session: fx.session,
+			settings: fx.settings,
+			modelRegistry: fx.modelRegistry,
+			agentDir: fx.agentDir,
+			taskDepth: 0,
+		});
+		fx.emit({
+			type: "agent_end",
+			messages: [
+				{
+					role: "user",
+					content: "Nhớ verify thật trước gắg claim xong.",
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		await waitFor(() => {
+			expect(writerSpy).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	test("skips an unknown reinforce alias", async () => {
@@ -1213,15 +1371,70 @@ describe("live learnings runtime", () => {
 		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
 	});
 
-	test("memoizes injected learnings until invalidated and bypasses shown tracking without cache", async () => {
-		const fx = await createFixture();
+	test("injects a learning-context message with the relevant learnings and commits shown tracking on delivery", async () => {
+		const fx = await createFixture({ "learning.relevance.enabled": false });
+		const db = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			for (const content of ["Guideline one.", "Guideline two."]) {
+				upsertLearning(db, {
+					scope: "global",
+					cwd: "",
+					content,
+					sourceMessageHash: content,
+					trigger: "test",
+					confidence: 0.8,
+					nowSec: 100,
+				});
+			}
+		} finally {
+			db.close();
+		}
+
+		const provider = createLearningTurnContextProvider({ agentDir: fx.agentDir, settings: fx.settings });
+		const manager = SessionManager.inMemory();
+		const preparation = await provider?.({ promptText: "Do the work", sessionManager: manager });
+		expect(preparation).toBeDefined();
+		const message = preparation!.message;
+		expect(message.customType).toBe("learning-context");
+		expect(message.content).toContain("Live learning guidance for this request");
+		expect(message.content).toContain("- [l:");
+		expect(message.content).toContain("Guideline one.");
+		const details = message.details;
+		expect(details).toBeDefined();
+		if (typeof details !== "object" || details === null || Array.isArray(details)) {
+			throw new Error("Expected learning-context details object");
+		}
+		expect("aliases" in details && Array.isArray(details.aliases)).toBe(true);
+
+		// Shown tracking publishes only on validated delivery, not at staging.
+		const beforeDb = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			expect(
+				beforeDb.prepare("SELECT shown_count FROM live_learnings WHERE content = ?").get("Guideline one."),
+			).toEqual({ shown_count: 0 });
+		} finally {
+			beforeDb.close();
+		}
+		preparation!.commit();
+		const afterDb = openLearningDb(getAgentDbPath(fx.agentDir));
+		try {
+			expect(
+				afterDb.prepare("SELECT shown_count FROM live_learnings WHERE content = ?").get("Guideline one."),
+			).toEqual({ shown_count: 1 });
+		} finally {
+			afterDb.close();
+		}
+	});
+
+	test("does not re-inject learnings already delivered on the branch", async () => {
+		const fx = await createFixture({ "learning.relevance.enabled": false });
 		const db = openLearningDb(getAgentDbPath(fx.agentDir));
 		try {
 			upsertLearning(db, {
 				scope: "global",
 				cwd: "",
-				content: "First cached learning.",
-				sourceMessageHash: "first",
+				content: "Delivered guideline.",
+				sourceMessageHash: "delivered",
 				trigger: "test",
 				confidence: 0.8,
 				nowSec: 100,
@@ -1230,61 +1443,19 @@ describe("live learnings runtime", () => {
 			db.close();
 		}
 
-		const first = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
-		if (!first) throw new Error("Expected cached learning injection");
-		expect(first).toContain("First cached learning.");
-
-		const shownDb = openLearningDb(getAgentDbPath(fx.agentDir));
-		try {
-			expect(
-				shownDb.prepare("SELECT shown_count FROM live_learnings WHERE content = ?").get("First cached learning."),
-			).toEqual({ shown_count: 1 });
-			upsertLearning(shownDb, {
-				scope: "global",
-				cwd: "",
-				content: "Stored between prompt rebuilds.",
-				sourceMessageHash: "second",
-				trigger: "test",
-				confidence: 0.8,
-				nowSec: 101,
-			});
-		} finally {
-			shownDb.close();
-		}
-
-		const cached = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
-		expect(cached).toBe(first);
-		expect(cached).not.toContain("Stored between prompt rebuilds.");
-
-		invalidateLearningInjection();
-		const refreshed = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd);
-		expect(refreshed).toContain("Stored between prompt rebuilds.");
-
-		const uncachedDb = openLearningDb(getAgentDbPath(fx.agentDir));
-		try {
-			upsertLearning(uncachedDb, {
-				scope: "global",
-				cwd: "",
-				content: "Fresh uncached learning.",
-				sourceMessageHash: "uncached",
-				trigger: "test",
-				confidence: 0.8,
-				nowSec: 102,
-			});
-		} finally {
-			uncachedDb.close();
-		}
-
-		const uncached = await buildLearningDeveloperInstructions(fx.agentDir, fx.settings, fx.cwd, { cache: false });
-		expect(uncached).toContain("Fresh uncached learning.");
-		const readDb = openLearningDb(getAgentDbPath(fx.agentDir));
-		try {
-			expect(
-				readDb.prepare("SELECT shown_count FROM live_learnings WHERE content = ?").get("Fresh uncached learning."),
-			).toEqual({ shown_count: 0 });
-		} finally {
-			readDb.close();
-		}
+		const provider = createLearningTurnContextProvider({ agentDir: fx.agentDir, settings: fx.settings });
+		const manager = SessionManager.inMemory();
+		const first = await provider?.({ promptText: "Do the work", sessionManager: manager });
+		expect(first).toBeDefined();
+		manager.appendCustomMessageEntry(
+			first!.message.customType,
+			first!.message.content,
+			false,
+			first!.message.details,
+			"user",
+		);
+		const second = await provider?.({ promptText: "Do the work again", sessionManager: manager });
+		expect(second).toBeUndefined();
 	});
 
 	test("limits each injected scope to learning.maxInjectedPerScope entries", async () => {

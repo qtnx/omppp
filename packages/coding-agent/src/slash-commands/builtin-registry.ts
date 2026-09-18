@@ -16,12 +16,7 @@ import type { DuoStatus } from "../duo";
 import type { Skill } from "../extensibility/skills";
 import { disableHerdrNotify, enableHerdrNotify, herdrNotifyStatus } from "../herdr/notify-optin";
 import { isHerdrPane } from "../herdr/socket";
-import {
-	buildLearningDeveloperInstructions,
-	clearLearningData,
-	getLearningLogText,
-	invalidateLearningInjection,
-} from "../learnings";
+import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../learnings";
 import * as learningConsolidation from "../learnings/consolidate";
 import { resolveRepoKey } from "../learnings/repo-key";
 import * as learningStorage from "../learnings/storage";
@@ -834,9 +829,7 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			switch (verb) {
 				case "view": {
 					const agentDir = runtime.settings.getAgentDir();
-					const payload = await buildLearningDeveloperInstructions(agentDir, runtime.settings, runtime.cwd, {
-						cache: false,
-					});
+					const payload = await buildLearningDeveloperInstructions(agentDir, runtime.settings, runtime.cwd);
 					const repoKey = await resolveRepoKey(runtime.cwd);
 					const db = learningStorage.openLearningDb(getAgentDbPath(agentDir));
 					try {
@@ -882,7 +875,6 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 									)
 									.join("\n");
 					if (reports.some(report => (report.opsApplied ?? 0) > 0 || (report.capArchived ?? 0) > 0)) {
-						invalidateLearningInjection();
 						await runtime.session.refreshBaseSystemPrompt();
 					}
 					await runtime.output(reportText);
@@ -920,7 +912,6 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 						learningStorage.closeLearningDb(db);
 					}
 					if (archived) {
-						invalidateLearningInjection();
 						await runtime.session.refreshBaseSystemPrompt();
 					}
 					return commandConsumed();

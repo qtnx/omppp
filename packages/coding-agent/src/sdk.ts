@@ -155,7 +155,7 @@ import {
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions, stripXdUrlPrefix } from "./internal-urls";
-import { buildLearningDeveloperInstructions, startLearningStartupTask } from "./learnings";
+import { createLearningTurnContextProvider, startLearningStartupTask } from "./learnings";
 import { setSharedLspEnabled } from "./lsp/client";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import {
@@ -3756,7 +3756,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			const discoverableToolSummary = summarizeDiscoverableTools(discoverableToolsForDesc);
 			const hasDiscoverableTools =
 				currentMcpDiscoveryEnabled && toolNames.includes("search_tool_bm25") && discoverableToolsForDesc.length > 0;
-			const learningInstructions = await buildLearningDeveloperInstructions(agentDir, settings, currentCwd);
 
 			const promptCwd = currentCwd;
 			const activeRepoContext = hasSession
@@ -3836,7 +3835,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						learn: builtInToolNames.includes("learn"),
 					});
 			const appendParts: string[] = [];
-			if (learningInstructions) appendParts.push(learningInstructions);
 			if (memoryInstructions) appendParts.push(memoryInstructions);
 			if (autoLearnInstructions) appendParts.push(autoLearnInstructions);
 			const projection = projectMountedMCPXdevGuidance(
@@ -5269,6 +5267,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}),
 			),
 		);
+		if (taskDepth === 0 && settings.get("learning.enabled") === true) {
+			session.setLearningTurnContextProvider(createLearningTurnContextProvider({ agentDir, settings }));
+		}
 		const startMemoryBackend = async () => {
 			const memoryBackend = await resolveMemoryBackend(settings);
 			await memoryBackend.start({

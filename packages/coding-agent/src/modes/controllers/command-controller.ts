@@ -28,12 +28,7 @@ import {
 	seedAlreadyExists,
 	summarizeMentalModel,
 } from "../../hindsight";
-import {
-	buildLearningDeveloperInstructions,
-	clearLearningData,
-	getLearningLogText,
-	invalidateLearningInjection,
-} from "../../learnings";
+import { buildLearningDeveloperInstructions, clearLearningData, getLearningLogText } from "../../learnings";
 import * as learningConsolidation from "../../learnings/consolidate";
 import { resolveRepoKey } from "../../learnings/repo-key";
 import * as learningStorage from "../../learnings/storage";
@@ -872,7 +867,7 @@ export class CommandController {
 		const cwd = this.ctx.sessionManager.getCwd();
 
 		if (action === "view") {
-			const payload = await buildLearningDeveloperInstructions(agentDir, this.ctx.settings, cwd, { cache: false });
+			const payload = await buildLearningDeveloperInstructions(agentDir, this.ctx.settings, cwd);
 			const repoKey = await resolveRepoKey(cwd);
 			const db = learningStorage.openLearningDb(getAgentDbPath(agentDir));
 			try {
@@ -928,7 +923,6 @@ export class CommandController {
 							)
 							.join("\n");
 			if (reports.some(report => (report.opsApplied ?? 0) > 0 || (report.capArchived ?? 0) > 0)) {
-				invalidateLearningInjection();
 				await this.ctx.session.refreshBaseSystemPrompt();
 			}
 			showMarkdownPanel(this.ctx, "Live Learning Consolidation", reportText);
@@ -970,7 +964,6 @@ export class CommandController {
 				learningStorage.closeLearningDb(db);
 			}
 			if (archived) {
-				invalidateLearningInjection();
 				await this.ctx.session.refreshBaseSystemPrompt();
 			}
 			return;

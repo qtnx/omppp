@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { type JevRunReport, jevRunCode, renderJevReport } from "../browser-jev-tool";
-import { jevApiKey } from "../browser/jev";
+import { jevApiKey } from "../../jev/systemone";
 
 const ORIGINAL_KEY = Bun.env.TYPESAFE_API_KEY;
 
