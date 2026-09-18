@@ -87,7 +87,7 @@ describe("TurnSignalService", () => {
 		});
 		const service = new TurnSignalService(client, { maxStateChars: 10 });
 		await service.classifyTurn("0123456789ABCDEFGHIJ", { wip: false });
-		expect((sent?.state as Record<string, string>).transcript).toBe("ABCDEFGHIJ");
+		expect((sent?.state as Record<string, string> | undefined)?.transcript).toBe("ABCDEFGHIJ");
 	});
 
 	test("authenticates only when a key is configured", async () => {
