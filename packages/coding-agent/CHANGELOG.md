@@ -6,7 +6,9 @@
 
 - TypeSafe turn signals: every primary turn is classified by TypeSafe System One into a work phase (planning, implementing, verifying, debugging, blocked, reporting) plus needs-review, stuck, done-without-evidence, and parallel-slices scores; when the endpoint is unavailable nothing changes. Tunable under `signals.*`.
 - Signals default to the TypeSafe proxy on the tailnet (`signals.baseUrl` = `http://codemc:8791/v1/systemone`), which holds the API key, so a session needs no `TYPESAFE_API_KEY`; point `signals.baseUrl` at `https://api.typesafe.ai/v1/systemone` to call TypeSafe directly, or leave it empty to require a local key.
+- Browser `tab.act(goal)` (TypeSafe Jev) now calls the same tailnet proxy by default, so it works without a local `TYPESAFE_API_KEY`; set `TYPESAFE_SYSTEMONE_URL` to point Jev at TypeSafe directly (which then needs the key).
 - `duo.phaseModels` maps each detected work phase to one model selector or an ordered fallback list; duo switches the executor at the next turn boundary once the phase holds (immediately for `blocked`) and registers the rest of the list as rate-limit fallbacks. Unlisted phases keep the planner/executor models. `/duo status` shows the detected phase and active phase model.
+
 ## [1.8.9] - 2026-09-18
 
 ### Added

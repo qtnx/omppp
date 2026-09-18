@@ -821,7 +821,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Signals",
 			label: "System One Endpoint",
 			description:
-				"System One endpoint. Defaults to the tailnet proxy on codemc, which holds the API key; set https://api.typesafe.ai/v1/systemone to call TypeSafe directly (an API key is then required), or leave empty to disable signals without a key.",
+				"System One endpoint. Defaults to the tailnet proxy on codemc, which holds the API key; set https://api.typesafe.ai/v1/systemone to call TypeSafe directly (an API key is then required), or leave empty to disable signals without a key. TYPESAFE_SYSTEMONE_URL overrides this.",
 		},
 	},
 	"signals.model": {

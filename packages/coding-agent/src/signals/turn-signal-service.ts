@@ -154,7 +154,7 @@ export function createTurnSignalService(
 ): TurnSignalService | undefined {
 	if (!settings.get("signals.enabled")) return undefined;
 	const apiKey = resolveTypeSafeApiKey(settings);
-	const baseUrl = (settings.get("signals.baseUrl") ?? "").trim();
+	const baseUrl = ($env.TYPESAFE_SYSTEMONE_URL?.trim() || settings.get("signals.baseUrl") || "").trim();
 	if (!apiKey && !baseUrl) return undefined;
 	const client = new TypeSafeClient({
 		apiKey,

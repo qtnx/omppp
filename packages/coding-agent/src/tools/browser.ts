@@ -11,7 +11,7 @@ import browserDeclarations from "./browser/declarations.d.ts" with { type: "text
 import browserJavascript from "./browser/prelude.js" with { type: "text" };
 import browserPython from "./browser/prelude.py" with { type: "text" };
 import { resolveCmuxKind } from "./browser/cmux/rpc";
-import { jevApiKey } from "./browser/jev";
+import { jevEndpoint } from "./browser/jev";
 import {
 	acquireBrowser,
 	type BrowserHandle,
@@ -151,7 +151,7 @@ export function resolveBrowserKind(params: BrowserParams, session: ToolSession):
 export function createBrowserPrelude(session: ToolSession): EvalPreludeDefinition {
 	return {
 		name: "browser",
-		documentation: prompt.render(browserDescription, { jev: jevApiKey() !== undefined }),
+		documentation: prompt.render(browserDescription, { jev: jevEndpoint() !== "" }),
 		javascript: browserJavascript,
 		python: browserPython,
 		exports: ["browser"],
