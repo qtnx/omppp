@@ -2112,7 +2112,7 @@ describe("Settings", () => {
 
 			expect(settings.get("retry.fallbackChains")).toEqual({
 				"openai-codex/gpt-5.6-sol": ["anthropic/claude-opus-5"],
-				"tnx/openrouter/~deepseek/deepseek-v4-flash-latest": ["anthropic/claude-opus-5:high"],
+				"tnx/openrouter/deepseek/deepseek-v4.1-flash": ["anthropic/claude-opus-5:high"],
 				"anthropic/claude-fable-5-1": ["openai-codex/gpt-6-astra:high", "anthropic/claude-opus-5:high"],
 				"anthropic/claude-fable-5": ["openai-codex/gpt-6-astra:high", "anthropic/claude-opus-5:high"],
 				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
@@ -2692,7 +2692,7 @@ describe("Settings", () => {
 				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
 				plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
 				"openai-codex/gpt-5.6-sol": ["anthropic/claude-opus-5"],
-				"tnx/openrouter/~deepseek/deepseek-v4-flash-latest": ["anthropic/claude-opus-5:high"],
+				"tnx/openrouter/deepseek/deepseek-v4.1-flash": ["anthropic/claude-opus-5:high"],
 				"anthropic/claude-fable-5-1": ["openai-codex/gpt-6-astra:high", "anthropic/claude-opus-5:high"],
 				"anthropic/claude-fable-5": ["openai-codex/gpt-6-astra:high", "anthropic/claude-opus-5:high"],
 			});

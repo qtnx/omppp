@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The default duo/executor DeepSeek model is now `tnx/openrouter/deepseek/deepseek-v4.1-flash` (was `tnx/openrouter/~deepseek/deepseek-v4-flash-latest`), in `duo.executorModel`, the `duo.phaseModels` default map, and the setup default `retry.fallbackChains` key.
+
+### Fixed
+
+- A usage-limit failure now falls through to the configured `retry.fallbackChains` after one sibling-credential wait instead of retrying the capped model until the retry budget runs out. A pool whose "sibling" claim never freed a fresh window previously re-hit the spent quota up to `retry.maxRetries` times before the chain was consulted; the chain's cross-provider candidate is now used, with the exhausted provider excluded.
+
 ## [1.9.0] - 2026-09-18
 
 ### Added

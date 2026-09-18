@@ -336,7 +336,7 @@ describe("resolveDuoConfig", () => {
 		const fable51 = anthropicModel("claude-fable-5-1");
 		const opus5 = anthropicModel("claude-opus-5");
 		const deepseek = buildModel({
-			id: "openrouter/~deepseek/deepseek-v4-flash-latest",
+			id: "openrouter/deepseek/deepseek-v4.1-flash",
 			name: "DeepSeek V4 Flash",
 			api: "openai-completions",
 			provider: "tnx",
@@ -365,7 +365,7 @@ describe("resolveDuoConfig", () => {
 		]);
 		expect(resolved?.phaseModels.planning?.[0]?.thinkingLevel).toBe(ThinkingLevel.High);
 		expect(resolved?.phaseModels.implementing?.map(candidate => candidate.selector)).toEqual([
-			"tnx/openrouter/~deepseek/deepseek-v4-flash-latest",
+			"tnx/openrouter/deepseek/deepseek-v4.1-flash",
 			"anthropic/claude-opus-5",
 		]);
 		expect(resolved?.phaseModels.verifying?.map(candidate => candidate.selector)).toEqual([
@@ -375,7 +375,7 @@ describe("resolveDuoConfig", () => {
 		expect(resolved?.phaseModels.debugging?.[0]?.selector).toBe("anthropic/claude-opus-5");
 		expect(resolved?.phaseModels.blocked?.[0]?.selector).toBe("openai-codex/gpt-6-astra");
 		expect(resolved?.phaseModels.reporting?.map(candidate => candidate.selector)).toEqual([
-			"tnx/openrouter/~deepseek/deepseek-v4-flash-latest",
+			"tnx/openrouter/deepseek/deepseek-v4.1-flash",
 		]);
 		// Scouting is not a signal work phase; it folds into planning.
 		expect((resolved?.phaseModels as Record<string, unknown> | undefined)?.["scouting"]).toBeUndefined();
