@@ -21,6 +21,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"codegraph_explore",
 	"kanban",
 	"browser_use",
+	"browser_jev",
 	"checkpoint",
 	"rewind",
 	"compact",

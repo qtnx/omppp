@@ -12,6 +12,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
   - Inspection: `observe`, `ariaSnapshot`, `screenshot`, `extract`.
 {{#if jev}}
   - Goal-driven: `tab.act(goal, { maxSteps? })` — DEFAULT for multi-step DOM interaction (forms, search, login, filters, navigation). TypeSafe Jev observes the page, picks one operation and one observed element per step (CLICK / TYPE_TEXT / SCROLL / WAIT), and loops until `status` is `done`, `blocked`, or `max_steps` (default 30). Returns `{ status, steps: [{ operation, target: { id, role, name }, text?, pageChanged, url }], url, title, elapsedMs }`. Put every requirement and every value in `goal`; a small helper model derives typed text from it and never invents personal data. `done` is Jev's claim, not proof: verify with `observe`/`extract` afterwards. Fall back to manual helpers when Jev returns `blocked`, for canvas/iframe/shadow-root widgets, or for one obvious click.
+  - Whole goal, no eval cell needed: the `browser_jev` tool runs the same policy from a tool call and returns one text report (status, steps, final URL, page text). Prefer it when the entire flow is the task; use `tab.act` when you are already scripting around it in an eval cell.
 {{/if}}
   - Interaction: `click`, `type`, `fill`, `press`, `scroll`, `drag`, `scrollIntoView`, `select`, `uploadFile`.
   - Waiting: `waitFor`, `waitForSelector`, `waitForUrl`.

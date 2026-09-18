@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- New `browser_jev` tool: hand it one browser goal and the Jev DOM policy plus a small text-helper model finish the whole flow, returning a text report (status, executed steps, final URL/title, page text) instead of making the main model drive clicks through screenshots. Appears only when `TYPESAFE_API_KEY` is set; keeps its own `jev` tab so a flow can continue across calls.
+
 ## [1.8.9] - 2026-09-18
 
 ### Added
