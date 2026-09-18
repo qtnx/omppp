@@ -10,16 +10,17 @@ describe("AsyncJobManager scheduled poll windows", () => {
 		const manager = createManager();
 		const ownerId = "scheduled-owner";
 
-		expect(manager.nextPollWaitMs(ownerId, 1_000)).toBe(300_000);
+		expect(manager.nextPollWaitMs(ownerId, 1_000)).toBe(5_000);
 		manager.recordPollWaitEnd(ownerId, 10_000);
 
-		expect(manager.nextPollWaitMs(ownerId, 10_000 + 119_999)).toBe(600_000);
-		manager.recordPollWaitEnd(ownerId, 130_010);
+		expect(manager.nextPollWaitMs(ownerId, 10_000 + 59_999)).toBe(10_000);
+		manager.recordPollWaitEnd(ownerId, 70_010);
 
-		expect(manager.nextPollWaitMs(ownerId, 130_011)).toBe(600_000);
-		manager.recordPollWaitEnd(ownerId, 130_020);
+		expect(manager.nextPollWaitMs(ownerId, 70_011)).toBe(30_000);
+		manager.recordPollWaitEnd(ownerId, 70_020);
 
-		expect(manager.nextPollWaitMs(ownerId, 250_020)).toBe(300_000);
+		// An idle gap past the reset window drops the ladder back to its floor.
+		expect(manager.nextPollWaitMs(ownerId, 130_020)).toBe(5_000);
 	});
 
 	test("peek previews the next poll window without advancing the ladder", () => {

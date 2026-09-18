@@ -992,8 +992,28 @@ mod tests {
 			.unwrap();
 	}
 
+	/// Minimum `jj` CLI the fixtures below are written against.
+	///
+	/// `jj` ships its CLI and `jj-lib` in lockstep, and this crate links the
+	/// library: a CLI older than the library writes working-copy commits without
+	/// the copy-id metadata the library needs to report renames, so the fixture
+	/// would fail on a version mismatch rather than on a regression here.
+	const JJ_FIXTURE_MIN_VERSION: (u32, u32) = (0, 44);
+
 	fn jj_available() -> bool {
-		Command::new("jj").arg("--version").output().is_ok()
+		let Ok(output) = Command::new("jj").arg("--version").output() else {
+			return false;
+		};
+		let text = String::from_utf8_lossy(&output.stdout);
+		let Some(version) = text.split_whitespace().nth(1) else {
+			return false;
+		};
+		let mut parts = version
+			.split('.')
+			.filter_map(|part| part.parse::<u32>().ok());
+		let major = parts.next().unwrap_or(0);
+		let minor = parts.next().unwrap_or(0);
+		(major, minor) >= JJ_FIXTURE_MIN_VERSION
 	}
 
 	fn run_jj(root: &Path, args: &[&str]) -> String {
@@ -1125,6 +1145,34 @@ mod tests {
 		let (change_id, subject) = lines[0].split_once(' ').unwrap();
 		assert!(change_id.len() >= 8);
 		assert_eq!(subject, "");
+	}
+
+	// Regression: `require_jj_diff_options` used to reject `max_bytes` on every
+	// jj operation that shared it, even though only `diff_text` renders text
+	// and needs the cap honored. A caller reusing one `DiffOptions` across
+	// `diffText`/`changedFiles`/`numstat` calls got `Unsupported` on the two
+	// operations that never look at `max_bytes` at all.
+	#[test]
+	fn max_bytes_is_inert_for_non_rendering_jj_queries() {
+		let temp = tempfile::tempdir().unwrap();
+		init_internal_jj(temp.path());
+		fs::write(temp.path().join("alpha.txt"), "one\ntwo\n").unwrap();
+		let repo = crate::detect(temp.path()).unwrap().unwrap();
+
+		let capped = crate::DiffOptions { max_bytes: Some(1), ..crate::DiffOptions::default() };
+		assert_eq!(repo.changed_files(&capped).unwrap(), vec!["alpha.txt"]);
+		assert_eq!(repo.numstat(&capped).unwrap(), vec![NumstatEntry {
+			path:    "alpha.txt".to_owned(),
+			added:   Some(2),
+			removed: Some(0),
+		}]);
+
+		let err = repo.diff_text(&capped).unwrap_err();
+		assert_eq!(err.kind(), "Unsupported");
+		assert!(matches!(err, crate::Error::Unsupported {
+			operation: "diffMaxBytes",
+			backend:   crate::VcsKind::Jj,
+		}));
 	}
 
 	#[test]

@@ -58,6 +58,7 @@ function makeRegistry(options: RegistryOptions): ModelRegistry {
 		find: (provider: string, modelId: string) =>
 			options.available.find(model => model.provider === provider && model.id === modelId),
 		getProviderBaseUrl: (provider: string) => options.available.find(model => model.provider === provider)?.baseUrl,
+		resolveModelHeaders: async () => undefined,
 		getApiKey: async (model: Model<Api>) => keys[model.provider],
 		getApiKeyForProvider: async (provider: string) => keys[provider],
 		resolver: (modelOrProvider: Model<Api> | string) => async () =>

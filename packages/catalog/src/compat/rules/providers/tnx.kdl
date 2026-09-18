@@ -1,0 +1,13 @@
+// Provider-wire compat for the fork's "tnx" gateway (default runtime endpoint).
+//
+// Fork divergence: `tnx` is an OMPx-only OpenAI-compatible gateway (see
+// packages/catalog/src/provider-models/openai-compat.ts `tnxModelManagerOptions`).
+// It is unauthenticated on the default endpoint, so discovery must run without a
+// key.
+
+provider "tnx" {
+	default-model "gpt-5.5"
+	env "TNX_API_KEY"
+	allow-unauthenticated #true
+	discovery label="TNX"
+}

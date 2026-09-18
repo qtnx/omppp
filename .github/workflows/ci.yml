@@ -34,7 +34,7 @@ on:
          - ".github/**"
          - "!.github/VOUCHED.td"
    pull_request:
-      branches: [main]
+      branches: [main, omp2]
       paths:
          - "packages/**"
          - "crates/**"
@@ -1006,8 +1006,6 @@ jobs:
       steps:
          - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
          - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-           with:
-              bun-version: "1.4"
          - name: Generate release notes from CHANGELOGs
            env:
               # `gh release list` (used to find the latest published GitHub
@@ -1247,8 +1245,6 @@ jobs:
            if: env.HAS_TAP_KEY == 'true'
          - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
            if: env.HAS_TAP_KEY == 'true'
-           with:
-              bun-version: "1.4"
          - name: Check out the Homebrew tap
            if: env.HAS_TAP_KEY == 'true'
            uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3

@@ -3,7 +3,14 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { getTimeBasedPricingPeriod } from "@oh-my-pi/pi-catalog/models";
 import { SPINNER_ADVANCE_MS, TERMINAL } from "@oh-my-pi/pi-tui";
-import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
+import {
+	formatDuration,
+	formatNumber,
+	getProjectDir,
+	normalizePathForComparison,
+	relativePathWithinNormalizedRoot,
+	relativePathWithinRoot,
+} from "@oh-my-pi/pi-utils";
 import { type SymbolKey, type Theme, type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { fileHyperlink } from "../../../tui/hyperlink";
@@ -62,6 +69,7 @@ let statusLinePathRootOverrides: StatusLinePathRootOverrides | null = null;
 
 export function __setStatusLinePathRootOverridesForTests(overrides: StatusLinePathRootOverrides | null): void {
 	statusLinePathRootOverrides = overrides;
+	PROJECT_DIR_CLASSIFICATIONS.clear();
 }
 
 function getScratchRoots(): readonly string[] {
@@ -157,24 +165,9 @@ function formatAdvisorSpendPlaceholder(usingSubscription: boolean, uiTheme: Them
 	if (icon && icon !== "(adv)") return `${icon} ${spend}`;
 	return `${spend} (adv)`;
 }
-
-const SCRATCH_ROOTS: readonly string[] = (() => {
-	const roots = new Set<string>([os.tmpdir(), path.join(os.homedir(), "tmp")]);
-	if (process.platform === "win32") {
-		const { TEMP, TMP, SystemRoot } = process.env;
-		if (TEMP) roots.add(TEMP);
-		if (TMP) roots.add(TMP);
-		if (SystemRoot) roots.add(path.join(SystemRoot, "Temp"));
-	} else {
-		roots.add("/tmp");
-		roots.add("/var/tmp");
-		if (process.platform === "darwin") {
-			roots.add("/private/tmp");
-			roots.add("/private/var/tmp");
-		}
-	}
-	return [...roots];
-})();
+function getNormalizedScratchRoots(): readonly string[] {
+	return [...new Set(getScratchRoots().map(normalizePathForComparison))];
+}
 
 function formatPrStatus(pr: NonNullable<SegmentContext["git"]["pr"]>): string | null {
 	if (pr.isDraft) return "draft";
@@ -225,13 +218,28 @@ function formatPrStatus(pr: NonNullable<SegmentContext["git"]["pr"]>): string | 
 	return state === "OPEN" ? "open" : null;
 }
 
-function classifyProjectDir(pwd: string): { scratch: boolean; relative: string | null } {
-	for (const root of getScratchRoots()) {
-		if (pathIsWithin(root, pwd)) {
-			return { scratch: true, relative: relativePathWithinRoot(root, pwd) };
+interface ProjectDirClassification {
+	scratch: boolean;
+	relative: string | null;
+}
+
+const PROJECT_DIR_CLASSIFICATIONS = new Map<string, ProjectDirClassification>();
+
+function classifyProjectDir(projectDir: string): ProjectDirClassification {
+	const cached = PROJECT_DIR_CLASSIFICATIONS.get(projectDir);
+	if (cached) return cached;
+
+	const normalizedProjectDir = normalizePathForComparison(projectDir);
+	let classification: ProjectDirClassification = { scratch: false, relative: null };
+	for (const normalizedRoot of getNormalizedScratchRoots()) {
+		const relative = relativePathWithinNormalizedRoot(normalizedRoot, normalizedProjectDir);
+		if (relative !== null) {
+			classification = { scratch: true, relative: relative || null };
+			break;
 		}
 	}
-	return { scratch: false, relative: null };
+	PROJECT_DIR_CLASSIFICATIONS.set(projectDir, classification);
+	return classification;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -315,14 +323,14 @@ const modelSegment: StatusLineSegment = {
 				// question-box marker; once resolved it shows `<level>`.
 				const resolved = ctx.session.autoResolvedThinkingLevel();
 				thinkingDisplay = resolved
-					? (theme.thinking[resolved as keyof typeof theme.thinking] ?? resolved)
+					? (theme.thinking[resolved as keyof Theme["thinking"]] ?? resolved)
 					: `${theme.thinking.autoPending} auto`;
 			} else {
 				const level = state.thinkingLevel ?? ThinkingLevel.Off;
 				thinkingDisplay =
 					level === ThinkingLevel.Off
 						? `${theme.status.disabled} off`
-						: (theme.thinking[level as keyof typeof theme.thinking] ?? level);
+						: (theme.thinking[level as keyof Theme["thinking"]] ?? level);
 			}
 		}
 

@@ -92,6 +92,20 @@ export interface MemoryBackendStartOptions {
 	parentMnemopiSessionState?: MnemopiSessionState;
 }
 
+/** A successful recall, including an empty result, staged until user-turn delivery. */
+export interface MemoryPromptPreparation {
+	context?: string;
+	/**
+	 * Commit synchronously after delivery validation; false rejects lost ownership
+	 * without state writes.
+	 *
+	 * `deliveredContext` is the text the caller actually staged (a backend may clamp
+	 * `context` to an injection budget); a backend that tracks delivery completeness
+	 * uses it to decide whether the untruncated recall still needs another surface.
+	 */
+	commit(deliveredContext?: string): boolean;
+}
+
 export interface MemoryBackend {
 	readonly id: MemoryBackendId;
 
@@ -144,11 +158,15 @@ export interface MemoryBackend {
 	 * Optional hook to inject backend-specific memory context before the current
 	 * user message.
 	 *
-	 * The caller persists the returned text as a hidden user-attributed context
-	 * message. Keeping volatile recall out of the system prompt preserves provider
-	 * prefix caches while retaining the memory in subsequent conversation turns.
+	 * This is the only place a backend can affect the very first answer of a
+	 * fresh session. The caller publishes the returned context as a hidden
+	 * user-attributed conversation message — keeping volatile recall out of the
+	 * system prompt preserves provider prefix caches while the recall still
+	 * reaches the model and the persisted transcript — and calls `commit` once
+	 * delivery is validated. Return undefined for an ineligible or failed recall,
+	 * not an empty success.
 	 */
-	beforeAgentStartPrompt?(session: AgentSession, promptText: string): Promise<string | undefined>;
+	beforeAgentStartPrompt?(session: AgentSession, promptText: string): Promise<MemoryPromptPreparation | undefined>;
 
 	/**
 	 * Optional hook to splice extra context into a compaction summarization.

@@ -14,6 +14,7 @@
  * redraw — that per-event recompute is what previously froze large sessions.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { Tokenizer } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ContextUsage } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
@@ -291,6 +292,26 @@ describe("StatusLineComponent context breakdown", () => {
 		expect(usageCalls()).toBe(2);
 	});
 
+	it("re-queries when settings or tokenizer identity changes", () => {
+		const { session, usageCalls } = makeSession({ messages: [userMessage("hi")] });
+		const mutable = session as unknown as {
+			settings: { revision: number };
+			agent: { tokenizer: object; state: { tools: unknown[] } };
+		};
+		mutable.settings = { revision: 0 };
+		mutable.agent.tokenizer = {};
+
+		const comp = statusLines.track(new StatusLineComponent(session));
+		comp.getCachedContextBreakdown();
+
+		mutable.settings.revision++;
+		comp.getCachedContextBreakdown();
+		mutable.agent.tokenizer = {};
+		comp.getCachedContextBreakdown();
+
+		expect(usageCalls()).toBe(3);
+	});
+
 	it("re-queries when only the in-flight pending revision changes (no message change)", () => {
 		const fake = makeSession({
 			messages: [userMessage("hi")],
@@ -444,7 +465,7 @@ describe("StatusLineComponent context breakdown", () => {
 			categoryTokens("skills");
 
 		expect(computeNonMessageTokens(session)).toBe(expected);
-		expect(estimateToolSchemaTokens(session.agent.state.tools)).toBe(categoryTokens("systemTools"));
+		expect(estimateToolSchemaTokens(session.agent.state.tools, new Tokenizer())).toBe(categoryTokens("systemTools"));
 	});
 
 	it("renders token usage with an unknown marker when the model window is unavailable", () => {

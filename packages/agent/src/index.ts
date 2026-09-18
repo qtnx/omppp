@@ -14,7 +14,10 @@ export * from "./proxy";
 export * from "./replay-policy";
 // Run-level telemetry collector + aggregators
 export * from "./run-collector";
+// Single-turn execution
 export * from "./single-turn";
+// Speculative execution coordinator
+export * from "./speculative-execution";
 // Telemetry
 export * from "./telemetry";
 // Thinking selectors

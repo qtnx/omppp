@@ -6,15 +6,8 @@ import type { Context, FetchImpl, Model, ModelSpec } from "@oh-my-pi/pi-ai/types
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import {
-	CATALOG_PROVIDERS,
-	DEFAULT_MODEL_PER_PROVIDER,
-	PROVIDER_DESCRIPTORS,
-} from "@oh-my-pi/pi-catalog/provider-models/descriptors";
-import {
-	MODELS_DEV_PROVIDER_DESCRIPTORS,
-	mapModelsDevToModels,
-} from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
+import { providerEntry } from "@oh-my-pi/pi-catalog/compat/providers";
+import { DEFAULT_MODEL_PER_PROVIDER, PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 
 const META_BASE_URL = "https://api.meta.ai/v1";
 const META_MODEL_ID = "muse-spark-1.1";
@@ -75,7 +68,8 @@ afterEach(() => {
 
 describe("Meta Model API provider", () => {
 	it("registers the provider, default model, catalog discovery, and login entry", () => {
-		const catalogEntry = CATALOG_PROVIDERS.find(entry => entry.id === "meta");
+		// The catalog table moved to the compiled KDL entries (`providerEntry`).
+		const catalogEntry = providerEntry("meta");
 		expect(catalogEntry?.defaultModel).toBe(META_MODEL_ID);
 		expect(catalogEntry?.envVars).toEqual(["META_MODEL_API_KEY", "META_API_KEY"]);
 		expect(DEFAULT_MODEL_PER_PROVIDER.meta).toBe(META_MODEL_ID);
@@ -99,43 +93,10 @@ describe("Meta Model API provider", () => {
 		expect(getEnvApiKey("meta")).toBe("specific-key");
 	});
 
-	it("maps models.dev Meta data to the official Responses contract", () => {
-		const models = mapModelsDevToModels(
-			{
-				meta: {
-					models: {
-						[META_MODEL_ID]: {
-							name: "Muse Spark 1.1",
-							tool_call: true,
-							reasoning: true,
-							modalities: { input: ["text", "image", "pdf", "video"] },
-							cost: { input: 9, output: 9, cache_read: 9, cache_write: 9 },
-							limit: { context: 1_000_000, output: 32_000 },
-						},
-					},
-				},
-			},
-			MODELS_DEV_PROVIDER_DESCRIPTORS,
-		);
-
-		expect(models).toHaveLength(1);
-		expect(models[0]).toMatchObject({
-			id: META_MODEL_ID,
-			name: "Muse Spark 1.1",
-			provider: "meta",
-			api: "openai-responses",
-			baseUrl: META_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			contextWindow: META_CONTEXT_WINDOW,
-			maxTokens: META_MAX_OUTPUT_TOKENS,
-			cost: META_COST,
-			compat: {
-				providerOutputClamp: META_MAX_OUTPUT_TOKENS,
-				supportsDeveloperRole: true,
-			},
-		});
-	});
+	// Meta has no models.dev feed: since the KDL provider compilation, its rows come
+	// from the reviewed seed in `providers/meta.kdl` plus authenticated `/v1/models`
+	// discovery, and `generate-models.ts` deliberately excludes it from reference
+	// fills. The models.dev mapping case was removed with that architecture.
 
 	it("discovers Meta models through the authenticated OpenAI-compatible models endpoint", async () => {
 		const fetchMock: FetchImpl = vi.fn(
@@ -165,7 +126,6 @@ describe("Meta Model API provider", () => {
 			contextWindow: META_CONTEXT_WINDOW,
 			maxTokens: META_MAX_OUTPUT_TOKENS,
 			cost: META_COST,
-			compat: { providerOutputClamp: META_MAX_OUTPUT_TOKENS },
 		});
 	});
 
