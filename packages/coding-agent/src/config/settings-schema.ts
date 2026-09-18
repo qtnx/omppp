@@ -798,7 +798,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Signals",
 			label: "TypeSafe Turn Signals",
 			description:
-				"Classify each primary turn with TypeSafe System One (work phase, needs-review, stuck, done-without-evidence). Effective only when TYPESAFE_API_KEY or signals.apiKey is set; off or unavailable means every consumer behaves as before.",
+				"Classify each primary turn with TypeSafe System One (work phase, needs-review, stuck, done-without-evidence). Active when an endpoint or TYPESAFE_API_KEY / signals.apiKey is set; off or unavailable means every consumer behaves as before.",
 		},
 	},
 	"signals.apiKey": {
@@ -811,6 +811,17 @@ export const SETTINGS_SCHEMA = {
 			label: "TypeSafe API Key",
 			description: "TypeSafe API key. The TYPESAFE_API_KEY environment variable takes precedence.",
 			secret: true,
+		},
+	},
+	"signals.baseUrl": {
+		type: "string",
+		default: "http://codemc:8791/v1/systemone",
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "System One Endpoint",
+			description:
+				"System One endpoint. Defaults to the tailnet proxy on codemc, which holds the API key; set https://api.typesafe.ai/v1/systemone to call TypeSafe directly (an API key is then required), or leave empty to disable signals without a key.",
 		},
 	},
 	"signals.model": {

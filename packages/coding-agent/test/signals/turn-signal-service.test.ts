@@ -90,6 +90,21 @@ describe("TurnSignalService", () => {
 		expect((sent?.state as Record<string, string>).transcript).toBe("ABCDEFGHIJ");
 	});
 
+	test("authenticates only when a key is configured", async () => {
+		const seen: Array<Record<string, string>> = [];
+		const capture = (async (_url: string | URL | Request, init?: RequestInit) => {
+			seen.push(init?.headers as Record<string, string>);
+			return Response.json(TURN_ANSWERS);
+		}) as typeof fetch;
+		await new TurnSignalService(new TypeSafeClient({ fetch: capture })).classifyTurn("x", { wip: true });
+		await new TurnSignalService(new TypeSafeClient({ apiKey: "k", fetch: capture })).classifyTurn("x", {
+			wip: true,
+		});
+		expect(seen[0]?.Authorization).toBeUndefined();
+		expect(seen[1]?.Authorization).toBe("Bearer k");
+		expect(seen[0]?.["Content-Type"]).toBe("application/json");
+	});
+
 	test("fails open on HTTP errors, malformed bodies, and unknown phases", async () => {
 		const cases: Array<() => Response> = [
 			() => new Response("nope", { status: 429 }),
@@ -158,18 +173,21 @@ describe("createTurnSignalService", () => {
 		return Settings.loadReadOnly({ agentDir: path.join(dir, "agent"), cwd: dir, overrides });
 	}
 
-	test("returns undefined without a key or when disabled, a service when the settings key is set", async () => {
+	test("builds without a key against an endpoint, and needs one when the endpoint is empty", async () => {
 		const previous = Bun.env.TYPESAFE_API_KEY;
 		delete Bun.env.TYPESAFE_API_KEY;
 		try {
-			expect(createTurnSignalService(await settingsWith({}))).toBeUndefined();
+			expect(createTurnSignalService(await settingsWith({ "signals.enabled": false }))).toBeUndefined();
+			// Default endpoint is the tailnet proxy, which authenticates upstream itself.
+			expect(createTurnSignalService(await settingsWith({}))).toBeInstanceOf(TurnSignalService);
+			// No endpoint and no key: nothing to call.
+			expect(createTurnSignalService(await settingsWith({ "signals.baseUrl": "" }))).toBeUndefined();
 			expect(
-				createTurnSignalService(await settingsWith({ "signals.apiKey": "k", "signals.enabled": false })),
-			).toBeUndefined();
-			const service = createTurnSignalService(
-				await settingsWith({ "signals.apiKey": "k", "signals.model": "jev-1.13.0" }),
-			);
-			expect(service).toBeInstanceOf(TurnSignalService);
+				createTurnSignalService(await settingsWith({ "signals.baseUrl": "", "signals.apiKey": "k" })),
+			).toBeInstanceOf(TurnSignalService);
+			expect(
+				createTurnSignalService(await settingsWith({ "signals.apiKey": "k", "signals.model": "jev-1.13.0" })),
+			).toBeInstanceOf(TurnSignalService);
 		} finally {
 			if (previous !== undefined) Bun.env.TYPESAFE_API_KEY = previous;
 		}

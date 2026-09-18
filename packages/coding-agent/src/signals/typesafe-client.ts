@@ -1,10 +1,11 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Question, SystemOneResponse } from "./types";
 
-export const TYPESAFE_SYSTEMONE_URL = "https://api.typesafe.ai/v1/systemone";
+export const TYPESAFE_SYSTEMONE_URL = "http://codemc:8791/v1/systemone";
 
 export interface TypeSafeClientOptions {
-	apiKey: string;
+	/** Omitted when the endpoint authenticates upstream itself (the tailnet proxy). */
+	apiKey?: string;
 	model?: string;
 	timeoutMs?: number;
 	/** Test seam; defaults to the global fetch. */
@@ -19,7 +20,7 @@ export interface TypeSafeClientOptions {
  */
 export class TypeSafeClient {
 	readonly model: string;
-	readonly #apiKey: string;
+	readonly #apiKey: string | undefined;
 	readonly #timeoutMs: number;
 	readonly #fetch: typeof fetch;
 	readonly #url: string;
@@ -39,13 +40,12 @@ export class TypeSafeClient {
 	): Promise<SystemOneResponse | undefined> {
 		const timeout = AbortSignal.timeout(this.#timeoutMs);
 		const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+		const headers: Record<string, string> = { "Content-Type": "application/json" };
+		if (this.#apiKey) headers.Authorization = `Bearer ${this.#apiKey}`;
 		try {
 			const response = await this.#fetch(this.#url, {
 				method: "POST",
-				headers: {
-					Authorization: `Bearer ${this.#apiKey}`,
-					"Content-Type": "application/json",
-				},
+				headers,
 				body: JSON.stringify({ state, model: this.model, questions }),
 				signal: combined,
 			});
