@@ -4,6 +4,9 @@
 
 ### Added
 
+- `duo.phaseModels` now ships with a default model routing map: planning/verifying/blocked run Astra-led chains, implementing/reporting run the DeepSeek executor, and debugging starts on Opus with DeepSeek fallback — each phase keeps its own thinking level and registers later entries as automatic rate-limit/quota fallbacks (`duo.phaseSwitch.minConfidence` still gates the switch).
+- Duo re-resolves its planner/executor pair at each re-check point: a side that degraded because its configured model (e.g. the DeepSeek executor) was not yet available is swapped to the configured model as soon as it resolves, instead of running the family fallback for the whole session.
+- The setup default `retry.fallbackChains` now covers the default duo planner: a Fable model that exhausts quota falls through to `openai-codex/gpt-6-astra:high` then `anthropic/claude-opus-5:high` (setup config version 9).
 - Jev can now hand a step over itself: `ESCALATE` is an offered operation, so when the policy is not confident which action is right it asks the reasoning model to drive the next actions instead of guessing. Jev traffic keeps going through the shared `codemc` proxy, which holds the TypeSafe key — `browser_jev` no longer needs a local `TYPESAFE_API_KEY` to be available.
 - Jev rescue turns now escalate to the session's reasoning model (instead of the cheap tier), may drive up to four actions each, and are allowed six per run (`max_rescues`) — a stuck flow gets real reasoning and room to work before the run reports `blocked`.
 - `browser_jev` gained viewport presets (`desktop`, `tablet`, `mobile`, `mobile-landscape`) so one goal can be checked at several breakpoints, automatic screenshots (start, each rescue, final state) listed in the report, and a UX/accessibility review of the finished flow (summary plus evidence-backed findings; skip with `review: false`).

@@ -1909,12 +1909,16 @@ function resolveExplicitDuoModel(
 
 	// A discovered provider model (e.g. a gateway's own /v1/models list) is not in
 	// the session snapshot; the registry lookup the main model selector uses still
-	// finds it, so an explicit duo selector is honoured the same way.
+	// finds it, so an explicit duo selector is honoured the same way. Gateway
+	// providers may themselves contain slashes in the selector prefix (tnx/ds,
+	// tnx/openrouter), so try every slash split longest-prefix first instead of
+	// blindly cutting at the first slash.
 	const { base, level } = splitThinkingSuffix(pattern, -1, MAX_THINKING_SUFFIX_OPTIONS);
-	const slash = base.indexOf("/");
-	if (slash <= 0 || slash === base.length - 1) return undefined;
-	const model = modelRegistry.find?.(base.slice(0, slash), base.slice(slash + 1));
-	return model ? { model, thinkingLevel: level } : undefined;
+	for (let i = base.lastIndexOf("/"); i > 0; i = base.lastIndexOf("/", i - 1)) {
+		const model = modelRegistry.find?.(base.slice(0, i), base.slice(i + 1));
+		if (model) return { model, thinkingLevel: level };
+	}
+	return undefined;
 }
 
 function resolveNewestAnthropicDuoModel(

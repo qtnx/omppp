@@ -320,7 +320,68 @@ describe("resolveDuoConfig", () => {
 		expect(unresolvable?.phaseModels).toEqual({});
 	});
 
-	test("no configured phase models resolves to an empty map", () => {
+	test("default phase models resolve when their selectors are authenticated", () => {
+		const astra = buildModel({
+			id: "gpt-6-astra",
+			name: "GPT 6 Astra",
+			api: "openai-responses",
+			provider: "openai-codex",
+			baseUrl: "https://api.openai.com/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1 },
+			contextWindow: 200000,
+			maxTokens: 8192,
+		});
+		const fable51 = anthropicModel("claude-fable-5-1");
+		const opus5 = anthropicModel("claude-opus-5");
+		const deepseek = buildModel({
+			id: "openrouter/~deepseek/deepseek-v4-flash-latest",
+			name: "DeepSeek V4 Flash",
+			api: "openai-completions",
+			provider: "tnx",
+			baseUrl: "http://localhost:20128/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1050000,
+			maxTokens: 64000,
+		});
+		const registryWithAuth = {
+			hasConfiguredAuth(model: Model) {
+				return ["anthropic", "openai-codex", "tnx"].includes(model.provider);
+			},
+		} as unknown as ModelRegistry;
+
+		const resolved = resolveDuoConfig(
+			settings(),
+			[astra, fable51, opus5, deepseek, fable5, opus48],
+			registryWithAuth,
+		);
+
+		expect(resolved?.phaseModels.planning?.map(candidate => candidate.selector)).toEqual([
+			"openai-codex/gpt-6-astra",
+			"anthropic/claude-fable-5-1",
+		]);
+		expect(resolved?.phaseModels.planning?.[0]?.thinkingLevel).toBe(ThinkingLevel.High);
+		expect(resolved?.phaseModels.implementing?.map(candidate => candidate.selector)).toEqual([
+			"tnx/openrouter/~deepseek/deepseek-v4-flash-latest",
+			"anthropic/claude-opus-5",
+		]);
+		expect(resolved?.phaseModels.verifying?.map(candidate => candidate.selector)).toEqual([
+			"openai-codex/gpt-6-astra",
+			"anthropic/claude-fable-5-1",
+		]);
+		expect(resolved?.phaseModels.debugging?.[0]?.selector).toBe("anthropic/claude-opus-5");
+		expect(resolved?.phaseModels.blocked?.[0]?.selector).toBe("openai-codex/gpt-6-astra");
+		expect(resolved?.phaseModels.reporting?.map(candidate => candidate.selector)).toEqual([
+			"tnx/openrouter/~deepseek/deepseek-v4-flash-latest",
+		]);
+		// Scouting is not a signal work phase; it folds into planning.
+		expect((resolved?.phaseModels as Record<string, unknown> | undefined)?.["scouting"]).toBeUndefined();
+	});
+
+	test("default phase models stay empty while their selectors are unauthenticated", () => {
 		const resolved = resolveDuoConfig(settings(), [fable5, opus48], registry);
 
 		expect(resolved?.phaseModels).toEqual({});
