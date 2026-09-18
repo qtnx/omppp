@@ -45,6 +45,8 @@ export * from "./session/agent-session";
 export * from "./session/auth-storage";
 export * from "./session/indexed-session-storage";
 export * from "./session/messages";
+export * from "./session/session-history-format";
+export type * from "./signals/types";
 export * from "./session/redis-session-storage";
 export * from "./session/session-context";
 export * from "./session/session-dump-format";

@@ -75,9 +75,22 @@ interface FakeContextUsage {
 interface FakeContext {
 	cwd: string;
 	getContextUsage(): FakeContextUsage | undefined;
+	model?: { provider: string; id: string; cost: { cacheWrite: number } };
+	classifyContextTrim?: (input: {
+		upcomingRequest: string;
+		sessionDigest: string;
+		contextTokens: number | null;
+		candidates: Array<{ id: string; kind: string; ageTurns: number; tokens: number; summary: string }>;
+	}) => Promise<{
+		keep: Record<string, number>;
+		action: "shake" | "compact" | "nothing";
+		actionConfidence: number;
+		handoffSufficient: number;
+	}>;
 	sessionManager: {
 		getSessionFile(): string;
 		getSessionId(): string;
+		getSessionName(): string | undefined;
 		getBranch(): FakeEntry[];
 		getEntries(): FakeEntry[];
 		saveArtifact(content: string, toolType: string): Promise<string>;
@@ -143,6 +156,7 @@ function createFakeContext(contextUsage?: FakeContextUsage): FakeContext {
 		sessionManager: {
 			getSessionFile: () => path.join(tempDir, "session.jsonl"),
 			getSessionId: () => "session-a",
+			getSessionName: () => "test session",
 			getBranch: () => session.entries,
 			getEntries: () => session.entries,
 			saveArtifact: async (content: string, toolType: string) => {
@@ -475,9 +489,73 @@ describe("contextGcExtension", () => {
 		expect(first?.content?.[0]?.text).toContain("context_recall");
 		const unloads = unloadDeltas(fakePi);
 		expect(unloads).toHaveLength(1);
-		expect(unloads[0]?.reason).toBe("auto-shake: prompt cache cold");
+		expect(unloads[0]?.reason).toBe("auto-trim: prompt cache cold");
 		// Recent messages survive untouched.
 		expect((cold?.messages?.[15] as { content?: string } | undefined)?.content).toBe("filler 14");
+		shutdown(fakePi);
+	});
+
+	it("sheds by the jev judgment and keeps records the judgment says are still needed", async () => {
+		const clock = 1_000_000;
+		const fakePi = createFakePi();
+		createContextGcExtension({ dbPath: getContextGcDbPath(tempDir), now: () => clock })(
+			fakePi as unknown as ExtensionAPI,
+		);
+		const contextHandler = getHandler<ContextHandler>(fakePi, "context");
+		if (!contextHandler) throw new Error("context handler missing");
+
+		const stale = {
+			role: "pythonExecution",
+			entryId: "python-judged-entry",
+			code: "print('old')",
+			output: "judged output\n".repeat(3_000),
+			exitCode: 0,
+			timestamp: 1,
+		};
+		const filler = Array.from({ length: 15 }, (_, index) => ({
+			role: "user",
+			content: `filler ${index}`,
+			timestamp: index + 2,
+		}));
+		const messages = [stale, ...filler];
+		const usage = { tokens: 400_000, contextWindow: 1_000_000, percent: 40 };
+		const model = { provider: "anthropic", id: "claude-opus-5", cost: { cacheWrite: 10 / 1_000_000 } };
+
+		const judged = (
+			keep: Record<string, number>,
+			action: "shake" | "compact" | "nothing" = "shake",
+		): FakeContext => ({
+			...createFakeContext(usage),
+			model,
+			classifyContextTrim: async input => ({
+				keep: Object.fromEntries(input.candidates.map(candidate => [candidate.id, keep[candidate.id] ?? 0.5])),
+				action,
+				actionConfidence: 0.9,
+				handoffSufficient: 0.9,
+			}),
+		});
+
+		// First request inventories the record; the judgment answers 0.5 (keep) for
+		// every candidate, so nothing is shed and the id becomes readable.
+		await contextHandler({ type: "context", messages }, judged({}));
+		const inspect = openContextGcStore({ dbPath: getContextGcDbPath(tempDir) });
+		const recordId = inspect.listRecords({ sessionId: "session-a", includePinned: true })[0]?.id;
+		expect(recordId).toBeDefined();
+		if (!recordId) return;
+
+		// The judgment says the upcoming work still needs it: nothing is shed.
+		const kept = await contextHandler({ type: "context", messages }, judged({ [recordId]: 0.9 }));
+		expect((kept?.messages?.[0] as { role?: string } | undefined)?.role).toBe("pythonExecution");
+		expect(unloadDeltas(fakePi)).toHaveLength(0);
+
+		// The judgment says it is stale: the record is projected and the delta recorded.
+		const shed = await contextHandler({ type: "context", messages }, judged({ [recordId]: 0.02 }));
+		const first = shed?.messages?.[0] as { customType?: string } | undefined;
+		expect(first?.customType).toBe("context-gc-projected");
+		const unloads = unloadDeltas(fakePi);
+		expect(unloads).toHaveLength(1);
+		expect(unloads[0]?.reason).toBe("auto-trim: prompt cache cold");
+		expect((shed?.messages?.[15] as { content?: string } | undefined)?.content).toBe("filler 14");
 		shutdown(fakePi);
 	});
 

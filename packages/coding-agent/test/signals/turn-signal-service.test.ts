@@ -35,6 +35,32 @@ const TURN_ANSWERS = {
 	usage: { input_tokens: 812, output_tokens: 40 },
 };
 
+const TRIM_ANSWERS = {
+	model: "jev-1.13.0",
+	answers: {
+		action: {
+			type: "choice",
+			choice: "shake",
+			probabilities: { shake: 0.72, compact: 0.2, nothing: 0.08 },
+			confidence: 0.81,
+		},
+		handoff_sufficient: { type: "noul", noul: 0.66 },
+		"keep:rec-1": { type: "noul", noul: 0.04 },
+		"keep:rec-2": { type: "noul", noul: 0.91 },
+	},
+	usage: { input_tokens: 900, output_tokens: 30 },
+};
+
+const TRIM_INPUT = {
+	upcomingRequest: "Run the migration and verify the ledger balances",
+	sessionDigest: "Title: ledger work",
+	contextTokens: 120_000,
+	candidates: [
+		{ id: "rec-1", kind: "tool_result", ageTurns: 6, tokens: 40_000, summary: "old pytest output" },
+		{ id: "rec-2", kind: "file_read", ageTurns: 1, tokens: 9_000, summary: "migration file" },
+	],
+};
+
 describe("TurnSignalService", () => {
 	test("maps a System One response into typed turn signals and remembers the latest", async () => {
 		let sent: Record<string, unknown> | undefined;
@@ -239,5 +265,65 @@ describe("createTurnSignalService", () => {
 		} finally {
 			if (previous !== undefined) Bun.env.TYPESAFE_API_KEY = previous;
 		}
+	});
+});
+
+describe("TurnSignalService context trim", () => {
+	test("asks one keep question per candidate and maps the answers", async () => {
+		let sent: Record<string, unknown> | undefined;
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: fakeFetch(body => {
+				sent = body;
+				return Response.json(TRIM_ANSWERS);
+			}),
+		});
+		const service = new TurnSignalService(client);
+
+		const signals = await service.classifyContextTrim(TRIM_INPUT);
+
+		expect(signals).toEqual({
+			keep: { "rec-1": 0.04, "rec-2": 0.91 },
+			action: "shake",
+			actionConfidence: 0.81,
+			handoffSufficient: 0.66,
+		});
+		const questions = sent?.questions as Record<string, { type: string; instructions: string }> | undefined;
+		expect(Object.keys(questions ?? {}).sort()).toEqual(["action", "handoff_sufficient", "keep:rec-1", "keep:rec-2"]);
+		expect(questions?.["keep:rec-1"]?.instructions).toContain("rec-1");
+		expect(questions?.["keep:rec-1"]?.instructions).not.toContain("{{id}}");
+	});
+
+	test("returns undefined rather than dropping records when the action is unusable", async () => {
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: fakeFetch(() =>
+				Response.json({
+					...TRIM_ANSWERS,
+					answers: {
+						...TRIM_ANSWERS.answers,
+						action: { type: "choice", choice: "archive", probabilities: {}, confidence: 0.5 },
+					},
+				}),
+			),
+		});
+		const service = new TurnSignalService(client);
+
+		expect(await service.classifyContextTrim(TRIM_INPUT)).toBeUndefined();
+	});
+
+	test("skips the request when there is nothing to judge", async () => {
+		let calls = 0;
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: fakeFetch(() => {
+				calls += 1;
+				return Response.json(TRIM_ANSWERS);
+			}),
+		});
+		const service = new TurnSignalService(client);
+
+		expect(await service.classifyContextTrim({ ...TRIM_INPUT, candidates: [] })).toBeUndefined();
+		expect(calls).toBe(0);
 	});
 });

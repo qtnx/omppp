@@ -67,6 +67,7 @@ import type { AsyncJobSnapshot, SendUserMessageOptions } from "../../session/age
 import type { CompactMode } from "../../session/compact-modes";
 import type { CustomMessage, CustomMessagePayload } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
+import type { ContextTrimInput, ContextTrimSignals } from "../../signals/types";
 import type {
 	BashToolDetails,
 	BashToolInput,
@@ -487,6 +488,12 @@ export interface ExtensionContext {
 	getAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null;
 	/** Compact the session context (interactive mode shows UI). */
 	compact(instructionsOrOptions?: string | CompactOptions): Promise<void>;
+	/**
+	 * Jev (TypeSafe System One) judgment over the prompt about to be rebuilt:
+	 * which records the upcoming work still needs, and whether to shake or
+	 * compact. Undefined when signals are disabled or unavailable.
+	 */
+	classifyContextTrim?(input: ContextTrimInput): Promise<ContextTrimSignals | undefined>;
 	/** Whether UI is available (false in print/RPC mode) */
 	hasUI: boolean;
 	/** Current working directory */
@@ -1772,6 +1779,8 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
+	/** Jev judgment over the prompt about to be rebuilt; absent when signals are off. */
+	classifyContextTrim?: (input: ContextTrimInput) => Promise<ContextTrimSignals | undefined>;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */
