@@ -153,6 +153,35 @@ describe("resolveDuoConfig", () => {
 		expect(resolvedOrchestrator).toBe("auto");
 	});
 
+	test("an explicit pattern resolves from the full registry even when the auth-filtered pool omits it", () => {
+		const tnxDeepseek = buildModel({
+			id: "ds/deepseek-v4-flash",
+			name: "DeepSeek V4 Flash",
+			api: "openai-responses",
+			provider: "tnx",
+			baseUrl: "https://tnx.test/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1 },
+			contextWindow: 200000,
+			maxTokens: 8192,
+		});
+		const poolRegistry = {
+			hasConfiguredAuth: (model: Model) => model.provider === "anthropic",
+			find: (provider: string, id: string) =>
+				provider === "tnx" && id === "ds/deepseek-v4-flash" ? tnxDeepseek : undefined,
+		} as unknown as ModelRegistry;
+
+		const resolved = resolveDuoConfig(
+			settings({ "duo.executorModel": "tnx/ds/deepseek-v4-flash" }),
+			[fable5, opus48],
+			poolRegistry,
+		);
+
+		expect(resolved?.planner.id).toBe("claude-fable-5");
+		expect(resolved?.executor.id).toBe("ds/deepseek-v4-flash");
+	});
+
 	test("advisor stays on the planner (Fable) even when a codex model is authed", () => {
 		const anyAuth = { hasConfiguredAuth: () => true } as unknown as ModelRegistry;
 		const resolved = resolveDuoConfig(settings(), [fable5, opus48, openaiSol], anyAuth);

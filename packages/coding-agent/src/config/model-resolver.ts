@@ -617,6 +617,8 @@ export interface ModelMatchPreferences {
 }
 
 export type CanonicalModelRegistry = object & {
+	/** Lookup by provider + id, including models the session snapshot omits. */
+	find?: (provider: string, modelId: string) => Model<Api> | undefined;
 	resolveCanonicalModel?: (
 		canonicalId: string,
 		options?: { availableOnly?: boolean; candidates?: readonly Model<Api>[] },
@@ -1878,7 +1880,16 @@ function resolveExplicitDuoModel(
 	const resolved = parseModelPattern(pattern, availableModels, getModelMatchPreferences(settings), {
 		modelRegistry,
 	});
-	return resolved.model ? { model: resolved.model, thinkingLevel: resolved.thinkingLevel } : undefined;
+	if (resolved.model) return { model: resolved.model, thinkingLevel: resolved.thinkingLevel };
+
+	// A discovered provider model (e.g. a gateway's own /v1/models list) is not in
+	// the session snapshot; the registry lookup the main model selector uses still
+	// finds it, so an explicit duo selector is honoured the same way.
+	const { base, level } = splitThinkingSuffix(pattern, -1, MAX_THINKING_SUFFIX_OPTIONS);
+	const slash = base.indexOf("/");
+	if (slash <= 0 || slash === base.length - 1) return undefined;
+	const model = modelRegistry.find?.(base.slice(0, slash), base.slice(slash + 1));
+	return model ? { model, thinkingLevel: level } : undefined;
 }
 
 function resolveNewestAnthropicDuoModel(
@@ -1954,6 +1965,7 @@ function resolveDuoSide(
 	if (normalized) {
 		const explicit = resolveExplicitDuoModel(normalized, availableModels, settings, modelRegistry);
 		if (explicit) return explicit;
+		logger.debug("duo model pattern unavailable; auto-detecting", { pattern: normalized });
 	}
 	const model = resolveNewestAnthropicDuoModel(availableModels, matchesKind);
 	return model ? { model } : undefined;
@@ -1993,6 +2005,13 @@ export function resolveDuoConfig(
 
 	const orchestrator = settings.get("duo.orchestrator");
 	const phaseModels = resolveDuoPhaseModels(settings, availableModels, registry);
+
+	logger.debug("duo config resolved", {
+		planner: `${planner.model.provider}/${planner.model.id}`,
+		executor: `${executor.model.provider}/${executor.model.id}`,
+		advisor: `${(advisor?.model ?? planner.model).provider}/${(advisor?.model ?? planner.model).id}`,
+		phaseModels: Object.keys(phaseModels ?? {}).length,
+	});
 
 	return {
 		mode: settings.get("duo.mode"),

@@ -13,6 +13,7 @@
 
 - The advisor now skips in-progress turns TypeSafe rates as not worth reviewing (`signals.advisorGate.*`); final yields, user prompts, consults, and every fourth held turn still reach it, and a completion claim TypeSafe scores as evidence-free is bounced back to the executor without an advisor consult.
 - The duo advisor now follows the planner model (Fable) instead of defaulting to a codex model whose rate-limit chain landed it on Opus; set `duo.advisorModel` to pin a different advisor.
+- An explicit `duo.*Model` / `duo.phaseModels` selector now also resolves through the registry lookup, so a model served by a discovered provider (a gateway's own `/v1/models` list) is honoured instead of silently degrading the side to its family fallback; when a side still cannot resolve, the reason (`duo model pattern unavailable`) and the models duo settled on are logged.
 - Duo raises an automatic recover takeover after two consecutive turns TypeSafe scores as stuck (`signals.stuckThreshold`), `duo_handoff` without an explicit scope lets TypeSafe pick `multi` for genuinely multi-phase briefs and notes when a brief reads unlocked, `save_learning` rejects case-specific notes, and the delegation reminder stays quiet on turns judged to hold a single slice.
 
 ## [1.8.9] - 2026-09-18
