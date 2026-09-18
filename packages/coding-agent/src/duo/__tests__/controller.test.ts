@@ -1699,3 +1699,104 @@ describe("DuoController planner auto-return watch", () => {
 		expect(controller.status.phase).toBe("executing");
 	});
 });
+
+describe("DuoController preplanning and model-requested phase changes", () => {
+	const PREPLANNING_CONFIG = duoConfig({
+		phaseModels: {
+			preplanning: [
+				{ selector: PHASE_MODEL_SELECTOR, model: phaseModel },
+				{ selector: PHASE_FALLBACK_SELECTOR, model: otherModel },
+			],
+			planning: [{ selector: "anthropic/claude-fable-5", model: planner }],
+			implementing: [{ selector: PHASE_FALLBACK_SELECTOR, model: otherModel }],
+		},
+	});
+
+	test("opens a fresh session on the preplanning model and registers its fallback chain", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, PREPLANNING_CONFIG);
+
+		await controller.reevaluate();
+
+		expect(controller.status).toMatchObject({
+			phase: "executing",
+			workPhase: "preplanning",
+			phaseModelId: PHASE_MODEL_SELECTOR,
+		});
+		expect(host.switches[0]).toEqual({ model: phaseModel, thinkingLevel: ThinkingLevel.Max });
+		expect(host.fallbackChains).toEqual([{ selector: PHASE_MODEL_SELECTOR, chain: [PHASE_FALLBACK_SELECTOR] }]);
+		expect(host.persisted.at(-1)?.workPhase).toBe("preplanning");
+		expect(host.notices.at(-1)?.text).toContain("preplanning");
+	});
+
+	test("keeps the executor on the stream when no preplanning phase is configured", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, duoConfig());
+
+		await controller.reevaluate();
+
+		expect(controller.status.workPhase).toBeUndefined();
+		expect(host.switches[0]).toEqual({ model: executor, thinkingLevel: ThinkingLevel.Max });
+	});
+
+	test("holds preplanning against a confident classifier until the model changes phase", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, PREPLANNING_CONFIG);
+		await controller.reevaluate();
+		host.switches = [];
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.95 }));
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.95 }));
+
+		expect(host.switches).toEqual([]);
+		expect(controller.status.workPhase).toBe("preplanning");
+	});
+
+	test("releases preplanning after the bounded dwell so the classifier can re-route", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, PREPLANNING_CONFIG);
+		await controller.reevaluate();
+		host.switches = [];
+
+		for (let turn = 0; turn < 5; turn++) {
+			controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.95 }));
+		}
+
+		expect(controller.status.workPhase).toBe("implementing");
+	});
+
+	test("requestPhaseChange applies the phase model without classifier confidence or streak", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, PREPLANNING_CONFIG);
+		await controller.reevaluate();
+		host.switches = [];
+
+		expect(await controller.requestPhaseChange("planning", "idea understood, scouted")).toBe("ok");
+
+		// A candidate without an explicit thinking level inherits the executor effort.
+		expect(host.switches).toEqual([{ model: planner, thinkingLevel: ThinkingLevel.Max }]);
+		expect(controller.status).toMatchObject({ workPhase: "planning", phaseModelId: "anthropic/claude-fable-5" });
+		expect(host.persisted.at(-1)?.workPhase).toBe("planning");
+		expect(host.notices.at(-1)?.text).toContain("idea understood, scouted");
+	});
+
+	test("requestPhaseChange on an unlisted phase restores the resolved executor", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, PREPLANNING_CONFIG);
+		await controller.reevaluate();
+		host.switches = [];
+
+		expect(await controller.requestPhaseChange("reporting")).toBe("ok");
+
+		expect(host.switches).toEqual([{ model: executor, thinkingLevel: ThinkingLevel.Max }]);
+		expect(controller.status.workPhase).toBe("reporting");
+	});
+
+	test("requestPhaseChange reports unavailable without a live duo phase", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, duoConfig({ mode: "off" }));
+
+		expect(await controller.requestPhaseChange("planning")).toBe("unavailable");
+		expect(host.switches).toEqual([]);
+	});
+});

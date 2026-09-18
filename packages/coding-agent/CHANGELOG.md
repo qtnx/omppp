@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `duo_change_phase` lets the model move the duo session between work phases itself (`preplanning`, `planning`, `implementing`, `verifying`, `debugging`, `blocked`, `reporting`) with a one-line rationale, putting that phase's configured model on the main stream without waiting for the classifier's confidence/streak gates.
+- New `preplanning` work phase, default `anthropic/claude-opus-5:high`: a fresh duo session opens on it to brainstorm the request and scout the code, then the model moves on to `planning`. The classifier never emits this phase — it holds until `duo_change_phase` (or a four-turn dwell) releases it.
+
 ### Changed
 
 - The default duo/executor DeepSeek model is now `tnx/openrouter/deepseek/deepseek-v4.1-flash` (was `tnx/openrouter/~deepseek/deepseek-v4-flash-latest`), in `duo.executorModel`, the `duo.phaseModels` default map, and the setup default `retry.fallbackChains` key.

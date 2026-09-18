@@ -18,6 +18,7 @@ export const ORCHESTRATOR_MODE_SAFE_TOOL_NAMES = [
 	"search_tool_bm25",
 	"duo_handoff",
 	"duo_escalate",
+	"duo_change_phase",
 	"consult",
 	"super_review",
 ] as const;

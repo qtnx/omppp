@@ -3,7 +3,7 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import { classifyModel } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { prompt } from "@oh-my-pi/pi-utils";
-import type { DuoResolvedConfig } from "../config/model-resolver";
+import type { DuoPhaseModelCandidate, DuoResolvedConfig } from "../config/model-resolver";
 import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 import advisorInstructions from "./prompts/advisor-instructions.md" with { type: "text" };
 import autoSignalDirective from "./prompts/auto-signal-directive.md" with { type: "text" };
@@ -24,6 +24,7 @@ import {
 	type DuoPhase,
 	DuoStateMachine,
 	type DuoStateSnapshot,
+	isDuoPhaseLive,
 	type TakeoverDecision,
 	type TakeoverPurpose,
 	type TakeoverRequestOptions,
@@ -75,7 +76,13 @@ export interface DuoPhasePolicy {
 /** Mirrors the `duo.phaseSwitch.minConfidence` / `signals.stuckThreshold` defaults for hosts that omit `phasePolicy`. */
 const DEFAULT_PHASE_POLICY: DuoPhasePolicy = { minConfidence: 0.7, stuckThreshold: 0.6 };
 
+/** Turns the sticky preplanning phase may hold before the classifier is allowed to re-route the phase model. */
+const PREPLANNING_MAX_TURNS = 4;
+
 export type DuoHandoffResult = "ok" | "no-controller" | "wrong-phase" | "already-executor" | "switch-failed";
+
+/** Outcome of a model-requested `duo_change_phase`: `unavailable` means no live duo controller accepted it. */
+export type DuoPhaseChangeResult = "ok" | "unavailable" | "switch-failed";
 
 export interface DuoStatus {
 	phase: DuoPhase;
@@ -130,6 +137,10 @@ export class DuoController {
 	#stuckStreak = 0;
 	/** Selector of the phase model currently holding the executor stream. */
 	#phaseModelSelector: string | undefined;
+	/** Phase-model switch in force; `reevaluate` re-asserts it while the sticky preplanning phase owns the stream. */
+	#phaseModelSwitch: { model: Model; thinkingLevel: ConfiguredThinkingLevel } | undefined;
+	/** Turns spent in the sticky preplanning phase; the classifier may take over after the bounded dwell. */
+	#preplanningTurns = 0;
 
 	constructor(host: DuoControllerHost, config: DuoResolvedConfig, restored?: DuoStateSnapshot) {
 		this.#host = host;
@@ -176,7 +187,27 @@ export class DuoController {
 			this.#host.injectBrief(prompt.render(plannerNotice), "nextTurn");
 			await this.#applySwitch(this.#config.planner, this.#config.plannerThinking);
 		} else if (activated && nextPhase === "executing") {
-			if (await this.#applySwitch(this.#config.executor, this.#executorThinking())) {
+			// A configured preplanning phase opens the session: the brainstorm/scout
+			// model takes the stream first, and the model moves the session on with
+			// `duo_change_phase` (or the bounded dwell above releases it).
+			const preplanning = this.#preplanningCandidate();
+			if (preplanning) {
+				this.#machine.setWorkPhase("preplanning");
+				this.#lastWorkPhase = "preplanning";
+				this.#phaseStreak = 1;
+				this.#preplanningTurns = 0;
+				this.#phaseModelSelector = preplanning.selector;
+				const thinkingLevel = preplanning.thinkingLevel ?? this.#executorThinking();
+				this.#phaseModelSwitch = { model: preplanning.model, thinkingLevel };
+				this.#installPhaseChain("preplanning", preplanning.selector);
+				if (await this.#applySwitch(preplanning.model, thinkingLevel)) {
+					await this.#setOrchestratorForExecutionScope(activationInput);
+				}
+				this.#host.emitNotice(
+					"info",
+					`Duo preplanning: ${preplanning.selector} opens the session — brainstorm the request and scout the code, then call duo_change_phase.`,
+				);
+			} else if (await this.#applySwitch(this.#config.executor, this.#executorThinking())) {
 				await this.#setOrchestratorForExecutionScope(activationInput);
 			}
 		} else if (deactivated) {
@@ -261,6 +292,16 @@ export class DuoController {
 	/** TypeSafe classification of the turn that just ended (see plan: phase models, stuck). */
 	notifyTurnSignals(signals: TurnSignals): void {
 		const policy = this.#host.phasePolicy?.() ?? DEFAULT_PHASE_POLICY;
+		// Preplanning is the duo session's opening phase and the model owns its exit
+		// (`duo_change_phase`), so the classifier must not re-route the phase model out
+		// from under it. The bounded dwell releases a session that never calls the tool.
+		if (this.#machine.workPhase === "preplanning") {
+			this.#preplanningTurns++;
+			if (this.#preplanningTurns <= PREPLANNING_MAX_TURNS) {
+				this.#persistSnapshot();
+				return;
+			}
+		}
 		this.#phaseStreak = this.#lastWorkPhase === signals.phase ? this.#phaseStreak + 1 : 1;
 		this.#lastWorkPhase = signals.phase;
 		this.#stuckStreak = signals.stuck >= policy.stuckThreshold ? this.#stuckStreak + 1 : 0;
@@ -670,6 +711,11 @@ export class DuoController {
 		switch (this.#machine.phase) {
 			case "executing":
 			case "degraded":
+				// The sticky preplanning phase keeps its own model across reevaluations
+				// (a session restore must not drop back to the executor mid-brainstorm).
+				if (this.#machine.workPhase === "preplanning" && this.#phaseModelSwitch) {
+					return this.#phaseModelSwitch;
+				}
 				return { model: this.#config.executor, thinkingLevel: this.#executorThinking() };
 			case "planning":
 			case "takeover":
@@ -695,24 +741,81 @@ export class DuoController {
 			if (signals.phase !== "blocked" && this.#phaseStreak < 2) return;
 			const chosen = candidates.find(candidate => !this.#host.isSelectorSuppressed?.(candidate.selector));
 			if (!chosen || chosen.selector === this.#phaseModelSelector) return;
-			// A suppressed selector stays out of the chain: it is in a rate-limit/auth cooldown,
-			// and the chain is a runtime override that would outlive that suppression.
-			const chain = candidates
-				.filter(
-					candidate =>
-						candidate.selector !== chosen.selector && !this.#host.isSelectorSuppressed?.(candidate.selector),
-				)
-				.map(candidate => candidate.selector);
-			if (chain.length > 0) this.#host.installFallbackChain?.(chosen.selector, chain);
+			this.#installPhaseChain(signals.phase, chosen.selector);
 			this.#phaseModelSelector = chosen.selector;
-			void this.#applySwitch(chosen.model, chosen.thinkingLevel ?? this.#executorThinking());
+			const thinkingLevel = chosen.thinkingLevel ?? this.#executorThinking();
+			this.#phaseModelSwitch = { model: chosen.model, thinkingLevel };
+			void this.#applySwitch(chosen.model, thinkingLevel);
 			return;
 		}
 		// Unlisted phase (or no available candidate): the planner/executor models are authoritative.
 		if (this.#phaseModelSelector === undefined) return;
 		if (signals.phaseConfidence < minConfidence || this.#phaseStreak < 2) return;
 		this.#phaseModelSelector = undefined;
+		this.#phaseModelSwitch = undefined;
 		void this.#applySwitch(this.#resolvedExecutor, this.#executorThinking());
+	}
+
+	/**
+	 * Model-requested phase change (`duo_change_phase`): the phase's own model is
+	 * authoritative here, so the classifier's confidence/streak gates do not apply.
+	 */
+	async requestPhaseChange(phase: WorkPhase, reason?: string): Promise<DuoPhaseChangeResult> {
+		if (!isDuoPhaseLive(this.#machine.phase)) return "unavailable";
+		const candidates = this.#config.phaseModels[phase];
+		const chosen = candidates?.find(candidate => !this.#host.isSelectorSuppressed?.(candidate.selector));
+		this.#preplanningTurns = 0;
+		if (this.#machine.workPhase !== phase) {
+			this.#machine.setWorkPhase(phase);
+			this.#lastWorkPhase = phase;
+			this.#phaseStreak = 1;
+		}
+		const suffix = reason?.trim() ? ` — ${reason.trim()}` : "";
+		if (!chosen) {
+			// Unlisted phase: the resolved executor is authoritative.
+			this.#phaseModelSelector = undefined;
+			this.#phaseModelSwitch = undefined;
+			if (!(await this.#applySwitch(this.#resolvedExecutor, this.#executorThinking()))) {
+				this.#persistSnapshot();
+				return "switch-failed";
+			}
+			this.#persistSnapshot();
+			this.#host.emitNotice("info", `Duo phase → ${phase}: the executor holds the main stream${suffix}.`);
+			return "ok";
+		}
+		this.#installPhaseChain(phase, chosen.selector);
+		this.#phaseModelSelector = chosen.selector;
+		const thinkingLevel = chosen.thinkingLevel ?? this.#executorThinking();
+		this.#phaseModelSwitch = { model: chosen.model, thinkingLevel };
+		if (!(await this.#applySwitch(chosen.model, thinkingLevel))) {
+			this.#persistSnapshot();
+			return "switch-failed";
+		}
+		this.#persistSnapshot();
+		this.#host.emitNotice("info", `Duo phase → ${phase}: ${chosen.selector} holds the main stream${suffix}.`);
+		return "ok";
+	}
+
+	/** First unsuppressed candidate of the sticky preplanning phase, when that phase is configured. */
+	#preplanningCandidate(): DuoPhaseModelCandidate | undefined {
+		return this.#config.phaseModels.preplanning?.find(
+			candidate => !this.#host.isSelectorSuppressed?.(candidate.selector),
+		);
+	}
+
+	/** Register the remaining candidates of a phase as rate-limit fallbacks of the chosen selector. */
+	#installPhaseChain(phase: WorkPhase, chosenSelector: string): void {
+		const candidates = this.#config.phaseModels[phase];
+		if (!candidates) return;
+		// A suppressed selector stays out of the chain: it is in a rate-limit/auth cooldown,
+		// and the chain is a runtime override that would outlive that suppression.
+		const chain = candidates
+			.filter(
+				candidate =>
+					candidate.selector !== chosenSelector && !this.#host.isSelectorSuppressed?.(candidate.selector),
+			)
+			.map(candidate => candidate.selector);
+		if (chain.length > 0) this.#host.installFallbackChain?.(chosenSelector, chain);
 	}
 
 	/** Two consecutive stuck turns hand the stream to the planner; the streak resets so the takeover cooldown governs repeats. */

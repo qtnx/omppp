@@ -125,6 +125,7 @@ import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import {
 	type DuoExecutionScope,
 	type DuoHandoffResult,
+	type DuoPhaseChangeResult,
 	type DuoStateSnapshot,
 	type DuoStatus,
 	isDuoPhaseLive,
@@ -215,7 +216,12 @@ import {
 	obfuscateProviderContext,
 } from "../secrets/message-transform";
 import { type SecretEntry, SecretObfuscator } from "../secrets/obfuscator";
-import { createTurnSignalService, TURN_SIGNALS_CHANNEL, type TurnSignalService } from "../signals/index";
+import {
+	createTurnSignalService,
+	TURN_SIGNALS_CHANNEL,
+	type TurnSignalService,
+	type WorkPhase,
+} from "../signals/index";
 import { maskSecretValue, normalizeSecretName, type SecretVaultLike, vaultSecretEntry } from "../secrets/vault";
 import { releaseSharpshooterSession } from "../sharpshooter/backend";
 import { flushSharpshooterExtraction } from "../sharpshooter/extract";
@@ -6683,6 +6689,10 @@ export class AgentSession {
 
 	duoEscalateToPlanner(reason: string): Promise<"ok" | "unavailable"> {
 		return this.#duoOrchestrator.escalateToPlanner(reason);
+	}
+
+	duoChangePhase(phase: WorkPhase, reason?: string): Promise<DuoPhaseChangeResult> {
+		return this.#duoOrchestrator.changePhase(phase, reason);
 	}
 
 	duoReplan(): Promise<boolean> {

@@ -2206,6 +2206,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session?.duoHandoffToExecutor(resolution, scope) ?? Promise.resolve("no-controller"),
 			turnSignals: session?.turnSignals,
 			duoEscalateToPlanner: reason => session?.duoEscalateToPlanner(reason) ?? Promise.resolve("unavailable"),
+			duoChangePhase: (phase, reason) => session?.duoChangePhase(phase, reason) ?? Promise.resolve("unavailable"),
 			getPlanModeState: () => session?.getPlanModeState(),
 			getOrchestratorModeState: () => session?.getOrchestratorModeState(),
 			setOrchestratorModeState: state => session?.setOrchestratorModeState(state),

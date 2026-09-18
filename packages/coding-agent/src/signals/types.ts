@@ -1,7 +1,15 @@
 /** Work phase a primary turn is judged to be in. */
-export type WorkPhase = "planning" | "implementing" | "verifying" | "debugging" | "blocked" | "reporting";
+export type WorkPhase =
+	| "preplanning"
+	| "planning"
+	| "implementing"
+	| "verifying"
+	| "debugging"
+	| "blocked"
+	| "reporting";
 
 export const WORK_PHASES: readonly WorkPhase[] = [
+	"preplanning",
 	"planning",
 	"implementing",
 	"verifying",

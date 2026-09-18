@@ -25,9 +25,11 @@ const _session = {} as AgentSession;
 const _handoffCheck: (resolution: string, scope?: DuoExecutionScope) => Promise<DuoHandoffResult> =
 	_session.duoHandoffToExecutor;
 const _escalateCheck: NonNullable<ToolSession["duoEscalateToPlanner"]> = _session.duoEscalateToPlanner;
+const _phaseCheck: NonNullable<ToolSession["duoChangePhase"]> = _session.duoChangePhase;
 const _summonCheck: () => Promise<boolean> = _session.duoSummon;
 void _handoffCheck;
 void _escalateCheck;
+void _phaseCheck;
 void _summonCheck;
 
 function anthropicModel(id: string): Model {

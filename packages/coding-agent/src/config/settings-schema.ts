@@ -789,6 +789,7 @@ export const SETTINGS_SCHEMA = {
 	"duo.phaseModels": {
 		type: "record",
 		default: {
+			preplanning: ["anthropic/claude-opus-5:high"],
 			planning: ["openai-codex/gpt-6-astra:high", "anthropic/claude-fable-5-1:medium"],
 			implementing: ["tnx/openrouter/deepseek/deepseek-v4.1-flash:high", "anthropic/claude-opus-5:high"],
 			verifying: ["openai-codex/gpt-6-astra:medium", "anthropic/claude-fable-5-1:medium"],
@@ -801,7 +802,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Phase Models",
 			description:
-				'JSON object mapping a detected work phase (planning, implementing, verifying, debugging, blocked, reporting) to a model selector or an ordered list of selectors, e.g. {"debugging":["anthropic/claude-opus-5:high","anthropic/claude-fable-5-1:high"],"reporting":"tnx/openrouter/deepseek/deepseek-v4.1-flash:low"}. The first available selector is used; later entries become rate-limit fallbacks. Phases without an entry keep the executor model (the planner keeps planning and takeovers as before). Requires TypeSafe signals (signals.enabled plus a reachable signals.baseUrl or key).',
+				'JSON object mapping a work phase (preplanning, planning, implementing, verifying, debugging, blocked, reporting) to a model selector or an ordered list of selectors, e.g. {"debugging":["anthropic/claude-opus-5:high","anthropic/claude-fable-5-1:high"],"reporting":"tnx/openrouter/deepseek/deepseek-v4.1-flash:low"}. The first available selector is used; later entries become rate-limit fallbacks. Phases without an entry keep the executor model (the planner keeps planning and takeovers as before). A configured preplanning phase opens each fresh duo session on its model — the model moves on with the duo_change_phase tool. Requires TypeSafe signals (signals.enabled plus a reachable signals.baseUrl or key).',
 		},
 	},
 	"duo.phaseSwitch.minConfidence": {

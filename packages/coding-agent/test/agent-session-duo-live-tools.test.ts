@@ -95,6 +95,7 @@ describe("AgentSession live duo/advisor tool availability", () => {
 			...ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES,
 			"duo_handoff",
 			"duo_escalate",
+			"duo_change_phase",
 		];
 		const activeToolNames = options.activeToolNames ?? ["read"];
 		const toolsByName = new Map(registryToolNames.map(name => [name, makeTool(name)] as const));
@@ -174,6 +175,7 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		expect(active).toContain("consult");
 		expect(active).toContain("duo_handoff");
 		expect(active).toContain("duo_escalate");
+		expect(active).toContain("duo_change_phase");
 	}
 
 	function orchestratorModeChangeCount(session: AgentSession): number {
@@ -252,6 +254,7 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		session.settings.override("duo.mode", "off");
 		expect(session.getActiveToolNames()).not.toContain("duo_handoff");
 		expect(session.getActiveToolNames()).not.toContain("duo_escalate");
+		expect(session.getActiveToolNames()).not.toContain("duo_change_phase");
 
 		session.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md" });
 		session.settings.clearOverride("duo.mode");
@@ -259,12 +262,14 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		expect(session.getDuoStatus()?.phase).toBe("planning");
 		expect(session.getActiveToolNames()).toContain("duo_handoff");
 		expect(session.getActiveToolNames()).toContain("duo_escalate");
+		expect(session.getActiveToolNames()).toContain("duo_change_phase");
 		expect(session.getActiveToolNames()).toContain("read");
 
 		await session.setDuoEnabled(false);
 		expect(session.getDuoStatus()?.phase).toBe("inactive");
 		expect(session.getActiveToolNames()).not.toContain("duo_handoff");
 		expect(session.getActiveToolNames()).not.toContain("duo_escalate");
+		expect(session.getActiveToolNames()).not.toContain("duo_change_phase");
 		expect(session.getActiveToolNames()).toContain("read");
 	});
 

@@ -1081,6 +1081,7 @@ const usageSegment: StatusLineSegment = {
  * endpoint; the phase word is coloured by how the turn is going.
  */
 const PHASE_COLORS: Record<NonNullable<SegmentContext["workPhase"]>["phase"], ThemeColor> = {
+	preplanning: "accent",
 	planning: "accent",
 	implementing: "statusLineSpend",
 	verifying: "statusLineOutput",
