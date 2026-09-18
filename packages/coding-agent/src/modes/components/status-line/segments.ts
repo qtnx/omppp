@@ -1067,6 +1067,29 @@ const usageSegment: StatusLineSegment = {
 // Segment Registry
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * TypeSafe work phase for the current turn. Hidden until the first classification
+ * lands (and stays hidden when signals are off), so it costs nothing without the
+ * endpoint; the phase word is coloured by how the turn is going.
+ */
+const PHASE_COLORS: Record<NonNullable<SegmentContext["workPhase"]>["phase"], ThemeColor> = {
+	planning: "accent",
+	implementing: "statusLineSpend",
+	verifying: "statusLineOutput",
+	debugging: "warning",
+	blocked: "error",
+	reporting: "success",
+};
+
+const phaseSegment: StatusLineSegment = {
+	id: "phase",
+	render(ctx) {
+		if (!ctx.workPhase) return { content: "", visible: false };
+		const { phase } = ctx.workPhase;
+		return { content: theme.fg(PHASE_COLORS[phase], statusValue(ctx, phase)), visible: true };
+	},
+};
+
 export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	pi: piSegment,
 	status: statusSegment,
@@ -1093,6 +1116,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	session_name: sessionNameSegment,
 	usage: usageSegment,
 	collab: collabSegment,
+	phase: phaseSegment,
 	vim: vimSegment,
 };
 

@@ -274,6 +274,7 @@ export type StatusLineSegmentId =
 	| "session_name"
 	| "usage"
 	| "collab"
+	| "phase"
 	| "vim";
 
 /** Submenu choice metadata. */

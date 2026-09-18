@@ -48,6 +48,7 @@ export function createGallerySegmentContext(sessionOptions?: GallerySessionOptio
 		vibeMode: null,
 		vim: null,
 		collab: { role: "host", participantCount: 3 },
+		workPhase: { phase: "implementing", confidence: 0.92 },
 		usageStats: {
 			input: 12_400,
 			output: 3_600,
