@@ -19,6 +19,7 @@ import {
 import { detectPlanningNeeded } from "../duo/takeover-signals";
 import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, type OrchestratorModeState } from "../orchestrator-mode/state";
 import type { PlanModeState } from "../plan-mode/state";
+import type { TurnSignals } from "../signals/index";
 import type { ConfiguredThinkingLevel } from "../thinking";
 
 export interface SessionDuoOrchestratorHost {
@@ -284,6 +285,11 @@ export class SessionDuoOrchestrator {
 
 	async onTurnEnd(): Promise<void> {
 		await this.#controller?.notifyTurnEnd();
+	}
+
+	/** Every resolved TypeSafe turn classification; drives phase models and stuck signals. */
+	onTurnSignals(signals: TurnSignals): void {
+		this.#controller?.notifyTurnSignals(signals);
 	}
 
 	notifyManualModelChange(): void {

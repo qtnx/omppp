@@ -16,6 +16,7 @@ import plannerNotice from "./prompts/planner-notice.md" with { type: "text" };
 import plannerSummon from "./prompts/planner-summon.md" with { type: "text" };
 import planningSignalNudge from "./prompts/planning-signal-nudge.md" with { type: "text" };
 import takeoverBrief from "./prompts/takeover-brief.md" with { type: "text" };
+import type { TurnSignals } from "../signals/index";
 import {
 	type DuoActivationInput,
 	type DuoExecutionScope,
@@ -227,6 +228,11 @@ export class DuoController {
 		this.#host.emitNotice("info", "Duo returned to planning: the planner holds the main stream again.");
 		this.#persistSnapshot();
 		return true;
+	}
+
+	/** TypeSafe classification of the turn that just ended (see plan: phase models, stuck). */
+	notifyTurnSignals(_signals: TurnSignals): void {
+		// Filled by the duo-phases slice.
 	}
 
 	async notifyTurnEnd(): Promise<void> {

@@ -1,0 +1,10 @@
+{
+	"generic_rule": {
+		"type": "noul",
+		"instructions": "The state is a candidate rule an AI reviewer wants to save so future coding sessions on other tasks benefit. Is it a reusable generic rule rather than a note about this one case?",
+		"criteria": {
+			"true": "States a behavior to keep or avoid that applies across tasks and repositories; no task-specific file names, ticket numbers, variable names, or one-off facts",
+			"false": "Describes a specific bug, file, command, value, or event from the current task; would not help a different task"
+		}
+	}
+}

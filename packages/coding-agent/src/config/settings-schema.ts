@@ -768,6 +768,113 @@ export const SETTINGS_SCHEMA = {
 				"Thinking selector for high-importance duo advisor consults when the escalation model pattern has no :thinking suffix.",
 		},
 	},
+	"duo.phaseModels": {
+		type: "record",
+		default: {} as Record<string, string | string[]>,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Phase Models",
+			description:
+				'JSON object mapping a detected work phase (planning, implementing, verifying, debugging, blocked, reporting) to a model selector or an ordered list of selectors, e.g. {"debugging":["anthropic/claude-opus-5:high","anthropic/claude-fable-5-1:high"],"reporting":"tnx/ds/deepseek-v4-flash:low"}. The first available selector is used; later entries become rate-limit fallbacks. Phases not listed use the planner (planning, blocked) or executor model. Requires TypeSafe signals (signals.enabled + TYPESAFE_API_KEY).',
+		},
+	},
+	"duo.phaseSwitch.minConfidence": {
+		type: "number",
+		default: 0.7,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Phase Switch Confidence",
+			description:
+				"Minimum phase-detection confidence (0-1) before duo switches the executor to the phase's model. The phase must also hold for two consecutive turns, except blocked which switches immediately.",
+		},
+	},
+	"signals.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "TypeSafe Turn Signals",
+			description:
+				"Classify each primary turn with TypeSafe System One (work phase, needs-review, stuck, done-without-evidence). Effective only when TYPESAFE_API_KEY or signals.apiKey is set; off or unavailable means every consumer behaves as before.",
+		},
+	},
+	"signals.apiKey": {
+		type: "string",
+		default: "",
+		credential: true,
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "TypeSafe API Key",
+			description: "TypeSafe API key. The TYPESAFE_API_KEY environment variable takes precedence.",
+			secret: true,
+		},
+	},
+	"signals.model": {
+		type: "string",
+		default: "jev-latest",
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "TypeSafe Model",
+			description: "System One model name or alias sent in the request model field.",
+		},
+	},
+	"signals.timeoutMs": {
+		type: "number",
+		default: 4000,
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "TypeSafe Timeout (ms)",
+			description: "Per-request timeout. A timed-out classification is treated as unavailable (fail-open).",
+		},
+	},
+	"signals.advisorGate.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "Advisor Review Gate",
+			description:
+				"Let the advisor skip in-progress turns TypeSafe rates as not worth reviewing. Final yields, user prompts, consults, and the deferred-turn cap always reach the advisor.",
+		},
+	},
+	"signals.advisorGate.reviewThreshold": {
+		type: "number",
+		default: 0.5,
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "Advisor Review Threshold",
+			description: "needs-review probability (0-1) at or above which an in-progress turn is sent to the advisor.",
+		},
+	},
+	"signals.advisorGate.maxDeferredTurns": {
+		type: "number",
+		default: 4,
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "Advisor Max Deferred Turns",
+			description: "Consecutive in-progress turns the gate may hold back before the advisor reviews them anyway.",
+		},
+	},
+	"signals.stuckThreshold": {
+		type: "number",
+		default: 0.6,
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "Stuck Threshold",
+			description:
+				"Stuck score (0 advancing, 1 stuck) at or above which, for two consecutive turns, duo raises an automatic recover takeover signal.",
+		},
+	},
 	"duo.advisorPromptReview": {
 		type: "boolean",
 		default: true,

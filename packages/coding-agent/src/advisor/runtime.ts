@@ -17,6 +17,7 @@ import {
 	formatSessionHistoryMarkdown,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
+import type { TurnSignals, TurnSignalService } from "../signals/index";
 import { ADVISOR_RENDER_OPTIONS } from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
 
@@ -111,6 +112,16 @@ export interface AdvisorRuntimeHost {
 	 *  hard-stops), so the host can repaint UI that reflects whether the
 	 *  advisor is still going to comment on the current yield. */
 	notifyIdle?(): void;
+	/**
+	 * TypeSafe turn classifier. When present, `onTurnEnd` classifies each
+	 * rendered delta (already obfuscated) and the drain loop may defer
+	 * in-progress deltas the classifier rates as not worth reviewing.
+	 */
+	turnSignals?: TurnSignalService;
+	/** Receives every resolved turn classification (duo phase/stuck consumers). */
+	onTurnSignals?(signals: TurnSignals): void;
+	/** Advisor gate policy; absent means never defer. */
+	advisorGate?(): { enabled: boolean; reviewThreshold: number; maxDeferredTurns: number };
 }
 
 /** A request rejection that no retry can correct for this advisor configuration. */

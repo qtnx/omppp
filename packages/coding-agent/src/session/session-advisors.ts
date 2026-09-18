@@ -102,6 +102,7 @@ import type { PlanModeState } from "../plan-mode/state";
 import doneReviewMd from "../prompts/advisor/done-review.md" with { type: "text" };
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import type { TurnSignals, TurnSignalService } from "../signals/index";
 import {
 	AUTO_THINKING,
 	concreteThinkingLevel,
@@ -282,6 +283,10 @@ export interface SessionAdvisorsOptions {
 	restoredDuoSnapshot?: DuoStateSnapshot;
 	/** Advisor spend already persisted for this session, restored on resume. */
 	initialCosts?: ReadonlyMap<string, number>;
+	/** TypeSafe turn classifier shared by the session; undefined when disabled. */
+	turnSignals?: TurnSignalService;
+	/** Forwarded from the advisor runtime for every resolved classification. */
+	onTurnSignals?(signals: TurnSignals): void;
 }
 
 /** Options accepted when an advisor injects a primary-session message. */
@@ -423,6 +428,8 @@ export class SessionAdvisors {
 	#duoAdvisorEscalationModel?: Model;
 	#duoAdvisorEscalationThinking?: ThinkingLevel;
 	#initialDuoPhase: DuoStatus["phase"] | undefined;
+	readonly #turnSignals: TurnSignalService | undefined;
+	readonly #onTurnSignals: ((signals: TurnSignals) => void) | undefined;
 
 	constructor(host: SessionAdvisorsHost, options: SessionAdvisorsOptions) {
 		this.#host = host;
@@ -441,6 +448,8 @@ export class SessionAdvisors {
 		this.#advisorConfigs = options.configs;
 		this.#advisorStreamFn = options.streamFn;
 		this.#transformProviderContext = options.transformProviderContext;
+		this.#turnSignals = options.turnSignals;
+		this.#onTurnSignals = options.onTurnSignals;
 		this.#initialDuoPhase = options.restoredDuoSnapshot?.phase;
 		this.#restoreDuoAdvisorPin(options.restoredDuoSnapshot);
 		if (options.initialCosts) this.#advisorCosts = new Map(options.initialCosts);
@@ -1605,6 +1614,13 @@ export class SessionAdvisors {
 							.emitSessionEvent({ type: "advisor_yielded" })
 							.catch(err => logger.debug("advisor yield notification failed", { err: String(err) }));
 					},
+					turnSignals: this.#turnSignals,
+					onTurnSignals: this.#onTurnSignals,
+					advisorGate: () => ({
+						enabled: this.#host.settings.get("signals.advisorGate.enabled"),
+						reviewThreshold: this.#host.settings.get("signals.advisorGate.reviewThreshold"),
+						maxDeferredTurns: this.#host.settings.get("signals.advisorGate.maxDeferredTurns"),
+					}),
 				},
 				1000,
 				{
