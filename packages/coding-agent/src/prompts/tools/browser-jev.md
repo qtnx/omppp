@@ -10,7 +10,7 @@ Hand one browser goal to the Jev DOM policy and get the finished outcome back as
 - Screenshots are captured automatically at the start, at each rescue, and at the final state; their paths are listed in the report so you can look at the frames that matter (or ignore them).
 - A UX/accessibility review of the finished flow is attached by default: a summary plus evidence-backed findings (`blocker`/`major`/`minor` × `accessibility`/`ux`/`responsive`/`content`). It reads labels, roles, states, the viewport, and the page text — it saw no pixels, so treat it as a lead, not a verdict. Pass `review: false` to skip it.
 - Returns `status` plus the executed step list, the final URL/title, and the readable page text: `done` (Jev saw every requirement satisfied), `blocked` (no supported operation could progress), `max_steps` (budget spent).
-- Self-unblocking: when the fast policy reports blocked, or three actions change nothing, a helper model gets one turn (max 2 per run) to clear the obstacle — modal, consent banner, tutorial overlay, end-of-round gate, collapsed section, off-screen control — using only the observed elements. Those steps are marked `[rescue: …]`. `blocked` therefore means the rescue also failed, and the report names the remaining obstacle, so take over only then.
+- Self-unblocking: when the fast policy reports blocked, or three actions change nothing, the run escalates to the session's reasoning model for a rescue turn — up to 6 turns per run (`max_rescues`), each able to drive up to 4 actions before the policy gets the page back. The model reasons about the obstacle (modal, consent banner, tutorial overlay, end-of-round gate, collapsed section, off-screen control) and answers with a short plan using only observed elements; those steps are marked `[rescue: …]`. `blocked` therefore means the rescues also failed, and the report names the remaining obstacle, so take over only then.
 - `status: done` is Jev's claim, not proof. Check the returned URL, step list, and page text against what you asked for; when it matters, verify through the app's own state (API, database, or a follow-up goal).
 - The tab persists between calls, so a flow can be built up in stages: `browser_jev` to reach a screen, another `browser_jev` for the next leg.
 </instruction>
@@ -28,12 +28,15 @@ Hand one browser goal to the Jev DOM policy and get the finished outcome back as
 `{"goal":"Search for \"wireless headphones\", sort by price low to high, and open the first result","url":"https://shop.example.com"}`
 
 # Continue in the same tab, tighter budget
+
 `{"goal":"Add the item to the cart and open the cart page","max_steps":8}`
 
 # Responsive pass over the same goal
+
 `{"goal":"Open the quest panel and claim the ready reward","viewport":"mobile"}`
 
 # Finish and release the tab
+
 `{"goal":"Log out","close":true}`
 </examples>
 

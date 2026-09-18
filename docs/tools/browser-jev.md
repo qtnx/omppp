@@ -27,6 +27,7 @@
 | `max_steps` | number, optional | Executed-action ceiling (default 30). |
 | `viewport` | string, optional | `desktop` (1280x720), `tablet` (834x1112), `mobile` (390x844), `mobile-landscape` (844x390). Tablet/mobile set touch-capability flags. |
 | `review` | boolean, optional | Attach the UX/accessibility review of the finished flow (default true). |
+| `max_rescues` | number, optional | Rescue turns allowed (default 6); each escalates to the reasoning model and may drive up to 4 actions. |
 | `profile` | string, optional | Named isolated browser session (`a-z0-9_-`, ≤40 chars): own Chromium, cookies, storage, and `jev-<profile>` tab. Reuse the name to continue as that account. |
 | `fresh` | boolean, optional | Discard the named profile's stored state before the run. |
 | `close` | boolean, optional | Release this run's tab after the run. |
@@ -40,7 +41,7 @@ Unknown fields are rejected.
 2. One TypeSafe request per step returns the operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `HOVER`, `PRESS_ENTER`, `DRAG`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`) and, speculatively, a target for each applicable head; only the head(s) matching the chosen operation can execute. `DRAG` answers two heads — the element to pick up and the drop target — in the same request.
 3. `TYPE_TEXT` resolves its value through the session `completion()` bridge — the `smol` tier first, the session `default` tier if that fails.
 4. Execute against the observed element id, re-observe, repeat. Model output never becomes a selector, coordinate, or script.
-5. A `BLOCKED` verdict, or three consecutive non-`WAIT` actions that changed nothing, spends one rescue turn: the `smol` helper (falling back to the session default) sees the goal, page text, element table, and recent actions, and must answer with ONE action from the SAME offered space — or `give_up` plus the obstacle it found. Up to `MAX_RESCUES` (2) per run; rescue steps carry a `rescue` reason. The rescue prompt forbids destructive actions the goal did not request.
+5. A `BLOCKED` verdict, or three consecutive non-`WAIT` actions that changed nothing, spends a rescue turn. That turn escalates to the session's **reasoning tier** (`default`, falling back to `smol`) — the decision the choice-only policy cannot make — and the model answers with a short plan (up to 4 actions) drawn from the SAME offered space, or `give_up` plus the obstacle it found. The loop keeps the longest valid prefix of the plan, hands control back to the policy as soon as a step changes the page, and allows up to `max_rescues` (default 6) turns per run. Rescue steps carry a `rescue` reason, and the prompt forbids destructive actions the goal did not request.
 6. Screenshots are captured at the start, at each rescue, and at the final state, and listed in the report.
 7. Stop on `DONE`, a rescue that gave up, or the step budget.
 

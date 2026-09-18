@@ -4,6 +4,7 @@
 
 ### Added
 
+- Jev rescue turns now escalate to the session's reasoning model (instead of the cheap tier), may drive up to four actions each, and are allowed six per run (`max_rescues`) — a stuck flow gets real reasoning and room to work before the run reports `blocked`.
 - `browser_jev` gained viewport presets (`desktop`, `tablet`, `mobile`, `mobile-landscape`) so one goal can be checked at several breakpoints, automatic screenshots (start, each rescue, final state) listed in the report, and a UX/accessibility review of the finished flow (summary plus evidence-backed findings; skip with `review: false`).
 - Browser observation can now recover visible controls the accessibility tree drops (`aria-hidden` game HUDs) and therefore drives canvas apps that publish an accessibility mirror — e.g. XLords' `#a11y-layer` building buttons: 2 controls visible before, ~81 after.
 - Added `evals/browser-jev/` — a four-task XLords eval suite (upgrade a building, collect a map resource, send chat, claim a quest) run across desktop/tablet/mobile, with a runner that records the tool's own report and never turns a `blocked` result into a pass.
