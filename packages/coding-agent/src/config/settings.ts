@@ -375,7 +375,7 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 			plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
 			"openai-codex/gpt-5.6-sol": ["anthropic/claude-opus-5"],
 			// Duo executor default: rate-limit/quota failures fall through to Opus.
-			"tnx/openrouter/~deepseek/deepseek-v4-flash-latest": ["anthropic/claude-opus-5:high"],
+			"tnx/openrouter/deepseek/deepseek-v4.1-flash": ["anthropic/claude-opus-5:high"],
 			// Duo planner default: a quota-exhausted Fable falls through to Astra then Opus
 			// instead of pausing the advisor and the planning stream.
 			"anthropic/claude-fable-5-1": ["openai-codex/gpt-6-astra:high", "anthropic/claude-opus-5:high"],

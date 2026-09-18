@@ -398,7 +398,7 @@ describe("Settings", () => {
 		});
 
 		it("backs up a corrupted project config and retains the pending project role for retry", async () => {
-			await writeSettings({ setupVersion: 9 });
+			await writeSettings({ setupVersion: SETUP_CONFIG_VERSION });
 			const projectConfigPath = path.join(projectDir, ".omp", "config.yml");
 			await Bun.write(
 				projectConfigPath,
@@ -433,11 +433,11 @@ describe("Settings", () => {
 			await fs.promises.symlink(managedConfigPath, getConfigPath(), "file");
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			settings.set("setupVersion", 9);
+			settings.set("setupVersion", SETUP_CONFIG_VERSION);
 			await settings.flush();
 
 			expect(fs.lstatSync(getConfigPath()).isSymbolicLink()).toBe(true);
-			expect(YAML.parse(await Bun.file(managedConfigPath).text())).toEqual({ setupVersion: 9 });
+			expect(YAML.parse(await Bun.file(managedConfigPath).text())).toEqual({ setupVersion: SETUP_CONFIG_VERSION });
 		});
 
 		it("writes through a dangling symlink chain to the final target, preserving every link", async () => {
@@ -517,12 +517,12 @@ describe("Settings", () => {
 			const lexicalSibling = tempDir.join("final-config.yml");
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			settings.set("setupVersion", 9);
+			settings.set("setupVersion", SETUP_CONFIG_VERSION);
 			await settings.flush();
 
 			// The write lands on the physical target, recreating it, while the
 			// alias's lexical sibling (the mis-resolution) stays untouched.
-			expect(YAML.parse(await Bun.file(physicalFinal).text())).toEqual({ setupVersion: 9 });
+			expect(YAML.parse(await Bun.file(physicalFinal).text())).toEqual({ setupVersion: SETUP_CONFIG_VERSION });
 			expect(fs.existsSync(lexicalSibling)).toBe(false);
 			// Every user-managed link in the chain survives.
 			expect(fs.lstatSync(getConfigPath()).isSymbolicLink()).toBe(true);
@@ -560,7 +560,7 @@ describe("Settings", () => {
 				return readlink(target);
 			}) as typeof fs.promises.readlink);
 
-			settings.set("setupVersion", 9);
+			settings.set("setupVersion", SETUP_CONFIG_VERSION);
 			await expect(settings.flush()).rejects.toThrow(/ELOOP/);
 			expect(readlinkCalls).toBeLessThanOrEqual(safetyValve);
 		});
@@ -584,12 +584,12 @@ describe("Settings", () => {
 			const lexicalSibling = path.join(agentDir, "final-config.yml");
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			settings.set("setupVersion", 9);
+			settings.set("setupVersion", SETUP_CONFIG_VERSION);
 			await settings.flush();
 
 			// The write lands on the physical target (fs semantics), recreating it,
 			// while the lexically collapsed sibling stays untouched.
-			expect(YAML.parse(await Bun.file(physicalFinal).text())).toEqual({ setupVersion: 9 });
+			expect(YAML.parse(await Bun.file(physicalFinal).text())).toEqual({ setupVersion: SETUP_CONFIG_VERSION });
 			expect(fs.existsSync(lexicalSibling)).toBe(false);
 			// The user-managed chain head survives as a symlink.
 			expect(fs.lstatSync(getConfigPath()).isSymbolicLink()).toBe(true);
@@ -620,12 +620,12 @@ describe("Settings", () => {
 			const lexicalSibling = path.join(baseDir, "final-config.yml");
 
 			const settings = await Settings.init({ cwd: projectDir, agentDir });
-			settings.set("setupVersion", 9);
+			settings.set("setupVersion", SETUP_CONFIG_VERSION);
 			await settings.flush();
 
 			// The write lands on the physical target (fs semantics), recreating it,
 			// while the lexically collapsed sibling stays untouched.
-			expect(YAML.parse(await Bun.file(physicalFinal).text())).toEqual({ setupVersion: 9 });
+			expect(YAML.parse(await Bun.file(physicalFinal).text())).toEqual({ setupVersion: SETUP_CONFIG_VERSION });
 			expect(fs.existsSync(lexicalSibling)).toBe(false);
 			// The user-managed chain head survives as a symlink.
 			expect(fs.lstatSync(getConfigPath()).isSymbolicLink()).toBe(true);
@@ -973,11 +973,11 @@ describe("Settings", () => {
 				await rename(source, target);
 			});
 
-			settings.set("setupVersion", 9);
+			settings.set("setupVersion", SETUP_CONFIG_VERSION);
 			await settings.flush();
 
 			expect(injected).toBe(true);
-			expect(await readSettings()).toEqual({ setupVersion: 9 });
+			expect(await readSettings()).toEqual({ setupVersion: SETUP_CONFIG_VERSION });
 			expect(fs.readdirSync(agentDir).some(name => name.endsWith(".tmp") || name.endsWith(".bak"))).toBe(false);
 		});
 
@@ -2116,7 +2116,7 @@ describe("Settings", () => {
 
 			expect(settings.get("retry.fallbackChains")).toEqual({
 				"openai-codex/gpt-5.6-sol": ["anthropic/claude-opus-5"],
-				"tnx/openrouter/~deepseek/deepseek-v4-flash-latest": ["anthropic/claude-opus-5:high"],
+				"tnx/openrouter/deepseek/deepseek-v4.1-flash": ["anthropic/claude-opus-5:high"],
 				"anthropic/claude-fable-5-1": ["openai-codex/gpt-6-astra:high", "anthropic/claude-opus-5:high"],
 				"anthropic/claude-fable-5": ["openai-codex/gpt-6-astra:high", "anthropic/claude-opus-5:high"],
 				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
@@ -2696,7 +2696,7 @@ describe("Settings", () => {
 				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
 				plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
 				"openai-codex/gpt-5.6-sol": ["anthropic/claude-opus-5"],
-				"tnx/openrouter/~deepseek/deepseek-v4-flash-latest": ["anthropic/claude-opus-5:high"],
+				"tnx/openrouter/deepseek/deepseek-v4.1-flash": ["anthropic/claude-opus-5:high"],
 				"anthropic/claude-fable-5-1": ["openai-codex/gpt-6-astra:high", "anthropic/claude-opus-5:high"],
 				"anthropic/claude-fable-5": ["openai-codex/gpt-6-astra:high", "anthropic/claude-opus-5:high"],
 			});

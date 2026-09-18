@@ -6,7 +6,7 @@ describe("duoStatusToSnapshot", () => {
 		const snapshot = duoStatusToSnapshot({
 			phase: "takeover",
 			planner: "anthropic/claude-fable-5-1:medium",
-			executor: "tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high",
+			executor: "tnx/openrouter/deepseek/deepseek-v4.1-flash:high",
 			takeoverPurpose: "recover",
 			takeoverCount: 2,
 			executionScope: "multi",
@@ -18,7 +18,7 @@ describe("duoStatusToSnapshot", () => {
 		expect(snapshot.takeoverCount).toBe(2);
 		expect(snapshot.executionScope).toBe("multi");
 		expect(snapshot.plannerId).toBe("anthropic/claude-fable-5-1:medium");
-		expect(snapshot.executorId).toBe("tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high");
+		expect(snapshot.executorId).toBe("tnx/openrouter/deepseek/deepseek-v4.1-flash:high");
 		// Rebuilt controllers re-earn cooldown credit rather than carrying stale state.
 		expect(snapshot.cooldownRemaining).toBe(0);
 	});

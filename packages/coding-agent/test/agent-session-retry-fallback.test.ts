@@ -2492,6 +2492,76 @@ describe("AgentSession retry fallback", () => {
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({ success: true });
 	});
+	it("switches to the configured chain after one wasted sibling wait on usage-limit exhaustion", async () => {
+		const primaryModel = getBundledModel("openai", "gpt-4o") ?? getBundledModel("openai", "gpt-5-mini");
+		const fallbackModel =
+			getBundledModel("anthropic", "claude-sonnet-4-5") ?? getBundledModel("google", "gemini-1.5-pro");
+		if (!primaryModel || !fallbackModel || primaryModel.provider === fallbackModel.provider) {
+			throw new Error("Expected bundled cross-provider test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const mock = createMockModel();
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				if (model.provider === primaryModel.provider && model.id === primaryModel.id) {
+					// Every primary call lands on the same spent quota window — the
+					// shape of a single-login pool where the "sibling" claim never
+					// frees anything.
+					mock.push({ throw: "429 usage_limit_reached" });
+				} else {
+					mock.push({ content: [`ok:${model.provider}/${model.id}`] });
+				}
+				return mock.stream(model, context, options);
+			},
+		});
+
+		// A sibling credential claims to free up in 2s — well within
+		// retry.maxDelayMs — so the sibling-availability wait schedules one
+		// same-model retry. When that retry lands on the spent window again, the
+		// explicit cross-provider chain must win instead of waiting (and burning
+		// the retry budget) another time.
+		vi.spyOn(modelRegistry.authStorage, "markUsageLimitReached").mockResolvedValue({
+			switched: false,
+			retryAtMs: Date.now() + 2_000,
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.fallbackChains": {
+				[`${primaryModel.provider}/${primaryModel.id}`]: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+		});
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+
+		await session.prompt("Usage-limit with sibling wait and an explicit cross-provider chain");
+		await session.waitForIdle();
+
+		// Exactly one sibling-wait retry on the primary, then the chain switch —
+		// not ten same-model retries before the exhausted-attempt consult.
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(session.model?.provider).toBe(fallbackModel.provider);
+		expect(session.model?.id).toBe(fallbackModel.id);
+	});
 	it("rotates sibling credentials on 402 Payment Required without invoking model fallback", async () => {
 		const primaryModel = getBundledModel("openai", "gpt-4o") ?? getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("google", "gemini-1.5-pro") ?? getBundledModel("openai", "gpt-4o-mini");
@@ -3697,7 +3767,7 @@ describe("AgentSession retry fallback", () => {
 		});
 		// The superseded first attempt is aggregated onto the terminal event so
 		// the transcript renders one budget-labeled error, not per-attempt rows.
-		expect(retryEndEvents[0]?.retryErrors).toHaveLength(1);
+		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]?.retryErrors?.[0]?.retryRecovery).toMatchObject({
 			kind: "auto-retry",
 			recovery: "model",

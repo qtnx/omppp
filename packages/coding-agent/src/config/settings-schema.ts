@@ -713,7 +713,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"duo.executorModel": {
 		type: "string",
-		default: "tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high",
+		default: "tnx/openrouter/deepseek/deepseek-v4.1-flash:high",
 		ui: {
 			tab: "model",
 			group: "Duo",
@@ -790,18 +790,18 @@ export const SETTINGS_SCHEMA = {
 		type: "record",
 		default: {
 			planning: ["openai-codex/gpt-6-astra:high", "anthropic/claude-fable-5-1:medium"],
-			implementing: ["tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high", "anthropic/claude-opus-5:high"],
+			implementing: ["tnx/openrouter/deepseek/deepseek-v4.1-flash:high", "anthropic/claude-opus-5:high"],
 			verifying: ["openai-codex/gpt-6-astra:medium", "anthropic/claude-fable-5-1:medium"],
-			debugging: ["anthropic/claude-opus-5:high", "tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high"],
+			debugging: ["anthropic/claude-opus-5:high", "tnx/openrouter/deepseek/deepseek-v4.1-flash:high"],
 			blocked: ["openai-codex/gpt-6-astra:high", "anthropic/claude-fable-5-1:medium"],
-			reporting: ["tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high"],
+			reporting: ["tnx/openrouter/deepseek/deepseek-v4.1-flash:high"],
 		} as Record<string, string | string[]>,
 		ui: {
 			tab: "model",
 			group: "Duo",
 			label: "Duo Phase Models",
 			description:
-				'JSON object mapping a detected work phase (planning, implementing, verifying, debugging, blocked, reporting) to a model selector or an ordered list of selectors, e.g. {"debugging":["anthropic/claude-opus-5:high","anthropic/claude-fable-5-1:high"],"reporting":"tnx/openrouter/~deepseek/deepseek-v4-flash-latest:low"}. The first available selector is used; later entries become rate-limit fallbacks. Phases without an entry keep the executor model (the planner keeps planning and takeovers as before). Requires TypeSafe signals (signals.enabled plus a reachable signals.baseUrl or key).',
+				'JSON object mapping a detected work phase (planning, implementing, verifying, debugging, blocked, reporting) to a model selector or an ordered list of selectors, e.g. {"debugging":["anthropic/claude-opus-5:high","anthropic/claude-fable-5-1:high"],"reporting":"tnx/openrouter/deepseek/deepseek-v4.1-flash:low"}. The first available selector is used; later entries become rate-limit fallbacks. Phases without an entry keep the executor model (the planner keeps planning and takeovers as before). Requires TypeSafe signals (signals.enabled plus a reachable signals.baseUrl or key).',
 		},
 	},
 	"duo.phaseSwitch.minConfidence": {

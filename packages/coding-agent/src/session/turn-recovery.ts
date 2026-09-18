@@ -2379,18 +2379,34 @@ export class TurnRecovery {
 		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
 			// A refusal chain stops at the retry budget: the exhausted-attempt
 			// last resort is for provider failures, not classifier decisions.
+			// A usage-limit failure means the provider's quota window is spent.
+			// The sibling-availability wait gets one chance to unblock the same
+			// provider (a fresh sibling credential is the cheapest recovery), but
+			// when the retry it scheduled still lands on the spent window, waiting
+			// again only burns the retry budget. At that point a configured chain
+			// candidate on a DIFFERENT provider wins — the exhausted provider is
+			// excluded so the consult cannot loop back onto the spent window.
+			const usageLimitChainBypass =
+				AIError.is(id, AIError.Flag.UsageLimit) &&
+				this.#retryAttempt > 1 &&
+				currentModel !== undefined &&
+				this.retryFallbackChainKeys(currentSelector).some(role =>
+					this.findRetryFallbackCandidates(role, currentSelector, currentModel).some(
+						candidate => candidate.provider !== currentModel?.provider,
+					),
+				);
 			if (
 				allowModelFallback &&
 				retrySettings.modelFallback &&
 				!thinkingLoop &&
-				!waitForSiblingCredential &&
+				(!waitForSiblingCredential || usageLimitChainBypass) &&
 				!(retryBudgetExhausted && classifierRefusal)
 			) {
 				if (!classifierRefusal) {
 					this.noteRetryFallbackCooldown(currentSelector, parsedRetryAfterMs, errorMessage);
 				}
 				switchedModel = await this.#tryRetryModelFallback(currentSelector, message, {
-					excludeProvider: longUsageLimitFallback ? currentModel.provider : undefined,
+					excludeProvider: longUsageLimitFallback || usageLimitChainBypass ? currentModel?.provider : undefined,
 					pinFallback: classifierRefusal,
 					preserveFailedTurn,
 					wrapAround: longUsageLimitFallback,
