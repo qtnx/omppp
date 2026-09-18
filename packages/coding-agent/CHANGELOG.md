@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Duo's executor default is now `tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high`, and the matching `retry.fallbackChains` key moves with it. The previous `tnx/ds/deepseek-v4-flash` id no longer exists, so duo silently degraded the executor to Opus every session (and logged `retry.fallbackChains key references unknown model`); existing configs carrying the old chain key should rename it.
+
+### Fixed
+
+- Browser `tab.act(goal)` is advertised whenever a System One endpoint is configured, not only when a local `TYPESAFE_API_KEY` exists — the gate was lost when the browser prelude moved into its own module.
+
 ### Added
 
 - `/duo status` now prints a Jev debug line — the model, step cap, and endpoint `tab.act` would use, whether the key is local or proxy-held, and whether `tab.act` is currently advertised in the browser docs.

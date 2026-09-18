@@ -375,7 +375,7 @@ const SETUP_CONFIG_RECORD_MIGRATIONS: readonly SetupConfigRecordMigration[] = [
 			plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
 			"openai-codex/gpt-5.6-sol": ["anthropic/claude-opus-5"],
 			// Duo executor default: rate-limit/quota failures fall through to Opus.
-			"tnx/ds/deepseek-v4-flash": ["anthropic/claude-opus-5:high"],
+			"tnx/openrouter/~deepseek/deepseek-v4-flash-latest": ["anthropic/claude-opus-5:high"],
 		},
 	},
 ];
