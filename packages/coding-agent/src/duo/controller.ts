@@ -251,7 +251,7 @@ export class DuoController {
 		this.#host.pauseAdvisor();
 		this.#advisorPaused = true;
 		await this.#applySwitch(this.#config.planner, this.#config.plannerThinking);
-		this.#plannerDwellTurns = 0;
+		this.#resetPlannerWatch();
 		this.#host.setPlanModeEnabled(true);
 		this.#host.emitNotice("info", "Duo returned to planning: the planner holds the main stream again.");
 		this.#persistSnapshot();
@@ -418,7 +418,7 @@ export class DuoController {
 			this.#refreshSnapshotMetadata();
 			this.#host.pauseAdvisor();
 			this.#advisorPaused = true;
-			this.#plannerDwellTurns = 0;
+			this.#resetPlannerWatch();
 			void this.#applySwitch(this.#config.planner, this.#config.plannerThinking);
 			this.#host.injectBrief(
 				prompt.render(takeoverBrief, { purpose, reason, directive }),
@@ -452,7 +452,7 @@ export class DuoController {
 		}
 		this.#host.pauseAdvisor();
 		this.#advisorPaused = true;
-		this.#plannerDwellTurns = 0;
+		this.#resetPlannerWatch();
 		this.#host.setPlanModeEnabled(true);
 		this.#host.injectBrief(
 			prompt.render(manualPlanBrief, {
@@ -534,7 +534,7 @@ export class DuoController {
 		this.#refreshSnapshotMetadata();
 		this.#host.pauseAdvisor();
 		this.#advisorPaused = true;
-		this.#plannerDwellTurns = 0;
+		this.#resetPlannerWatch();
 		await this.#applySwitch(this.#config.planner, this.#config.plannerThinking, true);
 		this.#host.injectBrief(
 			prompt.render(takeoverBrief, {
@@ -825,6 +825,16 @@ export class DuoController {
 			return;
 		}
 		this.#plannerDwellTurns = 0;
+	}
+
+	/**
+	 * The planner just took the main stream (takeover, plan mode, escalation):
+	 * restart the drift watch from scratch so a stuck-triggered takeover is not
+	 * immediately flipped back by phase signals earned on the executor's turns.
+	 */
+	#resetPlannerWatch(): void {
+		this.#plannerDwellTurns = 0;
+		this.#phaseStreak = 0;
 	}
 
 	/**

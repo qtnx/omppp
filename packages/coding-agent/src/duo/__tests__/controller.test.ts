@@ -1676,4 +1676,26 @@ describe("DuoController planner auto-return watch", () => {
 		await Bun.sleep(10);
 		expect(host.notices.some(notice => notice.text.includes("could not auto-return"))).toBe(true);
 	});
+
+	test("a stuck-triggered takeover is not flipped back by the first implementing turn", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("executing");
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", stuck: 0.8 }));
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", stuck: 0.8 }));
+		expect(controller.status.phase).toBe("takeover");
+		host.switches = [];
+
+		// First planner turn still classified implementing: the streak is reset
+		// when the planner took the stream, so no immediate flip back.
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
+		expect(controller.status.phase).toBe("takeover");
+		expect(host.switches).toEqual([]);
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
+		await Bun.sleep(10);
+		expect(controller.status.phase).toBe("executing");
+	});
 });
