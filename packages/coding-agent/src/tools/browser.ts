@@ -1,6 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import type { EvalPreludeContext, EvalPreludeDefinition } from "../eval/preludes";
 import browserDescription from "../prompts/tools/browser.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -11,6 +11,7 @@ import browserDeclarations from "./browser/declarations.d.ts" with { type: "text
 import browserJavascript from "./browser/prelude.js" with { type: "text" };
 import browserPython from "./browser/prelude.py" with { type: "text" };
 import { resolveCmuxKind } from "./browser/cmux/rpc";
+import { jevApiKey } from "./browser/jev";
 import {
 	acquireBrowser,
 	type BrowserHandle,
@@ -150,7 +151,7 @@ export function resolveBrowserKind(params: BrowserParams, session: ToolSession):
 export function createBrowserPrelude(session: ToolSession): EvalPreludeDefinition {
 	return {
 		name: "browser",
-		documentation: browserDescription,
+		documentation: prompt.render(browserDescription, { jev: jevApiKey() !== undefined }),
 		javascript: browserJavascript,
 		python: browserPython,
 		exports: ["browser"],

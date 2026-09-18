@@ -39,6 +39,7 @@
 		"title",
 		"goto",
 		"observe",
+		"act",
 		"ariaSnapshot",
 		"screenshot",
 		"extract",

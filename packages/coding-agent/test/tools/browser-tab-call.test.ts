@@ -24,6 +24,7 @@ describe("renderTabCall", () => {
 			"title",
 			"goto",
 			"observe",
+			"act",
 			"ariaSnapshot",
 			"screenshot",
 			"extract",
@@ -86,7 +87,7 @@ describe("renderTabCall", () => {
 	it("reports every invalid chain with its exact public error", () => {
 		expect(errorMessage(() => renderTabCall([]))).toBe("Action 'call' requires a non-empty 'chain'.");
 		expect(errorMessage(() => renderTabCall([{ method: "waitForNavigation", args: [] }]))).toBe(
-			'Unknown tab helper "waitForNavigation". Direct helpers: url, title, goto, observe, ariaSnapshot, screenshot, extract, click, type, fill, press, scroll, drag, scrollIntoView, select, uploadFile, waitForUrl, evaluate, waitFor, waitForSelector; element handles via tab.id(n)/tab.ref(id).',
+			'Unknown tab helper "waitForNavigation". Direct helpers: url, title, goto, observe, act, ariaSnapshot, screenshot, extract, click, type, fill, press, scroll, drag, scrollIntoView, select, uploadFile, waitForUrl, evaluate, waitFor, waitForSelector; element handles via tab.id(n)/tab.ref(id).',
 		);
 		expect(errorMessage(() => renderTabCall([{ method: "id", args: [5] }]))).toBe(
 			"tab.id() returns an element handle; call a method on it (tab.id(5).click()) or use tab.run(fn).",
