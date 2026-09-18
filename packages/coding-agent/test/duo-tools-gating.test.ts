@@ -16,16 +16,18 @@ function makeSession(phase: DuoPhase | undefined): ToolSession {
 }
 
 describe("duo tool gating", () => {
-	it("creates duo_handoff/duo_escalate only while a duo controller is live", async () => {
+	it("creates the duo tools only while a duo controller is live", async () => {
 		for (const phase of [undefined, "inactive", "suspended"] as const) {
 			const names = (await createTools(makeSession(phase))).map(tool => tool.name);
 			expect(names).not.toContain("duo_handoff");
 			expect(names).not.toContain("duo_escalate");
+			expect(names).not.toContain("duo_change_phase");
 		}
 		for (const phase of ["planning", "executing", "takeover", "degraded"] as const) {
 			const names = (await createTools(makeSession(phase))).map(tool => tool.name);
 			expect(names).toContain("duo_handoff");
 			expect(names).toContain("duo_escalate");
+			expect(names).toContain("duo_change_phase");
 		}
 	});
 
@@ -33,5 +35,6 @@ describe("duo tool gating", () => {
 		const names = (await createTools(makeSession(undefined), ["read", "duo_handoff"])).map(tool => tool.name);
 		expect(names).toContain("duo_handoff");
 		expect(names).not.toContain("duo_escalate");
+		expect(names).not.toContain("duo_change_phase");
 	});
 });
