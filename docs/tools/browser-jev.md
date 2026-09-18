@@ -13,7 +13,7 @@
 
 ## Availability
 
-- `TYPESAFE_API_KEY` must be present in the environment; without it the tool is absent from the roster and the `tab.act` helper in the `browser` prelude reports the missing variable.
+- Jev is reached through the tailnet proxy on `codemc` (`http://codemc:8791/v1/systemone`) by default, and that proxy holds the TypeSafe key — so no local key is needed. `TYPESAFE_SYSTEMONE_URL` points the tool at TypeSafe directly (a key is then required); setting it empty disables the tool.
 - `TYPESAFE_MODEL` selects the Jev model (default `jev-latest`).
 - `browser.enabled` gates the tool alongside the rest of the browser stack.
 - The tool is `essential` and `exclusive`: runs are serialized per session, and a managed tab named `jev` is reused across calls so a flow can continue in stages.
@@ -38,10 +38,10 @@ Unknown fields are rejected.
 ## How one run works
 
 1. Observe the page through the accessibility snapshot and build an indexed element table.
-2. One TypeSafe request per step returns the operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `HOVER`, `PRESS_ENTER`, `DRAG`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`) and, speculatively, a target for each applicable head; only the head(s) matching the chosen operation can execute. `DRAG` answers two heads — the element to pick up and the drop target — in the same request.
+2. One TypeSafe request per step returns the operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `HOVER`, `PRESS_ENTER`, `DRAG`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `ESCALATE`, `DONE`, `BLOCKED`) and, speculatively, a target for each applicable head; only the head(s) matching the chosen operation can execute. `DRAG` answers two heads — the element to pick up and the drop target — in the same request.
 3. `TYPE_TEXT` resolves its value through the session `completion()` bridge — the `smol` tier first, the session `default` tier if that fails.
 4. Execute against the observed element id, re-observe, repeat. Model output never becomes a selector, coordinate, or script.
-5. A `BLOCKED` verdict, or three consecutive non-`WAIT` actions that changed nothing, spends a rescue turn. That turn escalates to the session's **reasoning tier** (`default`, falling back to `smol`) — the decision the choice-only policy cannot make — and the model answers with a short plan (up to 4 actions) drawn from the SAME offered space, or `give_up` plus the obstacle it found. The loop keeps the longest valid prefix of the plan, hands control back to the policy as soon as a step changes the page, and allows up to `max_rescues` (default 6) turns per run. Rescue steps carry a `rescue` reason, and the prompt forbids destructive actions the goal did not request.
+5. `ESCALATE` is offered while rescue budget remains: choosing it means the policy is not confident which action is right, so the reasoning model takes the next steps and hands the page back. A `BLOCKED` verdict, or three consecutive non-`WAIT` actions that changed nothing, spends the same kind of turn automatically. That turn escalates to the session's **reasoning tier** (`default`, falling back to `smol`) — the decision the choice-only policy cannot make — and the model answers with a short plan (up to 4 actions) drawn from the SAME offered space, or `give_up` plus the obstacle it found. The loop keeps the longest valid prefix of the plan, hands control back to the policy as soon as a step changes the page, and allows up to `max_rescues` (default 6) turns per run. Rescue steps carry a `rescue` reason, and the prompt forbids destructive actions the goal did not request.
 6. Screenshots are captured at the start, at each rescue, and at the final state, and listed in the report.
 7. Stop on `DONE`, a rescue that gave up, or the step budget.
 

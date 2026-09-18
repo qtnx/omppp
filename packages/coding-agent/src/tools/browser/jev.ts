@@ -69,8 +69,8 @@ export function jevDebugSummary(): string {
 		? `key ${JEV_API_KEY_ENV}`
 		: endpointOverride
 			? `no key — ${JEV_API_KEY_ENV} unset and the endpoint is not the proxy`
-			: "key held by the proxy";
-	const gate = jevApiKey() ? "" : `; tab.act hidden from browser docs (${JEV_API_KEY_ENV} unset)`;
+			: "key held by the proxy (codemc)";
+	const gate = jevEndpoint() === "" ? "; browser_jev unavailable (endpoint disabled)" : "";
 	return `Jev: model ${model} ${override ? `(${JEV_MODEL_ENV})` : "(default)"}, maxSteps ${DEFAULT_MAX_STEPS}, endpoint ${jevEndpoint()} ${route}, ${auth}${gate}`;
 }
 
@@ -84,6 +84,7 @@ export type JevOperation =
 	| "SCROLL_UP"
 	| "SCROLL_DOWN"
 	| "WAIT"
+	| "ESCALATE"
 	| "DONE"
 	| "BLOCKED";
 
@@ -123,6 +124,8 @@ export interface JevStep {
 	text?: string;
 	/** Set when the rescue helper, not Jev, chose this action; holds its one-line reason. */
 	rescue?: string;
+	/** True when the policy itself asked for the reasoning model (ESCALATE). */
+	escalated?: boolean;
 	confidence: number;
 	probability: number;
 	latencyMs: number;
@@ -203,7 +206,7 @@ export interface JevDriver {
 
 export interface JevRescueContext {
 	goal: string;
-	stuck_because: "policy_reported_blocked" | "no_progress";
+	stuck_because: "policy_reported_blocked" | "policy_requested_escalation" | "no_progress";
 	page: { url: string; title?: string; text: string };
 	offered_operations: string[];
 	elements: JevElement[];
@@ -320,6 +323,8 @@ const OPERATION_LABELS: Record<JevOperation, string> = {
 	SCROLL_DOWN: "Scroll the page down to reveal content below the current viewport.",
 	SCROLL_UP: "Scroll the page up to reveal content above the current viewport.",
 	WAIT: "Wait briefly because a needed control is absent/disabled or results are still loading.",
+	ESCALATE:
+		"Hand this step to the reasoning model instead of choosing an action yourself. Choose it when you are not confident which action is right, when every offered option looks wrong for the goal, when the page is gated or ambiguous, or when the goal needs more reasoning than a single next action.",
 	DONE: "Every requirement is visibly satisfied.",
 	BLOCKED: "No supported operation can progress.",
 };
@@ -348,6 +353,8 @@ export function buildJevRequest(
 	goal: string,
 	history: JevStep[],
 	model: string,
+	/** Whether the run can still hand a step to the reasoning model. */
+	escalationAvailable = true,
 ): { body: Record<string, unknown>; space: JevActionSpace; operations: Record<string, string> } {
 	const space = buildActionSpace(observation);
 	const operations: Record<string, string> = {};
@@ -366,6 +373,9 @@ export function buildJevRequest(
 	operations.WAIT = OPERATION_LABELS.WAIT;
 	operations.DONE = OPERATION_LABELS.DONE;
 	operations.BLOCKED = OPERATION_LABELS.BLOCKED;
+	// Offered only while the run can still afford a reasoning turn; once the
+	// budget is gone the policy must pick for itself.
+	if (escalationAvailable) operations.ESCALATE = OPERATION_LABELS.ESCALATE;
 
 	const questions: Record<string, unknown> = {
 		operation: {
@@ -743,6 +753,7 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 		space: JevActionSpace,
 		operations: Record<string, string>,
 	): Promise<{ recovered: boolean; reason: string }> => {
+		const escalated = why === "policy_requested_escalation";
 		if (rescues >= maxRescues) return { recovered: false, reason: "rescue budget spent" };
 		rescues++;
 		const context: JevRescueContext = {
@@ -768,6 +779,7 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 				step: steps.length + 1,
 				operation: plan.operation,
 				rescue: plan.reason,
+				escalated,
 				confidence: 0,
 				probability: 0,
 				latencyMs: 0,
@@ -792,7 +804,14 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 	while (steps.length < maxSteps) {
 		throwIfAborted(signal);
 		const pageText = await driver.pageText();
-		const { body, space, operations } = buildJevRequest(observation, pageText, task, steps, model);
+		const { body, space, operations } = buildJevRequest(
+			observation,
+			pageText,
+			task,
+			steps,
+			model,
+			rescues < maxRescues,
+		);
 		const requestStarted = performance.now();
 		const result = await postJev(body, apiKey, signal, fetchImpl);
 		const latencyMs = Math.round(performance.now() - requestStarted);
@@ -800,6 +819,13 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 		const operationAnswer = validateChoice(answers.operation, Object.keys(operations));
 		const operation = operationAnswer.choice as JevOperation;
 		if (operation === "DONE") return await finish("done");
+		if (operation === "ESCALATE") {
+			// The policy asked for the reasoning model rather than guessing: let it
+			// drive the next actions, then hand the page straight back.
+			const attempt = await rescue("policy_requested_escalation", pageText, space, operations);
+			if (!attempt.recovered) return await finish("blocked", attempt.reason);
+			continue;
+		}
 		if (operation === "BLOCKED") {
 			// Jev only chooses among offered actions; a modal, consent banner, or
 			// end-of-round gate reads as "blocked" to it. Spend one helper turn

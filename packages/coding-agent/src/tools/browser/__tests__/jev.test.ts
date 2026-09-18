@@ -498,3 +498,73 @@ describe("runJevAct rescue depth", () => {
 		expect(result.steps).toHaveLength(2);
 	});
 });
+
+describe("policy-requested escalation", () => {
+	test("Jev choosing ESCALATE hands the step to the reasoning model and resumes after it", async () => {
+		const log: string[] = [];
+		const tiers: Array<string | undefined> = [];
+		let cleared = false;
+		const gate = { id: 21, role: "button", name: "Collect rewards", states: [] };
+		const driver = makeDriver(log, {
+			observe: async () => observation(cleared ? [SUBMIT] : [SUBMIT, gate]),
+			click: async id => {
+				log.push(`click:${id}`);
+				if (id === gate.id) cleared = true;
+			},
+			helper: async payload => {
+				tiers.push((payload as { stuck_because?: string }).stuck_because);
+				return {
+					action: "recover",
+					reason: "cleared the gate the policy could not choose between",
+					steps: [{ operation: "CLICK", element: "2", text: null }],
+				};
+			},
+		});
+		const result = await runJevAct(driver, "Open the search page", {
+			apiKey: "test",
+			screenshots: false,
+			review: false,
+			fetch: fakeFetch([body => answerAll(body, "ESCALATE"), body => answerAll(body, "DONE")]),
+		});
+		expect(tiers).toEqual(["policy_requested_escalation"]);
+		expect(result.status).toBe("done");
+		expect(result.rescues).toBe(1);
+		expect(result.steps.map(step => [step.operation, step.target?.id, step.escalated])).toEqual([
+			["CLICK", 21, true],
+		]);
+	});
+
+	test("ESCALATE is not offered once the rescue budget is spent", async () => {
+		const seen: string[][] = [];
+		const driver = makeDriver([], {
+			observe: async () => observation([SUBMIT]),
+			// Recover without moving the page, so the loop asks Jev again.
+			helper: async () => ({
+				action: "recover",
+				reason: "tried the only control",
+				steps: [{ operation: "CLICK", element: "1", text: null }],
+			}),
+		});
+		const fetchImpl = ((_url: unknown, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			const criteria = (body.questions as Record<string, { criteria: Record<string, unknown> }>).operation!.criteria;
+			seen.push(Object.keys(criteria));
+			return Promise.resolve(
+				new Response(JSON.stringify({ answers: answerAll(body, "ESCALATE") }), { status: 200 }),
+			);
+		}) as typeof fetch;
+		await expect(
+			runJevAct(driver, "Do the thing", {
+				apiKey: "test",
+				screenshots: false,
+				review: false,
+				maxRescues: 1,
+				fetch: fetchImpl,
+			}),
+		).rejects.toThrow(/Invalid Jev response/);
+		expect(seen[0]).toContain("ESCALATE");
+		// The budget went on the first escalation, so the next request must not offer
+		// it — and an answer that still names it is rejected rather than executed.
+		expect(seen[1]).not.toContain("ESCALATE");
+	});
+});
