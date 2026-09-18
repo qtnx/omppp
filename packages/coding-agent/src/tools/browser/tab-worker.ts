@@ -39,7 +39,7 @@ import {
 import { ToolAbortError, ToolError, throwIfAborted } from "../tool-errors";
 import { disableAnnotationMode, enableAnnotationMode } from "./annotate";
 import { elementCenter, selectObservedOptionInPage } from "./jev-dom";
-import { fieldTextViaBridge, type JevActOptions, type JevActResult, runJevAct } from "./jev";
+import { helperViaBridge, type JevActOptions, type JevActResult, runJevAct } from "./jev";
 import {
 	type AriaSnapshotOptions,
 	assertSelectorString,
@@ -254,7 +254,10 @@ interface TabApi {
 		opts?: { waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2" },
 	): Promise<void>;
 	observe(opts?: { includeAll?: boolean; viewportOnly?: boolean }): Promise<Observation>;
-	act(goal: string, opts?: Pick<JevActOptions, "maxSteps">): Promise<JevActResult>;
+	act(
+		goal: string,
+		opts?: Pick<JevActOptions, "maxSteps" | "review" | "screenshots" | "maxRescues">,
+	): Promise<JevActResult>;
 	ariaSnapshot(selector?: string, opts?: AriaSnapshotOptions): Promise<string>;
 	screenshot(opts?: ScreenshotOptions): Promise<string>;
 	extract(format?: ReadableFormat): Promise<string>;
@@ -791,6 +794,133 @@ async function createTrackedHeadlessPage(browser: Browser, reportTarget: (target
 	const page = await target.page();
 	if (!page) throw new ToolError(`Created headless target ${targetId} did not expose a page`);
 	return page;
+}
+
+/**
+ * Interactive DOM selector used to recover controls the accessibility tree
+ * dropped. Game shells routinely label their HUD but wrap it in
+ * `aria-hidden="true"` (the canvas is the "real" UI), which makes those labels
+ * invisible to an AX snapshot even though they are on screen and clickable.
+ */
+const SUPPLEMENTAL_DOM_SELECTOR = [
+	"button",
+	"[role=button]",
+	"a[href]",
+	"[role=link]",
+	"[role=tab]",
+	"[role=menuitem]",
+	"[role=checkbox]",
+	"[role=switch]",
+	"[role=radio]",
+	"[role=option]",
+	"input:not([type=hidden])",
+	"select",
+	"textarea",
+].join(",");
+
+/** Cap on recovered DOM controls, so a generated list cannot blow up the request. */
+const SUPPLEMENTAL_DOM_LIMIT = 120;
+
+interface SupplementalDomRow {
+	role: string;
+	label: string;
+	disabled: boolean;
+	readonly: boolean;
+	checked: boolean | null;
+	value: string | null;
+	box: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * Append entries the accessibility snapshot cannot represent: visible DOM
+ * controls hidden from the AX tree, and canvas mirror boxes. Deduped against
+ * what the snapshot already produced, so the same control is never offered twice.
+ */
+async function collectSupplementalEntries(
+	core: WorkerCore,
+	page: Page,
+	entries: ObservationEntry[],
+	signal?: AbortSignal,
+): Promise<void> {
+	const seen = new Set(entries.map(entry => `${entry.role}|${entry.name ?? ""}`));
+	const handles = await untilAborted(signal, () => page.$$(SUPPLEMENTAL_DOM_SELECTOR));
+	try {
+		for (const handle of handles.slice(0, SUPPLEMENTAL_DOM_LIMIT)) {
+			const row = (await untilAborted(signal, () =>
+				handle.evaluate(el => {
+					const node = el as unknown as {
+						tagName: string;
+						innerText?: string;
+						value?: string;
+						disabled?: boolean;
+						readOnly?: boolean;
+						checked?: boolean;
+						type?: string;
+						getAttribute: (name: string) => string | null;
+						getBoundingClientRect: () => { x: number; y: number; width: number; height: number };
+					};
+					const tag = node.tagName.toLowerCase();
+					const type = (node.type ?? "").toLowerCase();
+					const role =
+						node.getAttribute("role") ??
+						(tag === "a"
+							? "link"
+							: tag === "select"
+								? "combobox"
+								: tag === "textarea" || (tag === "input" && type !== "checkbox" && type !== "radio")
+									? "textbox"
+									: tag === "input"
+										? type
+										: "button");
+					const label = (
+						node.getAttribute("aria-label") ??
+						node.getAttribute("title") ??
+						node.innerText ??
+						node.getAttribute("placeholder") ??
+						node.getAttribute("name") ??
+						""
+					)
+						.replace(/\s+/g, " ")
+						.trim()
+						.slice(0, 120);
+					const rect = node.getBoundingClientRect();
+					return {
+						role,
+						label,
+						disabled: node.disabled === true || node.getAttribute("aria-disabled") === "true",
+						readonly: node.readOnly === true,
+						checked: typeof node.checked === "boolean" ? node.checked : null,
+						value: typeof node.value === "string" && node.value.length > 0 ? node.value.slice(0, 120) : null,
+						box: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+					} satisfies SupplementalDomRow;
+				}),
+			)) as SupplementalDomRow;
+			const key = `${row.role}|${row.label}`;
+			// Off-screen or zero-sized controls are noise; unlabelled ones cannot be
+			// chosen by name, and the snapshot already covers the labelled originals.
+			if (!row.label || row.box.width < 4 || row.box.height < 4 || seen.has(key)) {
+				await handle.dispose();
+				continue;
+			}
+			seen.add(key);
+			const id = core.nextElementId();
+			const states: string[] = ["outside-a11y-tree"];
+			if (row.disabled) states.push("disabled");
+			if (row.readonly) states.push("readonly");
+			if (row.checked !== null) states.push(`checked=${String(row.checked)}`);
+			core.cacheElement(id, handle);
+			entries.push({
+				id,
+				role: row.role,
+				name: row.label,
+				value: row.value ?? undefined,
+				states,
+			});
+		}
+	} catch (error) {
+		for (const handle of handles) await handle.dispose().catch(() => undefined);
+		throw error;
+	}
 }
 
 async function collectObservationEntries(
@@ -1721,7 +1851,10 @@ export class WorkerCore {
 				op(`tab.act(${JSON.stringify(goal)})`, INF, sig =>
 					runJevAct(
 						{
-							observe: () => this.#collectObservation({ signal: sig }),
+							// includeHidden: game shells label their HUD but hide it from the
+							// AX tree, and canvas scenes publish mirror boxes — both are needed
+							// to drive a canvas app at all.
+							observe: () => this.#collectObservation({ signal: sig, includeHidden: true }),
 							pageText: () =>
 								untilAborted(sig, () =>
 									page.evaluate(() => {
@@ -1750,11 +1883,34 @@ export class WorkerCore {
 							scroll: deltaY =>
 								untilAborted(sig, () => dispatchScroll(() => page.mouse.wheel({ deltaX: 0, deltaY }))),
 							wait: ms => untilAborted(sig, () => Bun.sleep(ms)),
-							fieldText: (context, rules) =>
-								fieldTextViaBridge((name, args) => this.#callTool(active, name, args), context, rules),
+							screenshot: async label => {
+								const buffer = (await untilAborted(sig, () => page.screenshot({ type: "png" }))) as Buffer;
+								const dir = session.browserScreenshotDir ?? path.join(os.tmpdir(), "omp-jev-shots");
+								await fs.promises.mkdir(dir, { recursive: true });
+								const dest = path.join(
+									dir,
+									`jev-${label}-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.png`,
+								);
+								await Bun.write(dest, buffer);
+								return dest;
+							},
+							helper: (payload, rules, schema, prefer) =>
+								helperViaBridge(
+									(name, args) => this.#callTool(active, name, args),
+									payload,
+									rules,
+									schema,
+									prefer,
+								),
 						},
 						goal,
-						{ maxSteps: opts?.maxSteps, signal: sig },
+						{
+							maxSteps: opts?.maxSteps,
+							signal: sig,
+							review: opts?.review,
+							screenshots: opts?.screenshots,
+							maxRescues: opts?.maxRescues,
+						},
 					),
 				),
 			ariaSnapshot: (selector, opts) =>
@@ -1985,6 +2141,8 @@ export class WorkerCore {
 	async #collectObservation(options: {
 		includeAll?: boolean;
 		viewportOnly?: boolean;
+		/** Also recover visible controls the AX tree drops and canvas a11y mirrors. */
+		includeHidden?: boolean;
 		signal?: AbortSignal;
 	}): Promise<Observation> {
 		const page = this.#requirePage();
@@ -1997,6 +2155,9 @@ export class WorkerCore {
 		if (!snapshot) throw new ToolError("Accessibility snapshot unavailable");
 		const entries: ObservationEntry[] = [];
 		await collectObservationEntries(this, snapshot, entries, { includeAll, viewportOnly });
+		if (options.includeHidden ?? false) {
+			await collectSupplementalEntries(this, page, entries, options.signal);
+		}
 		const scroll = (await untilAborted(options.signal, () =>
 			page.evaluate(() => {
 				const win = globalThis as unknown as {

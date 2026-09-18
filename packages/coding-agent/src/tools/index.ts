@@ -65,7 +65,7 @@ import { AstEditTool } from "./ast-edit";
 import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { BrowserJevTool } from "./browser-jev-tool";
-import { jevApiKey } from "./browser/jev";
+import { jevEndpoint } from "./browser/jev";
 import { NativeBrowserComputerTool } from "./browser-native-computer";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
@@ -1026,9 +1026,12 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				session.settings.get("browser.enabled") === true &&
 				session.settings.get("browser.nativeComputer.enabled") === true
 			);
-		// The key gate lives here, not in the factory: tool metadata (loadMode,
-		// description) must resolve even in a session without a TypeSafe key.
-		if (name === "browser_jev") return session.settings.get("browser.enabled") === true && jevApiKey() !== undefined;
+		// The endpoint gate lives here, not in the factory: tool metadata (loadMode,
+		// description) must resolve even when the endpoint is unset. The default
+		// endpoint is the tailnet proxy on codemc, which holds the TypeSafe key, so
+		// no local key is required — only an explicitly emptied endpoint takes the
+		// tool away.
+		if (name === "browser_jev") return session.settings.get("browser.enabled") === true && jevEndpoint() !== "";
 		if (name === "checkpoint" || name === "rewind")
 			return (
 				session.settings.get("checkpoint.enabled") &&

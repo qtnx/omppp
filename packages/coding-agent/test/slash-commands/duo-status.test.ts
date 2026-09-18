@@ -66,7 +66,7 @@ describe("/duo status Jev debug line", () => {
 		expect(text).not.toContain("hidden from browser docs");
 	});
 
-	it("reports the proxy-held key and the docs gate when no local key is set", async () => {
+	it("reports the proxy-held key with no local key, and no gate on the tool", async () => {
 		setEnv(KEY_ENV, undefined);
 		setEnv(MODEL_ENV, undefined);
 		setEnv(ENDPOINT_ENV, undefined);
@@ -74,8 +74,17 @@ describe("/duo status Jev debug line", () => {
 		const text = await duoStatusText();
 
 		expect(text).toContain("Jev: model jev-latest (default)");
-		expect(text).toContain("key held by the proxy");
-		expect(text).toContain("tab.act hidden from browser docs (TYPESAFE_API_KEY unset)");
+		expect(text).toContain("key held by the proxy (codemc)");
+		// The proxy holds the key, so the tool stays available without one.
+		expect(text).not.toContain("unavailable");
+	});
+
+	it("flags the tool as unavailable only when the endpoint is explicitly disabled", async () => {
+		setEnv(ENDPOINT_ENV, "");
+
+		const text = await duoStatusText();
+
+		expect(text).toContain("browser_jev unavailable (endpoint disabled)");
 	});
 
 	it("flags a direct endpoint that has no key to send", async () => {

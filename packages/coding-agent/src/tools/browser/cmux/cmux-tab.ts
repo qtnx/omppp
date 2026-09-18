@@ -22,7 +22,7 @@ import { ToolAbortError, ToolError, throwIfAborted } from "../../tool-errors";
 import { type AriaSnapshotOptions, assertSelectorString, buildAriaSnapshotScript } from "../aria/aria-snapshot";
 import { DEFAULT_VIEWPORT } from "../launch";
 import { elementCenter, selectObservedOptionInPage } from "../jev-dom";
-import { fieldTextViaBridge, type JevActOptions, type JevActResult, runJevAct } from "../jev";
+import { helperViaBridge, type JevActOptions, type JevActResult, runJevAct } from "../jev";
 import { extractReadableFromHtml, type ReadableFormat } from "../readable";
 import { cloneSafe, RunOutput } from "../run-output";
 import type { Observation, ReadyInfo, RunResultOk, ScreenshotResult, SessionSnapshot } from "../tab-protocol";
@@ -440,7 +440,10 @@ export class CmuxTab {
 	}
 
 	/** Goal-driven DOM loop (TypeSafe Jev); every target resolves from an observed element id. */
-	async act(goal: string, opts?: Pick<JevActOptions, "maxSteps">): Promise<JevActResult> {
+	async act(
+		goal: string,
+		opts?: Pick<JevActOptions, "maxSteps" | "review" | "screenshots" | "maxRescues">,
+	): Promise<JevActResult> {
 		const context = this.#runContext;
 		if (!context) throw new ToolError("tab.act() requires an active browser run");
 		const signal = context.signal;
@@ -464,15 +467,28 @@ export class CmuxTab {
 				},
 				scroll: deltaY => this.scroll(0, deltaY),
 				wait: ms => untilAborted(signal, () => Bun.sleep(ms)),
-				fieldText: (fieldContext, rules) =>
-					fieldTextViaBridge(
+				// cmux screenshots are saved by the daemon path; capture via eval and
+				// write the file here so the report can list it like the worker's.
+				screenshot: async label => {
+					return await this.screenshot({ silent: true });
+				},
+				helper: (payload, rules, schema, prefer) =>
+					helperViaBridge(
 						(name, args) => callSessionTool(name, args, { session: context.toolSession, signal }),
-						fieldContext,
+						payload,
 						rules,
+						schema,
+						prefer,
 					),
 			},
 			goal,
-			{ maxSteps: opts?.maxSteps, signal },
+			{
+				maxSteps: opts?.maxSteps,
+				signal,
+				review: opts?.review,
+				screenshots: opts?.screenshots,
+				maxRescues: opts?.maxRescues,
+			},
 		);
 	}
 
