@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/duo status` now prints a Jev debug line — whether the browser goal driver is available, and the model, step cap, and endpoint `tab.act` would use.
+
 ## [1.8.9] - 2026-09-18
 
 ### Added

@@ -31,6 +31,18 @@ export function jevApiKey(): string | undefined {
 	return key ? key : undefined;
 }
 
+/**
+ * One-line debug summary of the Jev driver as this process would call it:
+ * why `tab.act` is unavailable, and the model, step cap, and endpoint a goal
+ * would use. The key itself is never rendered.
+ */
+export function jevDebugSummary(): string {
+	const override = Bun.env[JEV_MODEL_ENV]?.trim();
+	if (!jevApiKey()) return `Jev: off — ${JEV_API_KEY_ENV} unset (tab.act unavailable)`;
+	const model = override || DEFAULT_MODEL;
+	return `Jev: on — model ${model} ${override ? `(${JEV_MODEL_ENV})` : "(default)"}, maxSteps ${DEFAULT_MAX_STEPS}, endpoint ${JEV_ENDPOINT}`;
+}
+
 export type JevOperation = "CLICK" | "TYPE_TEXT" | "SCROLL_UP" | "SCROLL_DOWN" | "WAIT" | "DONE" | "BLOCKED";
 
 const FILL_ROLES: Record<string, true> = { textbox: true, searchbox: true, combobox: true, spinbutton: true };

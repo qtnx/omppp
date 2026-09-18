@@ -37,6 +37,7 @@ import {
 	enableAnnotateHttp,
 	getAnnotateHttpStatus,
 } from "../tools/browser/annotate-http";
+import { jevDebugSummary } from "../tools/browser/jev";
 import { replaceTabs, shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { BUILTIN_COLLABORATION_SLASH_COMMANDS } from "./builtin-collaboration";
 import {
@@ -77,17 +78,19 @@ export interface TuiBuiltinSlashCommand extends BuiltinSlashCommand {
  * `/duo status` line. The scope parenthetical derives from the LIVE orchestrator
  * state (not the declared scope) so a refused single-scope disable stays visible:
  * when the user already owned orchestrator, a `single` scope cannot flip it off.
+ * The trailing Jev line reports the browser goal driver's effective config, so a
+ * duo session can be debugged without opening `tab.act`.
  */
 function formatDuoStatusText(status: DuoStatus, orchestratorOn: boolean): string {
 	const base = `Duo: ${status.phase} — planner ${status.planner ?? "?"}, executor ${
 		status.executor ?? "?"
 	}, takeovers ${status.takeoverCount}${status.advisorPaused ? ", advisor paused" : ""}`;
-	if (status.phase === "inactive") return base;
+	if (status.phase === "inactive") return sanitizeText(`${base}\n${jevDebugSummary()}`);
 	let paren = "orchestrator";
 	if (status.executionScope === "single") {
 		paren = orchestratorOn ? "orchestrator — direct disable refused: user-owned" : "direct";
 	}
-	return sanitizeText(`${base}\nscope: ${status.executionScope} (${paren})`);
+	return sanitizeText(`${base}\nscope: ${status.executionScope} (${paren})\n${jevDebugSummary()}`);
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;
