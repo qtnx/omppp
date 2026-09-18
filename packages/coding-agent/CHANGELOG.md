@@ -13,6 +13,7 @@
 - The advisor now acts as the senior beside the executor: it sets the business frame and work order for each task, gives direction and domain opinions, makes the small calls a senior would make instead of sending the executor to the user, and reviews landed diffs like a merge reviewer with one decisive change per verdict.
 - Advisors gain `save_learning`: after correcting a caught mistake (hallucinated API/path, done claim without evidence, symptom fix, retry loop, ignored correction) the advisor stores the generic rule behind it, and future sessions receive it through Live Learning Guidance; identical rules reinforce instead of duplicating.
 - Duo no longer defaults to Safe orchestrator mode: handoffs and plan approvals run the executor with direct tools (`scope: single`); `scope: multi` is reserved for long-running multi-phase implementation with several independent workstreams, and the executor may enter or leave orchestrator mode itself as the work turns out to need it.
+
 ## [1.8.8] - 2026-09-18
 
 ### Added
