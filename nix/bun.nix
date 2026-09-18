@@ -1505,9 +1505,9 @@
     url = "https://registry.npmjs.org/@xyflow/system/-/system-0.0.79.tgz";
     hash = "sha512-czLyOh91NF0hIzbNzwi8I6GlqG23BHh2435OddfI6uiaLH3xdrdygO93gqgH1Bv9mhy8XPFQJOBn1FTq4LvEWA==";
   };
-  "adm-zip@0.6.0" = fetchurl {
-    url = "https://registry.npmjs.org/adm-zip/-/adm-zip-0.6.0.tgz";
-    hash = "sha512-XleryMhbuksdKtofnWZ9Sk+4CUTbms4Mb/EU32SZwToAyZ5RgVos/ki8n+yr0LWHOGKuakbXTuuYNHLQjhddgg==";
+  "adm-zip@0.6.1" = fetchurl {
+    url = "https://registry.npmjs.org/adm-zip/-/adm-zip-0.6.1.tgz";
+    hash = "sha512-Xwrja8nx9e5o2N1my4DsKCeKpdrnACyr1wtbPxBDgGzKzKyE9kRtBFA8mWldI+RVlD7CBZNWY/wQ2+ydwOR6kQ==";
   };
   "ansi-regex@5.0.1" = fetchurl {
     url = "https://registry.npmjs.org/ansi-regex/-/ansi-regex-5.0.1.tgz";
