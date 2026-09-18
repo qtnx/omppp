@@ -1981,12 +1981,10 @@ export function resolveDuoConfig(
 		registry,
 		kind => kind === "opus",
 	);
-	const advisor = resolveExplicitDuoModel(
-		settings.get("duo.advisorModel") ?? "gpt-5.6-sol",
-		availableModels,
-		settings,
-		registry,
-	);
+	const advisorPattern = (settings.get("duo.advisorModel") ?? "").trim();
+	const advisor = advisorPattern
+		? resolveExplicitDuoModel(advisorPattern, availableModels, settings, registry)
+		: undefined;
 	const advisorEscalationPattern = (settings.get("duo.advisorEscalationModel") ?? "").trim();
 	const advisorEscalation = advisorEscalationPattern
 		? resolveExplicitDuoModel(advisorEscalationPattern, availableModels, settings, registry)

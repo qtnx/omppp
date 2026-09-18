@@ -726,13 +726,13 @@ export const SETTINGS_SCHEMA = {
 	},
 	"duo.advisorModel": {
 		type: "string",
-		default: "gpt-5.6-sol",
+		default: "",
 		ui: {
 			tab: "model",
 			group: "Duo",
 			label: "Duo Advisor Model",
 			description:
-				"Continuous duo advisor model pattern; falls back to the planner model when unavailable. Supports :thinking suffix.",
+				"Continuous duo advisor model pattern; empty keeps the advisor on the planner model (Fable). Supports :thinking suffix.",
 		},
 	},
 	"duo.advisorThinking": {

@@ -20,6 +20,7 @@
 - Advisors gain `save_learning`: after correcting a caught mistake (hallucinated API/path, done claim without evidence, symptom fix, retry loop, ignored correction) the advisor stores the generic rule behind it, and future sessions receive it through Live Learning Guidance; identical rules reinforce instead of duplicating.
 - Duo no longer defaults to Safe orchestrator mode: handoffs and plan approvals run the executor with direct tools (`scope: single`); `scope: multi` is reserved for long-running multi-phase implementation with several independent workstreams, and the executor may enter or leave orchestrator mode itself as the work turns out to need it.
 - The advisor now skips in-progress turns TypeSafe rates as not worth reviewing (`signals.advisorGate.*`); final yields, user prompts, consults, and every fourth held turn still reach it, and a completion claim TypeSafe scores as evidence-free is bounced back to the executor without an advisor consult.
+- The duo advisor now follows the planner model (Fable) instead of defaulting to a codex model whose rate-limit chain landed it on Opus; set `duo.advisorModel` to pin a different advisor.
 - Duo raises an automatic recover takeover after two consecutive turns TypeSafe scores as stuck (`signals.stuckThreshold`), `duo_handoff` without an explicit scope lets TypeSafe pick `multi` for genuinely multi-phase briefs and notes when a brief reads unlocked, `save_learning` rejects case-specific notes, and the delegation reminder stays quiet on turns judged to hold a single slice.
 
 ## [1.8.8] - 2026-09-18

@@ -153,6 +153,26 @@ describe("resolveDuoConfig", () => {
 		expect(resolvedOrchestrator).toBe("auto");
 	});
 
+	test("advisor stays on the planner (Fable) even when a codex model is authed", () => {
+		const anyAuth = { hasConfiguredAuth: () => true } as unknown as ModelRegistry;
+		const resolved = resolveDuoConfig(settings(), [fable5, opus48, openaiSol], anyAuth);
+
+		expect(resolved?.planner.id).toBe("claude-fable-5");
+		expect(resolved?.advisor.id).toBe("claude-fable-5");
+	});
+
+	test("duo.advisorModel overrides the advisor without moving the planner", () => {
+		const anyAuth = { hasConfiguredAuth: () => true } as unknown as ModelRegistry;
+		const resolved = resolveDuoConfig(
+			settings({ "duo.advisorModel": "gpt-5.6-sol" }),
+			[fable5, opus48, openaiSol],
+			anyAuth,
+		);
+
+		expect(resolved?.planner.id).toBe("claude-fable-5");
+		expect(resolved?.advisor.id).toBe("gpt-5.6-sol");
+	});
+
 	test("orchestrator resolves explicit always", () => {
 		const resolved = resolveDuoConfig(settings({ "duo.orchestrator": "always" }), [fable5, opus48], registry);
 
