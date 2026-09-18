@@ -30,8 +30,9 @@ function turnAnswers(needsReview: number): Record<string, unknown> {
 }
 
 /** Classifier backed by a fake System One endpoint: a score, or an HTTP failure. */
-function classifier(needsReview: number | "error"): TurnSignalService {
-	const fetchImpl = (async (_url: string | URL | Request) => {
+function classifier(needsReview: number | "error", sent?: Record<string, unknown>[]): TurnSignalService {
+	const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+		if (sent) sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
 		if (needsReview === "error") return new Response("boom", { status: 503 });
 		return new Response(JSON.stringify(turnAnswers(needsReview)), {
 			status: 200,
@@ -73,6 +74,7 @@ function createHarness(options: {
 	service?: TurnSignalService;
 	maxDeferredTurns?: number;
 	gateEnabled?: boolean;
+	duoWorkPhase?: string;
 }): Harness {
 	const messages: AgentMessage[] = [];
 	const prompts: string[] = [];
@@ -96,6 +98,7 @@ function createHarness(options: {
 		...(options.service
 			? {
 					turnSignals: options.service,
+					duoWorkPhase: () => options.duoWorkPhase,
 					onTurnSignals: signals => {
 						seen.push({ needsReview: signals.needsReview });
 					},
@@ -172,5 +175,27 @@ describe("advisor turn-signal gate", () => {
 
 		expect(harness.prompts).toHaveLength(1);
 		expect(harness.prompts[0]).toContain("marker with gate off");
+	});
+	it("sends the live duo work phase with the classified turn", async () => {
+		const sent: Record<string, unknown>[] = [];
+		const harness = createHarness({
+			service: classifier(0.9, sent),
+			duoWorkPhase: "preplanning",
+		});
+
+		await harness.turn("opening brainstorm", true);
+
+		expect(sent).toHaveLength(1);
+		expect((sent[0]?.state as Record<string, unknown>).duo_phase).toBe("preplanning");
+	});
+
+	it("omits the duo phase when the session is not in duo", async () => {
+		const sent: Record<string, unknown>[] = [];
+		const harness = createHarness({ service: classifier(0.9, sent) });
+
+		await harness.turn("plain turn", true);
+
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.state as Record<string, unknown>).not.toHaveProperty("duo_phase");
 	});
 });

@@ -763,14 +763,13 @@ describe("StatusLineComponent git watcher survives atomic HEAD renames", () => {
 		component.updateSettings(gitSegment);
 
 		// Await the watcher's own #onBranchChange signal rather than a wall-clock
-		// delay. Only resolve once the atomically replaced HEAD is observable.
+		// delay: the callback only fires once the atomic HEAD replacement is
+		// observable. The paint is then forced through `invalidateGitCaches`, so a
+		// memoized render revision can never leave the assertion reading a stale
+		// border (the previous shape resolved only when the repaint had already
+		// landed, which raced the watcher under CI load).
 		let branchChanged = Promise.withResolvers<void>();
-		let expectedBranch: string | null = null;
-		component.watchBranch(() => {
-			if (expectedBranch && component.getTopBorder(80).content.includes(expectedBranch)) {
-				branchChanged.resolve();
-			}
-		});
+		component.watchBranch(() => branchChanged.resolve());
 		// Platform-independent pin: the watch must be a stat-poll of the HEAD
 		// *path* (inode-independent), not an fs.watch event subscription.
 		expect(watchFileSpy).toHaveBeenCalledWith(
@@ -790,11 +789,11 @@ describe("StatusLineComponent git watcher survives atomic HEAD renames", () => {
 			// but no coverage to the filesystem-watcher regression.
 			await fs.writeFile(headLock, `ref: refs/heads/${branchName}\n`);
 			branchChanged = Promise.withResolvers<void>();
-			expectedBranch = branchName;
 			const fired = branchChanged.promise;
 			await fs.rename(headLock, path.join(gitDir, "HEAD"));
 			await fired;
-			expectedBranch = null;
+			component.invalidateGitCaches();
+			expect(component.getTopBorder(80).content).toContain(branchName);
 		};
 
 		await switchTo("first");

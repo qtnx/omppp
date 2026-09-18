@@ -734,7 +734,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"duo.executorThinking": {
 		type: "string",
-		default: "max",
+		default: "high",
 		ui: {
 			tab: "model",
 			group: "Duo",
