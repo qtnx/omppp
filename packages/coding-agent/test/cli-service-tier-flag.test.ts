@@ -41,12 +41,13 @@ describe("--service-tier", () => {
 	});
 
 	it("overrides only the OpenAI family in the live session", async () => {
+		using tempDir = TempDir.createSync("@omp-service-tier-live-");
 		const authStorage = await AuthStorage.create(":memory:");
 		const sessionManager = SessionManager.inMemory();
 		try {
 			const { session } = await createAgentSession({
 				cwd: process.cwd(),
-				agentDir: process.cwd(),
+				agentDir: tempDir.path(),
 				modelRegistry: new ModelRegistry(authStorage),
 				settings: Settings.isolated({ "tier.anthropic": "priority" }),
 				sessionManager,

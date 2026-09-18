@@ -1734,6 +1734,14 @@ export class AgentSession {
 		this.getXdevToolEntries = config.getXdevToolEntries ?? (() => []);
 		this.#obfuscator = config.obfuscator;
 		this.#secretVault = config.secretVault;
+		if (this.#secretVault) {
+			// A lazily created vault key surfaces its raw material only at the first
+			// write; register it with the live obfuscator immediately so a
+			// model-issued read of the key file/keychain cannot ship the reusable
+			// key bytes to the provider (one-way replace, never a placeholder).
+			this.#secretVault.onKeyMaterialCreated = keyMaterialToRedact =>
+				this.registerRuntimeSecrets([{ type: "plain", content: keyMaterialToRedact, mode: "replace" }]);
+		}
 		const sessionToolsHost: SessionToolsHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,

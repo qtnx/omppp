@@ -4,19 +4,23 @@ Prevents sensitive values (API keys, tokens, passwords) from being sent to LLM p
 
 ## Enabling
 
-Disabled by default. Toggle via `/settings` UI or directly in `config.yml`:
+Enabled by default. Disable via `/settings` UI or directly in `config.yml`:
 
 ```yaml
 secrets:
-  enabled: true
+  enabled: false
 ```
+
+The encrypted secret vault creates its encryption key lazily: no keychain entry, libsecret item, or key file is created until the first secret is actually stored (via `/secrets add`, `ompx secrets add`, or automatic prompt detection). Sessions that never store a secret spawn no credential-store subprocess.
 
 ## How it works
 
 1. On session startup, secrets are collected from:
-   - **Environment variables** whose names match common secret patterns (`KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASS`, `AUTH`, `CREDENTIAL`, `PRIVATE`, `OAUTH`) with values at least 8 characters long
+   - **Environment variables** whose names match common secret patterns (`KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASS`, `AUTH`, `CREDENTIAL`, `PRIVATE`, `OAUTH`) with values at least 8 characters long; filesystem-path values (`SSH_AUTH_SOCK`, `*_KEY_FILE`) are skipped
    - **`secrets.yml` files** (see below)
    - A built-in reversible regex for common GitHub-, GitLab-, and OpenAI-style credential tokens that appear only in session content or tool results
+
+   Prompts are additionally scanned (`secrets.autoDetect`, on by default) for credential-shaped tokens (GitHub, OpenAI, Anthropic, AWS, Slack, GitLab, npm, Stripe, JWT, PEM blocks, `key=value` pairs) and for explicit tags. Detected values are stored in the vault, replaced in the prompt with `[secret NAME (mask) — exported as env var NAME in bash]`, and exported to bash as `$NAME`. To mark a value by hand, wrap it in `<secret>…</secret>` or the short alias `<sec>…</sec>`, optionally naming the env var: `<sec name="DB_PASS">hunter2-long</sec>`. `<s>` and `<>` are not accepted so pasted HTML/JSX never becomes a secret.
 
 2. Provider-visible text has matching values replaced with deterministic placeholders such as `$$3P8W5JH1TK2Q$$`, `$$3P8W5JH1TK2Q:L$$`, or `$$GITHUBTOKEN_3P8W5JH1TK2Q:L$$`.
 
