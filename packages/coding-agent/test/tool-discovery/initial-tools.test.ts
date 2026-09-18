@@ -16,6 +16,7 @@ import {
 	SshTool,
 	ContextNotesTool,
 	NewContextTool,
+	BrowserJevTool,
 } from "@oh-my-pi/pi-coding-agent/tools";
 
 const allToolsSettings = Settings.isolated({
@@ -75,6 +76,9 @@ async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summa
 		new SecretsTool(toolSession),
 		new ContextNotesTool(toolSession),
 		new NewContextTool(toolSession),
+		// `browser_jev` only builds with a TypeSafe key in the environment, so
+		// construct it directly to check its loading fields.
+		new BrowserJevTool(toolSession),
 	]) {
 		metadata.set(tool.name, { loadMode: tool.loadMode, summary: tool.summary });
 	}

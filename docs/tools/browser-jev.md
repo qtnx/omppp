@@ -1,0 +1,46 @@
+# browser_jev
+
+> Goal-in, outcome-out browser automation: the TypeSafe Jev DOM policy plus a small text-helper model finish a whole multi-step flow (forms, search, filters, login, navigation) and return one text report — status, executed steps, final URL/title, page text. The calling model never pays a screenshot plus a decision round trip per click. `browser_use` remains the tool for canvas/WebGL/gesture surfaces; the `browser` eval prelude remains the tool for selectors, injected JavaScript, and network work.
+
+## Source
+
+- Tool: `packages/coding-agent/src/tools/browser-jev-tool.ts`
+- Decision loop, action space, answer validation: `packages/coding-agent/src/tools/browser/jev.ts`
+- Model instructions: `packages/coding-agent/src/prompts/tools/browser-jev/{next-action,target,text-value}.md`
+- Registration and gate: `packages/coding-agent/src/tools/index.ts` (`browser_jev` factory; allowed when `browser.enabled` is true and `TYPESAFE_API_KEY` is set)
+- Browser acquisition and tab lifecycle: `packages/coding-agent/src/tools/browser/registry.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`
+- Tests: `packages/coding-agent/src/tools/__tests__/browser-jev-tool.test.ts`, `packages/coding-agent/src/tools/browser/__tests__/jev.test.ts`
+
+## Availability
+
+- `TYPESAFE_API_KEY` must be present in the environment; without it the tool is absent from the roster and the `tab.act` helper in the `browser` prelude reports the missing variable.
+- `TYPESAFE_MODEL` selects the Jev model (default `jev-latest`).
+- `browser.enabled` gates the tool alongside the rest of the browser stack.
+- The tool is `essential` and `exclusive`: runs are serialized per session, and a managed tab named `jev` is reused across calls so a flow can continue in stages.
+
+## Parameters
+
+| field | type | notes |
+| --- | --- | --- |
+| `goal` | string, required | Everything the flow must accomplish plus every literal value it needs. An omitted value is never invented; the run stops instead. |
+| `url` | string, optional | Navigate the `jev` tab first. Omit to continue where the previous call ended. |
+| `max_steps` | number, optional | Executed-action ceiling (default 30). |
+| `close` | boolean, optional | Release the `jev` tab after the run. |
+| `timeout` | number, optional | Seconds; default 300, ceiling 900. |
+
+Unknown fields are rejected.
+
+## How one run works
+
+1. Observe the page through the accessibility snapshot and build an indexed element table.
+2. One TypeSafe request per step returns the operation (`CLICK`, `TYPE_TEXT`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`) and, speculatively, a target for each applicable head; only the head matching the chosen operation can execute.
+3. `TYPE_TEXT` resolves its value through the session `completion()` bridge — the `smol` tier first, the session `default` tier if that fails.
+4. Execute against the observed element id, re-observe, repeat. Model output never becomes a selector, coordinate, or script.
+5. Stop on `DONE`, `BLOCKED`, three consecutive non-`WAIT` actions that leave the page unchanged, or the step budget.
+
+## Result
+
+- Text report: `status` with the action count and elapsed time, the goal, final URL and title, the executed steps (operation, target role/name, typed value, `page unchanged` marker), and the readable page text of the final page.
+- `blocked` and `max_steps` append the takeover instruction (`browser_use` for canvas/gesture, the `browser` prelude for selectors/JS) and set `isError: true`.
+- `details`: `{ status?, stepCount, url?, title?, elapsedMs?, goal }`.
+- `status: done` is the policy's claim, not proof — verify against the returned URL, steps, and page text, or through the application's own state.

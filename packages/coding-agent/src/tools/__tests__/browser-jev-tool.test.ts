@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { BrowserJevTool, type JevRunReport, jevRunCode, renderJevReport } from "../browser-jev";
-import type { ToolSession } from "../index";
+import { type JevRunReport, jevRunCode, renderJevReport } from "../browser-jev-tool";
+import { jevApiKey } from "../browser/jev";
 
 const ORIGINAL_KEY = Bun.env.TYPESAFE_API_KEY;
 
@@ -72,12 +72,13 @@ describe("renderJevReport", () => {
 	});
 });
 
-describe("BrowserJevTool.createIf", () => {
-	test("is unavailable without a TypeSafe key and available with one", () => {
-		const session = {} as ToolSession;
+describe("jevApiKey", () => {
+	test("treats an absent or blank TypeSafe key as no key — the tool's availability gate", () => {
 		delete Bun.env.TYPESAFE_API_KEY;
-		expect(BrowserJevTool.createIf(session)).toBeNull();
+		expect(jevApiKey()).toBeUndefined();
+		Bun.env.TYPESAFE_API_KEY = "   ";
+		expect(jevApiKey()).toBeUndefined();
 		Bun.env.TYPESAFE_API_KEY = "apikey_test";
-		expect(BrowserJevTool.createIf(session)?.name).toBe("browser_jev");
+		expect(jevApiKey()).toBe("apikey_test");
 	});
 });

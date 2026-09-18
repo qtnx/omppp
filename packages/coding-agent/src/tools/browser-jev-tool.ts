@@ -3,7 +3,6 @@ import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import browserJevDescription from "../prompts/tools/browser-jev.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { resolveBrowserKind } from "./browser";
-import { jevApiKey } from "./browser/jev";
 import { acquireBrowser } from "./browser/registry";
 import { acquireTab, releaseTab, runInTab, type TabSession } from "./browser/tab-supervisor";
 import { clampTimeout } from "./tool-timeouts";
@@ -140,10 +139,6 @@ export class BrowserJevTool implements AgentTool<typeof browserJevSchema, Browse
 	#tab?: TabSession;
 
 	constructor(private readonly session: ToolSession) {}
-
-	static createIf(session: ToolSession): BrowserJevTool | null {
-		return jevApiKey() === undefined ? null : new BrowserJevTool(session);
-	}
 
 	async execute(
 		_toolCallId: string,

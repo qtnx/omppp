@@ -63,7 +63,8 @@ import { AskTool } from "./ask";
 import { AstEditTool } from "./ast-edit";
 import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
-import { BrowserJevTool } from "./browser-jev";
+import { BrowserJevTool } from "./browser-jev-tool";
+import { jevApiKey } from "./browser/jev";
 import { NativeBrowserComputerTool } from "./browser-native-computer";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";
@@ -121,7 +122,7 @@ export * from "./ast-edit";
 export * from "./ast-grep";
 export * from "./bash";
 export * from "./browser";
-export * from "./browser-jev";
+export * from "./browser-jev-tool";
 export * from "./checkpoint";
 export * from "./compact";
 export * from "./computer";
@@ -779,9 +780,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	codegraph_explore: s => new CodeGraphExploreTool(s),
 	kanban: KanbanTool.createIf,
 	browser_use: s => new NativeBrowserComputerTool(s),
-	// Lazy closure, not a direct `.createIf` reference: browser-jev sits in this
-	// module's own import cycle, so an eager read hits the class TDZ.
-	browser_jev: s => BrowserJevTool.createIf(s),
+	browser_jev: s => new BrowserJevTool(s),
 	checkpoint: CheckpointTool.createIf,
 	rewind: RewindTool.createIf,
 	compact: CompactTool.createIf,
@@ -1024,7 +1023,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				session.settings.get("browser.enabled") === true &&
 				session.settings.get("browser.nativeComputer.enabled") === true
 			);
-		if (name === "browser_jev") return session.settings.get("browser.enabled") === true;
+		// The key gate lives here, not in the factory: tool metadata (loadMode,
+		// description) must resolve even in a session without a TypeSafe key.
+		if (name === "browser_jev") return session.settings.get("browser.enabled") === true && jevApiKey() !== undefined;
 		if (name === "checkpoint" || name === "rewind")
 			return (
 				session.settings.get("checkpoint.enabled") &&
