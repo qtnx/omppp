@@ -50,9 +50,16 @@ export function jevApiKey(): string | undefined {
 	return key ? key : undefined;
 }
 
-/** System One endpoint for Jev; the proxy default needs no local key. */
+/**
+ * System One endpoint for Jev; the proxy default needs no local key.
+ * An explicitly empty variable disables Jev (and the `browser_jev` tool) — that
+ * is the documented "leave empty to disable" switch, so it must be distinguished
+ * from the variable being unset.
+ */
 export function jevEndpoint(): string {
-	return Bun.env[JEV_ENDPOINT_ENV]?.trim() || JEV_PROXY_ENDPOINT;
+	const override = Bun.env[JEV_ENDPOINT_ENV];
+	if (override !== undefined) return override.trim();
+	return JEV_PROXY_ENDPOINT;
 }
 
 /**
