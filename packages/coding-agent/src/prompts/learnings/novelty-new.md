@@ -1,0 +1,1 @@
+Is the lesson in this user message genuinely new — not already covered by any of the existing learnings listed in state?

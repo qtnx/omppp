@@ -3811,6 +3811,34 @@ export const SETTINGS_SCHEMA = {
 
 	"learning.staleRepoDays": { type: "number", default: 90 },
 
+	"learning.relevance.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Agent",
+			label: "Live Learning Relevance (Jev)",
+			description: "Score stored learnings against each request with Jev and inject only the relevant ones",
+		},
+	},
+	"learning.relevance.threshold": { type: "number", default: 0.5 },
+	"learning.relevance.maxCandidates": { type: "number", default: 60 },
+	"learning.relevance.timeoutMs": { type: "number", default: 2500 },
+
+	"learning.novelty.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Agent",
+			label: "Live Learning Novelty Check (Jev)",
+			description:
+				"Before storing, let Jev decide whether an existing learning already covers the lesson and reinforce it instead",
+		},
+	},
+	"learning.novelty.reinforceThreshold": { type: "number", default: 0.6 },
+	"learning.novelty.timeoutMs": { type: "number", default: 4000 },
+
 	"learning.consolidation.enabled": {
 		type: "boolean",
 		default: true,

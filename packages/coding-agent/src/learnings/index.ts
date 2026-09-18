@@ -29,8 +29,17 @@ import {
 	toLearningAuditInsert,
 } from "./audit";
 import * as consolidation from "./consolidate";
-import { getCachedLearningInjection, invalidateLearningInjection, setCachedLearningInjection } from "./injection-cache";
+import * as noveltyChecks from "./novelty";
+import {
+	LEARNING_CONTEXT_MESSAGE_TYPE,
+	renderLearningTurnMessage,
+	selectRelevantLearnings,
+	type LearningTurnCandidate,
+} from "./relevance";
 import { resolveRepoKey } from "./repo-key";
+import type { CustomMessage } from "../session/messages";
+import type { SessionManager } from "../session/session-manager";
+import type { LearningTurnContextProvider } from "../session/session-tools";
 import {
 	clearLearningData as clearLearningDataInDb,
 	closeLearningDb,
@@ -58,6 +67,13 @@ interface LearningRuntimeConfig {
 	maxUserMessageChars: number;
 	maxEntriesPerScope: number;
 	maxInjectedPerScope: number;
+	relevanceEnabled: boolean;
+	relevanceThreshold: number;
+	relevanceMaxCandidates: number;
+	relevanceTimeoutMs: number;
+	noveltyEnabled: boolean;
+	noveltyReinforceThreshold: number;
+	noveltyTimeoutMs: number;
 	halfLifeDays: number;
 	consolidationEnabled: boolean;
 	consolidationIntervalDays: number;
@@ -110,6 +126,13 @@ const DEFAULTS: LearningRuntimeConfig = {
 	maxUserMessageChars: 4_000,
 	maxEntriesPerScope: 40,
 	maxInjectedPerScope: 20,
+	relevanceEnabled: true,
+	relevanceThreshold: 0.5,
+	relevanceMaxCandidates: 60,
+	relevanceTimeoutMs: 2_500,
+	noveltyEnabled: true,
+	noveltyReinforceThreshold: 0.6,
+	noveltyTimeoutMs: 4_000,
 	halfLifeDays: 45,
 	consolidationEnabled: true,
 	consolidationIntervalDays: 1,
@@ -254,22 +277,18 @@ export function startLearningStartupTask(options: {
 	}
 }
 
-export { invalidateLearningInjection };
-
+/**
+ * Full ranked learning block for `/learning view`; the per-turn injection path
+ * uses {@link createLearningTurnContextProvider} instead.
+ */
 export async function buildLearningDeveloperInstructions(
 	agentDir: string,
 	settings: Settings,
 	cwd = settings.getCwd(),
-	options: { cache?: boolean } = {},
 ): Promise<string | undefined> {
 	const config = loadLearningConfig(settings);
 	if (!config.enabled) return undefined;
 	const repoKey = await resolveRepoKey(cwd);
-	const useCache = options.cache !== false;
-	if (useCache) {
-		const cached = getCachedLearningInjection(repoKey);
-		if (cached.hit) return cached.value;
-	}
 	const db = openLearningDb(getAgentDbPath(agentDir));
 	try {
 		if (!preparedLearningRepoKeys.has(repoKey)) {
@@ -278,36 +297,133 @@ export async function buildLearningDeveloperInstructions(
 			healCurrentCwdRows(db, { cwd, repoKey, nowSec });
 			preparedLearningRepoKeys.add(repoKey);
 		}
-		const nowSec = unixNow();
 		const entries = listActiveLearnings(db, {
 			repoKey,
 			limitPerScope: config.maxInjectedPerScope,
 			halfLifeDays: config.halfLifeDays,
-			nowSec,
+			nowSec: unixNow(),
 		});
-		const rendered =
-			entries.length === 0
-				? undefined
-				: prompt
-						.render(injectionTemplate, {
-							global_section: renderLearningSection(
-								"Global learnings",
-								entries.filter(entry => entry.scope === "global"),
-							),
-							repo_section: renderLearningSection(
-								"Repository-specific learnings",
-								entries.filter(entry => entry.scope === "repo"),
-							),
-						})
-						.trim();
-		if (useCache) {
-			setCachedLearningInjection(repoKey, rendered);
-			markLearningsShown(db, { ids: entries.map(entry => entry.id), nowSec });
-		}
-		return rendered;
+		if (entries.length === 0) return undefined;
+		const global = entries.filter(entry => entry.scope === "global");
+		const repo = entries.filter(entry => entry.scope === "repo");
+		return prompt
+			.render(injectionTemplate, {
+				global_section: renderLearningSection("Global learnings", global),
+				repo_section: renderLearningSection("Repository-specific learnings", repo),
+			})
+			.trim();
 	} finally {
 		closeLearningDb(db);
 	}
+}
+
+/** The latest non-synthetic user message already on the branch, for relevance state. */
+function extractPreviousUserText(sessionManager: SessionManager): string | undefined {
+	for (const entry of sessionManager.getBranch()) {
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role !== "user" || message.synthetic || message.attribution === "agent") continue;
+		const text = extractMessageText(message);
+		if (text.trim()) return text.trim();
+	}
+	return undefined;
+}
+
+/**
+ * Per-turn live-learning context provider: scores stored learnings against the
+ * current request with Jev and returns a hidden context message carrying only
+ * the relevant ones, once per conversation (branch-scoped). Delivery state is
+ * published by the returned commit, which the session runs only after the
+ * message is validated as delivered.
+ */
+export function createLearningTurnContextProvider(options: {
+	agentDir: string;
+	settings: Settings;
+}): LearningTurnContextProvider {
+	const { agentDir, settings } = options;
+	return async ({ promptText, sessionManager }) => {
+		const config = loadLearningConfig(settings);
+		if (!config.enabled) return undefined;
+		const cwd = sessionManager.getCwd();
+		const repoKey = await resolveRepoKey(cwd);
+		const injected = new Set(sessionManager.getInjectedLearningAliases());
+		const db = openLearningDb(getAgentDbPath(agentDir));
+		try {
+			if (!preparedLearningRepoKeys.has(repoKey)) {
+				const nowSec = unixNow();
+				sweepTombstoneTouches(db, { repoKey, nowSec });
+				healCurrentCwdRows(db, { cwd, repoKey, nowSec });
+				preparedLearningRepoKeys.add(repoKey);
+			}
+			const nowSec = unixNow();
+			const entries = listActiveLearnings(db, {
+				repoKey,
+				limitPerScope: config.maxEntriesPerScope,
+				halfLifeDays: config.halfLifeDays,
+				nowSec,
+			}).filter(entry => !injected.has(entry.alias));
+			if (entries.length === 0) return undefined;
+			const candidates: LearningTurnCandidate[] = entries.map(entry => ({
+				id: entry.id,
+				alias: entry.alias,
+				scope: entry.scope,
+				content: entry.content,
+				score: entry.score,
+			}));
+			const selection = await selectRelevantLearnings({
+				candidates,
+				request: promptText,
+				previousRequest: extractPreviousUserText(sessionManager),
+				cwd,
+				config: {
+					enabled: config.relevanceEnabled,
+					threshold: config.relevanceThreshold,
+					timeoutMs: config.relevanceTimeoutMs,
+					maxCandidates: config.relevanceMaxCandidates,
+					maxInjectedPerScope: config.maxInjectedPerScope,
+				},
+				signal: AbortSignal.timeout(config.relevanceTimeoutMs),
+			});
+			const selected = selection.selected;
+			const content = renderLearningTurnMessage(selected);
+			if (selected.length === 0 || content === undefined) return undefined;
+			logger.debug("live-learning: turn injection", {
+				cwd,
+				method: selection.method,
+				injected: selected.length,
+				candidates: candidates.length,
+			});
+			const message: CustomMessage = {
+				role: "custom",
+				customType: LEARNING_CONTEXT_MESSAGE_TYPE,
+				content,
+				display: false,
+				details: {
+					aliases: selected.map(entry => entry.alias),
+					ids: selected.map(entry => entry.id),
+					method: selection.method,
+				},
+				attribution: "user",
+				timestamp: Date.now(),
+			};
+			return {
+				message,
+				commit: () => {
+					const showDb = openLearningDb(getAgentDbPath(agentDir));
+					try {
+						markLearningsShown(showDb, { ids: selected.map(entry => entry.id), nowSec: unixNow() });
+					} finally {
+						closeLearningDb(showDb);
+					}
+				},
+			};
+		} catch (error) {
+			logger.debug("live-learning: turn injection failed", { cwd, error: String(error) });
+			return undefined;
+		} finally {
+			closeLearningDb(db);
+		}
+	};
 }
 
 export async function clearLearningData(
@@ -321,7 +437,6 @@ export async function clearLearningData(
 	} finally {
 		closeLearningDb(db);
 	}
-	invalidateLearningInjection();
 }
 
 export async function getLearningLogText(maxLines = LEARNING_LOG_LINE_LIMIT): Promise<string> {
@@ -444,6 +559,40 @@ async function processLearningFromUserMessage(options: {
 			halfLifeDays: config.halfLifeDays,
 			nowSec: unixNow(),
 		}).filter(entry => entry.scope === decision.scope);
+		const novelty = await noveltyChecks.checkLearningNovelty({
+			userText: boundedUserText,
+			scope: decision.scope,
+			cwd,
+			existing,
+			config: {
+				enabled: config.noveltyEnabled,
+				reinforceThreshold: config.noveltyReinforceThreshold,
+				timeoutMs: config.noveltyTimeoutMs,
+				maxCandidates: config.relevanceMaxCandidates,
+				halfLifeDays: config.halfLifeDays,
+			},
+			signal: AbortSignal.timeout(config.noveltyTimeoutMs),
+		});
+		await recordLearningNoveltyCheck(audit, novelty);
+		if (novelty.kind === "duplicate") {
+			const reinforced = reinforceLearning(db, {
+				id: novelty.target.id,
+				confidence: decision.confidence,
+				nowSec: unixNow(),
+			});
+			logger.debug(
+				reinforced ? "live-learning: reinforced by novelty" : "live-learning: novelty reinforce no-op",
+				decisionLogContext,
+			);
+			await persistLearningAuditInDb(
+				db,
+				audit,
+				reinforced ? "reinforced_by_novelty" : "reinforce_noop",
+				reinforced,
+				decisionSnapshot,
+			);
+			return reinforced;
+		}
 		const writeResult = await writeLearning({
 			userText: boundedUserText,
 			decision,
@@ -538,6 +687,19 @@ async function persistLearningAuditInDb(
 		outcome,
 		auditDir: audit.auditDir,
 	});
+}
+
+/** Writes the Jev novelty verdict beside the other per-run audit artifacts. */
+async function recordLearningNoveltyCheck(
+	audit: LearningAuditRun,
+	verdict: noveltyChecks.NoveltyVerdict,
+): Promise<void> {
+	try {
+		await fs.mkdir(audit.auditDir, { recursive: true });
+		await Bun.write(path.join(audit.auditDir, "novelty.json"), JSON.stringify(verdict, null, 2));
+	} catch (error) {
+		logger.debug("live-learning: novelty audit write failed", { error: String(error) });
+	}
 }
 
 async function classifyLearning(options: {
@@ -972,6 +1134,14 @@ function loadLearningConfig(settings: Settings): LearningRuntimeConfig {
 		maxUserMessageChars: settings.get("learning.maxUserMessageChars") ?? DEFAULTS.maxUserMessageChars,
 		maxEntriesPerScope: settings.get("learning.maxEntriesPerScope") ?? DEFAULTS.maxEntriesPerScope,
 		maxInjectedPerScope: settings.get("learning.maxInjectedPerScope") ?? DEFAULTS.maxInjectedPerScope,
+		relevanceEnabled: settings.get("learning.relevance.enabled") ?? DEFAULTS.relevanceEnabled,
+		relevanceThreshold: settings.get("learning.relevance.threshold") ?? DEFAULTS.relevanceThreshold,
+		relevanceMaxCandidates: settings.get("learning.relevance.maxCandidates") ?? DEFAULTS.relevanceMaxCandidates,
+		relevanceTimeoutMs: settings.get("learning.relevance.timeoutMs") ?? DEFAULTS.relevanceTimeoutMs,
+		noveltyEnabled: settings.get("learning.novelty.enabled") ?? DEFAULTS.noveltyEnabled,
+		noveltyReinforceThreshold:
+			settings.get("learning.novelty.reinforceThreshold") ?? DEFAULTS.noveltyReinforceThreshold,
+		noveltyTimeoutMs: settings.get("learning.novelty.timeoutMs") ?? DEFAULTS.noveltyTimeoutMs,
 		halfLifeDays: settings.get("learning.halfLifeDays") ?? DEFAULTS.halfLifeDays,
 		consolidationEnabled: settings.get("learning.consolidation.enabled") ?? DEFAULTS.consolidationEnabled,
 		consolidationIntervalDays:

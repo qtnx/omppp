@@ -13,6 +13,20 @@
  * run reports `blocked` to its caller.
  */
 
+import {
+	JEV_API_KEY_ENV,
+	JEV_DEFAULT_MODEL,
+	JEV_ENDPOINT_ENV,
+	JEV_MODEL_ENV,
+	JevError,
+	jevApiKey,
+	jevEndpoint,
+	type JevRequest,
+	type JevResponse,
+	type JevChoice,
+	postSystemOne,
+	validateChoice as sharedValidateChoice,
+} from "../../jev/systemone";
 import { ToolError, throwIfAborted } from "../tool-errors";
 import nextActionRules from "../../prompts/tools/browser-jev/next-action.md" with { type: "text" };
 import targetRules from "../../prompts/tools/browser-jev/target.md" with { type: "text" };
@@ -21,18 +35,11 @@ import reviewRules from "../../prompts/tools/browser-jev/review.md" with { type:
 import textValueRules from "../../prompts/tools/browser-jev/text-value.md" with { type: "text" };
 import type { Observation, ObservationEntry } from "./tab-protocol";
 
-export const JEV_API_KEY_ENV = "TYPESAFE_API_KEY";
-export const JEV_MODEL_ENV = "TYPESAFE_MODEL";
-export const JEV_ENDPOINT_ENV = "TYPESAFE_SYSTEMONE_URL";
-/** The tailnet proxy holds the key; point the endpoint at TypeSafe directly to need a local one. */
-export const JEV_PROXY_ENDPOINT = "http://codemc:8791/v1/systemone";
-const DEFAULT_MODEL = "jev-latest";
 const DEFAULT_MAX_STEPS = 30;
 const PAGE_TEXT_CAP = 6000;
 const SETTLE_MS = 150;
 const WAIT_MS = 500;
 const REQUEST_TIMEOUT_MS = 25_000;
-const RETRY_STATUSES: Record<number, true> = { 429: true, 503: true, 529: true };
 /**
  * Rescue turns allowed per run. Each costs one helper completion, and each turn
  * may drive several actions, so the budget is spent only when the helper is
@@ -44,24 +51,6 @@ const MAX_RESCUE_STEPS = 4;
 /** Consecutive non-WAIT actions that changed nothing before the run is considered stuck. */
 const STALL_LIMIT = 3;
 
-/** Jev is on by default whenever the TypeSafe key is present in the environment. */
-export function jevApiKey(): string | undefined {
-	const key = Bun.env[JEV_API_KEY_ENV]?.trim();
-	return key ? key : undefined;
-}
-
-/**
- * System One endpoint for Jev; the proxy default needs no local key.
- * An explicitly empty variable disables Jev (and the `browser_jev` tool) — that
- * is the documented "leave empty to disable" switch, so it must be distinguished
- * from the variable being unset.
- */
-export function jevEndpoint(): string {
-	const override = Bun.env[JEV_ENDPOINT_ENV];
-	if (override !== undefined) return override.trim();
-	return JEV_PROXY_ENDPOINT;
-}
-
 /**
  * One-line debug summary of the Jev driver as this process would call it:
  * endpoint (tailnet proxy unless overridden), where the key comes from, and the
@@ -69,7 +58,7 @@ export function jevEndpoint(): string {
  */
 export function jevDebugSummary(): string {
 	const override = Bun.env[JEV_MODEL_ENV]?.trim();
-	const model = override || DEFAULT_MODEL;
+	const model = override || JEV_DEFAULT_MODEL;
 	const endpointOverride = Bun.env[JEV_ENDPOINT_ENV]?.trim();
 	const route = endpointOverride ? `(${JEV_ENDPOINT_ENV})` : "(proxy default)";
 	const auth = jevApiKey()
@@ -246,17 +235,6 @@ export interface JevActOptions {
 	apiKey?: string;
 	model?: string;
 	fetch?: typeof fetch;
-}
-
-interface JevChoice {
-	choice: string;
-	confidence: number;
-	probabilities: Record<string, number>;
-}
-
-interface JevResponse {
-	model?: string;
-	answers: Record<string, unknown>;
 }
 
 function stateValue(entry: ObservationEntry, key: string): string | undefined {
@@ -436,67 +414,12 @@ function describeStep(step: JevStep): string {
 
 /** Reject any answer whose choice, probability set, or normalization is off — no action executes on it. */
 export function validateChoice(answer: unknown, ids: Iterable<string>): JevChoice {
-	const valid = new Set(ids);
-	const record = answer as Partial<JevChoice> | undefined;
-	const probabilities = record?.probabilities;
-	const choice = record?.choice;
-	const confidence = record?.confidence;
-	const ok =
-		typeof choice === "string" &&
-		valid.has(choice) &&
-		probabilities !== undefined &&
-		probabilities !== null &&
-		typeof probabilities === "object" &&
-		typeof confidence === "number" &&
-		Number.isFinite(confidence) &&
-		confidence >= 0 &&
-		confidence <= 1 &&
-		Object.keys(probabilities).length === valid.size &&
-		Object.keys(probabilities).every(key => valid.has(key)) &&
-		Object.values(probabilities).every(p => typeof p === "number" && Number.isFinite(p) && p >= 0 && p <= 1) &&
-		Math.abs(Object.values(probabilities).reduce((sum, p) => sum + p, 0) - 1) < 0.02 &&
-		probabilities[choice]! >= Math.max(...Object.values(probabilities)) - 1e-6;
-	if (!ok) throw new ToolError("Invalid Jev response; no action executed.");
-	return { choice, confidence, probabilities };
-}
-
-async function postJev(
-	body: Record<string, unknown>,
-	apiKey: string | undefined,
-	signal: AbortSignal | undefined,
-	fetchImpl: typeof fetch,
-): Promise<JevResponse> {
-	const endpoint = jevEndpoint();
-	const headers: Record<string, string> = { "content-type": "application/json" };
-	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-	for (let attempt = 0; attempt < 3; attempt++) {
-		throwIfAborted(signal);
-		let response: Response;
-		try {
-			response = await fetchImpl(endpoint, {
-				method: "POST",
-				headers,
-				body: JSON.stringify(body),
-				signal: signal
-					? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
-					: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-			});
-		} catch (error) {
-			throwIfAborted(signal);
-			throw new ToolError(
-				`Jev connection failed; no action executed (${error instanceof Error ? error.message : String(error)})`,
-			);
-		}
-		if (RETRY_STATUSES[response.status] && attempt < 2) {
-			await Bun.sleep(500 * 2 ** attempt);
-			continue;
-		}
-		if (!response.ok) {
-			throw new ToolError(`Jev returned HTTP ${response.status}; no action executed.`);
-		}
-		return (await response.json()) as JevResponse;
+	try {
+		return sharedValidateChoice(answer, ids);
+	} catch (error) {
+		if (error instanceof JevError) throw new ToolError(`${error.message}; no action executed.`);
+		throw error;
 	}
-	throw new ToolError("Jev unavailable; no action executed.");
 }
 
 function fingerprint(observation: Observation): string {
@@ -677,7 +600,7 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 	const task = goal.trim();
 	if (!task) throw new ToolError("tab.act() requires a non-empty goal");
 	const apiKey = opts.apiKey ?? jevApiKey();
-	const model = opts.model ?? Bun.env[JEV_MODEL_ENV]?.trim() ?? DEFAULT_MODEL;
+	const model = opts.model ?? Bun.env[JEV_MODEL_ENV]?.trim() ?? JEV_DEFAULT_MODEL;
 	const maxSteps = opts.maxSteps ?? DEFAULT_MAX_STEPS;
 	const maxRescues = opts.maxRescues ?? DEFAULT_MAX_RESCUES;
 	const fetchImpl = opts.fetch ?? fetch;
@@ -820,7 +743,19 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 			rescues < maxRescues,
 		);
 		const requestStarted = performance.now();
-		const result = await postJev(body, apiKey, signal, fetchImpl);
+		let result: JevResponse;
+		try {
+			result = await postSystemOne(body as unknown as JevRequest, {
+				apiKey,
+				signal,
+				fetchImpl,
+				timeoutMs: REQUEST_TIMEOUT_MS,
+			});
+		} catch (error) {
+			if (error instanceof JevError && error.kind === "aborted") throwIfAborted(signal);
+			if (error instanceof JevError) throw new ToolError(`${error.message}; no action executed.`);
+			throw error;
+		}
 		const latencyMs = Math.round(performance.now() - requestStarted);
 		const answers = result.answers ?? {};
 		const operationAnswer = validateChoice(answers.operation, Object.keys(operations));

@@ -65,7 +65,7 @@ import { AstEditTool } from "./ast-edit";
 import { AstGrepTool } from "./ast-grep";
 import { BashTool } from "./bash";
 import { BrowserJevTool } from "./browser-jev-tool";
-import { jevEndpoint } from "./browser/jev";
+import { jevEndpoint } from "../jev/systemone";
 import { NativeBrowserComputerTool } from "./browser-native-computer";
 import { type BuiltinToolName, type HiddenToolName, normalizeToolNames } from "./builtin-names";
 import { type CheckpointState, CheckpointTool, type CompletedRewindState, RewindTool } from "./checkpoint";

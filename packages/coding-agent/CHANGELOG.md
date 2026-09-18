@@ -9,6 +9,11 @@
 ### Fixed
 
 - A usage-limit failure now falls through to the configured `retry.fallbackChains` after one sibling-credential wait instead of retrying the capped model until the retry budget runs out. A pool whose "sibling" claim never freed a fresh window previously re-hit the spent quota up to `retry.maxRetries` times before the chain was consulted; the chain's cross-provider candidate is now used, with the exhausted provider excluded.
+- Live learnings are injected per request instead of as a static system-prompt block: Jev (TypeSafe System One) scores each stored learning against the current request and only the relevant ones are added — once per conversation, as a hidden context message — so the provider prompt cache stays byte-stable. Falls back to the stored rank when Jev is unavailable (`learning.relevance.*`).
+
+### Added
+
+- Live learning novelty check: before storing a new guideline, Jev judges whether an existing learning already covers the lesson; a confident duplicate reinforces the existing entry instead of writing another one (`learning.novelty.*`).
 
 ## [1.9.0] - 2026-09-18
 

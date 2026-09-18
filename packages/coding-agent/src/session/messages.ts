@@ -39,6 +39,7 @@ import { titleTextFromSkillPrompt } from "./skill-title-input";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
 export const MEMORY_CONTEXT_MESSAGE_TYPE = "memory-context";
+export const LEARNING_CONTEXT_MESSAGE_TYPE = "learning-context";
 export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
 export const BROWSER_ANNOTATION_MESSAGE_TYPE = "browser-annotation";
 export const MAX_BACKGROUND_BROWSER_ANNOTATIONS = 20;
