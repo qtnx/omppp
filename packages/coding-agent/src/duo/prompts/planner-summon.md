@@ -4,4 +4,4 @@ Do the reasoning now: analyze the request, verify assumptions against the code o
 
 The moment the direction is settled, call `duo_handoff` — the `resolution` is the EXECUTOR'S WORKING BRIEF (decisions made, what to do next, exact steps/files/commands to continue with), NOT a closing summary. The executor resumes the work from your brief immediately, and you return to advising. Do not linger on the executing stream, and do not try to finish the work yourself.
 
-Declare `scope` on `duo_handoff`: single means the executor uses direct tools; multi means the executor runs Safe orchestrator mode and delegates.
+`scope` on `duo_handoff` defaults to `single` (executor works directly with its own tools); declare `multi` only for long-running, multi-phase implementation with several independent workstreams, where the executor should run Safe orchestrator mode and delegate.

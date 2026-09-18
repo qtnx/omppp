@@ -1887,6 +1887,12 @@ function resolveNewestAnthropicDuoModel(
 	return selected?.model;
 }
 
+/**
+ * Resolve one duo side. An explicit pattern wins when it resolves; when it does
+ * not (provider unauthenticated, model not discovered) the side degrades to the
+ * newest authenticated model of the role's Anthropic family instead of
+ * disabling duo outright.
+ */
 function resolveDuoSide(
 	pattern: string | undefined,
 	availableModels: Model<Api>[],
@@ -1896,7 +1902,8 @@ function resolveDuoSide(
 ): { model: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
 	const normalized = pattern?.trim();
 	if (normalized) {
-		return resolveExplicitDuoModel(normalized, availableModels, settings, modelRegistry);
+		const explicit = resolveExplicitDuoModel(normalized, availableModels, settings, modelRegistry);
+		if (explicit) return explicit;
 	}
 	const model = resolveNewestAnthropicDuoModel(availableModels, matchesKind);
 	return model ? { model } : undefined;

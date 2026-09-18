@@ -268,6 +268,30 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		expect(session.getActiveToolNames()).toContain("read");
 	});
 
+	it("/duo on|off are session-scoped: the persisted duo.mode survives the toggle", async () => {
+		const session = createHarness({ activeToolNames: ["read"], initialModelId: "claude-sonnet-4-5" });
+
+		await session.setDuoEnabled(true);
+		expect(session.getDuoStatus()?.phase).toBe("executing");
+		await session.setDuoEnabled(false);
+		expect(session.getDuoStatus()?.phase).toBe("inactive");
+
+		session.settings.clearOverride("duo.mode");
+		expect(session.settings.get("duo.mode")).toBe("auto");
+	});
+
+	it("auto duo started outside the pair activates once the user switches onto the planner", async () => {
+		const session = createHarness({ activeToolNames: ["read"], initialModelId: "claude-sonnet-4-5" });
+		expect(session.getDuoStatus()).toBeUndefined();
+
+		const planner = session.modelRegistry.getAvailable().find(model => model.id === "claude-fable-5");
+		if (!planner) throw new Error("planner missing");
+		await session.setModelTemporary(planner);
+
+		expect(session.getDuoStatus()?.phase).toBe("executing");
+		expect(session.getActiveToolNames()).toContain("duo_handoff");
+	});
+
 	it("does not register consult for a plain non-duo non-advisor session", () => {
 		const session = createHarness({
 			duoMode: "off",

@@ -226,7 +226,7 @@ describe("DuoController", () => {
 		});
 	});
 
-	test("planning engages plan mode; handoff releases it and enters orchestrator mode", async () => {
+	test("planning engages plan mode; a default handoff releases it without orchestrator mode, multi opts in", async () => {
 		const host = fakeHost({ model: planner, planModeOn: true, orchestrator: false });
 		const controller = new DuoController(host, duoConfig());
 
@@ -238,8 +238,16 @@ describe("DuoController", () => {
 		const handedOff = await controller.handoffToExecutor("plan locked");
 		expect(handedOff).toBe("ok");
 		expect(controller.status.phase).toBe("executing");
+		expect(controller.status.executionScope).toBe("single");
 		expect(host.planModeEnables).toEqual([true, false]);
-		expect(host.orchestratorEnables).toEqual([true]);
+		expect(host.orchestratorEnables).toEqual([false]);
+
+		const multiHost = fakeHost({ model: planner, planModeOn: true, orchestrator: false });
+		const multiController = new DuoController(multiHost, duoConfig());
+		await multiController.reevaluate();
+		expect(await multiController.handoffToExecutor("plan locked", "multi")).toBe("ok");
+		expect(multiController.status.executionScope).toBe("multi");
+		expect(multiHost.orchestratorEnables).toEqual([true]);
 	});
 
 	test("restored planning session re-engages plan mode on reevaluate", async () => {
@@ -289,7 +297,7 @@ describe("DuoController", () => {
 		expect(host.notices.at(-1)).toMatchObject({
 			level: "info",
 			text: expect.stringMatching(
-				/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the Fable\/Opus pair/,
+				/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the duo planner\/executor pair/,
 			),
 		});
 		const switchCount = host.switches.length;
@@ -318,7 +326,7 @@ describe("DuoController", () => {
 
 		expect(controller.status.phase).toBe("inactive");
 		expect(host.notices.at(-1)?.text).toMatch(
-			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the Fable\/Opus pair/,
+			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the duo planner\/executor pair/,
 		);
 		expect(host.orchestratorEnables.at(-1)).toBe(false);
 		await controller.reevaluate();
@@ -442,7 +450,7 @@ describe("DuoController", () => {
 
 		expect(controller.status.phase).toBe("inactive");
 		expect(host.briefs.filter(brief => brief.text.includes("summons to reason"))).toHaveLength(1);
-		expect(host.notices.at(-1)?.text).toMatch(/outside the Fable\/Opus pair/);
+		expect(host.notices.at(-1)?.text).toMatch(/outside the duo planner\/executor pair/);
 	});
 
 	test("manual planner model change during takeover does not inject summon protocol", async () => {
@@ -487,7 +495,7 @@ describe("DuoController", () => {
 		expect(host.stops).toBe(stopCount + 1);
 		expect(host.resumes).toHaveLength(0);
 		expect(host.notices.at(-1)?.text).toMatch(
-			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the Fable\/Opus pair/,
+			/Duo disabled: main model anthropic\/claude-sonnet-4\.5 is outside the duo planner\/executor pair/,
 		);
 		expect(controller.status.phase).toBe("inactive");
 	});
@@ -866,7 +874,7 @@ describe("DuoController", () => {
 		expect(host.persisted.at(-1)?.phase).toBe("inactive");
 		expect(host.notices.at(-1)).toMatchObject({
 			level: "info",
-			text: expect.stringMatching(/outside the Fable\/Opus pair/),
+			text: expect.stringMatching(/outside the duo planner\/executor pair/),
 		});
 	});
 
@@ -955,6 +963,54 @@ describe("DuoController", () => {
 		expect(controller.status.phase).toBe("suspended");
 		expect(host.notices.at(-1)).toMatchObject({ level: "warning" });
 		expect(host.persisted.at(-1)).toMatchObject({ phase: "suspended", suspendReason: "set-model-failed" });
+	});
+
+	test("suspended duo resumes on the next reevaluate once the switch succeeds", async () => {
+		const host = fakeHost({ failSwitch: true });
+		const controller = new DuoController(host, duoConfig());
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("suspended");
+
+		host.failSwitch = false;
+		await controller.reevaluate();
+
+		expect(controller.status.phase).toBe("executing");
+		expect(host.switches.at(-1)?.model).toBe(executor);
+		expect(host.persisted.at(-1)?.suspendReason).toBeUndefined();
+	});
+
+	test("dormant auto duo activates when the user switches onto the planner, not onto the executor", async () => {
+		const host = fakeHost({ model: otherModel, orchestrator: false, planModeOn: false });
+		const controller = new DuoController(host, duoConfig({ mode: "auto" }));
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("inactive");
+
+		// Executor alone is not the documented auto trigger: no reevaluate is scheduled.
+		host.model = executor;
+		controller.notifyManualModelChange();
+		expect(controller.status.phase).toBe("inactive");
+
+		const switched = Promise.withResolvers<void>();
+		host.onSwitch = () => switched.resolve();
+		host.model = planner;
+		controller.notifyManualModelChange();
+		await switched.promise;
+		expect(controller.status.phase).toBe("executing");
+		expect(host.switches.at(-1)?.model).toBe(executor);
+	});
+
+	test("a live duoMode host overrides the captured config so /duo off stays off across model switches", async () => {
+		let mode: "auto" | "on" | "off" = "auto";
+		const host = fakeHost({ model: otherModel, orchestrator: false, planModeOn: false, duoMode: () => mode });
+		const controller = new DuoController(host, duoConfig({ mode: "auto" }));
+		await controller.reevaluate();
+
+		mode = "off";
+		host.model = planner;
+		controller.notifyManualModelChange();
+
+		expect(controller.status.phase).toBe("inactive");
+		expect(host.switches).toHaveLength(0);
 	});
 
 	test("notifyTurnEnd ticks executor cooldown to zero and persists each transition", async () => {

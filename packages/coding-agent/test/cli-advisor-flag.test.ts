@@ -35,4 +35,12 @@ describe("parseArgs — --advisor flag", () => {
 		expect(result.model).toBe("opus");
 		expect(result.messages).toEqual([]);
 	});
+
+	it("parses --duo as a valueless flag alongside --advisor", () => {
+		const result = parseArgs(["--duo", "--model", "opus", "hello"]);
+		expect(result.duo).toBe(true);
+		expect(result.advisor).toBeUndefined();
+		expect(result.model).toBe("opus");
+		expect(result.messages).toContain("hello");
+	});
 });
