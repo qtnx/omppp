@@ -4,6 +4,9 @@
 
 ### Added
 
+- `duo.phaseModels` now ships with a default model routing map: planning/verifying/blocked run Astra-led chains, implementing/reporting run the DeepSeek executor, and debugging starts on Opus with DeepSeek fallback — each phase keeps its own thinking level and registers later entries as automatic rate-limit/quota fallbacks (`duo.phaseSwitch.minConfidence` still gates the switch).
+- Duo re-resolves its planner/executor pair at each re-check point: a side that degraded because its configured model (e.g. the DeepSeek executor) was not yet available is swapped to the configured model as soon as it resolves, instead of running the family fallback for the whole session.
+- The setup default `retry.fallbackChains` now covers the default duo planner: a Fable model that exhausts quota falls through to `openai-codex/gpt-6-astra:high` then `anthropic/claude-opus-5:high` (setup config version 9).
 - New `browser_jev` tool: hand it one browser goal and the Jev DOM policy plus a small text-helper model finish the whole flow, returning a text report (status, executed steps, final URL/title, page text) instead of making the main model drive clicks through screenshots. Appears only when `TYPESAFE_API_KEY` is set; keeps its own `jev` tab so a flow can continue across calls.
 - Jev browser automation (`browser_jev`, `tab.act`) gained `SELECT`, `HOVER`, `PRESS_ENTER`, and `DRAG`: native `<select>` options now commit through their select instead of failing on an unclickable option node, hover-only menus open, a field can be submitted with Enter when no visible submit control exists, and one observed element can be dragged onto another.
 - Browser tools accept `profile: "<name>"` (plus `fresh: true`): each named profile is its own Chromium with its own cookies, storage, and login, so several accounts can be driven side by side — `browser.open({ profile })` in eval and `browser_jev({ profile })`, which also keeps a `jev-<profile>` tab per account.

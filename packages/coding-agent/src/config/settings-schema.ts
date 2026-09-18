@@ -788,7 +788,14 @@ export const SETTINGS_SCHEMA = {
 	},
 	"duo.phaseModels": {
 		type: "record",
-		default: {} as Record<string, string | string[]>,
+		default: {
+			planning: ["openai-codex/gpt-6-astra:high", "anthropic/claude-fable-5-1:medium"],
+			implementing: ["tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high", "anthropic/claude-opus-5:high"],
+			verifying: ["openai-codex/gpt-6-astra:medium", "anthropic/claude-fable-5-1:medium"],
+			debugging: ["anthropic/claude-opus-5:high", "tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high"],
+			blocked: ["openai-codex/gpt-6-astra:high", "anthropic/claude-fable-5-1:medium"],
+			reporting: ["tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high"],
+		} as Record<string, string | string[]>,
 		ui: {
 			tab: "model",
 			group: "Duo",

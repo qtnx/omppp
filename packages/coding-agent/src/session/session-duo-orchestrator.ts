@@ -4,7 +4,7 @@ import { classifyModel } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { resolveDuoConfig } from "../config/model-resolver";
+import { formatModelStringWithRouting, resolveDuoConfig } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import {
 	computeAdvisorRetryDelay,
@@ -107,6 +107,20 @@ export function parseDuoStateSnapshot(value: unknown): DuoStateSnapshot | undefi
 }
 
 export type DuoPlanTakeoverDecision = { request: true; reason: string } | { request: false };
+
+export function duoStatusToSnapshot(status: DuoStatus): DuoStateSnapshot {
+	return {
+		phase: status.phase,
+		executionScope: status.executionScope,
+		workPhase: status.workPhase,
+		plannerId: status.planner,
+		executorId: status.executor,
+		takeoverPurpose: status.takeoverPurpose,
+		takeoverCount: status.takeoverCount,
+		consecutiveTakeovers: 0,
+		cooldownRemaining: 0,
+	};
+}
 
 export function resolveDuoPlanTakeoverDecision(
 	agentKind: "main" | "sub",
@@ -349,7 +363,18 @@ export class SessionDuoOrchestrator {
 	}
 
 	#ensureController(restored?: DuoStateSnapshot): DuoController | undefined {
-		if (this.#controller) return this.#controller;
+		if (this.#controller) {
+			if (!this.#duoReconfigurationNeeded()) return this.#controller;
+			const liveSnapshot = duoStatusToSnapshot(this.#controller.status);
+			this.#controller.dispose();
+			this.#controller = undefined;
+			restored = liveSnapshot;
+			this.#host.emitNotice(
+				"info",
+				"Duo reconfigured: a configured planner/executor model became available.",
+				"duo",
+			);
+		}
 		if (this.#host.agentKind() !== "main") return undefined;
 		if (!restored && !this.#couldActivate()) return undefined;
 		const config = resolveDuoConfig(this.#host.settings, this.#host.availableModels(), this.#host.modelRegistry);
@@ -395,6 +420,25 @@ export class SessionDuoOrchestrator {
 			restored,
 		);
 		return this.#controller;
+	}
+
+	/**
+	 * A fresh duo resolution may now pick a different planner or executor than
+	 * the live controller: a configured selector that degraded to a family
+	 * fallback (e.g. the executor default before the gateway provider attached)
+	 * is re-resolved so the session stops running the stale fallback. Compared on
+	 * every re-check point (initialize, /duo toggle, orchestrator toggle, advisor
+	 * revive); returns true only when the resolved models actually differ.
+	 */
+	#duoReconfigurationNeeded(): boolean {
+		const current = this.#controller?.status;
+		if (!current || current.phase === "inactive") return false;
+		const fresh = resolveDuoConfig(this.#host.settings, this.#host.availableModels(), this.#host.modelRegistry);
+		if (!fresh) return false;
+		return (
+			formatModelStringWithRouting(fresh.planner) !== current.planner ||
+			formatModelStringWithRouting(fresh.executor) !== current.executor
+		);
 	}
 
 	#couldActivate(): boolean {
