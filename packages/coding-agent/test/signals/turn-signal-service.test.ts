@@ -182,6 +182,37 @@ describe("TurnSignalService", () => {
 		expect(await service.classifyHandoff("plan")).toEqual({ scope: "multi", scopeConfidence: 0.7, planLocked: 0.9 });
 		expect(await service.classifyLearning("rule")).toEqual({ genericRule: 0.3 });
 	});
+
+	test("classifyTopicSwitch sends the digest and request as separate state fields", async () => {
+		let state: Record<string, unknown> | undefined;
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: fakeFetch(body => {
+				state = body.state as Record<string, unknown>;
+				return Response.json({
+					model: "jev",
+					answers: { topic_switch: { type: "noul", noul: 0.82 } },
+					usage: { input_tokens: 1, output_tokens: 1 },
+				});
+			}),
+		});
+		const service = new TurnSignalService(client);
+
+		expect(await service.classifyTopicSwitch("Title: refactor parser", "Set up the billing webhook")).toEqual({
+			topicSwitch: 0.82,
+		});
+		expect(state).toEqual({ prior_context: "Title: refactor parser", new_request: "Set up the billing webhook" });
+	});
+
+	test("classifyTopicSwitch fails open when the answer is missing", async () => {
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: fakeFetch(() =>
+				Response.json({ model: "jev", answers: {}, usage: { input_tokens: 1, output_tokens: 1 } }),
+			),
+		});
+		expect(await new TurnSignalService(client).classifyTopicSwitch("digest", "request")).toBeUndefined();
+	});
 });
 
 describe("createTurnSignalService", () => {

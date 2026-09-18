@@ -2,6 +2,7 @@ import { $env, logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import handoffQuestions from "./questions/handoff.json";
 import learningQuestions from "./questions/learning.json";
+import topicQuestions from "./questions/topic.json";
 import turnQuestions from "./questions/turn.json";
 import { TypeSafeClient } from "./typesafe-client";
 import {
@@ -10,6 +11,7 @@ import {
 	isWorkPhase,
 	type LearningSignals,
 	type Question,
+	type TopicSignals,
 	type TurnSignals,
 } from "./types";
 
@@ -22,6 +24,7 @@ const FAILURE_BUDGET = 3;
 const TURN_QUESTIONS = turnQuestions as Record<string, Question>;
 const HANDOFF_QUESTIONS = handoffQuestions as Record<string, Question>;
 const LEARNING_QUESTIONS = learningQuestions as Record<string, Question>;
+const TOPIC_QUESTIONS = topicQuestions as Record<string, Question>;
 
 function noul(answer: Answer | undefined): number | undefined {
 	return answer?.type === "noul" && Number.isFinite(answer.noul) ? answer.noul : undefined;
@@ -165,6 +168,24 @@ export class TurnSignalService {
 		this.#record(response !== undefined);
 		const genericRule = noul(response?.answers.generic_rule);
 		return genericRule === undefined ? undefined : { genericRule };
+	}
+
+	/**
+	 * Judge a new user request against a digest of the session's prior context
+	 * (idle topic-switch compaction). One noul question over the digest — never
+	 * the full transcript — so the pre-prompt round trip stays cheap.
+	 */
+	async classifyTopicSwitch(
+		priorContext: string,
+		request: string,
+		signal?: AbortSignal,
+	): Promise<TopicSignals | undefined> {
+		if (this.#unavailable) return undefined;
+		const state = { prior_context: this.#clip(priorContext), new_request: this.#clip(request) };
+		const response = await this.#client.systemOne(state, TOPIC_QUESTIONS, signal);
+		this.#record(response !== undefined);
+		const topicSwitch = noul(response?.answers.topic_switch);
+		return topicSwitch === undefined ? undefined : { topicSwitch };
 	}
 }
 

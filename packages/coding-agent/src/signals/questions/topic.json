@@ -1,0 +1,10 @@
+{
+	"topic_switch": {
+		"type": "noul",
+		"instructions": "The state has `prior_context` — what a coding session has been working on so far (its title, the latest compaction summary, the most recent user requests) — and `new_request`, the message the user just submitted after an idle gap. Does the new request start work that does not need that prior context?",
+		"criteria": {
+			"true": "A different task, feature, area, or question: carrying it out would never consult the prior work",
+			"false": "Continues, corrects, reviews, or asks about the prior work, or is a short follow-up that only makes sense with that context"
+		}
+	}
+}

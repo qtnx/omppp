@@ -11,6 +11,7 @@
 
 ### Changed
 
+- Idle topic-switch compaction now asks jev (TypeSafe System One signals) whether a new prompt is unrelated to the prior context and compacts before sending it; the previous smol-model relevance classifier is removed. New `compaction.topicSwitchThreshold` (default 0.7) sets the probability at which the stale context is compacted.
 - Duo's executor default is now `tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high`, and the matching `retry.fallbackChains` key moves with it. The previous `tnx/ds/deepseek-v4-flash` id no longer exists, so duo silently degraded the executor to Opus every session (and logged `retry.fallbackChains key references unknown model`); existing configs carrying the old chain key should rename it.
 
 ### Fixed

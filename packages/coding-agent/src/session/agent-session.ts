@@ -2250,6 +2250,7 @@ export class AgentSession {
 			promptGeneration: () => this.#promptGeneration,
 			sessionId: () => this.sessionId,
 			messages: () => this.messages,
+			turnSignals: () => this.#turnSignals,
 			buildCompactionLiveContext: async model =>
 				this.#transformProviderContext(
 					{
@@ -7886,6 +7887,12 @@ export class AgentSession {
 					(lastAssistant.stopReason === "error" || lastAssistant.stopReason === "length")
 				) {
 					await this.#maintenance.checkCompaction(lastAssistant, false, false, false);
+				}
+				// Idle topic switch: jev judges the new request against the prior
+				// context and compacts stale history before the prompt is sent.
+				if (message.role === "user" && !options?.skipCompactionCheck) {
+					await this.#maintenance.runTopicSwitchCompactionIfNeeded(expandedText);
+					if (this.#promptGeneration !== generation) return false;
 				}
 			}
 

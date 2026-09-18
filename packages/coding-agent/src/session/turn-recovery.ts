@@ -227,7 +227,7 @@ export interface TurnRecoveryHost {
 	 */
 	maybeAutoRedeemCodexReset(activeBlockUnblockAtMs?: number): Promise<boolean>;
 	runAutoCompaction(
-		reason: "requested" | "overflow" | "threshold" | "idle" | "incomplete",
+		reason: "requested" | "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch",
 		willRetry: boolean,
 		deferred?: boolean,
 		allowDefer?: boolean,
