@@ -15,6 +15,7 @@ import type {
 	MemoryBackendSearchItem,
 	MemoryBackendStartOptions,
 	MemoryBackendStatus,
+	MemoryPromptPreparation,
 } from "../memory-backend/types";
 import memoryConsolidationPrompt from "../prompts/system/memory-consolidation-system.md" with { type: "text" };
 import memoryExtractionPrompt from "../prompts/system/memory-extraction-system.md" with { type: "text" };
@@ -140,15 +141,34 @@ export const mnemopiBackend: MemoryBackend = {
 		const primary = state?.aliasOf;
 		const parts = [STATIC_INSTRUCTIONS];
 		// Subagents cannot run root auto-recall, so inherit the parent's latest
-		// snapshot in their static prompt. Root sessions receive volatile recall as
-		// a hidden conversation message from beforeAgentStartPrompt instead.
-		if (primary?.lastRecallSnippet) parts.push(primary.lastRecallSnippet);
+		// snapshot in their static prompt. A root session receives volatile recall as
+		// a hidden conversation message instead — but only when the prompt path staged
+		// and committed it. When the background auto-recall won the race (or the prompt
+		// path never ran), that snippet was never delivered as a message and belongs
+		// here, or the recall is dropped entirely.
+		const inherited = primary?.lastRecallSnippet;
+		const cached = inherited ?? (state?.recallDeliveredVolatile ? undefined : state?.lastRecallSnippet);
+		if (cached) parts.push(cached);
 		return truncateApproxTokens(parts.join("\n\n").trim(), settings.get("mnemopi.injectionTokenLimit"));
 	},
 
-	async beforeAgentStartPrompt(session, promptText): Promise<string | undefined> {
+	async beforeAgentStartPrompt(session, promptText): Promise<MemoryPromptPreparation | undefined> {
 		const state = getMnemopiSessionState(session);
-		return await state?.beforeAgentStartPrompt(promptText);
+		const preparation = await state?.beforeAgentStartPrompt(promptText);
+		if (!preparation) return undefined;
+		if (preparation.context) {
+			// Match the canonical memory block's budget while the recall is staged
+			// separately from its static instructions. Commit still caches the full snippet.
+			const rendered = [STATIC_INSTRUCTIONS, preparation.context].join("\n\n").trim();
+			preparation.context =
+				truncateApproxTokens(rendered, session.settings.get("mnemopi.injectionTokenLimit"))
+					.slice(STATIC_INSTRUCTIONS.length)
+					.trim() || undefined;
+		}
+		return {
+			context: preparation.context,
+			commit: () => getMnemopiSessionState(session) === state && preparation.commit(preparation.context),
+		};
 	},
 
 	async clear(agentDir, _cwd, session): Promise<void> {
@@ -580,20 +600,22 @@ async function resolveMnemopiProviderOptions(
 					});
 					return null;
 				}
-				const message = await retryTransientCompletion(() =>
-					completeSimple(
-						model,
-						{
-							...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
-							messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
-						},
-						{
-							apiKey: modelRegistry.resolver(model, sessionId),
-							sessionId,
-							maxTokens: opts?.maxTokens,
-							temperature: opts?.temperature,
-						},
-					),
+				const message = await retryTransientCompletion(
+					() =>
+						completeSimple(
+							model,
+							{
+								...(request.systemPrompt ? { systemPrompt: [request.systemPrompt] } : {}),
+								messages: [{ role: "user", content: request.prompt, timestamp: Date.now() }],
+							},
+							{
+								apiKey: modelRegistry.resolver(model, sessionId),
+								sessionId,
+								maxTokens: opts?.maxTokens,
+								temperature: opts?.temperature,
+							},
+						),
+					{ provider: model.provider },
 				);
 				return message.content
 					.filter(

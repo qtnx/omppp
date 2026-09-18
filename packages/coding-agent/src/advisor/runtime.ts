@@ -2,7 +2,6 @@ import { type AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Effort, ImageContent, Model, TextContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
-import { type CursorExecResolvedCarrier, kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
@@ -10,7 +9,11 @@ import consultationRequestTemplate from "../prompts/advisor/consultation-request
 import consultationRequestAsyncTemplate from "../prompts/advisor/consultation-request-async.md" with { type: "text" };
 import fableNormalMessageFramesNote from "../prompts/advisor/fable-normal-message-frames-note.md" with { type: "text" };
 import promptReviewTemplate from "../prompts/advisor/prompt-review.md" with { type: "text" };
-import { obfuscateToolArguments } from "../secrets/message-transform";
+import {
+	collectNativeReplayRegexSecretValues,
+	obfuscateNativeReplay,
+	obfuscateToolArguments,
+} from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import {
 	formatExecutionSourcePreview,
@@ -48,7 +51,7 @@ export interface AdvisorRuntimeHost {
 	/** Live primary transcript (use `agent.state.messages`). */
 	snapshotMessages(): AgentMessage[];
 	/** Surface one advice note to the primary (enqueues into the session YieldQueue). */
-	enqueueAdvice(note: string, severity?: "nit" | "concern" | "blocker"): void;
+	enqueueAdvice?(note: string, severity?: "nit" | "concern" | "blocker"): void;
 	/** Redact primary transcript bytes before they reach the advisor model. */
 	obfuscator?: SecretObfuscator;
 	/**
@@ -148,45 +151,23 @@ const ADVISOR_OUTPUT_ONLY_HAZARDS: readonly AdvisorOutputHazard[] = [
 ];
 
 /**
- * Replaces an advisor assistant turn that requested unavailable tools or generated
- * output-only destructive directives with a sanitized error before dispatch.
+ * Replaces an advisor assistant turn that generated output-only destructive
+ * directives with a sanitized error before dispatch.
  *
  * The agent loop records assistant turns before dispatching tools. Without this
- * pre-dispatch rewrite, an advisor hallucination can leave unrelated text in the
- * advisor transcript even though the action itself never executes.
+ * pre-dispatch rewrite, a hazardous advisor turn would stay in the advisor
+ * transcript as model-visible context. Calls to tools the advisor was not
+ * granted are not a quarantine matter: the loop answers them with a
+ * self-correcting `Tool <name> not found` result.
  */
-export function quarantineAdvisorUnsafeOutput(
-	message: AssistantMessage,
-	availableToolNames: ReadonlySet<string>,
-	sourceText = "",
-): string | undefined {
+export function quarantineAdvisorUnsafeOutput(message: AssistantMessage, sourceText = ""): string | undefined {
 	const reasons: string[] = [];
-	const unavailableToolNames = new Set<string>();
 	const generatedParts: string[] = [];
 	for (const block of message.content) {
-		// Cursor exec-channel native blocks (bash/read/grep/...) are stamped
-		// kCursorExecResolved: they already ran server-side through the
-		// advisor-scoped CursorExecHandlers bridge, which rejects ungranted
-		// tools in-band ("Tool not available") and lets the model self-correct.
-		// Quarantining them would discard the legitimate advise emitted in the
-		// same turn (issue #5900). The scoped bridge is the grant gate here, not
-		// this pre-dispatch check.
-		if (
-			block.type === "toolCall" &&
-			!availableToolNames.has(block.name) &&
-			(block as CursorExecResolvedCarrier)[kCursorExecResolved] !== true
-		) {
-			unavailableToolNames.add(block.name);
-		}
 		if (block.type === "toolCall" && block.name === "advise" && typeof block.arguments.note === "string") {
 			generatedParts.push(block.arguments.note);
 		}
 		if (block.type === "text") generatedParts.push(block.text);
-	}
-	if (unavailableToolNames.size > 0) {
-		const names = [...unavailableToolNames].sort();
-		const toolLabel = names.length === 1 ? "tool" : "tools";
-		reasons.push(`requested unavailable ${toolLabel} ${names.join(", ")}`);
 	}
 
 	const generatedText = generatedParts.join("\n");
@@ -893,45 +874,7 @@ export class AdvisorRuntime {
 		if (!md.trim()) return null;
 		if (!obfuscator?.hasSecrets()) return md;
 
-		let discoveredNewRegexSecretValue = false;
-		const addRegexValues = (text: string): void => {
-			for (const secretValue of obfuscator.collectRegexSecretValuesForObfuscation(text)) {
-				if (this.#advisorRegexSecretValues.has(secretValue)) continue;
-				this.#advisorRegexSecretValues.add(secretValue);
-				discoveredNewRegexSecretValue = true;
-			}
-		};
-		const addTextualContent = (content: TextualContent): void => {
-			if (typeof content === "string") {
-				addRegexValues(content);
-				return;
-			}
-			for (const block of content) {
-				if (block.type === "text") addRegexValues(block.text);
-			}
-		};
-		for (const message of delta) {
-			if (
-				message.role === "custom" &&
-				PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType) &&
-				typeof message.content === "string"
-			) {
-				addRegexValues(message.content);
-			}
-			if (message.role === "toolResult") addTextualContent(message.content as TextualContent);
-		}
-		addRegexValues(md);
-		scrubAdvisorHistory(obfuscator, this.agent.state.messages, this.#advisorRegexSecretValues);
-		if (discoveredNewRegexSecretValue) {
-			this.#pending = this.#pending.map(item =>
-				item.kind === "delta"
-					? {
-							...item,
-							text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(item.text, this.#advisorRegexSecretValues),
-						}
-					: item,
-			);
-		}
+		this.#collectAdvisorSecrets(obfuscator, delta, md);
 		md = formatSessionHistoryMarkdown(
 			delta.map(message =>
 				message.role === "custom" && PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType)
@@ -1071,6 +1014,66 @@ export class AdvisorRuntime {
 			.slice(rawStart, this.#lastCount)
 			.filter(message => message.role !== "custom" || message.customType !== "advisor");
 		return this.#createPendingDelta(text, turns, wip, rawMessages);
+	}
+
+	/**
+	 * Shared obfuscation side effects for the render path ({@link
+	 * #formatDeltaMarkdown}) and the drain's post-maintenance refresh: collect
+	 * regex secret values from primary-context custom messages, the rendered
+	 * markdown and the native advisor history before scrubbing that history, then
+	 * refresh the queued deltas' placeholder prefixes when new secrets appear.
+	 * Returns whether new secret values were discovered.
+	 */
+	#collectAdvisorSecrets(obfuscator: SecretObfuscator, delta: AgentMessage[], renderedMd: string): boolean {
+		let discoveredNewRegexSecretValue = false;
+		const addRegexValues = (text: string): void => {
+			for (const secretValue of obfuscator.collectRegexSecretValuesForObfuscation(text)) {
+				if (this.#advisorRegexSecretValues.has(secretValue)) continue;
+				this.#advisorRegexSecretValues.add(secretValue);
+				discoveredNewRegexSecretValue = true;
+			}
+		};
+		const addTextualContent = (content: TextualContent): void => {
+			if (typeof content === "string") {
+				addRegexValues(content);
+				return;
+			}
+			for (const block of content) {
+				if (block.type === "text") addRegexValues(block.text);
+			}
+		};
+		for (const message of delta) {
+			if (
+				message.role === "custom" &&
+				PRIMARY_CONTEXT_CUSTOM_TYPES.has(message.customType) &&
+				typeof message.content === "string"
+			) {
+				addRegexValues(message.content);
+			}
+			if (message.role === "toolResult") addTextualContent(message.content as TextualContent);
+		}
+		addRegexValues(renderedMd);
+		discoveredNewRegexSecretValue =
+			scrubAdvisorHistory(obfuscator, this.agent.state.messages, this.#advisorRegexSecretValues) ||
+			discoveredNewRegexSecretValue;
+		if (discoveredNewRegexSecretValue) {
+			this.#refreshPendingSecretPrefixes(obfuscator);
+		}
+		return discoveredNewRegexSecretValue;
+	}
+
+	/** Re-strip friendly placeholder prefixes on every queued delta after new
+	 *  secret values were discovered. Consult items hold no rendered text, so
+	 *  they pass through untouched. */
+	#refreshPendingSecretPrefixes(obfuscator: SecretObfuscator): void {
+		this.#pending = this.#pending.map(item =>
+			item.kind === "delta"
+				? {
+						...item,
+						text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(item.text, this.#advisorRegexSecretValues),
+					}
+				: item,
+		);
 	}
 
 	#renderDelta(messages?: AgentMessage[], wip = false): string | null {
@@ -1394,6 +1397,16 @@ export class AdvisorRuntime {
 						batchInvalidated = true;
 						break;
 					}
+					// Maintenance can commit unseen native plaintext or a snapshot
+					// predating concurrent collisions. Collect before scrubbing and
+					// refresh the queued deltas before another round can send history
+					// or the popped batch to compaction.
+					if (
+						batchObfuscator?.hasSecrets() &&
+						scrubAdvisorHistory(batchObfuscator, this.agent.state.messages, this.#advisorRegexSecretValues)
+					) {
+						this.#refreshPendingSecretPrefixes(batchObfuscator);
+					}
 					if (
 						shouldReprime ||
 						round === MAX_COALESCE_ROUNDS - 1 ||
@@ -1575,7 +1588,7 @@ export class AdvisorRuntime {
 					if (consult?.async) {
 						if (!this.#advisorCalledAdviseSince(messageSnapshot)) {
 							const answer = this.#extractConsultAnswer(messageSnapshot);
-							if (answer) this.host.enqueueAdvice(answer);
+							if (answer) this.host.enqueueAdvice?.(answer);
 						}
 					} else if (consult) {
 						const answer = this.#extractConsultAnswer(messageSnapshot);
@@ -2106,11 +2119,32 @@ function obfuscateAdvisorMessage(
 function scrubAdvisorHistory(
 	obfuscator: SecretObfuscator,
 	messages: AgentMessage[],
-	sharedRegexSecretValues: ReadonlySet<string>,
-): void {
+	sharedRegexSecretValues: Set<string>,
+): boolean {
+	const previousSize = sharedRegexSecretValues.size;
+	// Collect across the entire history first: redacting a search-only regex
+	// value would otherwise erase the evidence needed to scrub an earlier prefix.
+	for (const message of messages) {
+		if (
+			message.role === "user" ||
+			message.role === "developer" ||
+			message.role === "assistant" ||
+			message.role === "compactionSummary"
+		) {
+			collectNativeReplayRegexSecretValues(obfuscator, message, sharedRegexSecretValues);
+		}
+	}
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index]!;
-		const next = obfuscateAdvisorMessage(obfuscator, message, sharedRegexSecretValues);
+		const replay =
+			message.role === "user" ||
+			message.role === "developer" ||
+			message.role === "assistant" ||
+			message.role === "compactionSummary"
+				? obfuscateNativeReplay(obfuscator, message, sharedRegexSecretValues)
+				: message;
+		const next = obfuscateAdvisorMessage(obfuscator, replay, sharedRegexSecretValues);
 		if (next !== message) messages[index] = next;
 	}
+	return sharedRegexSecretValues.size !== previousSize;
 }

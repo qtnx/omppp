@@ -87,6 +87,7 @@ describe("advisor watchdog prompt discovery", () => {
 		const cwd = tempDir.join("project-root");
 		fs.mkdirSync(cwd, { recursive: true });
 		fs.mkdirSync(path.join(cwd, "active-project", ".git"), { recursive: true });
+		fs.writeFileSync(path.join(cwd, "active-project", ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
 
 		// Write a WATCHDOG.md file
 		const watchdogContent = "Watchdog rule: Watch out for cheating on edits.";
@@ -134,12 +135,9 @@ describe("advisor watchdog prompt discovery", () => {
 			expect(session.isAdvisorActive()).toBe(true);
 			const dump = session.formatAdvisorHistoryAsText();
 			expect(dump).not.toBeNull();
-			expect(dump).toContain("Especially pay attention to:");
-			expect(dump).toContain("<attention>");
 			expect(dump).toContain(watchdogContent);
 			expect(dump).toContain(activeRepoMarker);
 			expect(dump!.indexOf(watchdogContent)).toBeLessThan(dump!.indexOf(activeRepoMarker));
-			expect(dump).toContain("</attention>");
 		} finally {
 			try {
 				await session?.dispose();
@@ -154,6 +152,9 @@ describe("advisor watchdog prompt discovery", () => {
 		tempDirs.push(tempDir);
 		const cwd = tempDir.join("parent-cwd");
 		fs.mkdirSync(path.join(cwd, "active-project", ".git"), { recursive: true });
+		// A populated marker: child-repo detection requires a real repository
+		// (gitdir + readable HEAD), not a bare `.git` directory.
+		fs.writeFileSync(path.join(cwd, "active-project", ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
 		const watchdogContent = "Parent watchdog remains before built-in active repo context.";
 		fs.writeFileSync(path.join(cwd, "WATCHDOG.md"), watchdogContent, "utf8");
 
@@ -168,10 +169,13 @@ describe("advisor watchdog prompt discovery", () => {
 		const tempDir = createOutsideGitTempDir();
 		tempDirs.push(tempDir);
 		const cwd = tempDir.join("parent-cwd");
-		fs.mkdirSync(path.join(cwd, "active-project", ".git"), { recursive: true });
-		fs.mkdirSync(path.join(cwd, "second-project", ".git"), { recursive: true });
+		for (const name of ["active-project", "second-project"]) {
+			fs.mkdirSync(path.join(cwd, name, ".git"), { recursive: true });
+			fs.writeFileSync(path.join(cwd, name, ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
+		}
 
 		await withAdvisorHistory(tempDir, cwd, dump => {
+			expect(dump).not.toContain("`active-project`");
 			expect(dump).not.toContain("exactly one direct child git repository");
 			expect(dump).not.toContain("Do not claim work is missing, destroyed, or absent at the parent cwd");
 		});

@@ -36,7 +36,7 @@ import {
 } from "@oh-my-pi/pi-ai/auth-broker";
 import { DEFAULT_AUTH_GATEWAY_BIND, startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/models";
-import { APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
+import { APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { setTransports as setLoggerTransports } from "@oh-my-pi/pi-utils/logger";
 import { ModelRegistry } from "../config/model-registry";
@@ -248,6 +248,59 @@ type AuthGatewayCredentialSource =
 	| { kind: "broker"; url: string; storage: AuthStorage; credentialCount: number }
 	| { kind: "local"; dbPath: string; storage: AuthStorage; credentialCount: number };
 
+/**
+ * How often a long-lived `serve` rebuilds its catalog from the registry so
+ * models discovered after boot become routable without a restart. `refresh()`
+ * reuses the `models.db` cache and only hits the network when a provider's
+ * cached row is stale, so a short interval stays cheap.
+ */
+const CATALOG_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * How often a long-lived `serve` polls the broker-backed store for credential
+ * changes made by another process (a `login`/`logout` on the host). Kept below
+ * {@link RemoteAuthCredentialStore}'s background idle window so the poll's
+ * activity ping keeps the snapshot stream warm and new generations arrive
+ * promptly. When the poll reports a change, the served catalog is rebuilt so a
+ * newly-credentialed provider becomes routable and a removed one stops being
+ * advertised.
+ */
+const CREDENTIAL_SYNC_INTERVAL_MS = 10 * 1000;
+
+/**
+ * Serialize catalog rebuilds so `registry.refresh()` passes never overlap,
+ * while guaranteeing a forced rebuild requested mid-flight runs a forced pass
+ * afterward. Without the follow-up pass a credential change arriving during a
+ * weaker cached rebuild would piggyback on it and miss an account-scoped
+ * catalog change. Non-forced requests during an in-flight rebuild simply
+ * coalesce onto it. Returns `rebuild(force?)`; its promise resolves once the
+ * catalog reflects that call's requirement.
+ */
+export function createSerializedRebuilder(run: (force: boolean) => Promise<void>): (force?: boolean) => Promise<void> {
+	let inFlight: Promise<void> | null = null;
+	let forcedQueued = false;
+	const rebuild = (force = false): Promise<void> => {
+		if (inFlight) {
+			if (force) forcedQueued = true;
+			return inFlight;
+		}
+		inFlight = (async () => {
+			try {
+				await run(force);
+				while (forcedQueued) {
+					forcedQueued = false;
+					await run(true);
+				}
+			} finally {
+				inFlight = null;
+				forcedQueued = false;
+			}
+		})();
+		return inFlight;
+	};
+	return rebuild;
+}
+
 async function createBrokerCredentialSource(
 	brokerConfig: AuthBrokerClientConfig,
 ): Promise<AuthGatewayCredentialSource> {
@@ -308,6 +361,13 @@ interface GatewayModelIndex {
 }
 interface BuildGatewayModelIndexOptions {
 	includeAliases?: boolean;
+	/**
+	 * Discovery strategy for the registry pass that precedes indexing. `serve`
+	 * rebuilds pass `online-if-uncached` periodically and `online` when
+	 * credentials changed, so an account added to an already-cached provider is
+	 * not missed for a cache TTL.
+	 */
+	refresh?: "online" | "online-if-uncached";
 }
 
 function qualifiedModelId(model: Model<Api>): string {
@@ -383,15 +443,16 @@ function loadAuthGatewayModelAliases(): Record<string, string> {
 	return result.value?.authGateway?.modelAliases ?? {};
 }
 
-function buildGatewayModelIndex(
+async function buildGatewayModelIndex(
 	source: AuthGatewayCredentialSource,
 	options: BuildGatewayModelIndexOptions = {},
-): GatewayModelIndex {
+): Promise<GatewayModelIndex> {
 	const storage = source.storage;
 	const registry =
 		source.kind === "broker"
 			? new ModelRegistry(storage, undefined, { ignoreUserConfig: true })
 			: new ModelRegistry(storage);
+	if (options.refresh) await registry.refresh(options.refresh);
 	const allModelById = new Map<string, Model<Api>>();
 	for (const model of registry.getAll()) {
 		for (const entry of modelIdEntries(model)) {
@@ -485,7 +546,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const gatewayToken = flags.noAuth ? null : await ensureToken();
 	const source = await resolveGatewayCredentialSource(flags);
 	const storage = source.storage;
-	const modelIndex = buildGatewayModelIndex(source);
+	let modelIndex = await buildGatewayModelIndex(source);
 	if (modelIndex.resolveById.size === 0) {
 		storage.close();
 		throw new Error(
@@ -509,12 +570,56 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	}
 	writeServeOutput(`credential source: ${describeSource(source)}\n`);
 
+	// `serve` is long-lived: rebuild the catalog periodically so models
+	// discovered after boot (for providers we already hold credentials for)
+	// become routable without a restart. A failed rebuild keeps serving the
+	// previous catalog. `unref()` so the timer never keeps the process alive on
+	// its own. Credential-triggered rebuilds force `online` discovery: an account
+	// added to or removed from an already-authenticated provider (e.g. Codex,
+	// whose discovery unions per-account catalogs) leaves that provider's model
+	// cache fresh, so the default `online-if-uncached` pass would skip the fetch
+	// and miss the change for up to a cache TTL. Periodic rebuilds stay cached.
+	const rebuildCatalog = createSerializedRebuilder(async force => {
+		modelIndex = await buildGatewayModelIndex(source, {
+			refresh: force ? "online" : "online-if-uncached",
+		});
+	});
+	const catalogRefresh = setInterval(() => {
+		void rebuildCatalog().catch(error => {
+			logger.warn("auth-gateway catalog refresh failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+	}, CATALOG_REFRESH_INTERVAL_MS);
+	catalogRefresh.unref();
+
+	// Poll the broker-backed store for credential changes made by another
+	// process (host `login`/`logout`). `pollExternalChanges()` reloads the
+	// storage's credential view so selection stops 401ing (or stops using a
+	// removed credential); the forced rebuild then refetches account-scoped
+	// catalogs and updates `/v1/models` and `resolveModel`. `unref()` for the
+	// same reason as above.
+	const credentialSync = setInterval(() => {
+		void (async () => {
+			try {
+				if (await storage.pollExternalChanges()) await rebuildCatalog(true);
+			} catch (error) {
+				logger.warn("auth-gateway credential sync failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		})();
+	}, CREDENTIAL_SYNC_INTERVAL_MS);
+	credentialSync.unref();
+
 	const stopped = Promise.withResolvers<void>();
 	let shutdownStarted = false;
 	const stop = async (signal: NodeJS.Signals): Promise<void> => {
 		if (shutdownStarted) return;
 		shutdownStarted = true;
 		await writeServeOutput(`\nReceived ${signal}, shutting down...\n`);
+		clearInterval(catalogRefresh);
+		clearInterval(credentialSync);
 		let closeError: unknown;
 		try {
 			await handle.close();
@@ -841,7 +946,7 @@ async function appendResolvedLocalCredentialResults(
 	if (source.kind !== "local") return results;
 	const storage = source.storage;
 	const providerNames = new Set(
-		buildGatewayModelIndex(source, { includeAliases: false }).listModels.map(model => model.provider),
+		(await buildGatewayModelIndex(source, { includeAliases: false })).listModels.map(model => model.provider),
 	);
 	const extraResults: CredentialHealthResult[] = [];
 	for (const provider of [...providerNames].sort()) {

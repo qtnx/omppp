@@ -341,6 +341,11 @@ export class SessionStatsTracker {
 		return this.#compactionEpoch;
 	}
 
+	/** Prompt messages still in flight for the active turn, if a snapshot is held. */
+	get pendingInFlightMessages(): readonly AgentMessage[] {
+		return this.#pendingContextSnapshot?.pendingMessages ?? [];
+	}
+
 	/** Non-message token count captured for the active provider request. */
 	get pendingNonMessageTokens(): number | undefined {
 		return this.#pendingContextSnapshot?.nonMessageTokens;
@@ -415,6 +420,7 @@ export class SessionStatsTracker {
 		this.#host.modelRegistry.authStorage.ingestUsageHeaders(provider, response.headers, {
 			sessionId: this.#host.agent.sessionId,
 			baseUrl: this.#host.modelRegistry.getProviderBaseUrl?.(provider),
+			responseStatus: response.status,
 		});
 	}
 }

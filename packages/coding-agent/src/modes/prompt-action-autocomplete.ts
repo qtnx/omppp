@@ -18,6 +18,12 @@ import {
 	type InternalUrlCallerContext,
 	isInternalUrlPrefix,
 } from "./internal-url-autocomplete";
+import {
+	applyModelMentionCompletion,
+	getModelMentionSuggestions,
+	isModelMentionPrefix,
+	type ModelMentionCandidateSource,
+} from "./model-mention-autocomplete";
 
 interface PromptActionDefinition {
 	id: string;
@@ -45,6 +51,8 @@ interface PromptActionAutocompleteOptions {
 	commandUsage?: (name: string) => number;
 	/** Read the receiving session at lookup time, following focus and session replacement. */
 	internalUrlCaller?: () => InternalUrlCallerContext;
+	/** Session-scoped models available for `^` mentions. */
+	modelMentions?: ModelMentionCandidateSource;
 	keybindings: KeybindingsManager;
 	workspaceRoots?: readonly WorkspaceAutocompleteRoot[];
 	copyCurrentLine: () => void;
@@ -193,6 +201,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
 	#internalUrlCaller: () => InternalUrlCallerContext;
+	#modelMentions: ModelMentionCandidateSource | undefined;
 
 	constructor(
 		commands: SlashCommand[],
@@ -202,10 +211,12 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		workspaceRoots?: readonly WorkspaceAutocompleteRoot[],
 		commandUsage?: (name: string) => number,
 		internalUrlCaller?: () => InternalUrlCallerContext,
+		modelMentions?: ModelMentionCandidateSource,
 	) {
 		this.#commands = commands;
 		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, { workspaceRoots, commandUsage });
 		this.#internalUrlCaller = internalUrlCaller ?? (() => ({ cwd: basePath }));
+		this.#modelMentions = modelMentions;
 		this.#actions = actions;
 		this.#dollarMentions = dollarMentions;
 	}
@@ -231,6 +242,8 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			if (command && (!("allowArgs" in command) || command.allowArgs !== false)) {
 				const argumentSuggestions = await this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, signal);
 				if (argumentSuggestions) return argumentSuggestions;
+				const modelMentionSuggestions = getModelMentionSuggestions(textBeforeCursor, this.#modelMentions);
+				if (modelMentionSuggestions) return modelMentionSuggestions;
 				// No slash-argument completion for this input: preserve numeric
 				// GitHub references and internal URLs while keeping prompt-action
 				// tokens such as `#copy` literal.
@@ -272,6 +285,9 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 				return { items, prefix: promptActionPrefix };
 			}
 		}
+
+		const modelMentionSuggestions = getModelMentionSuggestions(textBeforeCursor, this.#modelMentions);
+		if (modelMentionSuggestions) return modelMentionSuggestions;
 
 		const urlSuggestions = await getInternalUrlSuggestions(
 			textBeforeCursor,
@@ -323,6 +339,10 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 				cursorCol: beforePrefix.length,
 				onApplied: () => item.execute(prefix),
 			};
+		}
+
+		if (isModelMentionPrefix(prefix)) {
+			return applyModelMentionCompletion(lines, cursorLine, cursorCol, item, prefix);
 		}
 
 		if (isInternalUrlPrefix(prefix)) {
@@ -424,5 +444,6 @@ export function createPromptActionAutocompleteProvider(
 		options.workspaceRoots,
 		options.commandUsage,
 		options.internalUrlCaller,
+		options.modelMentions,
 	);
 }

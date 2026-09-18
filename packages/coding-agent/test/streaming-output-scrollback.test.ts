@@ -636,7 +636,11 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 
 			const midStreamRows = plainScrollBuffer(term);
 			expect(midStreamRows.some(row => row.includes("Thinking paragraph 0"))).toBe(true);
-			expect(midStreamRows.some(row => row.includes("Answer paragraph 0 "))).toBe(false);
+			// Finished answer text retires mid-turn too (upstream #11276): the block
+			// publishes closed children plus the streaming child's frozen Markdown
+			// boundary, so a long reply no longer clips its own beginning while the
+			// turn is still streaming.
+			expect(midStreamRows.some(row => row.includes("Answer paragraph 0 "))).toBe(true);
 
 			assistant.updateContent(makeAssistantMessage(fullContent), { transient: false });
 			assistant.markTranscriptBlockFinalized();
