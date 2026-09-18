@@ -1,4 +1,4 @@
-import { $env } from "@oh-my-pi/pi-utils";
+import { $env, logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import handoffQuestions from "./questions/handoff.json";
 import learningQuestions from "./questions/learning.json";
@@ -113,6 +113,7 @@ export class TurnSignalService {
 			inputTokens: response.usage.input_tokens,
 		};
 		this.#latest = signals;
+		logger.debug("turn signals", { ...signals, wip: context.wip });
 		return signals;
 	}
 
