@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Duo's executor default is now `tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high`, and the matching `retry.fallbackChains` key moves with it. The previous `tnx/ds/deepseek-v4-flash` id no longer exists, so duo silently degraded the executor to Opus every session (and logged `retry.fallbackChains key references unknown model`); existing configs carrying the old chain key should rename it.
+
+### Fixed
+
+- Browser `tab.act(goal)` is advertised whenever a System One endpoint is configured, not only when a local `TYPESAFE_API_KEY` exists — the gate was lost when the browser prelude moved into its own module.
+
 ### Added
 
 - TypeSafe turn signals are on by default: each primary turn's transcript is classified by TypeSafe System One into a work phase (planning, implementing, verifying, debugging, blocked, reporting) plus needs-review, stuck, done-without-evidence, and parallel-slices scores, and the classification adjusts the advisor, duo phase, takeover, handoff, learning, and delegation-reminder behavior. Tunable under `signals.*`; `signals.baseUrl: ""` (or `signals.enabled: false`) opts out, and an unreachable endpoint costs three failed requests per session before signals go quiet.
