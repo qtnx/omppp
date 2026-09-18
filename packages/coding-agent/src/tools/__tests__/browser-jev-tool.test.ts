@@ -34,6 +34,7 @@ function report(overrides: Partial<JevRunReport> = {}): JevRunReport {
 		elapsedMs: 4200,
 		pageText: "Two hotels found",
 		rescues: 0,
+		shots: [],
 		...overrides,
 	};
 }
@@ -105,5 +106,43 @@ describe("jevApiKey", () => {
 		expect(jevApiKey()).toBeUndefined();
 		Bun.env.TYPESAFE_API_KEY = "apikey_test";
 		expect(jevApiKey()).toBe("apikey_test");
+	});
+});
+
+describe("report review and screenshot sections", () => {
+	test("lists saved frames and the review findings with their evidence", () => {
+		const text = renderJevReport(
+			"g",
+			report({
+				shots: ["/tmp/jev-start.png", "/tmp/jev-final.png"],
+				review: {
+					summary: "Two clicks reached the results page.",
+					findings: [
+						{
+							severity: "major",
+							area: "accessibility",
+							finding: "The search field has no visible label.",
+							evidence: 'control role=searchbox label=""',
+						},
+					],
+				},
+			}),
+		);
+		expect(text).toContain("screenshots (view them when the run is a visual or responsive claim):");
+		expect(text).toContain("- /tmp/jev-start.png");
+		expect(text).toContain("review:");
+		expect(text).toContain("Two clicks reached the results page.");
+		expect(text).toContain(
+			'- [major/accessibility] The search field has no visible label. — evidence: control role=searchbox label=""',
+		);
+	});
+
+	test("says when the review could not run, and says so plainly when it found nothing", () => {
+		expect(
+			renderJevReport("g", report({ review: { summary: "", findings: [], unavailable: "provider rate limited" } })),
+		).toContain("- unavailable: provider rate limited");
+		expect(renderJevReport("g", report({ review: { summary: "Clean run.", findings: [] } }))).toContain(
+			"- no findings",
+		);
 	});
 });

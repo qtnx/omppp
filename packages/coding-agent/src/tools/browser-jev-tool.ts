@@ -8,6 +8,13 @@ import { acquireTab, releaseTab, runInTab, type TabSession } from "./browser/tab
 import { clampTimeout } from "./tool-timeouts";
 import { ToolAbortError, ToolError } from "./tool-errors";
 
+const VIEWPORTS: Record<string, { width: number; height: number; isMobile: boolean; hasTouch: boolean }> = {
+	desktop: { width: 1280, height: 720, isMobile: false, hasTouch: false },
+	tablet: { width: 834, height: 1112, isMobile: true, hasTouch: true },
+	mobile: { width: 390, height: 844, isMobile: true, hasTouch: true },
+	"mobile-landscape": { width: 844, height: 390, isMobile: true, hasTouch: true },
+};
+
 /** Dedicated tab name so a Jev run never fights the `main` or `browser_use` tab. */
 const JEV_TAB = "jev";
 const PAGE_TEXT_CAP = 4000;
@@ -19,6 +26,10 @@ const browserJevSchema = type({
 	),
 	"url?": type("string").describe("Navigate the Jev tab here first; omit to continue where the last call ended"),
 	"max_steps?": type("number").describe("Action ceiling before the run stops (default 30)"),
+	"viewport?": type("'desktop' | 'tablet' | 'mobile' | 'mobile-landscape'").describe(
+		"Viewport preset for this run: desktop 1280x720, tablet 834x1112, mobile 390x844, mobile-landscape 844x390. Mobile and tablet presets enable touch-capability flags; use them to test responsive behaviour.",
+	),
+	"review?": type("boolean").describe("Run the UX/accessibility review of the finished flow (default true)"),
 	"profile?": type("string").describe(
 		"Named isolated browser session (own cookies/login) — use one name per account under test",
 	),
@@ -52,11 +63,21 @@ export interface JevRunReport {
 	pageText: string;
 	rescues: number;
 	reason?: string;
+	shots: string[];
+	review?: {
+		summary: string;
+		findings: Array<{ severity: string; area: string; finding: string; evidence: string }>;
+		unavailable?: string;
+	};
 }
 
 export interface BrowserJevDetails {
 	/** Rescue turns this run spent on a stuck page. */
 	rescues?: number;
+	/** Saved screenshot paths in capture order. */
+	shots?: string[];
+	/** UX/accessibility review of the run, when one was produced. */
+	review?: JevRunReport["review"];
 	/** Named isolated browser session this run drove, when one was requested. */
 	profile?: string;
 	status?: JevRunReport["status"];
@@ -73,13 +94,21 @@ export interface BrowserJevDetails {
  * page text — one round trip instead of one per action.
  */
 export function jevRunCode(params: BrowserJevParams): string {
-	const actOptions = params.max_steps === undefined ? "{}" : JSON.stringify({ maxSteps: params.max_steps });
+	const actOptions = JSON.stringify({
+		...(params.max_steps === undefined ? {} : { maxSteps: params.max_steps }),
+		...(params.review === undefined ? {} : { review: params.review }),
+	});
+	const preset = params.viewport === undefined ? undefined : VIEWPORTS[params.viewport];
+	const viewport =
+		preset === undefined
+			? ""
+			: `await page.setViewport({ width: ${preset.width}, height: ${preset.height}, isMobile: ${preset.isMobile}, hasTouch: ${preset.hasTouch} });\nawait Bun.sleep(300);\n`;
 	const navigate =
 		params.url === undefined || params.url.length === 0
 			? ""
 			: `await tab.goto(${JSON.stringify(params.url)}, { waitUntil: "domcontentloaded" });\n`;
 	return (
-		`${navigate}const result = await tab.act(${JSON.stringify(params.goal)}, ${actOptions});\n` +
+		`${viewport}${navigate}const result = await tab.act(${JSON.stringify(params.goal)}, ${actOptions});\n` +
 		`let pageText = "";\n` +
 		`try { pageText = await tab.extract("text"); } catch { pageText = ""; }\n` +
 		`return { ...result, pageText: pageText.slice(0, ${PAGE_TEXT_CAP}) };`
@@ -123,6 +152,22 @@ export function renderJevReport(goal: string, report: JevRunReport): string {
 		);
 	}
 	if (report.pageText.length > 0) lines.push("", "page text:", report.pageText);
+	if (report.shots.length > 0) {
+		lines.push("", "screenshots (view them when the run is a visual or responsive claim):");
+		for (const shot of report.shots) lines.push(`- ${shot}`);
+	}
+	if (report.review) {
+		lines.push("", "review:");
+		if (report.review.unavailable) {
+			lines.push(`- unavailable: ${report.review.unavailable}`);
+		} else {
+			if (report.review.summary) lines.push(report.review.summary);
+			for (const finding of report.review.findings) {
+				lines.push(`- [${finding.severity}/${finding.area}] ${finding.finding} — evidence: ${finding.evidence}`);
+			}
+			if (report.review.findings.length === 0) lines.push("- no findings");
+		}
+	}
 	return lines.join("\n");
 }
 
@@ -206,6 +251,8 @@ export class BrowserJevTool implements AgentTool<typeof browserJevSchema, Browse
 			details.title = report.title;
 			details.elapsedMs = report.elapsedMs;
 			details.rescues = report.rescues;
+			details.shots = report.shots;
+			details.review = report.review;
 			return {
 				content: [{ type: "text", text: renderJevReport(params.goal, report) }],
 				details,

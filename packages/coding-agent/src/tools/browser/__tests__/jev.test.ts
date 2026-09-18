@@ -61,6 +61,9 @@ describe("validateChoice", () => {
 	});
 });
 
+/** Behavior tests assert the action log, so shots and the review turn stay off. */
+const QUIET = { apiKey: "test", screenshots: false, review: false } as const;
+
 interface Answer {
 	choice: string;
 	probabilities: Record<string, number>;
@@ -96,6 +99,10 @@ function targetIds(body: Record<string, unknown>, head: string): string[] {
 function makeDriver(log: string[], overrides: Partial<JevDriver> & Pick<JevDriver, "observe">): JevDriver {
 	return {
 		pageText: async () => "Fixture page",
+		screenshot: async label => {
+			log.push(`shot:${label}`);
+			return `/tmp/${label}.png`;
+		},
 		click: async id => void log.push(`click:${id}`),
 		fill: async (id, text) => void log.push(`fill:${id}:${text}`),
 		hover: async id => void log.push(`hover:${id}`),
@@ -145,7 +152,7 @@ describe("runJevAct", () => {
 			body => answerAll(body, "CLICK", { click_target: "2" }),
 			body => answerAll(body, "DONE"),
 		]);
-		const result = await runJevAct(driver, "Search for cats", { apiKey: "test", fetch: fetchImpl });
+		const result = await runJevAct(driver, "Search for cats", { ...QUIET, fetch: fetchImpl });
 		expect(log).toEqual(["text:Search", "fill:1:cats", "click:2"]);
 		expect(result.status).toBe("done");
 		expect(result.steps.map(s => [s.operation, s.target?.id, s.text, s.pageChanged])).toEqual([
@@ -168,7 +175,7 @@ describe("runJevAct", () => {
 			body => answerAll(body, "PRESS_ENTER", { press_enter_target: "1" }),
 			body => answerAll(body, "DONE"),
 		]);
-		const result = await runJevAct(driver, "Pick economy then submit", { apiKey: "test", fetch: fetchImpl });
+		const result = await runJevAct(driver, "Pick economy then submit", { ...QUIET, fetch: fetchImpl });
 		expect(log).toEqual(["click:9", "hover:2", "enter:1"]);
 		expect(result.steps.map(s => [s.operation, s.target?.id])).toEqual([
 			["SELECT", 9],
@@ -182,7 +189,7 @@ describe("runJevAct", () => {
 		const elements = [SEARCH, SUBMIT, { id: 4, role: "listitem", name: "Row", states: [] }];
 		const driver = makeDriver(log, { observe: async () => observation(elements) });
 		const dragged = await runJevAct(driver, "Reorder the row", {
-			apiKey: "test",
+			...QUIET,
 			fetch: fakeFetch([
 				body => answerAll(body, "DRAG", { drag_from_target: "3", drag_to_target: "1" }),
 				body => answerAll(body, "DONE"),
@@ -193,7 +200,7 @@ describe("runJevAct", () => {
 
 		await expect(
 			runJevAct(makeDriver([], { observe: async () => observation(elements) }), "Reorder the row", {
-				apiKey: "test",
+				...QUIET,
 				fetch: fakeFetch([body => answerAll(body, "DRAG", { drag_from_target: "2", drag_to_target: "2" })]),
 			}),
 		).rejects.toThrow(/same element/);
@@ -205,7 +212,7 @@ describe("runJevAct", () => {
 		const clickGo = (body: Record<string, unknown>): Record<string, unknown> =>
 			answerAll(body, "CLICK", { click_target: "1" });
 		const result = await runJevAct(driver, "Open the thing", {
-			apiKey: "test",
+			...QUIET,
 			fetch: fakeFetch([clickGo, clickGo, clickGo, clickGo]),
 		});
 		expect(result.status).toBe("blocked");
@@ -235,11 +242,11 @@ describe("runJevAct", () => {
 			expect(seen[0]?.url).toBe("http://codemc:8791/v1/systemone");
 			expect(seen[0]?.headers.Authorization).toBeUndefined();
 
-			await runJevAct(driver, "Open the thing", { apiKey: "test", fetch: capture });
+			await runJevAct(driver, "Open the thing", { ...QUIET, fetch: capture });
 			expect(seen[1]?.headers.Authorization).toBe("Bearer test");
 
 			Bun.env.TYPESAFE_SYSTEMONE_URL = "https://api.typesafe.ai/v1/systemone";
-			await runJevAct(driver, "Open the thing", { apiKey: "test", fetch: capture });
+			await runJevAct(driver, "Open the thing", { ...QUIET, fetch: capture });
 			expect(seen[2]?.url).toBe("https://api.typesafe.ai/v1/systemone");
 		} finally {
 			if (previousKey === undefined) delete Bun.env.TYPESAFE_API_KEY;
@@ -258,7 +265,7 @@ describe("runJevAct", () => {
 			helper: async () => ({ text: null }),
 		});
 		const fetchImpl = fakeFetch([body => answerAll(body, "TYPE_TEXT", { type_text_target: "1" })]);
-		await expect(runJevAct(driver, "Fill the form", { apiKey: "test", fetch: fetchImpl })).rejects.toThrow(
+		await expect(runJevAct(driver, "Fill the form", { ...QUIET, fetch: fetchImpl })).rejects.toThrow(
 			/supplies no value for field "Search"/,
 		);
 	});
@@ -293,7 +300,7 @@ describe("runJevAct rescue turn", () => {
 			},
 		});
 		const result = await runJevAct(driver, "Reach the page behind the dialog", {
-			apiKey: "test",
+			...QUIET,
 			fetch: fakeFetch([body => answerAll(body, "BLOCKED"), body => answerAll(body, "DONE")]),
 		});
 		expect(log).toEqual(["rescue:policy_reported_blocked", "click:11"]);
@@ -316,7 +323,7 @@ describe("runJevAct rescue turn", () => {
 			}),
 		});
 		const result = await runJevAct(driver, "Complete checkout", {
-			apiKey: "test",
+			...QUIET,
 			fetch: fakeFetch([body => answerAll(body, "BLOCKED")]),
 		});
 		expect(result.status).toBe("blocked");
@@ -338,7 +345,7 @@ describe("runJevAct rescue turn", () => {
 			}),
 		});
 		const result = await runJevAct(driver, "Do the thing", {
-			apiKey: "test",
+			...QUIET,
 			fetch: fakeFetch([body => answerAll(body, "BLOCKED")]),
 		});
 		expect(log).toEqual([]);
@@ -358,11 +365,64 @@ describe("runJevAct rescue turn", () => {
 		const clickGo = (body: Record<string, unknown>): Record<string, unknown> =>
 			answerAll(body, "CLICK", { click_target: "1" });
 		const result = await runJevAct(driver, "Open the thing", {
-			apiKey: "test",
+			...QUIET,
 			fetch: fakeFetch([clickGo, clickGo, clickGo, clickGo]),
 		});
 		expect(log).toEqual(["click:2", "click:2", "click:2", "rescue:no_progress"]);
 		expect(result.status).toBe("blocked");
 		expect(result.reason).toBe("the page never reacts");
+	});
+});
+
+describe("runJevAct reporting", () => {
+	test("records the opening and final frames and attaches the review turn", async () => {
+		const log: string[] = [];
+		const driver = makeDriver(log, {
+			observe: async () => observation([SUBMIT]),
+			helper: async (_payload, rules) => {
+				log.push(rules.startsWith("Judge the browser flow") ? "review" : "other-helper");
+				return {
+					summary: "One click reached the goal.",
+					findings: [
+						{
+							severity: "major",
+							area: "accessibility",
+							finding: "The only control is named Go.",
+							evidence: 'label "Go"',
+						},
+						{ severity: "minor", area: "ux", finding: "no progress feedback", evidence: "0 step feedback" },
+						// Malformed rows are dropped, not surfaced.
+						{ severity: "minor" },
+					],
+				};
+			},
+		});
+		const result = await runJevAct(driver, "Open the thing", {
+			apiKey: "test",
+			fetch: fakeFetch([body => answerAll(body, "DONE")]),
+		});
+		// The final frame is captured before the review turn runs, so the screenshot
+		// shows the state the reviewer is judging.
+		expect(log).toEqual(["shot:start", "shot:final", "review"]);
+		expect(result.shots).toEqual(["/tmp/start.png", "/tmp/final.png"]);
+		expect(result.review?.summary).toBe("One click reached the goal.");
+		expect(result.review?.findings).toHaveLength(2);
+	});
+
+	test("a failing review turn degrades to an unavailable note instead of failing the run", async () => {
+		const driver = makeDriver([], {
+			observe: async () => observation([SUBMIT]),
+			helper: async () => {
+				throw new Error("provider rate limited");
+			},
+		});
+		const result = await runJevAct(driver, "Open the thing", {
+			apiKey: "test",
+			screenshots: false,
+			fetch: fakeFetch([body => answerAll(body, "DONE")]),
+		});
+		expect(result.status).toBe("done");
+		expect(result.review?.unavailable).toContain("provider rate limited");
+		expect(result.review?.findings).toEqual([]);
 	});
 });

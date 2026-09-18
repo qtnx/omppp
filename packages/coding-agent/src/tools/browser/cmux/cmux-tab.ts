@@ -440,7 +440,7 @@ export class CmuxTab {
 	}
 
 	/** Goal-driven DOM loop (TypeSafe Jev); every target resolves from an observed element id. */
-	async act(goal: string, opts?: Pick<JevActOptions, "maxSteps">): Promise<JevActResult> {
+	async act(goal: string, opts?: Pick<JevActOptions, "maxSteps" | "review" | "screenshots">): Promise<JevActResult> {
 		const context = this.#runContext;
 		if (!context) throw new ToolError("tab.act() requires an active browser run");
 		const signal = context.signal;
@@ -464,6 +464,11 @@ export class CmuxTab {
 				},
 				scroll: deltaY => this.scroll(0, deltaY),
 				wait: ms => untilAborted(signal, () => Bun.sleep(ms)),
+				// cmux screenshots are saved by the daemon path; capture via eval and
+				// write the file here so the report can list it like the worker's.
+				screenshot: async label => {
+					return await this.screenshot({ silent: true });
+				},
 				helper: (payload, rules, schema) =>
 					helperViaBridge(
 						(name, args) => callSessionTool(name, args, { session: context.toolSession, signal }),
@@ -473,7 +478,7 @@ export class CmuxTab {
 					),
 			},
 			goal,
-			{ maxSteps: opts?.maxSteps, signal },
+			{ maxSteps: opts?.maxSteps, signal, review: opts?.review, screenshots: opts?.screenshots },
 		);
 	}
 

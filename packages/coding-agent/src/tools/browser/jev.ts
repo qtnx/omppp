@@ -17,6 +17,7 @@ import { ToolError, throwIfAborted } from "../tool-errors";
 import nextActionRules from "../../prompts/tools/browser-jev/next-action.md" with { type: "text" };
 import targetRules from "../../prompts/tools/browser-jev/target.md" with { type: "text" };
 import rescueRules from "../../prompts/tools/browser-jev/rescue.md" with { type: "text" };
+import reviewRules from "../../prompts/tools/browser-jev/review.md" with { type: "text" };
 import textValueRules from "../../prompts/tools/browser-jev/text-value.md" with { type: "text" };
 import type { Observation, ObservationEntry } from "./tab-protocol";
 
@@ -133,6 +134,24 @@ export interface JevActResult {
 	rescues: number;
 	/** Why the run stopped, when a rescue turn named the remaining obstacle. */
 	reason?: string;
+	/** Saved screenshot paths, in capture order (start, each rescue, final state). */
+	shots: string[];
+	/** UX/accessibility review of the run, when the helper model produced one. */
+	review?: JevReview;
+}
+
+export interface JevReviewFinding {
+	severity: "blocker" | "major" | "minor";
+	area: "accessibility" | "ux" | "responsive" | "content";
+	finding: string;
+	evidence: string;
+}
+
+export interface JevReview {
+	summary: string;
+	findings: JevReviewFinding[];
+	/** Set when the review could not be produced (no helper, provider failure). */
+	unavailable?: string;
 }
 
 export interface JevFieldContext {
@@ -160,6 +179,8 @@ export interface JevDriver {
 	drag(fromId: number, toId: number): Promise<void>;
 	scroll(deltaY: number): Promise<void>;
 	wait(ms: number): Promise<void>;
+	/** Capture the current viewport to a file and return its path. */
+	screenshot(label: string): Promise<string>;
 	/**
 	 * Ask the session's helper model for one structured answer (field value,
 	 * rescue plan). `rules` is the system prompt, `schema` the required JSON
@@ -186,6 +207,10 @@ interface JevRescuePlan {
 }
 
 export interface JevActOptions {
+	/** Capture screenshots at the start, at each rescue, and at the end. */
+	screenshots?: boolean;
+	/** Run a UX/accessibility review of the run with the helper model. */
+	review?: boolean;
 	maxSteps?: number;
 	signal?: AbortSignal;
 	apiKey?: string;
@@ -500,6 +525,96 @@ function parseRescuePlan(
 	return { plan: { operation: op, entry, reason }, reason };
 }
 
+const REVIEW_SCHEMA = {
+	type: "object",
+	properties: {
+		summary: { type: "string" },
+		findings: {
+			type: "array",
+			items: {
+				type: "object",
+				properties: {
+					severity: { enum: ["blocker", "major", "minor"] },
+					area: { enum: ["accessibility", "ux", "responsive", "content"] },
+					finding: { type: "string" },
+					evidence: { type: "string" },
+				},
+				required: ["severity", "area", "finding", "evidence"],
+				additionalProperties: false,
+			},
+		},
+	},
+	required: ["summary", "findings"],
+	additionalProperties: false,
+} as const;
+
+/**
+ * One helper turn that judges the finished run as a user would: what the flow
+ * asked of the operator, what the page communicated, and what an assistive
+ * technology could reach. Evidence-only — findings must cite an observed label,
+ * step, or page-text excerpt, and the reviewer is told it saw no pixels.
+ */
+async function reviewRun(
+	driver: JevDriver,
+	goal: string,
+	status: JevActResult["status"],
+	steps: JevStep[],
+	observation: Observation,
+	pageText: string,
+): Promise<JevReview> {
+	const payload = {
+		goal,
+		status,
+		page: { url: observation.url, title: observation.title, text: pageText.slice(0, PAGE_TEXT_CAP) },
+		actions: steps.map(step => ({
+			step: step.step,
+			action: describeStep(step),
+			rescue: step.rescue,
+			page_changed: step.pageChanged,
+		})),
+		// Only what the page itself exposes: labels, roles, and states.
+		controls: observation.elements.slice(0, 80).map(entry => ({
+			role: entry.role,
+			label: entry.name ?? "",
+			states: entry.states,
+			value: entry.value === undefined ? undefined : String(entry.value),
+		})),
+		viewport: observation.viewport,
+	};
+	try {
+		const value = await driver.helper(payload, reviewRules, REVIEW_SCHEMA);
+		const record = (typeof value === "string" ? JSON.parse(value) : value) as Partial<JevReview> | null;
+		if (!record || typeof record.summary !== "string" || !Array.isArray(record.findings)) {
+			return { summary: "", findings: [], unavailable: "review helper returned no usable report" };
+		}
+		const findings: JevReviewFinding[] = [];
+		for (const raw of record.findings.slice(0, 12)) {
+			const finding = raw as Partial<JevReviewFinding>;
+			if (
+				typeof finding.finding !== "string" ||
+				typeof finding.evidence !== "string" ||
+				!finding.severity ||
+				!finding.area
+			) {
+				continue;
+			}
+			findings.push({
+				severity: finding.severity,
+				area: finding.area,
+				finding: finding.finding.slice(0, 300),
+				evidence: finding.evidence.slice(0, 300),
+			});
+		}
+		return { summary: record.summary.slice(0, 600), findings };
+	} catch (error) {
+		return {
+			summary: "",
+			findings: [],
+			unavailable: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
 /** Run the observe → choose → act loop until Jev reports DONE/BLOCKED or the step budget is spent. */
 export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOptions = {}): Promise<JevActResult> {
 	const task = goal.trim();
@@ -511,19 +626,47 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 	const signal = opts.signal;
 	const started = performance.now();
 	const steps: JevStep[] = [];
-	let observation = await driver.observe();
 	let rescues = 0;
 	let stalled = 0;
+	const shots: string[] = [];
+	const wantShots = opts.screenshots ?? true;
 
-	const finish = (status: JevActResult["status"], reason?: string): JevActResult => ({
-		status,
-		steps,
-		url: observation.url,
-		title: observation.title,
-		elapsedMs: Math.round(performance.now() - started),
-		rescues,
-		reason,
-	});
+	const capture = async (label: string): Promise<void> => {
+		if (!wantShots) return;
+		try {
+			shots.push(await driver.screenshot(label));
+		} catch {
+			// A failed capture must never fail the run; the report simply lists fewer frames.
+		}
+	};
+
+	const finish = async (status: JevActResult["status"], reason?: string): Promise<JevActResult> => {
+		await capture("final");
+		const result: JevActResult = {
+			status,
+			steps,
+			url: observation.url,
+			title: observation.title,
+			elapsedMs: Math.round(performance.now() - started),
+			rescues,
+			reason,
+			shots,
+		};
+		if (opts.review ?? true) {
+			result.review = await reviewRun(
+				driver,
+				task,
+				status,
+				steps,
+				observation,
+				await driver.pageText().catch(() => ""),
+			);
+		}
+		return result;
+	};
+
+	let observation = await driver.observe();
+	await capture("start");
 
 	/** Execute one resolved action; returns the page fingerprint taken before it. */
 	const apply = async (step: JevStep, plan: { operation: JevOperation; entry?: ObservationEntry; text?: string }) => {
@@ -573,6 +716,7 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 		const answer = await driver.helper(context, rescueRules, RESCUE_SCHEMA);
 		const { plan, reason } = parseRescuePlan(answer, space, operations);
 		if (!plan) return { recovered: false, reason };
+		await capture(`rescue-${rescues}`);
 		const before = fingerprint(observation);
 		const step: JevStep = {
 			step: steps.length + 1,
@@ -603,14 +747,14 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 		const answers = result.answers ?? {};
 		const operationAnswer = validateChoice(answers.operation, Object.keys(operations));
 		const operation = operationAnswer.choice as JevOperation;
-		if (operation === "DONE") return finish("done");
+		if (operation === "DONE") return await finish("done");
 		if (operation === "BLOCKED") {
 			// Jev only chooses among offered actions; a modal, consent banner, or
 			// end-of-round gate reads as "blocked" to it. Spend one helper turn
 			// before handing the cost back to the caller.
 			const attempt = await rescue("policy_reported_blocked", pageText, space, operations);
 			if (attempt.recovered) continue;
-			return finish("blocked", attempt.reason);
+			return await finish("blocked", attempt.reason);
 		}
 
 		const before = fingerprint(observation);
@@ -675,10 +819,10 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 		stalled = step.pageChanged || step.operation === "WAIT" ? 0 : stalled + 1;
 		if (stalled >= STALL_LIMIT) {
 			const attempt = await rescue("no_progress", pageText, space, operations);
-			if (!attempt.recovered) return finish("blocked", attempt.reason);
+			if (!attempt.recovered) return await finish("blocked", attempt.reason);
 		}
 	}
-	return finish("max_steps");
+	return await finish("max_steps");
 }
 
 type HelperTier = "smol" | "default";
