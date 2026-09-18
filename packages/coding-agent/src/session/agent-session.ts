@@ -173,7 +173,6 @@ import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-ur
 import type { IrcMessage } from "../irc/bus";
 import { stopLinearIntegration, unregisterKanbanSession } from "../kanban";
 import type { DaemonCompletionNotification } from "../launch/protocol";
-import { invalidateLearningInjection } from "../learnings/injection-cache";
 import { shutdownMnemopiEmbedClient } from "../mnemopi/embed-client";
 import { getMnemopiSessionState, type MnemopiSessionState, setMnemopiSessionState } from "../mnemopi/state";
 import { renderOrchestrateNotice, requestsOrchestrate } from "../modes/orchestrate";
@@ -443,6 +442,7 @@ import {
 	buildAdvisorSkillsAndRulesPrompt,
 	buildSystemPromptWithOrchestratorOverlay,
 	SessionTools,
+	type LearningTurnContextProvider,
 	type SessionToolsHost,
 } from "./session-tools";
 import type { ShakeMode, ShakeResult } from "./shake-types";
@@ -847,6 +847,8 @@ export class AgentSession {
 	#inheritedProviderPromptCacheKey: string | undefined;
 	#autolearnCaptureAbortController: AbortController | undefined;
 	#autolearnCaptureTask: Promise<void> | undefined;
+	/** Per-turn live-learning context provider; set by the SDK when learning is enabled. */
+	#learningTurnContext: LearningTurnContextProvider | undefined;
 	#isDisposed = false;
 	#modelDiscoveryAbortController = new AbortController();
 	/** Process-wide by default (double-spend safety across sessions); injectable for tests. */
@@ -1829,6 +1831,7 @@ export class AgentSession {
 			this.#secretVault.onKeyMaterialCreated = keyMaterialToRedact =>
 				this.registerRuntimeSecrets([{ type: "plain", content: keyMaterialToRedact, mode: "replace" }]);
 		}
+		const sessionToolsHostSelf = this;
 		const sessionToolsHost: SessionToolsHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1853,6 +1856,9 @@ export class AgentSession {
 			notifyCommandMetadataChanged: () => this.#notifyCommandMetadataChanged(),
 			localProtocolOptions: () => this.#localProtocolOptions(),
 			secretVault: this.#secretVault,
+			get learningTurnContext() {
+				return sessionToolsHostSelf.#learningTurnContext;
+			},
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
 			autoApprove: config.autoApprove,
@@ -5812,7 +5818,6 @@ export class AgentSession {
 		this.sessionManager.appendResetBoundary();
 
 		resetCapabilities();
-		invalidateLearningInjection();
 		await this.refreshBaseSystemPrompt();
 
 		return { droppedCount };
@@ -6370,6 +6375,11 @@ export class AgentSession {
 	/** Rebuilds the stable base prompt, optionally discarding a stale asynchronous rebuild. */
 	refreshBaseSystemPrompt(commitIf?: () => boolean): Promise<void> {
 		return this.#tools.refreshBaseSystemPrompt(commitIf);
+	}
+
+	/** Sets the per-turn live-learning context provider (SDK wiring; undefined disables it). */
+	setLearningTurnContextProvider(provider: LearningTurnContextProvider | undefined): void {
+		this.#learningTurnContext = provider;
 	}
 
 	/** Replaces connected MCP tools using the requested discovery activation mode. */
@@ -7725,7 +7735,13 @@ export class AgentSession {
 		// recall to ride the committed array instead (`foldMemoryIntoCommit`).
 		stageMemory = true,
 		foldMemoryIntoCommit = false,
-	): Promise<QueuedMessagePreparation & { baseXdevCatalogDelivered: boolean; memoryContextMessage?: CustomMessage }> {
+	): Promise<
+		QueuedMessagePreparation & {
+			baseXdevCatalogDelivered: boolean;
+			memoryContextMessage?: CustomMessage;
+			learningContextMessage?: CustomMessage;
+		}
+	> {
 		const sessionGeneration = this.#sessionGeneration;
 		// Preserve ordinary prompt disposal semantics, but never begin a queued turn on a disposed session.
 		const alreadyDisposing = this.#isDisposed && signal === undefined;
@@ -7788,10 +7804,12 @@ export class AgentSession {
 			return {
 				baseXdevCatalogDelivered: result?.systemPrompt === undefined,
 				memoryContextMessage: agentStartContext.memoryContextMessage,
+				learningContextMessage: agentStartContext.learningContextMessage,
 				commit: () => {
 					// No await may separate ownership validation from publishing memory and policy.
 					if (!isCurrent() || !overrideIsCurrent()) return undefined;
 					if (agentStartContext.commitMemory?.() === false) return undefined;
+					agentStartContext.commitLearning?.();
 					if (result?.systemPrompt !== undefined) {
 						this.#tools.setTurnSystemPromptOverride(result.systemPrompt);
 					} else {
@@ -7804,9 +7822,14 @@ export class AgentSession {
 					// batch returns it inside the committed array (the Agent hook appends
 					// those after the batch's originals); the direct path splices
 					// `memoryContextMessage` itself, so folding it here too would deliver
-					// the recall twice.
+					// the recall twice. The per-turn learning context rides the same way.
 					const staged = agentStartContext.memoryContextMessage;
-					return foldMemoryIntoCommit && staged ? [...messages, staged] : messages;
+					const stagedLearning = agentStartContext.learningContextMessage;
+					if (!foldMemoryIntoCommit) return messages;
+					const folded: AgentMessage[] = [];
+					if (staged) folded.push(staged);
+					if (stagedLearning) folded.push(stagedLearning);
+					return folded.length > 0 ? [...messages, ...folded] : messages;
 				},
 			};
 		}
@@ -7968,7 +7991,11 @@ export class AgentSession {
 			if (!preparedMessages) return false;
 			// Volatile recall rides a hidden user-attributed message placed ahead of the user
 			// turn instead of the system prompt, so the provider prefix cache stays byte-stable
-			// while the recall still reaches the model and the persisted transcript.
+			// while the recall still reaches the model and the persisted transcript. The
+			// per-turn live-learning context rides the same way, after the recall.
+			if (preparation.learningContextMessage) {
+				messages.splice(xdevMountNoticeIndex, 0, preparation.learningContextMessage);
+			}
 			if (preparation.memoryContextMessage) {
 				messages.splice(xdevMountNoticeIndex, 0, preparation.memoryContextMessage);
 			}
@@ -9557,7 +9584,6 @@ export class AgentSession {
 			// directory set, not the previous session's — refresh before the next
 			// turn goes out.
 			resetCapabilities();
-			invalidateLearningInjection();
 			await this.refreshBaseSystemPrompt();
 
 			// Emit session_switch event with reason "new" to hooks
@@ -10911,7 +10937,6 @@ export class AgentSession {
 			// Refresh the workspace-roots block to match the resumed session's directory set.
 			// Wrapped so a rebuild failure (e.g. a gate that intentionally fails in tests)
 			// doesn't roll back an otherwise-successful session switch.
-			invalidateLearningInjection();
 			try {
 				await this.refreshBaseSystemPrompt();
 			} catch (refreshErr) {

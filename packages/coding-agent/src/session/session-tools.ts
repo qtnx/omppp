@@ -74,6 +74,19 @@ export interface SystemPromptRebuildContext {
 	xdevRouteSources: readonly MountedMCPToolRouteSource[];
 }
 
+/**
+ * Per-turn live-learning provider. Returns a hidden context message when
+ * relevant learnings should accompany the user turn, plus a commit closure that
+ * publishes delivery state (shown tracking) only after validated delivery.
+ */
+export interface LearningTurnContextProvider {
+	(input: {
+		promptText: string;
+		sessionManager: SessionManager;
+		signal?: AbortSignal;
+	}): Promise<{ message: CustomMessage; commit(): void } | undefined>;
+}
+
 /** Capabilities borrowed from the owning AgentSession. */
 export interface SessionToolsHost {
 	agent: Agent;
@@ -100,6 +113,8 @@ export interface SessionToolsHost {
 	/** Session-scoped `/vision` override; undefined means "follow the persisted setting". */
 	/** Publishes the current Codex Code Mode tool exposure snapshot for turn metadata; undefined clears it. */
 	setCodeModeNamespacesInfo?(info: unknown): void;
+	/** Per-turn live-learning context provider set by the SDK when learning is enabled. */
+	learningTurnContext?: LearningTurnContextProvider;
 }
 
 interface SessionToolsOptions {
@@ -193,6 +208,9 @@ interface AgentStartContext {
 	memoryContextMessage?: CustomMessage;
 	/** Publishes the staged recall; false rejects lost ownership without state writes. */
 	commitMemory?(): boolean;
+	learningContextMessage?: CustomMessage;
+	/** Publishes the staged learning delivery (shown tracking). */
+	commitLearning?(): void;
 }
 
 export interface MountedMCPToolRouteSource {
@@ -2307,15 +2325,17 @@ export class SessionTools {
 	 */
 	async buildAgentStartContext(promptText: string, options?: { stageMemory?: boolean }): Promise<AgentStartContext> {
 		const systemPrompt = this.#applySystemPromptOverlay(this.#baseSystemPrompt);
-		if (options?.stageMemory === false) return { systemPrompt };
+		if (options?.stageMemory === false) {
+			return await this.#stageLearningContext(promptText, { systemPrompt });
+		}
 		const backend = await resolveMemoryBackend(this.#host.settings);
-		if (!backend.beforeAgentStartPrompt) return { systemPrompt };
+		if (!backend.beforeAgentStartPrompt) return await this.#stageLearningContext(promptText, { systemPrompt });
 
 		try {
 			const preparation = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText);
-			if (!preparation) return { systemPrompt };
+			if (!preparation) return await this.#stageLearningContext(promptText, { systemPrompt });
 			const memoryContext = preparation.context;
-			return {
+			const context: AgentStartContext = {
 				systemPrompt,
 				memoryContextMessage: memoryContext
 					? ({
@@ -2329,13 +2349,29 @@ export class SessionTools {
 					: undefined,
 				commitMemory: () => preparation.commit(),
 			};
+			return await this.#stageLearningContext(promptText, context);
 		} catch (err) {
 			logger.debug("Memory backend beforeAgentStartPrompt failed", {
 				backend: backend.id,
 				error: String(err),
 			});
-			return { systemPrompt };
+			return await this.#stageLearningContext(promptText, { systemPrompt });
 		}
+	}
+
+	/** Stages the per-turn live-learning context alongside the memory context. */
+	async #stageLearningContext(promptText: string, context: AgentStartContext): Promise<AgentStartContext> {
+		const provider = this.#host.learningTurnContext;
+		if (!provider) return context;
+		try {
+			const preparation = await provider({ promptText, sessionManager: this.#host.sessionManager });
+			if (!preparation) return context;
+			context.learningContextMessage = preparation.message;
+			context.commitLearning = preparation.commit;
+		} catch (err) {
+			logger.debug("Learning turn context provider failed", { error: String(err) });
+		}
+		return context;
 	}
 
 	#applySystemPromptOverlay(baseSystemPrompt: string[]): string[] {

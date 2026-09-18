@@ -2,7 +2,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { EvalPreludeDefinition } from "../../eval/preludes";
 import browserDescription from "../../prompts/tools/browser.md" with { type: "text" };
 import type { ToolSession } from "../../sdk";
-import { jevEndpoint } from "./jev";
+import { jevEndpoint } from "../../jev/systemone";
 // @ts-expect-error Bun imports this declaration source as text instead of a TypeScript module.
 import browserDeclarations from "./declarations.d.ts" with { type: "text" };
 // @ts-expect-error Bun imports this JavaScript source as text instead of evaluating its module shape.

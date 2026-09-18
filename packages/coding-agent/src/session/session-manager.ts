@@ -42,6 +42,7 @@ import {
 	type CustomMessage,
 	type FileMentionMessage,
 	type HookMessage,
+	LEARNING_CONTEXT_MESSAGE_TYPE,
 	normalizeCustomMessagePayload,
 	type PythonExecutionMessage,
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
@@ -3051,6 +3052,23 @@ export class SessionManager {
 			for (const name of entry.injectedRules) names.add(name);
 		}
 		return [...names];
+	}
+
+	/** All live-learning aliases injected on the current branch (root → leaf). */
+	getInjectedLearningAliases(): string[] {
+		const aliases = new Set<string>();
+		for (const entry of this.getBranch()) {
+			if (entry.type !== "custom_message" || entry.customType !== LEARNING_CONTEXT_MESSAGE_TYPE) continue;
+			const details = entry.details;
+			if (!details || typeof details !== "object" || Array.isArray(details)) continue;
+			if (!("aliases" in details)) continue;
+			const listed = details.aliases;
+			if (!Array.isArray(listed)) continue;
+			for (const alias of listed) {
+				if (typeof alias === "string" && alias.length > 0) aliases.add(alias);
+			}
+		}
+		return [...aliases];
 	}
 
 	/** Append a credential pin recording which OAuth account served `provider`. */
