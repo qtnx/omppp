@@ -169,7 +169,6 @@ function getNormalizedScratchRoots(): readonly string[] {
 	return [...new Set(getScratchRoots().map(normalizePathForComparison))];
 }
 
-
 function formatPrStatus(pr: NonNullable<SegmentContext["git"]["pr"]>): string | null {
 	if (pr.isDraft) return "draft";
 

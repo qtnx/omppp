@@ -23,7 +23,10 @@ import {
 	clampsContextOverride,
 	resolveMaxContextWindow,
 } from "@oh-my-pi/pi-catalog/compat/context-window";
-import { CODEX_PINNED_CONTEXT_WINDOW, CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS } from "@oh-my-pi/pi-catalog/discovery/codex";
+import {
+	CODEX_PINNED_CONTEXT_WINDOW,
+	CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS,
+} from "@oh-my-pi/pi-catalog/discovery/codex";
 import { applyCatalogMetrics, CatalogMetricsIndex } from "@oh-my-pi/pi-catalog/identity/metrics";
 import { readModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import {
@@ -2597,7 +2600,12 @@ export class ModelRegistry {
 					model = applyModelOverride(model, { contextWindow: threshold });
 				}
 			}
-			if (!extendedContext && forkPinned && model.contextWindow !== null && model.contextWindow !== CODEX_PINNED_CONTEXT_WINDOW) {
+			if (
+				!extendedContext &&
+				forkPinned &&
+				model.contextWindow !== null &&
+				model.contextWindow !== CODEX_PINNED_CONTEXT_WINDOW
+			) {
 				model = applyModelOverride(model, { contextWindow: CODEX_PINNED_CONTEXT_WINDOW });
 			}
 			if (model.provider === "ollama-cloud" && model.omitMaxOutputTokens !== true) {

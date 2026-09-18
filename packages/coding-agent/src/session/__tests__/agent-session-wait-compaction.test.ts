@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { type Agent, type AgentMessage, type AgentTurnEndContext, type SessionEntry, Tokenizer } from "@oh-my-pi/pi-agent-core";
+import {
+	type Agent,
+	type AgentMessage,
+	type AgentTurnEndContext,
+	type SessionEntry,
+	Tokenizer,
+} from "@oh-my-pi/pi-agent-core";
 import * as compaction from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";

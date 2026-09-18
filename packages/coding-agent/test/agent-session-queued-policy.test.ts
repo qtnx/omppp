@@ -276,17 +276,11 @@ describe("queued user delivery policy", () => {
 			expect(effectivePrompt(requests[0])).not.toContain("recall-1");
 			await session.prompt("continue");
 			expect(recalls).toBe(2);
-			expect(
-				effectivePrompt(requests.at(-1))
-					.match(/recall-2/g),
-			).toHaveLength(1);
+			expect(effectivePrompt(requests.at(-1)).match(/recall-2/g)).toHaveLength(1);
 			await session.refreshBaseSystemPrompt();
 			await session.prompt("after canonical rebuild");
 			expect(recalls).toBe(2);
-			expect(
-				effectivePrompt(requests.at(-1))
-					.match(/recall-2/g),
-			).toHaveLength(1);
+			expect(effectivePrompt(requests.at(-1)).match(/recall-2/g)).toHaveLength(1);
 		},
 	);
 

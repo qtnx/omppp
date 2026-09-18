@@ -1487,9 +1487,7 @@ export function prepareCompaction(
 	}
 
 	const keepFromEntryId = options?.keepFromEntryId;
-	const keepFromIndex = keepFromEntryId
-		? compactionEntries.findIndex(entry => entry.id === keepFromEntryId)
-		: -1;
+	const keepFromIndex = keepFromEntryId ? compactionEntries.findIndex(entry => entry.id === keepFromEntryId) : -1;
 	const protectedCutPoint =
 		keepFromIndex >= 0
 			? findCutPoint(compactionEntries, tokenizer, 0, compactionEntries.length, keepRecentTokens, keepFromIndex)
@@ -1507,7 +1505,6 @@ export function prepareCompaction(
 		protectedCutPoint !== undefined && protectedCutPoint.firstKeptEntryIndex > 0
 			? protectedCutPoint
 			: findCutPoint(compactionEntries, tokenizer, 0, compactionEntries.length, keepRecentTokens);
-
 
 	// Get ID of first kept entry
 	const firstKeptEntry = compactionEntries[cutPoint.firstKeptEntryIndex];

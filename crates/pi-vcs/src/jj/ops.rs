@@ -1008,7 +1008,9 @@ mod tests {
 		let Some(version) = text.split_whitespace().nth(1) else {
 			return false;
 		};
-		let mut parts = version.split('.').filter_map(|part| part.parse::<u32>().ok());
+		let mut parts = version
+			.split('.')
+			.filter_map(|part| part.parse::<u32>().ok());
 		let major = parts.next().unwrap_or(0);
 		let minor = parts.next().unwrap_or(0);
 		(major, minor) >= JJ_FIXTURE_MIN_VERSION

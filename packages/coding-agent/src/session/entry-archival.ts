@@ -234,11 +234,7 @@ export function archiveEntries(entries: SessionEntry[], blobs: BlobStore): void 
  * frames that fit its budget (`resolveFrameData`). The explicit archival
  * round-trip keeps the default so `archiveEntries` stays byte-reversible.
  */
-export function rehydrateEntries(
-	entries: SessionEntry[],
-	blobs: BlobStore,
-	options: { frames?: boolean } = {},
-): void {
+export function rehydrateEntries(entries: SessionEntry[], blobs: BlobStore, options: { frames?: boolean } = {}): void {
 	for (const entry of entries) {
 		if (entry.type === "message") {
 			const message = entry.message as { content?: unknown; role?: string; details?: unknown };

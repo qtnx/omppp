@@ -2312,7 +2312,7 @@ export class SessionTools {
 		if (!backend.beforeAgentStartPrompt) return { systemPrompt };
 
 		try {
-		const preparation = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText);
+			const preparation = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText);
 			if (!preparation) return { systemPrompt };
 			const memoryContext = preparation.context;
 			return {
