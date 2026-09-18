@@ -70,6 +70,9 @@ describe("AgentSession advisor context maintenance", () => {
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 		const settings = Settings.isolated({
 			"advisor.syncBacklog": "1",
+			// Turn signals default to the TypeSafe proxy; this test asserts advisor
+			// prompting and must not depend on a live classifier gating the turn.
+			"signals.enabled": false,
 			"compaction.enabled": true,
 			"compaction.methodOrder": ["soft"],
 			"contextPromotion.enabled": contextPromotionEnabled,
@@ -181,6 +184,9 @@ describe("AgentSession advisor context maintenance", () => {
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 		const settings = Settings.isolated({
 			"advisor.syncBacklog": "1",
+			// Turn signals default to the TypeSafe proxy; this test asserts advisor
+			// prompting and must not depend on a live classifier gating the turn.
+			"signals.enabled": false,
 			"compaction.enabled": true,
 			"compaction.methodOrder": options?.remoteEnabled === false ? ["soft"] : ["remote", "soft"],
 			"contextPromotion.enabled": options?.contextPromotionEnabled ?? false,
@@ -386,6 +392,9 @@ describe("AgentSession advisor context maintenance", () => {
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 		const settings = Settings.isolated({
 			"advisor.syncBacklog": "1",
+			// Turn signals default to the TypeSafe proxy; this test asserts advisor
+			// prompting and must not depend on a live classifier gating the turn.
+			"signals.enabled": false,
 			"compaction.enabled": true,
 			"compaction.methodOrder": ["soft"],
 			"contextPromotion.enabled": false,
@@ -947,6 +956,9 @@ describe("AgentSession advisor context maintenance", () => {
 		const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 		const settings = Settings.isolated({
 			"advisor.syncBacklog": "1",
+			// Turn signals default to the TypeSafe proxy; this test asserts advisor
+			// prompting and must not depend on a live classifier gating the turn.
+			"signals.enabled": false,
 			"compaction.enabled": true,
 			"compaction.methodOrder": ["soft"],
 			"contextPromotion.enabled": false,

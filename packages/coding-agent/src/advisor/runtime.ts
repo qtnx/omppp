@@ -130,7 +130,7 @@ export interface AdvisorRuntimeHost {
 	 */
 	duoWorkPhase?(): string | undefined;
 	/** Advisor gate policy; absent means never defer. */
-	advisorGate?(): { enabled: boolean; reviewThreshold: number; maxDeferredTurns: number };
+	advisorGate?(): { enabled: boolean; reviewThreshold: number };
 }
 
 /** A request rejection that no retry can correct for this advisor configuration. */
@@ -1335,28 +1335,24 @@ export class AdvisorRuntime {
 	}
 
 	/**
-	 * Advisor gate: true when every queued item is an in-progress (wip) delta the
-	 * classifier rates as not worth reviewing, so the drain loop may leave them
-	 * queued for a later flush instead of prompting now.
+	 * Advisor gate: true when every queued item is a delta the classifier rates
+	 * as not worth the advisor's attention right now (in-progress or terminal —
+	 * a yielded chit-chat turn is as skippable as a mid-task read), so the drain
+	 * loop may leave them queued for a later flush instead of prompting now.
 	 *
-	 * Fails open in every ambiguous case — a consult, a terminal delta, a missing
-	 * or failed classification, or the deferral cap all fall through to today's
-	 * "review it" behavior.
+	 * Fails open only when there is no judgment to act on — a consult or a
+	 * missing/failed classification. Otherwise the classifier alone decides:
+	 * deferred turns accumulate until one scores at or above the threshold.
 	 */
-	async #shouldDeferPending(gate: {
-		enabled: boolean;
-		reviewThreshold: number;
-		maxDeferredTurns: number;
-	}): Promise<boolean> {
+	async #shouldDeferPending(gate: { enabled: boolean; reviewThreshold: number }): Promise<boolean> {
 		let deferred = 0;
 		const classifications: Promise<TurnSignals | undefined>[] = [];
 		for (const item of this.#pending) {
-			// A consult or a terminal delta is owed a review right now.
-			if (item.kind !== "delta" || !item.wip || !item.signals) return false;
+			// A consult is owed a review right now; an unclassified delta fails open.
+			if (item.kind !== "delta" || !item.signals) return false;
 			if (item.deferred === true) deferred++;
 			classifications.push(item.signals);
 		}
-		if (deferred >= gate.maxDeferredTurns) return false;
 		const resolved = await Promise.all(classifications);
 		if (this.disposed || this.#paused || this.#sessionTransitionPaused) return false;
 		// No signal means "no opinion"; only an explicit low review score defers.
@@ -1372,6 +1368,7 @@ export class AdvisorRuntime {
 			this.#backlog = Math.max(0, this.#backlog - item.turns);
 			item.turns = 0;
 		}
+		logger.debug("advisor gate deferred", { pending: this.#pending.length, deferred: deferred + 1 });
 		this.#notifyWaiters();
 		return true;
 	}
@@ -1383,14 +1380,14 @@ export class AdvisorRuntime {
 			this.#syncModelIdentity();
 			while (!this.#paused && !this.disposed && !this.#sessionTransitionPaused && this.#pending.length) {
 				// The sync guard keeps every non-deferrable batch (gate off, consult,
-				// terminal delta, missing classification) on the original synchronous
-				// path, so a signal aborted right after enqueueing still sees its
-				// prompt attempt recorded.
+				// missing classification) on the original synchronous path, so a
+				// signal aborted right after enqueueing still sees its prompt attempt
+				// recorded.
 				const gate = this.host.advisorGate?.();
 				if (
 					gate?.enabled &&
 					this.host.turnSignals &&
-					this.#pending.every(item => item.kind === "delta" && item.wip && item.signals !== undefined) &&
+					this.#pending.every(item => item.kind === "delta" && item.signals !== undefined) &&
 					(await this.#shouldDeferPending(gate))
 				) {
 					break;

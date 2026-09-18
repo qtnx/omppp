@@ -29,12 +29,17 @@ function turnAnswers(needsReview: number): Record<string, unknown> {
 	};
 }
 
-/** Classifier backed by a fake System One endpoint: a score, or an HTTP failure. */
-function classifier(needsReview: number | "error", sent?: Record<string, unknown>[]): TurnSignalService {
+/**
+ * Classifier backed by a fake System One endpoint: one score for every call,
+ * a per-call score sequence, or an HTTP failure. `sent` captures request bodies.
+ */
+function classifier(needsReview: number | number[] | "error", sent?: Record<string, unknown>[]): TurnSignalService {
+	let call = 0;
 	const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
 		if (sent) sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
 		if (needsReview === "error") return new Response("boom", { status: 503 });
-		return new Response(JSON.stringify(turnAnswers(needsReview)), {
+		const score = Array.isArray(needsReview) ? needsReview[Math.min(call++, needsReview.length - 1)] : needsReview;
+		return new Response(JSON.stringify(turnAnswers(score)), {
 			status: 200,
 			headers: { "content-type": "application/json" },
 		});
@@ -72,7 +77,6 @@ interface Harness {
 
 function createHarness(options: {
 	service?: TurnSignalService;
-	maxDeferredTurns?: number;
 	gateEnabled?: boolean;
 	duoWorkPhase?: string;
 }): Harness {
@@ -90,11 +94,7 @@ function createHarness(options: {
 	const host: AdvisorRuntimeHost = {
 		snapshotMessages: () => messages,
 		enqueueAdvice: () => {},
-		advisorGate: () => ({
-			enabled: options.gateEnabled ?? true,
-			reviewThreshold: 0.5,
-			maxDeferredTurns: options.maxDeferredTurns ?? 4,
-		}),
+		advisorGate: () => ({ enabled: options.gateEnabled ?? true, reviewThreshold: 0.5 }),
 		...(options.service
 			? {
 					turnSignals: options.service,
@@ -120,8 +120,8 @@ function createHarness(options: {
 }
 
 describe("advisor turn-signal gate", () => {
-	it("defers a low-review in-progress delta, then flushes it together with the next terminal turn", async () => {
-		const harness = createHarness({ service: classifier(0.2) });
+	it("defers low-score deltas whether in-progress or terminal, then flushes them with the next advisor-worthy turn", async () => {
+		const harness = createHarness({ service: classifier([0.2, 0.2, 0.9]) });
 
 		await harness.turn("in-progress marker alpha", true);
 		expect(harness.prompts).toHaveLength(0);
@@ -129,10 +129,15 @@ describe("advisor turn-signal gate", () => {
 		// advisor catch-up must not park on work the advisor deliberately skipped.
 		expect(await harness.runtime.waitForCatchup(50, 1)).toBe(true);
 
-		await harness.turn("terminal marker beta", false);
+		// A yielded chit-chat turn is just as skippable as a mid-task read.
+		await harness.turn("terminal chit-chat beta", false);
+		expect(harness.prompts).toHaveLength(0);
+
+		await harness.turn("terminal completion claim gamma", false);
 		expect(harness.prompts).toHaveLength(1);
 		expect(harness.prompts[0]).toContain("in-progress marker alpha");
-		expect(harness.prompts[0]).toContain("terminal marker beta");
+		expect(harness.prompts[0]).toContain("terminal chit-chat beta");
+		expect(harness.prompts[0]).toContain("terminal completion claim gamma");
 	});
 
 	it("prompts immediately when the classifier yields no signal", async () => {
@@ -144,18 +149,17 @@ describe("advisor turn-signal gate", () => {
 		expect(harness.prompts[0]).toContain("unclassifiable marker");
 	});
 
-	it("flushes once the deferral cap is reached", async () => {
-		const harness = createHarness({ service: classifier(0.2), maxDeferredTurns: 2 });
+	it("keeps deferring low-score turns without a count cap until the classifier asks for the advisor", async () => {
+		const harness = createHarness({ service: classifier([0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.7]) });
 
-		await harness.turn("marker one", true);
-		await harness.turn("marker two", true);
+		for (let index = 1; index <= 6; index++) await harness.turn(`quiet marker ${index}`, true);
 		expect(harness.prompts).toHaveLength(0);
 
-		await harness.turn("marker three", true);
+		await harness.turn("advisor-worthy marker", false);
 		expect(harness.prompts).toHaveLength(1);
-		expect(harness.prompts[0]).toContain("marker one");
-		expect(harness.prompts[0]).toContain("marker two");
-		expect(harness.prompts[0]).toContain("marker three");
+		expect(harness.prompts[0]).toContain("quiet marker 1");
+		expect(harness.prompts[0]).toContain("quiet marker 6");
+		expect(harness.prompts[0]).toContain("advisor-worthy marker");
 	});
 
 	it("hands every resolved classification to the host", async () => {

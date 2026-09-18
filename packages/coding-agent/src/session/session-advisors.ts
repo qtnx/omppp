@@ -1791,7 +1791,6 @@ export class SessionAdvisors {
 					advisorGate: () => ({
 						enabled: this.#host.settings.get("signals.advisorGate.enabled"),
 						reviewThreshold: this.#host.settings.get("signals.advisorGate.reviewThreshold"),
-						maxDeferredTurns: this.#host.settings.get("signals.advisorGate.maxDeferredTurns"),
 					}),
 				},
 				1000,

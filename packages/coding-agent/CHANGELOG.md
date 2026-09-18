@@ -14,6 +14,7 @@
 
 - The default duo executor thinking level is now `high` (was `max`), in `duo.executorThinking` and the `duo.phaseModels` defaults that inherit it.
 - The default duo/executor DeepSeek model is now `tnx/openrouter/deepseek/deepseek-v4.1-flash` (was `tnx/openrouter/~deepseek/deepseek-v4-flash-latest`), in `duo.executorModel`, the `duo.phaseModels` default map, and the setup default `retry.fallbackChains` key.
+- The advisor review gate now asks TypeSafe whether the advisor is actually needed on each turn — including turns that just yielded — so chit-chat, short answers, and routine progress no longer wake the advisor; only consults and unclassified turns still reach it unconditionally.
 
 ### Fixed
 
