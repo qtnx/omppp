@@ -6,6 +6,7 @@ import type {
 	StatusLineSeparatorStyle,
 } from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
+import type { WorkPhase } from "../../../signals";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
 import type { LoopConditionConfig } from "../../loop-condition";
 import type { LoopLimitRuntime } from "../../loop-limit";
@@ -121,6 +122,8 @@ export interface SegmentContext {
 		display: "text" | "icon" | "none";
 	} | null;
 	collab: CollabStatus | null;
+	/** TypeSafe work phase for the current turn, or null when signals are off. */
+	workPhase: { phase: WorkPhase; confidence: number } | null;
 	// Cached values for performance (computed once per render)
 	usageStats: {
 		input: number;

@@ -1,0 +1,18 @@
+{
+	"scope": {
+		"type": "choice",
+		"instructions": "The state is a planner's handoff brief for an implementer. Which execution scope fits it?",
+		"criteria": {
+			"single": "One coherent slice of work an implementer does directly: an ordered checklist, a fix, a feature within a few files, or verification; even if it touches many files in one pass",
+			"multi": "Long-running multi-phase implementation with several independent workstreams: three or more phases that each land separately, or four or more work packages with distinct files that can run in parallel and need coordination"
+		}
+	},
+	"plan_locked": {
+		"type": "noul",
+		"instructions": "Is this brief locked enough to execute now without further planning? Locked means the files or components, the intended behavior, and how to verify it are stated, and no open decision is left for the implementer to resolve with the user.",
+		"criteria": {
+			"true": "Files or components, target behavior, and a verification step are named; no unresolved decision or 'to be confirmed' item",
+			"false": "Missing what to change, what the result should be, or how to check it; or it leaves a decision open"
+		}
+	}
+}

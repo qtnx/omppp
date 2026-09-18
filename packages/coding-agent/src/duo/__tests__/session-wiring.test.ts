@@ -70,6 +70,7 @@ function duoConfig(overrides: Partial<DuoResolvedConfig> = {}): DuoResolvedConfi
 		advisorPromptReview: true,
 		manualSwitchIntent: "plan",
 		signals: { enabled: true, sentiment: true, failureThreshold: 3, loopThreshold: 3, planningNeeded: true },
+		phaseModels: {},
 		...overrides,
 	};
 }

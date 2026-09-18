@@ -4,15 +4,21 @@ import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-comm
 
 const KEY_ENV = "TYPESAFE_API_KEY";
 const MODEL_ENV = "TYPESAFE_MODEL";
+const ENDPOINT_ENV = "TYPESAFE_SYSTEMONE_URL";
 
-const originalKey = Bun.env[KEY_ENV];
-const originalModel = Bun.env[MODEL_ENV];
+const original: Record<string, string | undefined> = {
+	[KEY_ENV]: Bun.env[KEY_ENV],
+	[MODEL_ENV]: Bun.env[MODEL_ENV],
+	[ENDPOINT_ENV]: Bun.env[ENDPOINT_ENV],
+};
+
+function setEnv(name: string, value: string | undefined): void {
+	if (value === undefined) delete Bun.env[name];
+	else Bun.env[name] = value;
+}
 
 afterEach(() => {
-	if (originalKey === undefined) delete Bun.env[KEY_ENV];
-	else Bun.env[KEY_ENV] = originalKey;
-	if (originalModel === undefined) delete Bun.env[MODEL_ENV];
-	else Bun.env[MODEL_ENV] = originalModel;
+	for (const [name, value] of Object.entries(original)) setEnv(name, value);
 });
 
 function createRuntimeHarness() {
@@ -38,27 +44,47 @@ function createRuntimeHarness() {
 	return { runtime: { ctx }, showStatus, showError, setText };
 }
 
+async function duoStatusText(): Promise<string> {
+	const harness = createRuntimeHarness();
+	await executeBuiltinSlashCommand("/duo status", harness.runtime);
+	return harness.showStatus.mock.calls.at(-1)?.[0] as string;
+}
+
 describe("/duo status Jev debug line", () => {
-	it("reports the effective Jev model without leaking the key", async () => {
-		Bun.env[KEY_ENV] = "test-key-not-a-secret";
-		Bun.env[MODEL_ENV] = "jev-test-model";
-		const harness = createRuntimeHarness();
+	it("reports the overridden model and the local key without echoing it", async () => {
+		setEnv(KEY_ENV, "test-key-not-a-secret");
+		setEnv(MODEL_ENV, "jev-test-model");
+		setEnv(ENDPOINT_ENV, undefined);
 
-		await executeBuiltinSlashCommand("/duo status", harness.runtime);
+		const text = await duoStatusText();
 
-		const text = harness.showStatus.mock.calls.at(-1)?.[0] as string;
 		expect(text).toContain("Duo: executing — planner anthropic/claude-fable-5-1");
-		expect(text).toContain("Jev: on — model jev-test-model (TYPESAFE_MODEL)");
+		expect(text).toContain("Jev: model jev-test-model (TYPESAFE_MODEL)");
+		expect(text).toContain("endpoint http://codemc:8791/v1/systemone (proxy default)");
+		expect(text).toContain("key TYPESAFE_API_KEY");
 		expect(text).not.toContain("test-key-not-a-secret");
+		expect(text).not.toContain("hidden from browser docs");
 	});
 
-	it("reports why tab.act is unavailable when the key is unset", async () => {
-		delete Bun.env[KEY_ENV];
-		const harness = createRuntimeHarness();
+	it("reports the proxy-held key and the docs gate when no local key is set", async () => {
+		setEnv(KEY_ENV, undefined);
+		setEnv(MODEL_ENV, undefined);
+		setEnv(ENDPOINT_ENV, undefined);
 
-		await executeBuiltinSlashCommand("/duo status", harness.runtime);
+		const text = await duoStatusText();
 
-		const text = harness.showStatus.mock.calls.at(-1)?.[0] as string;
-		expect(text).toContain("Jev: off — TYPESAFE_API_KEY unset");
+		expect(text).toContain("Jev: model jev-latest (default)");
+		expect(text).toContain("key held by the proxy");
+		expect(text).toContain("tab.act hidden from browser docs (TYPESAFE_API_KEY unset)");
+	});
+
+	it("flags a direct endpoint that has no key to send", async () => {
+		setEnv(KEY_ENV, undefined);
+		setEnv(ENDPOINT_ENV, "https://api.typesafe.ai/v1/systemone");
+
+		const text = await duoStatusText();
+
+		expect(text).toContain("endpoint https://api.typesafe.ai/v1/systemone (TYPESAFE_SYSTEMONE_URL)");
+		expect(text).toContain("no key — TYPESAFE_API_KEY unset and the endpoint is not the proxy");
 	});
 });

@@ -1,0 +1,47 @@
+{
+	"phase": {
+		"type": "choice",
+		"instructions": "The state is the latest slice of a coding agent's session transcript (user messages, assistant text, tool calls with one-line results, diffs). Which work phase does this slice show the agent in right now? Judge the most recent activity, not the whole task.",
+		"criteria": {
+			"planning": "Reading code, exploring, designing an approach, writing a plan or brief, deciding scope; no production edits yet",
+			"implementing": "Editing or writing production code or config, wiring features, mechanical changes; edits are landing",
+			"verifying": "Running tests, typechecks, builds, smoke runs, or checking output of the changed path; results mostly pass or are being read",
+			"debugging": "Investigating a failing test, error, crash, or wrong output: reproducing, reading stack traces, trying fixes in response to failures",
+			"blocked": "Cannot proceed: missing access, credentials, environment, a decision only the user can make, or the same failure repeating without a new idea",
+			"reporting": "Summarizing what was done, presenting evidence, writing changelog/PR text, answering the user; no further tool work in progress"
+		}
+	},
+	"needs_review": {
+		"type": "noul",
+		"instructions": "Should a senior reviewer look at this transcript slice now, rather than waiting for a later turn? Yes when it contains something a reviewer would want to catch early: a landed diff or design decision, a claim of completion, a change of direction, a repeated failure, a risky or destructive command, or a question to the user. No when it is routine progress: reads, searches, a single passing check, small mechanical edits, or in-flight work with nothing decided yet.",
+		"criteria": {
+			"true": "Contains a decision, landed change, completion claim, repeated failure, risky action, or deviation a reviewer should see now",
+			"false": "Routine exploration or mechanical progress; nothing a reviewer needs to act on yet"
+		}
+	},
+	"progress": {
+		"type": "score",
+		"instructions": "How much forward progress does this transcript slice show compared with what it was trying to do? Consider whether tool calls produce new information or landed changes, whether the same command or edit keeps repeating, and whether errors are being resolved or recurring.",
+		"criteria": [
+			"Advancing: each step yields new information or a landed change; errors, if any, are resolved and not repeated",
+			"Churning: some progress but effort is going into retries, reformulations, or edits that get reverted; the same error or command appears more than once",
+			"Stuck: the same failure or command repeats with no new idea, the agent circles between two approaches, or it explicitly says it cannot proceed"
+		]
+	},
+	"done_without_evidence": {
+		"type": "noul",
+		"instructions": "Does the assistant in this transcript slice claim the task is done, fixed, implemented, passing, or ready WITHOUT showing evidence in the same slice: no test or command run whose result supports the claim, no observed output, only assertion?",
+		"criteria": {
+			"true": "A completion claim is present and no supporting command output, test result, or observation appears",
+			"false": "No completion claim, or the claim is backed by visible command output, test results, or an observed run"
+		}
+	},
+	"parallel_slices": {
+		"type": "noul",
+		"instructions": "Does the work in this transcript slice contain two or more independent pieces that could be done at the same time by different people, each with its own files and its own check? Independent means neither piece needs the other's output first.",
+		"criteria": {
+			"true": "Two or more separable work packages with distinct files or components and no runtime dependency between them",
+			"false": "One coherent slice, sequential steps that depend on each other, or work too small to split"
+		}
+	}
+}

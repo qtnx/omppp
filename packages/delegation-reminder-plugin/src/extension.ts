@@ -9,6 +9,7 @@ import type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "@oh-my-pi/pi-coding-agent";
+import { TURN_SIGNALS_CHANNEL, type TurnSignals } from "@oh-my-pi/pi-coding-agent/signals/index";
 import delegationReminderNotice from "./delegation-reminder-notice.md" with { type: "text" };
 
 export const DELEGATION_REMINDER_LABEL = "Delegation Reminder";
@@ -26,6 +27,13 @@ export const TASK_TOOL_NAME = "task";
 
 /** Default hands-on count that triggers the mid-turn delegation nudge. */
 export const DEFAULT_DELEGATION_REMINDER_THRESHOLD = 6;
+
+/**
+ * `TurnSignals.parallelSlices` below this value means TypeSafe judged the turn
+ * to hold one work slice, so there is nothing left to parallelize and the
+ * nudge would only be noise.
+ */
+export const SINGLE_SLICE_PARALLEL_MAX = 0.5;
 
 type AssistantMessage = Extract<TurnEndEvent["message"], { role: "assistant" }>;
 
@@ -73,6 +81,21 @@ function registerDelegationReminderExtension(pi: ExtensionAPI, options: Delegati
 	let taskCount = 0;
 	let delegated = false;
 	let nudged = false;
+	// TypeSafe classifies a turn once it settles; an extension only ever sees the
+	// published values, never the classifier. Cache the latest classification so
+	// the nudge can skip a turn already judged single-slice. Never cleared on
+	// `turn_start`: the newest value describes the most recent classification,
+	// and dropping it would blind the nudge for a whole turn.
+	let latestParallelSlices: number | undefined;
+
+	pi.events.on(TURN_SIGNALS_CHANNEL, payload => {
+		// Untrusted payload: a malformed frame counts as "no classification" so a
+		// producer bug can never read as a confident single-slice judgment.
+		const signals: Partial<TurnSignals> = typeof payload === "object" && payload !== null ? payload : {};
+		if (typeof signals.parallelSlices === "number" && Number.isFinite(signals.parallelSlices)) {
+			latestParallelSlices = signals.parallelSlices;
+		}
+	});
 
 	const resetTurn = (): void => {
 		handsOnCount = 0;
@@ -115,6 +138,10 @@ function registerDelegationReminderExtension(pi: ExtensionAPI, options: Delegati
 
 	pi.on("tool_result", (event: ToolResultEvent): ToolResultEventResult | undefined => {
 		if (!enabled || event.isError || delegated || nudged || handsOnCount < threshold) return undefined;
+		// TypeSafe judged this turn single-slice: delegating cannot split work that
+		// is not there. No classification (disabled, no key, request failed) keeps
+		// the nudge exactly as it behaved before signals existed.
+		if (latestParallelSlices !== undefined && latestParallelSlices < SINGLE_SLICE_PARALLEL_MAX) return undefined;
 		nudged = true;
 		// Full replacement array: keep every existing content item verbatim and
 		// append the notice last. NEVER mutate or drop the original content.

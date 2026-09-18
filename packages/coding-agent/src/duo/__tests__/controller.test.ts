@@ -3,6 +3,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { DuoResolvedConfig } from "../../config/model-resolver";
+import type { TurnSignals } from "../../signals/index";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
 import { DuoController, type DuoControllerHost } from "../controller";
 import type { DuoStateSnapshot } from "../state";
@@ -34,6 +35,9 @@ function anthropicModel(id: string): Model {
 const planner = anthropicModel("claude-fable-5");
 const executor = anthropicModel("claude-opus-4.8");
 const otherModel = anthropicModel("claude-sonnet-4.5");
+const phaseModel = anthropicModel("claude-haiku-4-5");
+const PHASE_MODEL_SELECTOR = "anthropic/claude-haiku-4-5";
+const PHASE_FALLBACK_SELECTOR = "anthropic/claude-sonnet-4.5";
 
 interface ModelSwitchCall {
 	model: Model;
@@ -48,6 +52,11 @@ interface BriefCall {
 interface NoticeCall {
 	level: "info" | "warning";
 	text: string;
+}
+
+interface FallbackChainCall {
+	selector: string;
+	chain: string[];
 }
 
 interface FakeHost extends DuoControllerHost {
@@ -71,6 +80,8 @@ interface FakeHost extends DuoControllerHost {
 	planModeEnables: boolean[];
 	revives: number;
 	continueRequests: number;
+	suppressedSelectors: string[];
+	fallbackChains: FallbackChainCall[];
 	onSwitch?: () => void;
 }
 
@@ -88,6 +99,7 @@ function duoConfig(overrides: Partial<DuoResolvedConfig> = {}): DuoResolvedConfi
 		advisorPromptReview: true,
 		manualSwitchIntent: "plan",
 		signals: { enabled: true, sentiment: true, failureThreshold: 3, loopThreshold: 3, planningNeeded: true },
+		phaseModels: {},
 		...overrides,
 	};
 }
@@ -114,6 +126,8 @@ function fakeHost(overrides: Partial<FakeHost> = {}): FakeHost {
 		planModeEnables: [],
 		revives: 0,
 		continueRequests: 0,
+		suppressedSelectors: [],
+		fallbackChains: [],
 		currentModel() {
 			return this.model;
 		},
@@ -182,6 +196,12 @@ function fakeHost(overrides: Partial<FakeHost> = {}): FakeHost {
 		requestAgentContinue() {
 			this.continueRequests += 1;
 		},
+		isSelectorSuppressed(selector: string) {
+			return this.suppressedSelectors.includes(selector);
+		},
+		installFallbackChain(selector: string, chain: string[]) {
+			this.fallbackChains.push({ selector, chain });
+		},
 		...overrides,
 	};
 	return host;
@@ -196,6 +216,20 @@ function signalReport(overrides: Partial<TakeoverSignalReport> = {}): TakeoverSi
 		planningShapedWork: false,
 		strong: false,
 		evidence: [],
+		...overrides,
+	};
+}
+
+function turnSignals(overrides: Partial<TurnSignals> = {}): TurnSignals {
+	return {
+		phase: "implementing",
+		phaseConfidence: 0.9,
+		needsReview: 0,
+		stuck: 0,
+		doneWithoutEvidence: 0,
+		parallelSlices: 0,
+		model: "jev-latest",
+		inputTokens: 1200,
 		...overrides,
 	};
 }
@@ -1484,5 +1518,94 @@ describe("DuoController", () => {
 		expect(host.pauses).toBe(1);
 		expect(controller.status).toMatchObject({ phase: "executing", advisorPaused: false });
 		expect(host.ensured).toContainEqual(planner);
+	});
+});
+
+describe("DuoController phase models from turn signals", () => {
+	const debuggingConfig = duoConfig({
+		phaseModels: {
+			debugging: [
+				{ selector: PHASE_MODEL_SELECTOR, model: phaseModel },
+				{ selector: PHASE_FALLBACK_SELECTOR, model: otherModel },
+			],
+		},
+	});
+
+	async function executingController(config: DuoResolvedConfig = duoConfig(), overrides: Partial<FakeHost> = {}) {
+		const host = fakeHost({ model: otherModel, planModeOn: false, ...overrides });
+		const controller = new DuoController(host, config);
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("executing");
+		// Drop the activation switch so assertions see only phase-driven switches.
+		host.switches = [];
+		return { host, controller };
+	}
+
+	test("applies a phase model after two consecutive confident turns and registers the rest as fallbacks", async () => {
+		const { host, controller } = await executingController(debuggingConfig);
+
+		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
+		expect(host.switches).toEqual([]);
+
+		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
+
+		expect(host.switches).toEqual([{ model: phaseModel, thinkingLevel: ThinkingLevel.Max }]);
+		expect(host.fallbackChains).toEqual([{ selector: PHASE_MODEL_SELECTOR, chain: [PHASE_FALLBACK_SELECTOR] }]);
+		expect(controller.status).toMatchObject({ workPhase: "debugging", phaseModelId: PHASE_MODEL_SELECTOR });
+		expect(host.persisted.at(-1)?.workPhase).toBe("debugging");
+	});
+
+	test("applies a blocked-phase model on the first confident signal but not on a low-confidence one", async () => {
+		const config = duoConfig({ phaseModels: { blocked: [{ selector: PHASE_MODEL_SELECTOR, model: phaseModel }] } });
+		const { host, controller } = await executingController(config);
+
+		controller.notifyTurnSignals(turnSignals({ phase: "blocked", phaseConfidence: 0.9 }));
+		expect(host.switches).toEqual([{ model: phaseModel, thinkingLevel: ThinkingLevel.Max }]);
+
+		const lowConfidence = await executingController(config);
+		lowConfidence.controller.notifyTurnSignals(turnSignals({ phase: "blocked", phaseConfidence: 0.5 }));
+		expect(lowConfidence.host.switches).toEqual([]);
+	});
+
+	test("skips a suppressed phase candidate and installs no fallback chain for the remaining one", async () => {
+		const { host, controller } = await executingController(debuggingConfig, {
+			suppressedSelectors: [PHASE_MODEL_SELECTOR],
+		});
+
+		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
+		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
+
+		expect(host.switches).toEqual([{ model: otherModel, thinkingLevel: ThinkingLevel.Max }]);
+		expect(host.fallbackChains).toEqual([]);
+		expect(controller.status.phaseModelId).toBe(PHASE_FALLBACK_SELECTOR);
+	});
+
+	test("hands the stream to the planner after two stuck turns but not after one", async () => {
+		const { host, controller } = await executingController();
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", stuck: 0.8 }));
+		expect(controller.status.phase).toBe("executing");
+		expect(host.switches).toEqual([]);
+
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", stuck: 0.8 }));
+		expect(controller.status.phase).toBe("takeover");
+		expect(host.switches).toEqual([{ model: planner, thinkingLevel: AUTO_THINKING }]);
+	});
+
+	test("restores the resolved executor once the phase has no configured model", async () => {
+		const { host, controller } = await executingController(debuggingConfig);
+		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
+		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
+		expect(controller.status.phaseModelId).toBe(PHASE_MODEL_SELECTOR);
+		host.switches = [];
+
+		controller.notifyTurnSignals(turnSignals({ phase: "reporting", phaseConfidence: 0.9 }));
+		expect(host.switches).toEqual([]);
+
+		controller.notifyTurnSignals(turnSignals({ phase: "reporting", phaseConfidence: 0.9 }));
+
+		expect(host.switches).toEqual([{ model: executor, thinkingLevel: ThinkingLevel.Max }]);
+		expect(controller.status.workPhase).toBe("reporting");
+		expect(controller.status.phaseModelId).toBeUndefined();
 	});
 });

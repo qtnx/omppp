@@ -20,6 +20,7 @@ import {
 	formatSessionHistoryMarkdown,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
+import type { TurnSignals, TurnSignalService } from "../signals/index";
 import { ADVISOR_RENDER_OPTIONS } from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
 
@@ -114,6 +115,16 @@ export interface AdvisorRuntimeHost {
 	 *  hard-stops), so the host can repaint UI that reflects whether the
 	 *  advisor is still going to comment on the current yield. */
 	notifyIdle?(): void;
+	/**
+	 * TypeSafe turn classifier. When present, `onTurnEnd` classifies each
+	 * rendered delta (already obfuscated) and the drain loop may defer
+	 * in-progress deltas the classifier rates as not worth reviewing.
+	 */
+	turnSignals?: TurnSignalService;
+	/** Receives every resolved turn classification (duo phase/stuck consumers). */
+	onTurnSignals?(signals: TurnSignals): void;
+	/** Advisor gate policy; absent means never defer. */
+	advisorGate?(): { enabled: boolean; reviewThreshold: number; maxDeferredTurns: number };
 }
 
 /** A request rejection that no retry can correct for this advisor configuration. */
@@ -242,6 +253,14 @@ interface PendingDelta {
 	/** Whether the primary was mid-turn (willContinue:true) when this delta was rendered. */
 	wip: boolean;
 	overflowRecovery?: boolean;
+	/**
+	 * In-flight TypeSafe classification of `text`, started in `onTurnEnd`. Never
+	 * rejects (the service fails open); a resolved `undefined` means "no signal",
+	 * which the advisor gate treats as "review this turn".
+	 */
+	signals?: Promise<TurnSignals | undefined>;
+	/** The advisor gate deferred this delta; it stays queued for a later flush. */
+	deferred?: boolean;
 }
 
 /** One actual advisor model prompt attempt for a blocking consult. */
@@ -525,13 +544,19 @@ export class AdvisorRuntime {
 	 * primary turn (or an explicit reset). A fresh runtime that has never
 	 * reviewed anything is NOT yielded — the eye stays open until the first
 	 * review completes. Drives the status-line closed-eye state.
+	 *
+	 * Gate-deferred deltas stay queued but are not owed a review right now, so
+	 * they do not hold the status line busy.
 	 */
 	get yielded(): boolean {
 		return (
 			this.disposed ||
 			this.#quotaExhausted ||
 			this.#halted ||
-			(this.#hasReviewed && !this.#busy && this.#backlog === 0 && this.#pending.length === 0)
+			(this.#hasReviewed &&
+				!this.#busy &&
+				this.#backlog === 0 &&
+				!this.#pending.some(item => item.kind !== "delta" || item.deferred !== true))
 		);
 	}
 
@@ -584,6 +609,22 @@ export class AdvisorRuntime {
 		try {
 			const pending = this.#renderPendingDelta(all, 1, wip);
 			if (!pending) return;
+			// Start the classification now (never awaited here: the primary turn
+			// must not block on the classifier) so the drain loop can decide
+			// without a second round trip. `pending.text` is already obfuscated.
+			const turnSignals = this.host.turnSignals;
+			if (turnSignals) {
+				pending.signals = turnSignals
+					.classifyTurn(pending.text, { wip })
+					.then(signals => {
+						if (signals) this.host.onTurnSignals?.(signals);
+						return signals;
+					})
+					.catch(err => {
+						logger.debug("turn signal classification failed", { err: String(err) });
+						return undefined;
+					});
+			}
 			this.#pending.push(pending);
 			this.#backlog++;
 			this.#notifyWaiters();
@@ -1286,12 +1327,67 @@ export class AdvisorRuntime {
 		return (await raceWithSignal(Promise.resolve(result), signal)) === true;
 	}
 
+	/**
+	 * Advisor gate: true when every queued item is an in-progress (wip) delta the
+	 * classifier rates as not worth reviewing, so the drain loop may leave them
+	 * queued for a later flush instead of prompting now.
+	 *
+	 * Fails open in every ambiguous case — a consult, a terminal delta, a missing
+	 * or failed classification, or the deferral cap all fall through to today's
+	 * "review it" behavior.
+	 */
+	async #shouldDeferPending(gate: {
+		enabled: boolean;
+		reviewThreshold: number;
+		maxDeferredTurns: number;
+	}): Promise<boolean> {
+		let deferred = 0;
+		const classifications: Promise<TurnSignals | undefined>[] = [];
+		for (const item of this.#pending) {
+			// A consult or a terminal delta is owed a review right now.
+			if (item.kind !== "delta" || !item.wip || !item.signals) return false;
+			if (item.deferred === true) deferred++;
+			classifications.push(item.signals);
+		}
+		if (deferred >= gate.maxDeferredTurns) return false;
+		const resolved = await Promise.all(classifications);
+		if (this.disposed || this.#paused || this.#sessionTransitionPaused) return false;
+		// No signal means "no opinion"; only an explicit low review score defers.
+		if (resolved.length === 0 || resolved.some(signals => !signals || signals.needsReview >= gate.reviewThreshold)) {
+			return false;
+		}
+		for (const item of this.#pending) {
+			if (item.kind !== "delta" || item.deferred) continue;
+			item.deferred = true;
+			// These turns are off the advisor's plate until a later flush, so settle
+			// their backlog now (catch-up waiters must not park on deferred work) and
+			// zero the count so the eventual prompt cannot subtract them twice.
+			this.#backlog = Math.max(0, this.#backlog - item.turns);
+			item.turns = 0;
+		}
+		this.#notifyWaiters();
+		return true;
+	}
+
 	async #drain(): Promise<void> {
 		if (this.#paused || this.#busy || this.#sessionTransitionPaused) return;
 		this.#busy = true;
 		try {
 			this.#syncModelIdentity();
 			while (!this.#paused && !this.disposed && !this.#sessionTransitionPaused && this.#pending.length) {
+				// The sync guard keeps every non-deferrable batch (gate off, consult,
+				// terminal delta, missing classification) on the original synchronous
+				// path, so a signal aborted right after enqueueing still sees its
+				// prompt attempt recorded.
+				const gate = this.host.advisorGate?.();
+				if (
+					gate?.enabled &&
+					this.host.turnSignals &&
+					this.#pending.every(item => item.kind === "delta" && item.wip && item.signals !== undefined) &&
+					(await this.#shouldDeferPending(gate))
+				) {
+					break;
+				}
 				this.#syncModelIdentity();
 				if (this.#onFallbackModel && this.#fallbackRetryItemCount === 0) {
 					this.#restorePrimaryModel();

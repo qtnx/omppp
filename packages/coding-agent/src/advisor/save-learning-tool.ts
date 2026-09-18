@@ -4,6 +4,7 @@ import { getAgentDbPath } from "@oh-my-pi/pi-utils";
 import { resolveRepoKey } from "../learnings/repo-key";
 import { closeLearningDb, learningMessageHash, openLearningDb, upsertLearning } from "../learnings/storage";
 import saveLearningDescription from "../prompts/tools/advisor-save-learning.md" with { type: "text" };
+import type { TurnSignalService } from "../signals/index";
 import type { ToolSession } from "../tools";
 import { ToolError } from "../tools/tool-errors";
 
@@ -11,6 +12,10 @@ const MAX_LEARNING_CHARS = 400;
 const MIN_LEARNING_CHARS = 20;
 /** Advisor-authored entries start above the classifier's typical band so a caught mistake outranks unrated noise. */
 const ADVISOR_LEARNING_CONFIDENCE = 0.85;
+/** Below this generic-rule probability the classifier reads the entry as a case-specific note. */
+const MIN_GENERIC_RULE_PROBABILITY = 0.5;
+const CASE_SPECIFIC_REJECTION =
+	"Rejected: reads as case-specific. State the generic rule (what to do or avoid across tasks), without file names, values, or this task's details.";
 
 const saveLearningSchema = type({
 	content: type("string").describe(
@@ -36,10 +41,13 @@ export class SaveLearningTool implements AgentTool<typeof saveLearningSchema> {
 	readonly strict = true;
 	readonly summary = "Store a generic learning so future executors avoid a caught mistake";
 
-	constructor(private readonly session: ToolSession) {}
+	constructor(
+		private readonly session: ToolSession,
+		private readonly turnSignals?: TurnSignalService,
+	) {}
 
-	static createIf(session: ToolSession): SaveLearningTool | null {
-		return session.settings.get("learning.enabled") ? new SaveLearningTool(session) : null;
+	static createIf(session: ToolSession, turnSignals?: TurnSignalService): SaveLearningTool | null {
+		return session.settings.get("learning.enabled") ? new SaveLearningTool(session, turnSignals) : null;
 	}
 
 	async execute(_id: string, params: SaveLearningParams): Promise<AgentToolResult> {
@@ -52,6 +60,11 @@ export class SaveLearningTool implements AgentTool<typeof saveLearningSchema> {
 		}
 		const failureClass = params.failure_class.trim().toLowerCase().replace(/\s+/g, "-");
 		if (!failureClass) throw new ToolError("save_learning: failure_class is required.");
+
+		const judged = await this.turnSignals?.classifyLearning(content);
+		if (judged && judged.genericRule < MIN_GENERIC_RULE_PROBABILITY) {
+			throw new ToolError(CASE_SPECIFIC_REJECTION);
+		}
 
 		const repoKey = await resolveRepoKey(this.session.cwd);
 		const db = openLearningDb(getAgentDbPath(this.session.settings.getAgentDir()));
