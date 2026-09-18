@@ -123,6 +123,12 @@ export interface AdvisorRuntimeHost {
 	turnSignals?: TurnSignalService;
 	/** Receives every resolved turn classification (duo phase/stuck consumers). */
 	onTurnSignals?(signals: TurnSignals): void;
+	/**
+	 * Live duo work phase (`duo.phaseModels` key) included in each classification
+	 * request, so the classifier can judge a turn against the phase the session
+	 * believes it is in.
+	 */
+	duoWorkPhase?(): string | undefined;
 	/** Advisor gate policy; absent means never defer. */
 	advisorGate?(): { enabled: boolean; reviewThreshold: number; maxDeferredTurns: number };
 }
@@ -614,8 +620,9 @@ export class AdvisorRuntime {
 			// without a second round trip. `pending.text` is already obfuscated.
 			const turnSignals = this.host.turnSignals;
 			if (turnSignals) {
+				const duoPhase = this.host.duoWorkPhase?.();
 				pending.signals = turnSignals
-					.classifyTurn(pending.text, { wip })
+					.classifyTurn(pending.text, duoPhase ? { wip, duoPhase } : { wip })
 					.then(signals => {
 						if (signals) this.host.onTurnSignals?.(signals);
 						return signals;

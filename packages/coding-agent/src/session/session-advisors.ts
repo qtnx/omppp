@@ -1787,6 +1787,7 @@ export class SessionAdvisors {
 					},
 					turnSignals: this.#turnSignals,
 					onTurnSignals: this.#onTurnSignals,
+					duoWorkPhase: () => this.#host.duoStatus()?.workPhase,
 					advisorGate: () => ({
 						enabled: this.#host.settings.get("signals.advisorGate.enabled"),
 						reviewThreshold: this.#host.settings.get("signals.advisorGate.reviewThreshold"),
