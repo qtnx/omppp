@@ -7,6 +7,8 @@
 - New `browser_jev` tool: hand it one browser goal and the Jev DOM policy plus a small text-helper model finish the whole flow, returning a text report (status, executed steps, final URL/title, page text) instead of making the main model drive clicks through screenshots. Appears only when `TYPESAFE_API_KEY` is set; keeps its own `jev` tab so a flow can continue across calls.
 - Jev browser automation (`browser_jev`, `tab.act`) gained `SELECT`, `HOVER`, `PRESS_ENTER`, and `DRAG`: native `<select>` options now commit through their select instead of failing on an unclickable option node, hover-only menus open, a field can be submitted with Enter when no visible submit control exists, and one observed element can be dragged onto another.
 - Browser tools accept `profile: "<name>"` (plus `fresh: true`): each named profile is its own Chromium with its own cookies, storage, and login, so several accounts can be driven side by side — `browser.open({ profile })` in eval and `browser_jev({ profile })`, which also keeps a `jev-<profile>` tab per account.
+- Browser guidance now has one order — `browser_jev` → `browser_use` → the raw `browser` prelude — in the system prompt, the `browser_qa` and `ui_ux_reviewer` agents (both gain the tool), and the `git-craft` publish step, so a DOM flow is driven by goal instead of screenshot-per-click.
+
 ### Changed
 
 - Duo's executor default is now `tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high`, and the matching `retry.fallbackChains` key moves with it. The previous `tnx/ds/deepseek-v4-flash` id no longer exists, so duo silently degraded the executor to Opus every session (and logged `retry.fallbackChains key references unknown model`); existing configs carrying the old chain key should rename it.
