@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.8.9] - 2026-09-18
+
 ### Added
 
 - Browser tool: `tab.act(goal)` drives multi-step DOM interaction with TypeSafe Jev (port of browser-use/jev-ultrafast) — one request per step picks the operation and an observed element; typed values come from the session's `smol` completion tier with a `default`-tier fallback. Enabled automatically when `TYPESAFE_API_KEY` is set; the browser tool docs then present it as the default for forms, search, and navigation.
@@ -17,16 +19,9 @@
 - The advisor now acts as the senior beside the executor: it sets the business frame and work order for each task, gives direction and domain opinions, makes the small calls a senior would make instead of sending the executor to the user, and reviews landed diffs like a merge reviewer with one decisive change per verdict.
 - Advisors gain `save_learning`: after correcting a caught mistake (hallucinated API/path, done claim without evidence, symptom fix, retry loop, ignored correction) the advisor stores the generic rule behind it, and future sessions receive it through Live Learning Guidance; identical rules reinforce instead of duplicating.
 - Duo no longer defaults to Safe orchestrator mode: handoffs and plan approvals run the executor with direct tools (`scope: single`); `scope: multi` is reserved for long-running multi-phase implementation with several independent workstreams, and the executor may enter or leave orchestrator mode itself as the work turns out to need it.
-
-## [1.8.8] - 2026-09-18
-
-### Added
-
-- `/model` now accepts a model selector (`/model sonnet:high`, `/model @smol`); `/effort` sets the session thinking level (`/effort high`).
-
-### Fixed
-
-- Snapcompact now omits `¶think:` sections for Anthropic-backed models whose id does not classify as the Anthropic dialect (OpenAI-compat gateways with Anthropic `cache_control`), matching the compaction summarizer so replayed archives no longer trip `reasoning_extraction`.
+- Browser annotate submissions now arrive as visible queued follow-up messages by default (queue chip in the UI, processed after the current turn); set `browser.annotateDelivery` to `steer` to restore mid-turn injection. The untrusted-content notice wrapper around annotation text was removed.
+- `/time-budget` now applies real pressure: activation and checkpoint reminders demand a newly verified slice per 5-minute interval, every post-deadline checkpoint escalates in the overtime register instead of decaying to wrap-up copy, and subagent runtime caps are automatically clamped to the remaining budget so the executor's early-yield notice and hard stop engage.
+- Secret hiding (`secrets.enabled`) is now on by default: configured secrets, vault entries, and credential-shaped tokens are obfuscated before provider requests. The vault encryption key is now created lazily on the first stored secret instead of at session startup, so sessions that never store a secret create no keychain entry or key file.
 
 ## [18.1.17] - 2026-09-10
 
@@ -423,9 +418,6 @@
 - `/loop 10 <prompt>` now repeats 10 times at the default interval instead of sleeping 10 seconds between unlimited repeats; a time unit (`/loop 10s`, `/loop 2m`) still sets the interval, and both can be combined in either order (`/loop 10 30s …`).
 
 ### Changed
-- Browser annotate submissions now arrive as visible queued follow-up messages by default (queue chip in the UI, processed after the current turn); set `browser.annotateDelivery` to `steer` to restore mid-turn injection. The untrusted-content notice wrapper around annotation text was removed.
-- `/time-budget` now applies real pressure: activation and checkpoint reminders demand a newly verified slice per 5-minute interval, every post-deadline checkpoint escalates in the overtime register instead of decaying to wrap-up copy, and subagent runtime caps are automatically clamped to the remaining budget so the executor's early-yield notice and hard stop engage.
-- Secret hiding (`secrets.enabled`) is now on by default: configured secrets, vault entries, and credential-shaped tokens are obfuscated before provider requests. The vault encryption key is now created lazily on the first stored secret instead of at session startup, so sessions that never store a secret create no keychain entry or key file.
 
 - Improved edit-tool error guidance for operations missing the `»` separator, identifying redundant context-only operations
 - Fixed OAuth provider `modifyModels` projections being silently dropped after a discovery refresh introduced live-config headers.
@@ -1949,6 +1941,16 @@
 - Added a `/vision [on|off|auto|status]` slash command for session-scoped control of the `inspect_image` vision-delegation tool, modeled on `/computer`: `on`/`off` force the tool for the current session only, `auto` returns to the persisted setting, and `status` reports the effective mode, session override, tool state, and active-model image capability.
 - Replaced the `inspect_image.enabled` boolean with the tri-state `inspect_image.mode` (`auto`|`on`|`off`, default `auto`). In `auto` the tool is registered only when the active model lacks native image input, so vision-capable models (e.g. `kimi-code/k3`) read images inline with their own capabilities instead of delegating to a separate vision model; the tool set is re-evaluated on every model switch with a status notice when it flips. The `read` tool now follows the effective state dynamically rather than the raw setting, so it returns decoded image blocks again whenever `inspect_image` is hidden. Existing `inspect_image.enabled: true/false` configs migrate to `inspect_image.mode: on/off`.
 
+## [1.8.8] - 2026-09-18
+
+### Added
+
+- `/model` now accepts a model selector (`/model sonnet:high`, `/model @smol`); `/effort` sets the session thinking level (`/effort high`).
+
+### Fixed
+
+- Snapcompact now omits `¶think:` sections for Anthropic-backed models whose id does not classify as the Anthropic dialect (OpenAI-compat gateways with Anthropic `cache_control`), matching the compaction summarizer so replayed archives no longer trip `reasoning_extraction`.
+
 ## [1.8.7] - 2026-09-14
 
 ### Changed
@@ -1960,21 +1962,4 @@
 - `task` and `quick_task` workers now copy LOCKED identifiers, paths, and payload shapes into code verbatim and check their own diff for them before yielding.
 - Launch broker now refuses to report readiness on a port already served by a foreign process and names a free alternative instead.
 
-## [1.8.6] - 2026-09-12
-
-### Added
-
-- `browser_use` now supports mobile portrait (390×844) and landscape (844×390) viewports, including switching orientation without reopening the tab; pointer actions remain mouse/wheel input.
-
-### Changed
-
-- Browser QA and UI/UX review guidance now distinguishes blocked checks from product failures, reports mobile-emulation limits, uses the supported browser interface, and requires cleanup of owned test resources.
-- Agents now carry authorized tasks through verification and publishing without repeated permission requests, with explicit autonomous-execution rules at both ends of the system prompt.
-
-### Fixed
-
-- Displaying cyclic JavaScript objects in `eval` no longer breaks session saving or the next model turn; cyclic metadata already queued for saving preserves the entry with explicit circular-reference markers.
-
-## [1.8.5] - 2026-09-12
-
-Older entries are archived in [packages/coding-agent/CHANGELOG.md@571c72827015](https://github.com/can1357/oh-my-pi/blob/571c728270155fc5d919d6aa03493bcd0cbb52ca/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@fea355a3c0be](https://github.com/can1357/oh-my-pi/blob/fea355a3c0be30e5b0c74a50129edcffe72ab425/packages/coding-agent/CHANGELOG.md).
