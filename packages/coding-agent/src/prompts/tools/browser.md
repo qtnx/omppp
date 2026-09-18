@@ -5,7 +5,8 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - JavaScript: `await browser.open(options)` returns a `BrowserTab`; `browser.tab(name)` returns an existing handle; `await browser.close(options)` releases tabs.
 - Python: `await browser.open(name=…, url=…)`, synchronous `browser.tab(name)`, and `await browser.close(name=…)`. Python methods accept keyword arguments.
 - `annotate`: overlay human feedback UI on tab. User draws red boxes or uses **Pick** to select element DevTools-style, writes comment, then sends. Toolbar draggable/minimizable. Missing or hidden-headless tab auto-launches visible browser with fresh profile; pass `url` when no tab exists. First call may wait up to `timeout` and return submission. Normal CLI sessions queue later submissions as `browser-annotation` messages; otherwise call annotate again. Pending submissions survive reload and deliver when mode re-enabled. `enabled: false` removes overlay; `wait: false` enables without blocking. Timeout is not an error; future submissions still arrive.
-- `open` options: `name`, `url`, `app`, `viewport`, `wait_until`, `dialogs`, `timeout`, `persist`.
+- `open` options: `name`, `url`, `app`, `viewport`, `wait_until`, `dialogs`, `timeout`, `persist`, `profile`, `fresh`.
+- `profile: "<name>"` gives that tab its OWN browser session — separate cookies, storage, and login — so several accounts can be driven side by side; reuse the same name to return to that logged-in session, and pass `fresh: true` to wipe it first. Tabs opened without a profile share the default session. One tab name belongs to one profile: use `acct-a`/`acct-b` style names for both.
 - `close` options: `name`, `all`, `kill`, `timeout`.
 - Direct tab helpers:
   - Navigation: `url`, `title`, `goto`.

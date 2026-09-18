@@ -2,7 +2,7 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import browserJevDescription from "../prompts/tools/browser-jev.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
-import { resolveBrowserKind } from "./browser";
+import { normalizeBrowserProfile, resolveBrowserKind } from "./browser";
 import { acquireBrowser } from "./browser/registry";
 import { acquireTab, releaseTab, runInTab, type TabSession } from "./browser/tab-supervisor";
 import { clampTimeout } from "./tool-timeouts";
@@ -19,6 +19,10 @@ const browserJevSchema = type({
 	),
 	"url?": type("string").describe("Navigate the Jev tab here first; omit to continue where the last call ended"),
 	"max_steps?": type("number").describe("Action ceiling before the run stops (default 30)"),
+	"profile?": type("string").describe(
+		"Named isolated browser session (own cookies/login) — use one name per account under test",
+	),
+	"fresh?": type("boolean").describe("Discard the named profile's stored state before this run"),
 	"close?": type("boolean").describe("Release the Jev tab after this run"),
 	"timeout?": type("number").describe("Timeout in seconds (default 300)"),
 	"+": "reject",
@@ -47,6 +51,8 @@ export interface JevRunReport {
 }
 
 export interface BrowserJevDetails {
+	/** Named isolated browser session this run drove, when one was requested. */
+	profile?: string;
 	status?: JevRunReport["status"];
 	stepCount: number;
 	url?: string;
@@ -139,7 +145,8 @@ export class BrowserJevTool implements AgentTool<typeof browserJevSchema, Browse
 	readonly description = browserJevDescription.trim();
 	readonly parameters = browserJevSchema;
 	readonly interruptible = true;
-	#tab?: TabSession;
+	/** One live tab per profile, so several accounts can be driven side by side. */
+	readonly #tabs = new Map<string, TabSession>();
 
 	constructor(private readonly session: ToolSession) {}
 
@@ -159,22 +166,21 @@ export class BrowserJevTool implements AgentTool<typeof browserJevSchema, Browse
 				params.timeout ?? DEFAULT_TIMEOUT_SEC,
 				this.session.settings.get("tools.maxTimeout"),
 			) * 1000;
-		const details: BrowserJevDetails = { stepCount: 0, goal: params.goal };
+		const profile = normalizeBrowserProfile(params.profile);
+		const tabName = profile ? `${JEV_TAB}-${profile}` : JEV_TAB;
+		const details: BrowserJevDetails = { stepCount: 0, goal: params.goal, profile };
 		try {
-			if (!this.#tab) {
-				const browser = await acquireBrowser(resolveBrowserKind({ action: "open" } as never, this.session), {
-					cwd: this.session.cwd,
+			if (!this.#tabs.has(tabName)) {
+				const kind = resolveBrowserKind({ action: "open", profile, fresh: params.fresh } as never, this.session);
+				const browser = await acquireBrowser(kind, { cwd: this.session.cwd, signal });
+				const acquired = await acquireTab(tabName, browser, {
+					timeoutMs,
 					signal,
+					ownerSessionId: this.session.getSessionId?.() ?? undefined,
 				});
-				this.#tab = (
-					await acquireTab(JEV_TAB, browser, {
-						timeoutMs,
-						signal,
-						ownerSessionId: this.session.getSessionId?.() ?? undefined,
-					})
-				).tab;
+				this.#tabs.set(tabName, acquired.tab);
 			}
-			const run = await runInTab(JEV_TAB, {
+			const run = await runInTab(tabName, {
 				code: jevRunCode(params),
 				timeoutMs,
 				signal,
@@ -193,14 +199,15 @@ export class BrowserJevTool implements AgentTool<typeof browserJevSchema, Browse
 			};
 		} finally {
 			if (params.close) {
-				await releaseTab(JEV_TAB).catch(() => undefined);
-				this.#tab = undefined;
+				await releaseTab(tabName).catch(() => undefined);
+				this.#tabs.delete(tabName);
 			}
 		}
 	}
 
 	async close(): Promise<void> {
-		if (this.#tab) await releaseTab(this.#tab.name).catch(() => undefined);
-		this.#tab = undefined;
+		const names = [...this.#tabs.keys()];
+		this.#tabs.clear();
+		for (const name of names) await releaseTab(name).catch(() => undefined);
 	}
 }

@@ -20,7 +20,7 @@ import type { RelayKind } from "./relay/kind";
 import { ensureSharedBrowser } from "./shared-daemon";
 
 export type PuppeteerBrowserKind =
-	| { kind: "headless"; headless: boolean }
+	| { kind: "headless"; headless: boolean; profile?: string; fresh?: boolean }
 	| { kind: "spawned"; path: string; args?: string[] }
 	| { kind: "connected"; cdpUrl: string }
 	| RelayKind;
@@ -83,7 +83,9 @@ const pendingOpens = new Map<string, Promise<BrowserHandle>>();
 export function browserKey(kind: BrowserKind): string {
 	switch (kind.kind) {
 		case "headless":
-			return `headless:${kind.headless ? "1" : "0"}`;
+			// `fresh` is a one-shot open flag, never part of the identity: two opens
+			// of the same profile must share one browser.
+			return `headless:${kind.headless ? "1" : "0"}:${kind.profile ?? ""}`;
 		case "spawned":
 			return `spawned:${JSON.stringify([kind.path, kind.args ?? []])}`;
 		case "connected":
@@ -187,6 +189,8 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			headless: kind.headless,
 			viewport: opts.viewport,
 			gpu: opts.gpu,
+			profile: kind.profile,
+			fresh: kind.fresh,
 		});
 		return {
 			key: browserKey(kind),
@@ -412,6 +416,8 @@ async function openSharedHeadlessHandle(
 		const shared = await ensureSharedBrowser({
 			projectDir: opts.cwd,
 			headless: kind.headless,
+			profile: kind.profile,
+			fresh: kind.fresh,
 			viewport: vp,
 			gpu: opts.gpu,
 			signal: opts.signal,

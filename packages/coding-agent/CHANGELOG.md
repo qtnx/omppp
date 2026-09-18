@@ -6,6 +6,7 @@
 
 - New `browser_jev` tool: hand it one browser goal and the Jev DOM policy plus a small text-helper model finish the whole flow, returning a text report (status, executed steps, final URL/title, page text) instead of making the main model drive clicks through screenshots. Appears only when `TYPESAFE_API_KEY` is set; keeps its own `jev` tab so a flow can continue across calls.
 - Jev browser automation (`browser_jev`, `tab.act`) gained `SELECT`, `HOVER`, `PRESS_ENTER`, and `DRAG`: native `<select>` options now commit through their select instead of failing on an unclickable option node, hover-only menus open, a field can be submitted with Enter when no visible submit control exists, and one observed element can be dragged onto another.
+- Browser tools accept `profile: "<name>"` (plus `fresh: true`): each named profile is its own Chromium with its own cookies, storage, and login, so several accounts can be driven side by side — `browser.open({ profile })` in eval and `browser_jev({ profile })`, which also keeps a `jev-<profile>` tab per account.
 
 ## [1.8.9] - 2026-09-18
 

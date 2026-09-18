@@ -5,6 +5,7 @@ Hand one browser goal to the Jev DOM policy and get the finished outcome back as
 - `goal` (required): every requirement and every literal value the flow needs, in one sentence or a short list. The helper never invents personal data — an unstated value stops the run.
 - `url` (optional): navigate the Jev tab there first. Omit to continue in the tab where the last call ended.
 - `max_steps` (default 30): action ceiling. `close: true` releases the tab when done. `timeout` is in seconds.
+- `profile: "<name>"` runs the goal in its own browser session (separate cookies/storage/login) with its own tab, so several accounts can be tested side by side; reuse the name to continue as that account, add `fresh: true` to start it logged out.
 - Returns `status` plus the executed step list, the final URL/title, and the readable page text: `done` (Jev saw every requirement satisfied), `blocked` (no supported operation could progress), `max_steps` (budget spent).
 - `status: done` is Jev's claim, not proof. Check the returned URL, step list, and page text against what you asked for; when it matters, verify through the app's own state (API, database, or a follow-up goal).
 - The tab persists between calls, so a flow can be built up in stages: `browser_jev` to reach a screen, another `browser_jev` for the next leg.

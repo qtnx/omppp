@@ -421,6 +421,14 @@ export interface LaunchHeadlessOptions {
 	args?: readonly string[];
 	/** Additional exact Puppeteer default arguments to suppress. */
 	ignoreDefaultArgs?: readonly string[];
+	/**
+	 * Named isolated profile. A named profile gets a stable directory that
+	 * survives teardown, so a logged-in account can be reused; omitted keeps the
+	 * throwaway temp profile.
+	 */
+	profile?: string;
+	/** Discard a named profile's stored state before launching. */
+	fresh?: boolean;
 }
 
 /** Result of a headless Chromium launch. */
@@ -506,10 +514,19 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 	// becomes a no-op and can no longer reject its eager process-exit hook with an
 	// unhandled EBUSY when Chromium still holds the profile lock on Windows
 	// (issue #7058). `removeUserDataDir` cleans it up on our terms instead.
+	// A named profile is persistent: a stable directory the caller logs into once
+	// and reuses. It is NOT reported as an owned temp dir, so teardown leaves it.
 	let userDataDir: string | undefined;
 	if (!launchArgs.some(arg => arg.startsWith("--user-data-dir"))) {
-		userDataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-chrome-profile-"));
-		launchArgs.push(`--user-data-dir=${userDataDir}`);
+		if (opts.profile) {
+			const profileDir = path.join(os.tmpdir(), `omp-chrome-profile-p-${opts.profile}`);
+			if (opts.fresh) await fs.promises.rm(profileDir, { recursive: true, force: true });
+			await fs.promises.mkdir(profileDir, { recursive: true });
+			launchArgs.push(`--user-data-dir=${profileDir}`);
+		} else {
+			userDataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-chrome-profile-"));
+			launchArgs.push(`--user-data-dir=${userDataDir}`);
+		}
 	}
 	try {
 		const executablePath = await ensureChromiumExecutable();

@@ -25,7 +25,9 @@
 | `goal` | string, required | Everything the flow must accomplish plus every literal value it needs. An omitted value is never invented; the run stops instead. |
 | `url` | string, optional | Navigate the `jev` tab first. Omit to continue where the previous call ended. |
 | `max_steps` | number, optional | Executed-action ceiling (default 30). |
-| `close` | boolean, optional | Release the `jev` tab after the run. |
+| `profile` | string, optional | Named isolated browser session (`a-z0-9_-`, ≤40 chars): own Chromium, cookies, storage, and `jev-<profile>` tab. Reuse the name to continue as that account. |
+| `fresh` | boolean, optional | Discard the named profile's stored state before the run. |
+| `close` | boolean, optional | Release this run's tab after the run. |
 | `timeout` | number, optional | Seconds; default 300, ceiling 900. |
 
 Unknown fields are rejected.
@@ -48,4 +50,4 @@ Unknown fields are rejected.
 
 - Text report: `status` with the action count and elapsed time, the goal, final URL and title, the executed steps (operation, target role/name, typed value, `page unchanged` marker), and the readable page text of the final page.
 - `blocked` and `max_steps` append the takeover instruction (`browser_use` for canvas/gesture, the `browser` prelude for selectors/JS) and set `isError: true`.
-- `details`: `{ status?, stepCount, url?, title?, elapsedMs?, goal }`.
+- `details`: `{ status?, stepCount, url?, title?, elapsedMs?, goal, profile? }`.

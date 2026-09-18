@@ -43,6 +43,10 @@ interface BrowserOpenOptions {
 	persist?: boolean;
 	/** Open timeout in seconds, excluding first-use browser installation. */
 	timeout?: number;
+	/** Named isolated browser session with its own cookies, storage, and login. */
+	profile?: string;
+	/** Discard the named profile's stored state before opening. */
+	fresh?: boolean;
 }
 
 /** Options for releasing managed browser tabs. */
