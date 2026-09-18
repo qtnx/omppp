@@ -51,7 +51,7 @@ export interface AdvisorRuntimeHost {
 	/** Live primary transcript (use `agent.state.messages`). */
 	snapshotMessages(): AgentMessage[];
 	/** Surface one advice note to the primary (enqueues into the session YieldQueue). */
-	enqueueAdvice(note: string, severity?: "nit" | "concern" | "blocker"): void;
+	enqueueAdvice?(note: string, severity?: "nit" | "concern" | "blocker"): void;
 	/** Redact primary transcript bytes before they reach the advisor model. */
 	obfuscator?: SecretObfuscator;
 	/**
@@ -1588,7 +1588,7 @@ export class AdvisorRuntime {
 					if (consult?.async) {
 						if (!this.#advisorCalledAdviseSince(messageSnapshot)) {
 							const answer = this.#extractConsultAnswer(messageSnapshot);
-							if (answer) this.host.enqueueAdvice(answer);
+							if (answer) this.host.enqueueAdvice?.(answer);
 						}
 					} else if (consult) {
 						const answer = this.#extractConsultAnswer(messageSnapshot);

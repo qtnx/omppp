@@ -7979,8 +7979,7 @@ export class AuthStorage {
 		const error = options?.error;
 		const status = AIError.status(error);
 		const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
-		const retryAfterMs =
-			extractRotationRetryAfterMs(error, message) ?? extractProviderRetryHint(provider, message);
+		const retryAfterMs = extractRotationRetryAfterMs(error, message) ?? extractProviderRetryHint(provider, message);
 		const exactCursorModelPolicy = AIError.isCursorPlanAccountPolicyError(error, provider);
 		const accountPolicy = exactCursorModelPolicy || AIError.isAccountPolicyError(error);
 		if (!accountPolicy && (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message))) {

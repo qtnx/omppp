@@ -205,13 +205,6 @@ function archiveFrames(entry: SessionEntry, blobs: BlobStore): void {
 	for (const frame of archive.frames) archiveImage(frame, blobs);
 }
 
-function rehydrateFrames(entry: SessionEntry, blobs: BlobStore): void {
-	if (entry.type !== "compaction") return;
-	const archive = snapcompact.getPreservedArchive(entry.preserveData);
-	if (!archive) return;
-	for (const frame of archive.frames) resolveImage(frame, blobs);
-}
-
 /** Replaces archiveable heavy leaves with content-addressed refs in place. */
 export function archiveEntries(entries: SessionEntry[], blobs: BlobStore): void {
 	for (const entry of entries) {
@@ -233,8 +226,19 @@ export function archiveEntries(entries: SessionEntry[], blobs: BlobStore): void 
 	}
 }
 
-/** Rehydrates archived heavy leaves in place without replacing object identities. */
-export function rehydrateEntries(entries: SessionEntry[], blobs: BlobStore): void {
+/**
+ * Rehydrates archived heavy leaves in place without replacing object identities.
+ *
+ * `frames: false` leaves snapcompact frames as blob references: the session-load
+ * path wants them cold, because the context builder resolves only the newest
+ * frames that fit its budget (`resolveFrameData`). The explicit archival
+ * round-trip keeps the default so `archiveEntries` stays byte-reversible.
+ */
+export function rehydrateEntries(
+	entries: SessionEntry[],
+	blobs: BlobStore,
+	options: { frames?: boolean } = {},
+): void {
 	for (const entry of entries) {
 		if (entry.type === "message") {
 			const message = entry.message as { content?: unknown; role?: string; details?: unknown };
@@ -250,6 +254,14 @@ export function rehydrateEntries(entries: SessionEntry[], blobs: BlobStore): voi
 		} else if (entry.type === "custom") {
 			rehydrateCustomData(entry.data, blobs);
 		}
-		rehydrateFrames(entry, blobs);
+		if (options.frames !== false) rehydrateFrames(entry, blobs);
 	}
+}
+
+/** Restores a compaction entry's archived frames in place. */
+function rehydrateFrames(entry: SessionEntry, blobs: BlobStore): void {
+	if (entry.type !== "compaction") return;
+	const archive = snapcompact.getPreservedArchive(entry.preserveData);
+	if (!archive) return;
+	for (const frame of archive.frames) resolveImage(frame, blobs);
 }

@@ -85,7 +85,9 @@ describe("diffObservations", () => {
 		const result = diffObservations(prev, next);
 
 		expect(result.changed).toBe(true);
-		expect(result.diff).toContain("@@");
+		// Numbered diff format (`edit_diff_string`): additions are marked `+N|`.
+		// The unified `@@` hunk header belongs to the text/apply diff generator.
+		expect(result.diff).toContain("+6|");
 		expect(result.diff).toContain('+6|checkbox "Remember me" value="true" states=[checked]');
 		expect(result.diff).not.toContain("#500");
 	});

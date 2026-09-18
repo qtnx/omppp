@@ -1070,4 +1070,3 @@ describe("AsyncJobManager", () => {
 		expect(manager.getJob("hung-1")?.status).toBe("cancelled");
 	});
 });
-

@@ -306,6 +306,49 @@ function normalizeCandidateArgs(args: string[]): string[] {
 }
 
 /**
+ * Fallback discovery through Chromium's own process singleton lock.
+ *
+ * A distro launcher — Arch's `/usr/bin/chromium` shim, a Flatpak export —
+ * `exec`s the real browser binary, so the running process image is not the
+ * launch path the caller passed and `Process.fromPath` cannot see it. The
+ * profile's `SingletonLock` symlink is Chromium's record of which process owns
+ * it (`<hostname>-<pid>`), which is the identity that matters here: reusable
+ * sessions are matched by profile, and only one process can hold a profile's
+ * singleton. Every field is re-verified (pid alive, argv names the same
+ * profile, port answers) so a stale lock or a recycled pid cannot attach the
+ * caller to an unrelated browser.
+ */
+async function findReusableCdpByProfileOwner(
+	normalizedUserDataDir: string,
+	signal?: AbortSignal,
+): Promise<{ cdpUrl: string; pid: number } | null> {
+	if (process.platform === "win32") return null;
+	const lockTarget = await fs.readlink(path.join(normalizedUserDataDir, "SingletonLock")).catch(() => null);
+	const lockPid = lockTarget === null ? undefined : /-(\d+)$/.exec(lockTarget)?.[1];
+	if (lockPid === undefined) return null;
+	const owner = Process.fromPid(Number.parseInt(lockPid, 10));
+	if (!owner || owner.status() !== ProcessStatus.Running) return null;
+	let args: string[];
+	try {
+		args = normalizeCandidateArgs(owner.args());
+	} catch {
+		return null;
+	}
+	const ownerProfile = findUserDataDirInArgs(args);
+	if (
+		ownerProfile === null ||
+		!path.isAbsolute(ownerProfile) ||
+		normalizeUserDataDir(ownerProfile) !== normalizedUserDataDir
+	) {
+		return null;
+	}
+	const port = findCdpPortInArgs(args);
+	if (port === null) return null;
+	if (!(await probeCdpAt(port, signal))) return null;
+	return { cdpUrl: `http://127.0.0.1:${port}`, pid: owner.pid };
+}
+
+/**
  * Return a reusable CDP endpoint for `exe`, or null when no instance is
  * running. Refuse to replace an occupied instance unless the caller can
  * launch an isolated profile.
@@ -355,6 +398,13 @@ export async function findReusableCdp(
 		if (await probeCdpAt(port, options.signal)) {
 			return { cdpUrl: `http://127.0.0.1:${port}`, pid: process.pid };
 		}
+	}
+	// Nothing matched by process image path. A launcher-wrapped browser is the
+	// one case `fromPath` structurally cannot cover, so the requested profile's
+	// own singleton lock gets the last word before we decide to launch.
+	if (normalizedRequestedUserDataDir !== null) {
+		const owner = await findReusableCdpByProfileOwner(normalizedRequestedUserDataDir, options.signal);
+		if (owner) return owner;
 	}
 	const canLaunchIsolatedProfile =
 		normalizedRequestedUserDataDir !== null &&

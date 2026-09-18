@@ -703,6 +703,9 @@ describe("imageGenTool", () => {
 				getApiKeyForProvider: async (provider: string) => (provider === "xai-oauth" ? "test-xai-token" : undefined),
 				getProviderBaseUrl: () => undefined,
 				getAll: () => [],
+				find: () => undefined,
+				resolveModelHeaders: async () => undefined,
+				getProviderHeaders: async () => undefined,
 				authStorage: {
 					hasNonEnvCredential: (provider: string) => provider === "xai-oauth",
 					rotateSessionCredential: async () => false,

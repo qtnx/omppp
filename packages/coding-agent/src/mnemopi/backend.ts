@@ -141,9 +141,14 @@ export const mnemopiBackend: MemoryBackend = {
 		const primary = state?.aliasOf;
 		const parts = [STATIC_INSTRUCTIONS];
 		// Subagents cannot run root auto-recall, so inherit the parent's latest
-		// snapshot in their static prompt. Root sessions receive volatile recall as
-		// a hidden conversation message from beforeAgentStartPrompt instead.
-		if (primary?.lastRecallSnippet) parts.push(primary.lastRecallSnippet);
+		// snapshot in their static prompt. A root session receives volatile recall as
+		// a hidden conversation message instead — but only when the prompt path staged
+		// and committed it. When the background auto-recall won the race (or the prompt
+		// path never ran), that snippet was never delivered as a message and belongs
+		// here, or the recall is dropped entirely.
+		const inherited = primary?.lastRecallSnippet;
+		const cached = inherited ?? (state?.recallDeliveredVolatile ? undefined : state?.lastRecallSnippet);
+		if (cached) parts.push(cached);
 		return truncateApproxTokens(parts.join("\n\n").trim(), settings.get("mnemopi.injectionTokenLimit"));
 	},
 
@@ -162,7 +167,8 @@ export const mnemopiBackend: MemoryBackend = {
 		}
 		return {
 			context: preparation.context,
-			commit: () => getMnemopiSessionState(session) === state && preparation.commit(),
+			commit: () =>
+				getMnemopiSessionState(session) === state && preparation.commit(preparation.context),
 		};
 	},
 

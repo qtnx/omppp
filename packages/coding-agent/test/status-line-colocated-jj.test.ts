@@ -245,7 +245,12 @@ describe("StatusLineComponent display detector", () => {
 		await flush();
 
 		expect(run).toHaveBeenCalledTimes(1);
-		expect(run.mock.calls[0]?.[1]).toEqual(["pr", "view", "--json", "number,url"]);
+		expect(run.mock.calls[0]?.[1]).toEqual([
+			"pr",
+			"view",
+			"--json",
+			"number,url,state,isDraft,mergeStateStatus,reviewDecision",
+		]);
 		expect(component.getTopBorder(80).content).toContain("feature-x");
 		expect(component.getTopBorder(80).content).toContain("#7");
 		component.dispose();

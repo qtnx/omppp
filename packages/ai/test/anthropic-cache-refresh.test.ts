@@ -341,15 +341,17 @@ describe("Anthropic prompt-cache refresh", () => {
 		await Promise.resolve();
 
 		expect(capture.bodies).toHaveLength(1);
+		// OMPx divergence: on the official OAuth path the fork anchors the 1h entry with
+		// the top-level automatic marker and leaves the messages undecorated, where
+		// upstream marks the trailing message. Either way no short breakpoint exists —
+		// the predicate only reads message content, so the timer stays unarmed.
+		expect(capture.bodies[0]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		const blocks = (capture.bodies[0]?.messages ?? []).flatMap(message =>
 			Array.isArray(message.content) ? message.content : [],
 		);
 		const breakpoints = blocks
 			.map(block => ("cache_control" in block ? (block.cache_control ?? undefined) : undefined))
 			.filter((cc): cc is CacheControlEphemeral => cc != null);
-		expect(breakpoints.length).toBeGreaterThan(0);
-		for (const cc of breakpoints) {
-			expect(cc.ttl).toBe("1h");
-		}
+		expect(breakpoints).toHaveLength(0);
 	});
 });

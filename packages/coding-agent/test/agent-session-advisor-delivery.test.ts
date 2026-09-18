@@ -241,13 +241,16 @@ describe("AgentSession advisor delivery during a tool batch", () => {
 		expect(session.hasPendingDeliverableAsides()).toBe(true);
 	});
 
-	it("automatically processes a concern emitted after the final aside snapshot", async () => {
+	it("preserves a concern emitted after the final aside snapshot as a visible card", async () => {
+		// The run has already reached its terminal boundary when the note lands (the
+		// loop is on its final aside poll), so this is no longer a mid-run note:
+		// terminal unwind preserves late non-blocking advice as a visible, persisted
+		// advisor card instead of starting an extra primary request (PR #12154, and
+		// the sibling window covered by `agent-session-advisor-terminal-unwind`).
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled anthropic model to exist");
 
-		const mainMock = createMockModel({
-			responses: [{ content: ["initial answer"] }, { content: ["advisor concern handled"] }],
-		});
+		const mainMock = createMockModel({ responses: [{ content: ["initial answer"] }] });
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: {
@@ -332,16 +335,16 @@ describe("AgentSession advisor delivery during a tool batch", () => {
 					typeof entry.content === "string" &&
 					entry.content.includes(TAIL_ADVISOR_NOTE),
 			);
-		const deliveredContextCount =
-			mainMock.calls[1]?.context.messages.filter(message => messageText(message).includes(TAIL_ADVISOR_NOTE))
-				.length ?? 0;
+		const noteInAnyModelContext = mainMock.calls.some(call =>
+			call.context.messages.some(message => messageText(message).includes(TAIL_ADVISOR_NOTE)),
+		);
 
 		expect({
 			streamingAtInjection,
 			finalSnapshotSize,
 			queuedImmediatelyAfterAdvice,
 			modelCalls: mainMock.calls.length,
-			deliveredContextCount,
+			noteInAnyModelContext,
 			liveAdvisorMessages: liveAdvisorMessages.length,
 			persistedAdvisorEntries: persistedAdvisorEntries.length,
 			advisorQueueRemaining: session.yieldQueue.has("advisor"),
@@ -349,8 +352,8 @@ describe("AgentSession advisor delivery during a tool batch", () => {
 			streamingAtInjection: true,
 			finalSnapshotSize: 0,
 			queuedImmediatelyAfterAdvice: false,
-			modelCalls: 2,
-			deliveredContextCount: 1,
+			modelCalls: 1,
+			noteInAnyModelContext: false,
 			liveAdvisorMessages: 1,
 			persistedAdvisorEntries: 1,
 			advisorQueueRemaining: false,

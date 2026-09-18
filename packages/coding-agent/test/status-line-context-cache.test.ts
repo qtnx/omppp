@@ -14,6 +14,7 @@
  * redraw — that per-event recompute is what previously froze large sessions.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { Tokenizer } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ContextUsage } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
@@ -464,7 +465,7 @@ describe("StatusLineComponent context breakdown", () => {
 			categoryTokens("skills");
 
 		expect(computeNonMessageTokens(session)).toBe(expected);
-		expect(estimateToolSchemaTokens(session.agent.state.tools)).toBe(categoryTokens("systemTools"));
+		expect(estimateToolSchemaTokens(session.agent.state.tools, new Tokenizer())).toBe(categoryTokens("systemTools"));
 	});
 
 	it("renders token usage with an unknown marker when the model window is unavailable", () => {

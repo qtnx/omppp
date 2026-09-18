@@ -992,8 +992,26 @@ mod tests {
 			.unwrap();
 	}
 
+	/// Minimum `jj` CLI the fixtures below are written against.
+	///
+	/// `jj` ships its CLI and `jj-lib` in lockstep, and this crate links the
+	/// library: a CLI older than the library writes working-copy commits without
+	/// the copy-id metadata the library needs to report renames, so the fixture
+	/// would fail on a version mismatch rather than on a regression here.
+	const JJ_FIXTURE_MIN_VERSION: (u32, u32) = (0, 44);
+
 	fn jj_available() -> bool {
-		Command::new("jj").arg("--version").output().is_ok()
+		let Ok(output) = Command::new("jj").arg("--version").output() else {
+			return false;
+		};
+		let text = String::from_utf8_lossy(&output.stdout);
+		let Some(version) = text.split_whitespace().nth(1) else {
+			return false;
+		};
+		let mut parts = version.split('.').filter_map(|part| part.parse::<u32>().ok());
+		let major = parts.next().unwrap_or(0);
+		let minor = parts.next().unwrap_or(0);
+		(major, minor) >= JJ_FIXTURE_MIN_VERSION
 	}
 
 	fn run_jj(root: &Path, args: &[&str]) -> String {

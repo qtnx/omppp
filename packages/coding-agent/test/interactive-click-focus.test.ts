@@ -89,6 +89,8 @@ describe("inline click-to-focus geometry", () => {
 			toolCount: 1,
 			requests: 1,
 			tokens: 0,
+			inputTokens: 0,
+			outputTokens: 0,
 			cost: 0,
 			durationMs: 0,
 		};

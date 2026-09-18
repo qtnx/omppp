@@ -61,6 +61,7 @@ export type KnownProvider =
 	| "siliconflow"
 	| "siliconflow-cn"
 	| "synthetic"
+	| "tnx"
 	| "together"
 	| "umans"
 	| "venice"

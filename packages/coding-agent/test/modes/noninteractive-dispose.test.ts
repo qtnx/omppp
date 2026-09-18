@@ -117,6 +117,9 @@ describe("print mode disposes the session before terminating", () => {
 				getEntries: () => [],
 				onPersistenceError: () => () => {},
 			},
+			// Print mode reads the live turn's messages off the session; this stub
+			// has no agent, so mirror the (empty) persisted context.
+			state: { messages: [] },
 			getLastAssistantMessage: () => abortedMsg,
 			prepareForHeadlessAdvisorDrain: () => {},
 			setTextOutputCommitted: () => {},

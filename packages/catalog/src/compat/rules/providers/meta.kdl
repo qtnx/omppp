@@ -2,7 +2,10 @@
 
 provider "meta" {
 	default-model "muse-spark-1.1"
-	env "MODEL_API_KEY" "META_API_KEY"
+	// Fork divergence: the fork shipped `META_MODEL_API_KEY` as the documented
+	// name (upstream's KDL uses the shorter `MODEL_API_KEY`). Keep the fork's
+	// name first so existing configs resolve, and still accept the alias.
+	env "META_MODEL_API_KEY" "META_API_KEY"
 	discovery label="Meta Model API"
 
 	// Muse Spark revisions served by Meta's first-party Responses API. Meta's

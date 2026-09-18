@@ -3719,11 +3719,18 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		toolNames = toolNames.filter(name => name !== "task");
 	}
 	// Ordinary agents retain the host's always-on collaboration capability.
-	// Restricted sessions must not widen their explicit host tool list with hub.
+	// Restricted sessions must not widen their explicit host tool list with hub,
+	// and neither does a child that is deliberately bounded (`resource-profile:
+	// minimal`, e.g. the bundled scout) or that already declares the peer channel
+	// (`irc`) — its surface stays exactly what the agent definition asked for.
+	// `tools: []` is yield-only — never auto-add hub.
 	if (
 		toolNames &&
+		(agent.tools === undefined || agent.tools.length > 0) &&
 		!options.restrictToolNames &&
 		!toolNames.includes("hub") &&
+		!toolNames.includes("irc") &&
+		!minimalResourceProfile &&
 		(!isReadOnlyAgent(agent) || toolNames.includes("task"))
 	) {
 		toolNames = [...toolNames, "hub"];
@@ -3736,11 +3743,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		toolNames = Array.from(new Set(expanded));
 	}
 	// Inbound steering works without hub, but outbound IRC roster and peer coordination instructions
-	// require the hub tool to be available to this subagent.
+	// require the child to hold a peer channel: the `hub` tool, or the legacy
+	// `irc` alias an agent definition may still declare.
 	const ircEnabled =
 		options.enableIrc !== false &&
 		isIrcEnabled(subagentSettings, childDepth) &&
-		(toolNames === undefined || toolNames.includes("hub"));
+		(toolNames === undefined || toolNames.includes("hub") || toolNames.includes("irc"));
 
 	const modelPatterns = normalizeModelPatterns(modelOverride ?? agent.model);
 	const sessionFile = subtaskSessionFile ?? null;

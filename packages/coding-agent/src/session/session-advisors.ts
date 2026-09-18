@@ -49,6 +49,7 @@ import {
 	AdviseTool,
 	type AdvisorAgent,
 	type AdvisorConfig,
+	type AdvisorConsultResult,
 	AdvisorEmissionGuard,
 	AdvisorLoopGuard,
 	type AdvisorMessageDetails,
@@ -1838,7 +1839,8 @@ export class SessionAdvisors {
 		const source = advisor.slug ? advisor.name : undefined;
 		const interrupting = isInterruptingSeverity(effectiveSeverity);
 		const terminalAnswerNoQueuedWork = this.#hasTerminalTextAnswerWithoutQueuedWork();
-		const terminalUnwindPreserve = this.#terminalUnwindActive && effectiveSeverity !== "blocker" && terminalAnswerNoQueuedWork;
+		const terminalUnwindPreserve =
+			this.#terminalUnwindActive && effectiveSeverity !== "blocker" && terminalAnswerNoQueuedWork;
 		const channel = resolveAdvisorDeliveryChannel({
 			severity: effectiveSeverity,
 			autoResumeSuppressed: this.#advisorAutoResumeSuppressed,

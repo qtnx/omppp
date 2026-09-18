@@ -803,6 +803,7 @@ describe("pickRecentFocusableAgentId", () => {
 			sessionFile: `${id}.jsonl`,
 			createdAt: 1000,
 			lastActivity: 1000,
+			ircEnabled: false,
 			...overrides,
 		};
 	}

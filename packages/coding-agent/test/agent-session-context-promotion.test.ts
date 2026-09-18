@@ -314,8 +314,8 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("runs threshold compaction before promoting when a promotion target exists", async () => {
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.6-sol");
 		if (!sparkModel || !codexModel) {
 			throw new Error("Expected codex spark and codex models to exist");
 		}
@@ -354,8 +354,8 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("runs overflow compaction before promoting when a promotion target exists", async () => {
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.6-sol");
 		if (!sparkModel || !codexModel) {
 			throw new Error("Expected codex spark and codex models to exist");
 		}
@@ -380,8 +380,8 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("runs length-stop compaction before promoting when a promotion target exists", async () => {
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.6-sol");
 		if (!sparkModel || !codexModel) {
 			throw new Error("Expected codex spark and codex models to exist");
 		}
@@ -399,8 +399,8 @@ describe("AgentSession context promotion", () => {
 	});
 
 	it("falls back to context promotion when overflow compaction is skipped", async () => {
-		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.3-codex-spark");
-		const codexModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		const sparkModel = modelRegistry.find("openai-codex", "gpt-5.5");
+		const codexModel = modelRegistry.find("openai-codex", "gpt-5.6-sol");
 		if (!sparkModel || !codexModel) {
 			throw new Error("Expected codex spark and codex models to exist");
 		}

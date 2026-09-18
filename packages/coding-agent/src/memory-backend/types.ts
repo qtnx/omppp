@@ -95,8 +95,15 @@ export interface MemoryBackendStartOptions {
 /** A successful recall, including an empty result, staged until user-turn delivery. */
 export interface MemoryPromptPreparation {
 	context?: string;
-	/** Commit synchronously after delivery validation; false rejects lost ownership without state writes. */
-	commit(): boolean;
+	/**
+	 * Commit synchronously after delivery validation; false rejects lost ownership
+	 * without state writes.
+	 *
+	 * `deliveredContext` is the text the caller actually staged (a backend may clamp
+	 * `context` to an injection budget); a backend that tracks delivery completeness
+	 * uses it to decide whether the untruncated recall still needs another surface.
+	 */
+	commit(deliveredContext?: string): boolean;
 }
 
 export interface MemoryBackend {

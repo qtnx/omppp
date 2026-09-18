@@ -231,10 +231,7 @@ export async function tryLoadMentalModelsBlock(
 	}
 
 	const models = (response.items ?? []).filter(
-		m =>
-			modelVisibleForScope(m, scopeOrVisibleTags) &&
-			typeof m.content === "string" &&
-			m.content.trim().length > 0,
+		m => modelVisibleForScope(m, scopeOrVisibleTags) && typeof m.content === "string" && m.content.trim().length > 0,
 	);
 	if (models.length === 0) return { ok: true, block: undefined };
 

@@ -301,6 +301,8 @@ describe("libkitty end-to-end", () => {
 			models: {},
 			injectedTtsrRules: [],
 			mode: "none",
+			selectedMCPToolNames: [],
+			hasPersistedMCPToolSelection: false,
 		});
 
 		const committedRows = () => {

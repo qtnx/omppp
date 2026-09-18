@@ -2359,8 +2359,8 @@ describe("ModelRegistry", () => {
 			testSettings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
 			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(640_000);
-			// An advertised maximum smaller than the current window cannot shrink it.
-			expect(registry.find("openai-codex", "gpt-5.6-luna")?.contextWindow).toBe(1_000_000);
+			// Fork pin is the usable Codex window; a smaller advertised maximum cannot shrink it.
+			expect(registry.find("openai-codex", "gpt-5.6-luna")?.contextWindow).toBe(372_000);
 
 			testSettings.set("extendedContext", false);
 			await registry.reapplyModelPolicies();
@@ -2400,7 +2400,9 @@ describe("ModelRegistry", () => {
 			settings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
 			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
-			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(372_000);
+			// Extended context raises the Codex route to the maximum the catalog
+			// rules own for this SKU (the advertised 872K, not a sibling's window).
+			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(872_000);
 		});
 	});
 	describe("bundled Anthropic catalog availability", () => {

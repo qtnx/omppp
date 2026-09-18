@@ -8,13 +8,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
-import {
-	getProjectAgentDir,
-	getProjectDir,
-	removeSyncWithRetries,
-	setProjectDir,
-	Snowflake,
-} from "@oh-my-pi/pi-utils";
+import { getProjectAgentDir, getProjectDir, removeSyncWithRetries, setProjectDir, Snowflake } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 function textContent(result: { content?: Array<{ type: string; text?: string }> }): string {

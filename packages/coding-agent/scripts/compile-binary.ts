@@ -49,7 +49,15 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
 			// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).
 			// Bytecode rejects top-level await in the bundle graph.
-			bytecode: true,
+			// Precompiled bytecode is disabled: with `bytecode: true` the compiled
+			// executable aborts at startup with `SyntaxError: import.meta is only
+			// valid inside modules`, while the same graph runs fine from source and
+			// from `dist/cli.js`. Bytecode also rejects top-level await in the
+			// bundle graph, so the first module that needs it would break the
+			// released binary the same way. Build without it until the graph is
+			// TLA-free again — the boot-time gain (~30 ms vs ~256 ms) is not worth
+			// shipping an executable that cannot start.
+			bytecode: false,
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,

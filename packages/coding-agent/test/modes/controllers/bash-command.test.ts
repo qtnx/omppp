@@ -46,6 +46,7 @@ function createCwdContext(sourceDir: string, isStreaming = false, showImages = t
 		session: {
 			isStreaming,
 			executeBash,
+			refreshBaseSystemPrompt: vi.fn(async () => {}),
 			moveSession: vi.fn(async (cwd: string) => {
 				state.cwd = cwd;
 				state.artifactCwd = cwd;

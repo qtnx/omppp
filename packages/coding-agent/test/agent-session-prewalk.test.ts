@@ -862,7 +862,7 @@ describe("AgentSession prewalk", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		const settings = Settings.isolated({ "advisor.enabled": false, "compaction.enabled": false });
 		settings.setModelRole("default", `anthropic/missing-model,${primary.provider}/${primary.id}:medium`);
 		settings.setModelRole("smol", `${target.provider}/${target.id}:medium`);
 		const sessionManager = SessionManager.inMemory();

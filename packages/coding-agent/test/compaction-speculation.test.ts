@@ -138,6 +138,9 @@ describe("async speculative compaction", () => {
 			syncTodoPhasesFromBranch: () => {},
 			resetAdvisorRuntimes: () => {},
 			rebaseAfterCompaction: () => {},
+			// No live prompt in this harness: nothing is in flight, so mid-run
+			// compaction has no entry to pin out of the summarized region.
+			pendingInFlightMessages: () => [],
 			recordAnchoredHistoryRewrite: () => {},
 			getContextBreakdown: () => undefined,
 			getContextUsage: () => undefined,

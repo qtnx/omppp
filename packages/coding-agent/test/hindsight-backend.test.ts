@@ -471,11 +471,12 @@ describe("hindsightBackend first-turn injection", () => {
 		} as never);
 
 		const prompt = await hindsightBackend.beforeAgentStartPrompt?.(session as never, "What do I remember?");
-		const mmIdx = prompt!.indexOf("<mental_models>\n");
-		const memIdx = prompt!.indexOf("<memories>\n");
+		const promptText = prompt?.context ?? "";
+		const mmIdx = promptText.indexOf("<mental_models>\n");
+		const memIdx = promptText.indexOf("<memories>\n");
 		expect(mmIdx).toBeGreaterThanOrEqual(0);
 		expect(memIdx).toBeGreaterThan(mmIdx);
-		expect(prompt).toContain("recalled fact");
+		expect(promptText).toContain("recalled fact");
 	});
 
 	it("reloadMentalModelsForSession refreshes the cached snippet and base prompt", async () => {

@@ -51,15 +51,15 @@ const host: SessionToolsHost = {
 	isDisposed: () => false,
 	isStreaming: () => false,
 	queuedMessageCount: () => 0,
+	orchestratorModeEnabled: () => false,
 	planModeEnabled: () => false,
 	model: () => undefined,
 	memoryBackendSession: () => ({}) as never,
 	clearInheritedProviderPromptCacheKey: () => {},
-	clearMemoryPromotionSnapshot: () => {},
-	captureMemoryPromotionSnapshot: () => {},
 	emitNotice: () => {},
 	notifyCommandMetadataChanged: () => {},
 	localProtocolOptions: () => ({}),
+	secretVault: undefined,
 };
 const sessionTools = new SessionTools(host, {
 	baseSystemPrompt: [],

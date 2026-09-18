@@ -397,6 +397,16 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 	let baseReleasePromise: Promise<void> | undefined;
 	let cleanupPromise: Promise<void> | undefined;
 	let releasePromise: Promise<void> | undefined;
+	/**
+	 * Set when the agent lifecycle released this workspace *before* the run's
+	 * terminal capture — the release hook fires inside `runSubprocess` for a
+	 * session the lifecycle does not keep alive. Capturing there would race the
+	 * run's own capture (and, with a post-run review gate, write a delta the gate
+	 * has not accepted yet), so capture and cleanup both stay with the runner.
+	 */
+	let releaseDeferredToRun = false;
+	/** True once the run's terminal capture / withhold decision has settled. */
+	let captureSettled = false;
 	const releaseBase = (): Promise<void> => {
 		baseReleasePromise ??= opts.baseOptions.onRelease?.() ?? Promise.resolve();
 		return baseReleasePromise;
@@ -412,6 +422,21 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 		releasePromise ??= (async () => {
 			if (!handle || retainWorkspace) {
 				await releaseBase();
+				return;
+			}
+			if (!captureSettled) {
+				// Released before the run captured: the runner owns the terminal
+				// capture (and the teardown it needs to stay possible).
+				releaseDeferredToRun = true;
+				await releaseBase();
+				return;
+			}
+			if (opts.afterRun) {
+				// A post-run phase (the review gate) owns the terminal capture: it
+				// either threaded an accepted delta into the run's patch/branch
+				// write, or deliberately withheld the delta. Recapturing here would
+				// write — and in branch mode commit — work the gate never approved.
+				await cleanupHandle();
 				return;
 			}
 			try {
@@ -637,11 +662,13 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 	} catch (err) {
 		return rememberAgentArtifacts(opts.buildFailureResult(err));
 	} finally {
+		captureSettled = true;
 		if (
 			handle &&
 			!retainWorkspace &&
-			!releasePromise &&
-			!(opts.baseOptions.keepAlive !== false && AgentLifecycleManager.global().has(opts.agentId))
+			(releaseDeferredToRun ||
+				(!releasePromise &&
+					!(opts.baseOptions.keepAlive !== false && AgentLifecycleManager.global().has(opts.agentId))))
 		) {
 			if (deferredCleanup) {
 				trackLateCleanup(deferredCleanup.then(cleanupHandle), {

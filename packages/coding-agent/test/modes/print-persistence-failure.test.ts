@@ -65,12 +65,26 @@ function memoizingDispose(manager: SessionManager): () => Promise<void> {
 	};
 }
 
+/**
+ * Print mode reads the live turn's messages off the session (`session.state`).
+ * These stubs have no agent, so mirror that surface from the persisted branch —
+ * the same messages a real session holds once the turn is persisted.
+ */
+function branchState(manager: SessionManager): { messages: unknown[] } {
+	return {
+		get messages() {
+			return manager.getBranch().flatMap(entry => (entry.type === "message" ? [entry.message] : []));
+		},
+	};
+}
+
 function assistantSession(manager: SessionManager, dispose: () => Promise<void>): AgentSession {
 	return {
 		extensionRunner: undefined,
 		subscribe: () => {},
 		settings: { get: () => false },
 		sessionManager: manager,
+		state: branchState(manager),
 		getLastAssistantMessage: () => assistant(""),
 		prepareForHeadlessAdvisorDrain: () => {},
 		setTextOutputCommitted: () => {},
@@ -95,6 +109,7 @@ describe("headless persistence-failure surface", () => {
 			subscribe: () => {},
 			settings: { get: () => false },
 			sessionManager: manager,
+			state: branchState(manager),
 			getLastAssistantMessage: () => assistant(""),
 			prepareForHeadlessAdvisorDrain: () => {},
 			setTextOutputCommitted: () => {},
@@ -142,6 +157,7 @@ describe("headless persistence-failure surface", () => {
 			subscribe: () => {},
 			settings: { get: () => false },
 			sessionManager: manager,
+			state: branchState(manager),
 			getLastAssistantMessage: () => assistant(""),
 			prepareForHeadlessAdvisorDrain: () => {},
 			setTextOutputCommitted: () => {},
@@ -191,6 +207,9 @@ describe("headless persistence-failure surface", () => {
 			extensionRunner: undefined,
 			subscribe: () => {},
 			settings: { get: () => false },
+			// No persisted branch in this stub: the turn's own message is the only
+			// assistant content print mode can emit.
+			state: { messages: [] },
 			sessionManager: {
 				onPersistenceError: (callback: (error: Error) => void) => {
 					notifyPersistenceError = callback;
@@ -238,6 +257,7 @@ describe("headless persistence-failure surface", () => {
 			subscribe: () => {},
 			settings: { get: () => false },
 			sessionManager: manager,
+			state: branchState(manager),
 			getLastAssistantMessage: () => assistant(""),
 			prepareForHeadlessAdvisorDrain: () => {},
 			setTextOutputCommitted: () => {},

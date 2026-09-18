@@ -47,6 +47,96 @@ import { getThemeByName, setThemeInstance } from "../src/modes/theme/theme";
 
 const miseBinary = Bun.env.MISE_BIN ?? $which("mise");
 
+/**
+ * Releases the fake GitHub API serves below: `v2.0.0` is recent enough that any
+ * release-age window must exclude it, so a mise that honors
+ * `minimum_release_age` never resolves it.
+ */
+const MISE_FIXTURE_RECENT = "github:qtnx/omppp@2.0.0";
+const MISE_FIXTURE_RELEASES = [
+	{ tag_name: "v2.0.0", draft: false, prerelease: false, created_at: "2026-09-09T00:00:00Z", assets: [] },
+	{ tag_name: "v1.0.0", draft: false, prerelease: false, created_at: "2020-01-01T00:00:00Z", assets: [] },
+];
+
+function serveMiseFixture(): { url: string; stop: () => void } {
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch(request) {
+			const pathname = new URL(request.url).pathname;
+			if (pathname.endsWith("/releases/latest")) return Response.json(MISE_FIXTURE_RELEASES[0]);
+			if (pathname.endsWith("/releases")) return Response.json(MISE_FIXTURE_RELEASES);
+			return new Response("not found", { status: 404 });
+		},
+	});
+	return { url: String(server.url), stop: () => void server.stop(true) };
+}
+
+/** A tool entry whose own release-age window excludes the fixture's recent release. */
+function miseFixtureConfig(apiUrl: string): string {
+	return `[tools]
+"github:qtnx/omppp" = { version = "1", minimum_release_age = "999y", api_url = "${apiUrl}" }
+`;
+}
+
+/** Isolated mise state under `root`; the proxy vars guarantee no real network escape. */
+function miseFixtureEnv(root: string): Record<string, string | undefined> {
+	return {
+		...process.env,
+		HOME: path.join(root, "home"),
+		MISE_CACHE_DIR: path.join(root, "cache"),
+		MISE_CONFIG_DIR: path.join(root, "config"),
+		MISE_DATA_DIR: path.join(root, "data"),
+		MISE_STATE_DIR: path.join(root, "state"),
+		HTTP_PROXY: "http://127.0.0.1:9",
+		HTTPS_PROXY: "http://127.0.0.1:9",
+		ALL_PROXY: "http://127.0.0.1:9",
+		NO_PROXY: "127.0.0.1,localhost",
+	};
+}
+
+/**
+ * Whether the installed mise honors release-age filtering at all. Releases
+ * before the `minimum_release_age` setting existed accept the per-tool option
+ * and silently ignore it (2026.3.x does), leaving the fixture below unable to
+ * express its premise. Support means both halves hold: the plain upgrade leaves
+ * the fixture's recent release out, and `--before 0s` pulls it back in — so a
+ * mise that cannot reach the fixture at all is unsupported too, not a false
+ * pass. Probed once while collecting tests because bun:test has no dynamic skip;
+ * the probe must await mise instead of `spawnSync`, which would block this
+ * process and starve the fixture API server it fetches from.
+ */
+async function miseHonorsReleaseAge(binary: string): Promise<boolean> {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "ompx-mise-age-probe-"));
+	const fixture = serveMiseFixture();
+	const run = async (args: string[]): Promise<string> => {
+		const probe = Bun.spawn([binary, "-C", root, ...args], {
+			env: miseFixtureEnv(root),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr] = await Promise.all([
+			new Response(probe.stdout).text(),
+			new Response(probe.stderr).text(),
+			probe.exited,
+		]);
+		return stdout + stderr;
+	};
+	try {
+		await Bun.write(path.join(root, "mise.toml"), miseFixtureConfig(fixture.url));
+		const blocked = await run(["upgrade", "github:qtnx/omppp", "--bump", "--dry-run"]);
+		if (blocked.includes(MISE_FIXTURE_RECENT)) return false;
+		const allowed = await run([...buildMiseUpgradeArgs(), "--dry-run"]);
+		return allowed.includes(MISE_FIXTURE_RECENT);
+	} finally {
+		fixture.stop();
+		await fs.rm(root, { recursive: true, force: true });
+	}
+}
+
+const miseSupportsReleaseAge = miseBinary ? await miseHonorsReleaseAge(miseBinary) : false;
+
 const tempDirs: string[] = [];
 
 async function makeTempDir(): Promise<string> {
@@ -566,67 +656,41 @@ describe("update-cli bun install command", () => {
 		expect(buildMiseForceInstallArgs("1.7.1")).toEqual(["install", "--force", "github:qtnx/omppp@1.7.1"]);
 	});
 
-	it.skipIf(!miseBinary)("overrides per-tool release age during actual mise upgrade resolution", async () => {
-		if (!miseBinary) throw new Error("mise binary unavailable");
-		const root = await makeTempDir();
-		const releases = [
-			{ tag_name: "v2.0.0", draft: false, prerelease: false, created_at: "2026-09-09T00:00:00Z", assets: [] },
-			{ tag_name: "v1.0.0", draft: false, prerelease: false, created_at: "2020-01-01T00:00:00Z", assets: [] },
-		];
-		const server = Bun.serve({
-			hostname: "127.0.0.1",
-			port: 0,
-			fetch(request) {
-				const pathname = new URL(request.url).pathname;
-				if (pathname.endsWith("/releases/latest")) return Response.json(releases[0]);
-				if (pathname.endsWith("/releases")) return Response.json(releases);
-				return new Response("not found", { status: 404 });
-			},
-		});
-		try {
-			await Bun.write(
-				path.join(root, "mise.toml"),
-				`[tools]
-"github:qtnx/omppp" = { version = "1", minimum_release_age = "999y", api_url = "${server.url}" }
-`,
-			);
-			const env = {
-				...process.env,
-				HOME: path.join(root, "home"),
-				MISE_CACHE_DIR: path.join(root, "cache"),
-				MISE_CONFIG_DIR: path.join(root, "config"),
-				MISE_DATA_DIR: path.join(root, "data"),
-				MISE_STATE_DIR: path.join(root, "state"),
-				HTTP_PROXY: "http://127.0.0.1:9",
-				HTTPS_PROXY: "http://127.0.0.1:9",
-				ALL_PROXY: "http://127.0.0.1:9",
-				NO_PROXY: "127.0.0.1,localhost",
-			};
-			const run = async (args: string[]): Promise<string> => {
-				const process = Bun.spawn([miseBinary, "-C", root, ...args], {
-					env,
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				const [stdout, stderr, exitCode] = await Promise.all([
-					new Response(process.stdout).text(),
-					new Response(process.stderr).text(),
-					process.exited,
-				]);
-				if (exitCode !== 0) throw new Error(`mise upgrade failed: ${stdout}${stderr}`);
-				return stdout + stderr;
-			};
+	it.skipIf(!miseSupportsReleaseAge)(
+		"overrides per-tool release age during actual mise upgrade resolution",
+		async () => {
+			if (!miseBinary) throw new Error("mise binary unavailable");
+			const root = await makeTempDir();
+			const fixture = serveMiseFixture();
+			try {
+				await Bun.write(path.join(root, "mise.toml"), miseFixtureConfig(fixture.url));
+				const env = miseFixtureEnv(root);
+				const run = async (args: string[]): Promise<string> => {
+					const process = Bun.spawn([miseBinary, "-C", root, ...args], {
+						env,
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+					});
+					const [stdout, stderr, exitCode] = await Promise.all([
+						new Response(process.stdout).text(),
+						new Response(process.stderr).text(),
+						process.exited,
+					]);
+					if (exitCode !== 0) throw new Error(`mise upgrade failed: ${stdout}${stderr}`);
+					return stdout + stderr;
+				};
 
-			const blocked = await run(["upgrade", "github:qtnx/omppp", "--bump", "--dry-run"]);
-			expect(blocked).not.toContain("Would install github:qtnx/omppp@2.0.0");
+				const blocked = await run(["upgrade", "github:qtnx/omppp", "--bump", "--dry-run"]);
+				expect(blocked).not.toContain(`Would install ${MISE_FIXTURE_RECENT}`);
 
-			const allowed = await run([...buildMiseUpgradeArgs(), "--dry-run"]);
-			expect(allowed).toContain("Would install github:qtnx/omppp@2.0.0");
-		} finally {
-			server.stop(true);
-		}
-	});
+				const allowed = await run([...buildMiseUpgradeArgs(), "--dry-run"]);
+				expect(allowed).toContain(`Would install ${MISE_FIXTURE_RECENT}`);
+			} finally {
+				fixture.stop();
+			}
+		},
+	);
 
 	it("pins npm package installs to the official registry and the checked native package versions", () => {
 		const args = buildNpmInstallArgs("16.3.15", "win32-x64");

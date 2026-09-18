@@ -397,12 +397,19 @@ describe("Anthropic request fingerprint alignment", () => {
 		});
 	});
 
-	it("places a 1h breakpoint on the trailing message in a one-message OAuth request by default", async () => {
+	it("defaults official OAuth requests to 1h anchors on the head and the automatic tail", async () => {
+		// OMPx divergence: the fork keeps the automatic conversation cache on the
+		// official OAuth path — a top-level `cache_control` plus a global-scope
+		// long-cache anchor on the trailing caller block — where upstream instead
+		// markers the trailing message. The 1h default is asserted on the fork's
+		// anchors; `uses 1h breakpoints for inferred OAuth on the official
+		// Anthropic API` pins the same contract from the payload side.
 		const payload = (await captureAnthropicPayload(ANTHROPIC_MODEL, {
 			systemPrompt: ["Stay concise."],
 			messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
 		})) as {
 			system?: Array<{ text?: string; cache_control?: unknown }>;
+			cache_control?: unknown;
 			messages?: Array<{ content?: Array<{ cache_control?: unknown }> | string }>;
 		};
 
@@ -410,17 +417,19 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.system?.[0]?.cache_control).toBeUndefined();
 		expect(claudeCodeSystemInstruction).toBe("You are Claude Code, Anthropic's official CLI for Claude.");
 		expect(payload.system?.[1]?.text).toBe(claudeCodeSystemInstruction);
-		expect(payload.system?.[1]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
-		expect(payload.system?.[2]?.cache_control).toBeUndefined();
-		const content = payload.messages?.[0]?.content;
-		expect(Array.isArray(content)).toBe(true);
-		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
-			type: "ephemeral",
-			ttl: "1h",
-		});
+		// The request-specific identity blocks stay uncached; the long-cache anchor
+		// sits on the trailing caller block, whose prefix the global scope shares.
+		expect(payload.system?.[1]?.cache_control).toBeUndefined();
+		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h", scope: "global" });
+		expect(payload.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
+		// The one-message tail is covered by the automatic anchor, so the message stays
+		// a plain string and never grows a marker of its own.
+		expect(payload.messages?.[0]?.content).toBe("Hi");
 	});
 
 	it("honors explicit short retention on OAuth requests", async () => {
+		// OMPx divergence: short retention is asserted on the fork's anchors — no
+		// `ttl` anywhere — rather than on upstream's trailing-message marker.
 		const payload = (await captureAnthropicPayload(
 			ANTHROPIC_MODEL,
 			{
@@ -430,14 +439,23 @@ describe("Anthropic request fingerprint alignment", () => {
 			{ cacheRetention: "short" },
 		)) as {
 			system?: Array<{ text?: string; cache_control?: unknown }>;
+			cache_control?: unknown;
 			messages?: Array<{ content?: Array<{ cache_control?: unknown }> | string }>;
 		};
 
-		expect(payload.system?.[1]?.cache_control).toEqual({ type: "ephemeral" });
-		const content = payload.messages?.[0]?.content;
-		expect(Array.isArray(content) ? content[0]?.cache_control : undefined).toEqual({
-			type: "ephemeral",
-		});
+		expect(payload.system?.[1]?.cache_control).toBeUndefined();
+		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral", scope: "global" });
+		expect(payload.cache_control).toEqual({ type: "ephemeral" });
+		// An explicit short retention must not leave a 1h marker on any anchor.
+		const controls = [
+			payload.cache_control,
+			...(payload.system ?? []).map(block => block.cache_control),
+			...((payload.messages ?? []).flatMap(message =>
+				Array.isArray(message.content) ? message.content.map(block => block.cache_control) : [],
+			) ?? []),
+		].filter(control => control != null);
+		expect(controls).toHaveLength(2);
+		for (const control of controls) expect(control).not.toHaveProperty("ttl");
 	});
 
 	it("uses global scope only on the stable OAuth system prefix", async () => {
@@ -2200,6 +2218,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		})) as {
 			tools?: Array<{ cache_control?: unknown }>;
 			system?: Array<{ cache_control?: unknown }>;
+			cache_control?: unknown;
 			messages?: Array<{ content?: Array<{ cache_control?: unknown }> | string }>;
 		};
 
@@ -2209,15 +2228,16 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.tools?.[1]?.cache_control).toBeUndefined();
 		expect(payload.tools?.at(-1)?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 
-		// The trailing message window is untouched; the OAuth identity block carries its
-		// own breakpoint, while caller system blocks stay uncached.
+		// OMPx divergence: the fork covers the tail with the automatic top-level
+		// anchor and keeps the request-specific OAuth identity blocks uncached, so the
+		// long-cache anchor sits on the trailing caller block instead of the trailing
+		// message. The head breakpoint count is what bounds the message budget, so the
+		// tool anchor must not leave the tail unanchored.
+		expect(payload.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		const content = payload.messages?.at(-1)?.content;
-		expect(Array.isArray(content) ? content.at(-1)?.cache_control : undefined).toEqual({
-			type: "ephemeral",
-			ttl: "1h",
-		});
-		expect(payload.system?.[1]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
-		expect(payload.system?.[2]?.cache_control).toBeUndefined();
+		expect(Array.isArray(content) ? content.at(-1)?.cache_control : undefined).toBeUndefined();
+		expect(payload.system?.[1]?.cache_control).toBeUndefined();
+		expect(payload.system?.[2]?.cache_control).toEqual({ type: "ephemeral", ttl: "1h", scope: "global" });
 		// Anthropic rejects a fifth breakpoint, so the total must stay in budget.
 		const marked = (blocks: Array<{ cache_control?: unknown }> | undefined) =>
 			(blocks ?? []).filter(block => block.cache_control != null).length;

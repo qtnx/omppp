@@ -194,7 +194,7 @@ function hasConfiguredCompactionMethod(settings: ConfiguredCompactionSettings): 
  */
 function isCompactionMethodUsable(
 	candidate: CompactionMethod,
-	reason: "overflow" | "threshold" | "idle" | "incomplete",
+	reason: "overflow" | "threshold" | "idle" | "incomplete" | "requested",
 	model: Model | undefined,
 	settings: ConfiguredCompactionSettings,
 	excludeMedia = false,
@@ -209,6 +209,22 @@ function isCompactionMethodUsable(
 }
 
 /**
+ * Identity key for a message that survives the pre-persist copy, so the
+ * in-flight prompt handed to the provider can be recognized inside the
+ * persisted branch.
+ */
+function inFlightMessageKey(message: AgentMessage): string {
+	const content = "content" in message ? message.content : message;
+	const rendered =
+		typeof content === "string"
+			? content
+			: Array.isArray(content)
+				? content.map(block => (block.type === "text" ? block.text : block.type)).join("\u0000")
+				: "";
+	return `${message.role}\u0000${rendered}`;
+}
+
+/**
  * Whether the configured method order contains at least one method that
  * `runAutoCompaction` would actually select for `reason` on `model` — a non-empty
  * `methodOrder` alone (see {@link hasConfiguredCompactionMethod}) is not enough: an
@@ -217,7 +233,7 @@ function isCompactionMethodUsable(
  * reported as available and then silently no-op in `runAutoCompaction` (#11482).
  */
 function hasUsableCompactionMethod(
-	reason: "overflow" | "threshold" | "idle" | "incomplete",
+	reason: "overflow" | "threshold" | "idle" | "incomplete" | "requested",
 	model: Model | undefined,
 	settings: ConfiguredCompactionSettings,
 	excludeMedia = false,
@@ -482,6 +498,8 @@ export interface SessionMaintenanceHost {
 	resetAdvisorRuntimes(reason?: string): void;
 	rebaseAdvisorRuntimes(): void;
 	rebaseAfterCompaction(): void;
+	/** Prompt messages still in flight for the active turn (pre-persisted before dispatch). */
+	pendingInFlightMessages(): readonly AgentMessage[];
 	recordAnchoredHistoryRewrite(tokensRemoved: number): void;
 	getContextBreakdown(options?: {
 		contextWindow?: number;
@@ -2922,10 +2940,16 @@ export class SessionMaintenance {
 			this.#host.removeAssistantMessageFromActiveContext(assistantMessage);
 
 			const compactionSettings = this.#host.settings.getGroup("compaction");
+			// The pre-promotion attempt runs the same method selection as the
+			// post-promotion one below, so it must carry the payload-rejection
+			// media exclusion too: snapcompact archives history onto base64 image
+			// frames, which only grows the byte size a 413 already rejected (#11482).
 			const compactionOutcome =
-				compactionSettings.enabled && hasConfiguredCompactionMethod(compactionSettings)
+				compactionSettings.enabled &&
+				hasUsableCompactionMethod("overflow", this.#model, compactionSettings, excludeMediaForPayloadRejection)
 					? await this.#host.runRecoveryCompactionWithRollback("overflow", assistantMessage, allowDefer, {
 							autoContinue,
+							excludeMediaMethods: excludeMediaForPayloadRejection,
 						})
 					: undefined;
 			if (
@@ -2976,7 +3000,7 @@ export class SessionMaintenance {
 			// shown) (#11482).
 			if (
 				payloadRejection &&
-					compactionResult !== undefined &&
+				compactionResult !== undefined &&
 				!compactionResult.continuationScheduled &&
 				compactionResult.historyRewritten !== true
 			) {
@@ -4248,8 +4272,14 @@ export class SessionMaintenance {
 		const startIndex = options.methodIndex ?? 0;
 		let methodIndex = -1;
 		let method: CompactionMethod | undefined;
+		// A pass carrying focus instructions must land on a method that can honor
+		// them: `snapcompact` and `shake` produce no LLM summary, so selecting one
+		// would silently drop the caller's directive (the agent `compact` tool and
+		// the blocked-wait path both pass focus).
+		const focusCapableOnly = (options.customInstructions ?? "").length > 0;
 		for (let index = startIndex; index < methods.length; index++) {
 			const candidate = methods[index];
+			if (focusCapableOnly && (candidate === "snapcompact" || candidate === "shake")) continue;
 			if (
 				!isCompactionMethodUsable(
 					candidate,
@@ -4427,26 +4457,27 @@ export class SessionMaintenance {
 
 			const pathEntries = this.#host.sessionManager.getBranch();
 
+			// The live turn's own prompt is pre-persisted before dispatch, so the
+			// retention budget would happily cut past it and fold the request being
+			// answered into the summary. Pin the cut at that entry instead.
+			const inFlightKeys = new Set(this.#host.pendingInFlightMessages().map(inFlightMessageKey));
+			const protectedEntryId =
+				inFlightKeys.size > 0
+					? pathEntries.find(entry => {
+							const message = entry.type === "message" ? entry.message : undefined;
+							return message !== undefined && inFlightKeys.has(inFlightMessageKey(message));
+						})?.id
+					: undefined;
+
 			let pathEntriesForCompaction = pathEntries;
-			let preparation = prepareCompaction(pathEntriesForCompaction, effectiveSettings, this.#model, this.#tokenizer);
+			let preparation = prepareCompaction(
+				pathEntriesForCompaction,
+				effectiveSettings,
+				this.#model,
+				this.#tokenizer,
+				protectedEntryId ? { keepFromEntryId: protectedEntryId } : undefined,
+			);
 			if (!preparation) {
-				// With fewer than two persisted entries there is no prior turn to
-				// compact or rescue. Emit the matching completion immediately rather
-				// than running elide/image recovery against an empty history.
-				if (reason === "overflow" && pathEntriesForCompaction.length <= 2) {
-					await this.#emitLifecycleEvent(
-						{
-							type: "auto_compaction_end",
-							action,
-							result: undefined,
-							aborted: false,
-							willRetry: false,
-							skipped: true,
-						},
-						options.detachPostCommit === true,
-					);
-					return COMPACTION_CHECK_NONE;
-				}
 				// prepareCompaction found nothing to summarize because the kept region
 				// is a single oversized recent turn — findCutPoint never cuts inside a
 				// tool result, so a huge tool-result / fenced block tail leaves nothing
@@ -4558,7 +4589,12 @@ export class SessionMaintenance {
 							terminalTextAnswer,
 							suppressContinuation,
 						});
-					} else if (!suppressContinuation && this.#host.agent.hasQueuedMessages()) {
+					} else if (rescueRewroteHistory && !suppressContinuation && this.#host.agent.hasQueuedMessages()) {
+						// Only a rescue that actually reclaimed something may drive the
+						// queue forward. With nothing reclaimed the pass made no
+						// progress, so the continuation decision belongs to the
+						// overflow-recovery caller — scheduling here as well made a
+						// queued turn continue twice.
 						this.#host.scheduleAgentContinue({
 							source: "frame-rescue-queued-message",
 							delayMs: 100,

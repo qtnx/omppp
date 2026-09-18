@@ -2300,6 +2300,7 @@ export class AgentSession {
 			resetAdvisorRuntimes: (reason?: string) => this.#advisors.resetAllRuntimes(reason),
 			rebaseAdvisorRuntimes: () => this.#advisors.rebaseAllRuntimes(),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
+			pendingInFlightMessages: () => this.#stats.pendingInFlightMessages,
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
 			getContextBreakdown: options => this.getContextBreakdown(options),
 			getContextUsage: options => this.getContextUsage(options),
@@ -7676,9 +7677,13 @@ export class AgentSession {
 			images.length > 0 ? images : undefined,
 			this.#promptGeneration,
 			signal,
-			// Prepared messages append after the batch's originals; recall staged here
-			// would land after the queued user turn and read as a second request.
-			false,
+			// A queued batch stages memory like a direct prompt: the recall must be
+			// retried when this attempt is cancelled rather than silently skipped,
+			// and it commits only with the delivery. The staged recall is folded into
+			// the committed messages because the Agent hook appends those after the
+			// batch's originals — the direct path splices it ahead instead.
+			true,
+			true,
 		);
 	};
 
@@ -7690,12 +7695,11 @@ export class AgentSession {
 		generation: number,
 		signal?: AbortSignal,
 		// Direct prompts splice staged recall ahead of the user turn. A queued batch
-		// delivers its prepared messages *after* the originals, where the same recall
-		// would read as a second user turn, so those batches skip staging it.
+		// delivers its prepared messages *after* the originals, so it asks for the
+		// recall to ride the committed array instead (`foldMemoryIntoCommit`).
 		stageMemory = true,
-	): Promise<
-		QueuedMessagePreparation & { baseXdevCatalogDelivered: boolean; memoryContextMessage?: CustomMessage }
-	> {
+		foldMemoryIntoCommit = false,
+	): Promise<QueuedMessagePreparation & { baseXdevCatalogDelivered: boolean; memoryContextMessage?: CustomMessage }> {
 		const sessionGeneration = this.#sessionGeneration;
 		// Preserve ordinary prompt disposal semantics, but never begin a queued turn on a disposed session.
 		const alreadyDisposing = this.#isDisposed && signal === undefined;
@@ -7711,7 +7715,11 @@ export class AgentSession {
 			const sourceBase = this.#tools.baseSystemPrompt;
 			const agentStartContext = await this.#tools.buildAgentStartContext(prompt, { stageMemory });
 			if (!isCurrent()) return cancelled;
-			const result = await this.#extensionRunner?.emitBeforeAgentStart(prompt, images, agentStartContext.systemPrompt);
+			const result = await this.#extensionRunner?.emitBeforeAgentStart(
+				prompt,
+				images,
+				agentStartContext.systemPrompt,
+			);
 			if (!isCurrent()) return cancelled;
 			// Overrides are opaque replacements, not string patches. Re-run only policy preparation
 			// against the winning base; discard this attempt's returned context and staged memory.
@@ -7766,7 +7774,13 @@ export class AgentSession {
 						this.#tools.clearTurnSystemPromptOverride();
 						this.#tools.reapplySystemPromptOverlay();
 					}
-					return messages;
+					// Volatile recall rides a hidden user-attributed message. A queued
+					// batch returns it inside the committed array (the Agent hook appends
+					// those after the batch's originals); the direct path splices
+					// `memoryContextMessage` itself, so folding it here too would deliver
+					// the recall twice.
+					const staged = agentStartContext.memoryContextMessage;
+					return foldMemoryIntoCommit && staged ? [...messages, staged] : messages;
 				},
 			};
 		}
@@ -8679,6 +8693,7 @@ export class AgentSession {
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
+			interruptToolExecution?: boolean;
 		},
 	): Promise<boolean> {
 		// An extension command parked on a manual compaction may fire this
@@ -8705,6 +8720,7 @@ export class AgentSession {
 					deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 					queueChipText?: string;
 					acceptTerminalEmptyStop?: boolean;
+					interruptToolExecution?: boolean;
 			  }
 			| undefined,
 		outcome: PromptDispatchOutcome,

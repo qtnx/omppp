@@ -21,6 +21,15 @@ provider "xai-oauth" {
 	// omit/include/history replay defaults live in catalog compat so every
 	// OpenAI-family endpoint consumes the same constraint.
 	seed api="openai-responses" base-url="https://api.x.ai/v1" bundle="always" {
+		// Fork curation: the SuperGrok headline/default model leads the picker
+		// (declaration order is headline order). Moved ahead of `grok-build`,
+		// which upstream lists first.
+		model "grok-4.6" name="Grok 4.6" {
+			reasoning #true
+			input "text" "image"
+			cost input=0 output=0 cache-read=0 cache-write=0
+			limits context=500000 max-tokens=500000
+		}
 		model "grok-build" name="Grok Build" {
 			reasoning #true
 			input "text" "image"
@@ -42,12 +51,6 @@ provider "xai-oauth" {
 			limits context=1000000 max-tokens=1000000
 		}
 		model "grok-4.5" name="Grok 4.5" {
-			reasoning #true
-			input "text" "image"
-			cost input=0 output=0 cache-read=0 cache-write=0
-			limits context=500000 max-tokens=500000
-		}
-		model "grok-4.6" name="Grok 4.6" {
 			reasoning #true
 			input "text" "image"
 			cost input=0 output=0 cache-read=0 cache-write=0

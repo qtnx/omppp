@@ -548,12 +548,13 @@ export type SkillPromptInput = Pick<ParsedSkillInvocation, "args"> & Partial<Pic
 
 export async function buildSkillPromptMessage(
 	skill: Pick<Skill, "name" | "filePath" | "baseDir" | "content">,
-	input: SkillPromptInput,
+	input: SkillPromptInput | string,
 	invocation: SkillInvocationKind = "user",
 ): Promise<BuiltSkillPromptMessage> {
+	const normalized: SkillPromptInput = typeof input === "string" ? { args: input } : input;
 	const content = skill.content ?? (await Bun.file(skill.filePath).text());
 	const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
-	const trimmedArgs = input.args.trim();
+	const trimmedArgs = normalized.args.trim();
 	let message: string;
 	if (invocation === "user") {
 		// User-invoked skills announce themselves and expose their skill directory
@@ -583,7 +584,7 @@ export async function buildSkillPromptMessage(
 			name: skill.name,
 			path: skill.filePath,
 			args: trimmedArgs || undefined,
-			prompt: input.prompt,
+			prompt: normalized.prompt,
 			lineCount: body ? body.split("\n").length : 0,
 		},
 	};

@@ -23,7 +23,7 @@ import {
 	clampsContextOverride,
 	resolveMaxContextWindow,
 } from "@oh-my-pi/pi-catalog/compat/context-window";
-import { isCodexPinnedContextWindowModel } from "@oh-my-pi/pi-catalog/discovery/codex";
+import { CODEX_PINNED_CONTEXT_WINDOW, CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS } from "@oh-my-pi/pi-catalog/discovery/codex";
 import { applyCatalogMetrics, CatalogMetricsIndex } from "@oh-my-pi/pi-catalog/identity/metrics";
 import { readModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import {
@@ -2563,6 +2563,9 @@ export class ModelRegistry {
 			if (tnxPatch) {
 				model = applyModelPatch(model, tnxPatch, "merge");
 			}
+			const pinnedId = model.id.endsWith("-wm") ? model.id.slice(0, -3) : model.id;
+			const forkPinned =
+				model.api === "openai-codex-responses" && CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS.includes(pinnedId);
 			const maximum = resolveMaxContextWindow(model);
 			if (maximum !== undefined && model.contextWindow !== null) {
 				// Only extended-window models need a fresh policy baseline: a
@@ -2588,11 +2591,14 @@ export class ModelRegistry {
 			// `contextWindow` overrides reapply later in composition and win over
 			// this cap. Fork-pinned Codex SKUs (372K) are the usable window, not
 			// a premium tier, so the cap never shrinks them.
-			if (!extendedContext && model.provider !== "xai-oauth" && !isCodexPinnedContextWindowModel(model)) {
+			if (!extendedContext && model.provider !== "xai-oauth" && !forkPinned) {
 				const threshold = model.cost.longContext?.inputThreshold;
 				if (threshold !== undefined && model.contextWindow !== null && model.contextWindow > threshold) {
 					model = applyModelOverride(model, { contextWindow: threshold });
 				}
+			}
+			if (!extendedContext && forkPinned && model.contextWindow !== null && model.contextWindow !== CODEX_PINNED_CONTEXT_WINDOW) {
+				model = applyModelOverride(model, { contextWindow: CODEX_PINNED_CONTEXT_WINDOW });
 			}
 			if (model.provider === "ollama-cloud" && model.omitMaxOutputTokens !== true) {
 				model = applyModelOverride(model, { omitMaxOutputTokens: true });

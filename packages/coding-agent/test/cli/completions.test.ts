@@ -91,20 +91,23 @@ const hasZsh = (() => {
 describe.skipIf(!hasZsh)("zsh action helper under _arguments' calling convention", () => {
 	it("reads the completion kind past the compadd options zsh prepends", () => {
 		const script = generateCompletion("zsh", spec);
-		const start = script.indexOf("_omp_call() {");
+		// Helper and wrapper names follow the configured binary (`spec.bin`), so
+		// derive them instead of assuming the upstream `omp` brand.
+		const helper = `_${spec.bin}_call() {`;
+		const start = script.indexOf(helper);
 		expect(start).toBeGreaterThanOrEqual(0);
 		const fn = script.slice(start, script.indexOf("\n}\n", start) + 3);
 
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-zsh-action-"));
 		try {
-			// `command omp` bypasses shell functions, so the stub must be an
+			// `command <bin>` bypasses shell functions, so the stub must be an
 			// executable on PATH.
-			const bin = path.join(dir, "omp");
+			const bin = path.join(dir, spec.bin);
 			fs.writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${dir}/argv.log"\n`, { mode: 0o755 });
 			fs.writeFileSync(
 				path.join(dir, "harness.zsh"),
 				// _describe only exists inside a completion context.
-				`_describe() { :; }\n${fn}\n_omp_call -n -J -default- sessions\n`,
+				`_describe() { :; }\n${fn}\n_${spec.bin}_call -n -J -default- sessions\n`,
 			);
 
 			const result = Bun.spawnSync(["zsh", "-f", path.join(dir, "harness.zsh")], {

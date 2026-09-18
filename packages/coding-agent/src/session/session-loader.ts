@@ -533,12 +533,24 @@ function repairTruncatedSnapcompactFrames(entry: FileEntry): void {
 	});
 }
 
-async function resolveBlobRefs(values: readonly unknown[], blobStore: BlobStore): Promise<void> {
+async function resolveBlobRefs(
+	values: readonly unknown[],
+	blobStore: BlobStore,
+	options: {
+		/**
+		 * Keep the original `blob:sha256:` reference when its blob is missing
+		 * instead of blanking the payload. A read-only transcript has no writer to
+		 * repair the reference, so showing the ref beats showing nothing.
+		 */
+		preserveUnresolved?: boolean;
+	} = {},
+): Promise<void> {
 	const semaphore = new Semaphore(BLOB_READ_CONCURRENCY);
 	const resolve: BlobReferenceResolver = async (data, asDataUrl = false) => {
 		await semaphore.acquire();
 		try {
-			return await (asDataUrl ? resolveImageDataUrl(blobStore, data) : resolveImageData(blobStore, data));
+			const resolved = await (asDataUrl ? resolveImageDataUrl(blobStore, data) : resolveImageData(blobStore, data));
+			return options.preserveUnresolved && resolved === "" ? data : resolved;
 		} finally {
 			semaphore.release();
 		}
@@ -558,7 +570,8 @@ export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: 
 		if (entry.type !== "session") repairTruncatedSnapcompactFrames(entry);
 	}
 	await resolveBlobRefs(liveEntries, blobStore);
-	rehydrateEntries(liveEntries, blobStore);
+	// Frames stay cold on load: the context builder resolves only the newest ones.
+	rehydrateEntries(liveEntries, blobStore, { frames: false });
 }
 
 /**
@@ -590,6 +603,6 @@ export async function loadSessionMessagesReadOnly(filePath: string): Promise<Age
 			? { ...message, providerPayload: undefined }
 			: message,
 	);
-	await resolveBlobRefs(displayMessages, blobs);
+	await resolveBlobRefs(displayMessages, blobs, { preserveUnresolved: true });
 	return displayMessages;
 }

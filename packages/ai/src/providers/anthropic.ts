@@ -65,6 +65,7 @@ import {
 	copyPerCallContextMessage,
 	type ConversationalUserCarrier,
 	isConversationalUser,
+	isPerCallContextMessage,
 	isSyntheticUser,
 	kConversationalUser,
 	kStreamingBlockIndex,
@@ -4108,6 +4109,40 @@ type CacheControlBlock = {
 	cache_control?: AnthropicCacheControl | null;
 };
 const MAX_CACHE_BREAKPOINTS = 4;
+/** Conversational turns between the historical checkpoints of a long session. */
+const ANTHROPIC_DECIMATION_INTERVAL = 15;
+
+/**
+ * Breakpoints already spent on the stable request head — system blocks and tool
+ * definitions decorated by `buildAnthropicSystemBlocks` and `applyHeadCaching`
+ * before this pass runs. The canonical cache order is tools → system → messages,
+ * so the message tail gets whatever the head leaves of the 4-breakpoint budget.
+ */
+function countHeadBreakpoints(params: MessageCreateParamsStreaming): number {
+	let count = 0;
+	if (Array.isArray(params.system)) {
+		for (const block of params.system) {
+			if (typeof block !== "string" && block.cache_control != null) count++;
+		}
+	}
+	if (Array.isArray(params.tools)) {
+		for (const tool of params.tools) {
+			if (tool.cache_control != null) count++;
+		}
+	}
+	return count;
+}
+
+function applyCacheControlToMessage(message: MessageParam, cacheControl: AnthropicCacheControl): boolean {
+	if (typeof message.content === "string") {
+		message.content = [
+			{ type: "text", text: message.content, cache_control: cloneAnthropicCacheControl(cacheControl) },
+		];
+		return true;
+	}
+	if (Array.isArray(message.content)) return applyCacheControlToLastBlock(message.content, cacheControl);
+	return false;
+}
 
 function applyCacheControlToLastBlock(blocks: ContentBlockParam[], cacheControl: AnthropicCacheControl): boolean {
 	for (let index = blocks.length - 1; index >= 0; index--) {
@@ -4140,27 +4175,34 @@ function applyPromptCaching(
 ): void {
 	if (!cacheControl) return;
 
-	let cacheBreakpointsUsed = countCacheControlBreakpoints(params);
+	let cacheBreakpointsUsed = countHeadBreakpoints(params);
 	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
-	let isCCLayout = false;
 	if (params.system && Array.isArray(params.system) && params.system.length > 0) {
-		isCCLayout = params.system[0]?.text?.startsWith(CLAUDE_BILLING_HEADER_PREFIX) === true;
-		let systemBreakpointsUsed = 0;
-		for (const block of params.system as AnthropicSystemBlock[]) {
-			if (block.cache_control) systemBreakpointsUsed++;
+		const isCCLayout = params.system[0]?.text?.startsWith(CLAUDE_BILLING_HEADER_PREFIX) === true;
+		// Prefix sharing is a secondary anchor: it caches the same block range the
+		// tail anchor already covers, so when a tool breakpoint holds the head the
+		// budget goes to the rolling tail and its decimation checkpoints instead.
+		// Without one, the leading system blocks may spend what the tail leaves.
+		const toolsAnchored = Array.isArray(params.tools) && params.tools.some(tool => tool.cache_control != null);
+		if (!toolsAnchored) {
+			let systemBreakpointsUsed = 0;
+			for (const block of params.system as AnthropicSystemBlock[]) {
+				if (block.cache_control) systemBreakpointsUsed++;
+			}
+			const maxSystemBreakpoints = Math.min(
+				Math.max(0, 3 - systemBreakpointsUsed),
+				Math.max(0, MAX_CACHE_BREAKPOINTS - cacheBreakpointsUsed),
+			);
+			cacheBreakpointsUsed += cacheSystemPrefixBreakpoints(
+				params.system as AnthropicSystemBlock[],
+				cacheControl,
+				maxSystemBreakpoints,
+				isCCLayout ? firstCacheableSystemIndex(params.system as AnthropicSystemBlock[]) : 0,
+			);
 		}
-		const maxSystemBreakpoints = Math.min(
-			Math.max(0, 3 - systemBreakpointsUsed),
-			MAX_CACHE_BREAKPOINTS - cacheBreakpointsUsed,
-		);
-		cacheBreakpointsUsed += cacheSystemPrefixBreakpoints(
-			params.system as AnthropicSystemBlock[],
-			cacheControl,
-			maxSystemBreakpoints,
-			isCCLayout ? firstCacheableSystemIndex(params.system as AnthropicSystemBlock[]) : 0,
-		);
 	}
-	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
+	const messageBudget = Math.max(0, MAX_CACHE_BREAKPOINTS - cacheBreakpointsUsed);
+	if (messageBudget <= 0 || params.messages.length === 0) return;
 	if (useAutomaticConversationCache && messageBoundary === undefined) {
 		params.cache_control = cloneAnthropicCacheControl(cacheControl);
 		return;
@@ -4178,22 +4220,60 @@ function applyPromptCaching(
 		!isConversationalUser(trailingMessage) &&
 		params.messages[trailingIndex - 1]?.role === "assistant";
 	const messageEnd = hasTrailingAssistantPad ? trailingIndex - 1 : trailingIndex;
-	const latestEligibleMessageIndex = messageBoundary === "before-final-message" ? messageEnd - 1 : messageEnd;
-	if (latestEligibleMessageIndex < 0) return;
-	const messageWindowSize = isCCLayout ? 1 : 2;
-	const start = Math.max(0, latestEligibleMessageIndex - messageWindowSize + 1);
-	for (let index = latestEligibleMessageIndex; index >= start; index--) {
-		if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) break;
+	// A breakpoint caches every preceding byte, not only the decorated message, so
+	// once per-call or turn-scoped content appears no later message can anchor a
+	// prefix the next request can reuse. Clamp the window to the stable prefix —
+	// injected per-call context (hook messages, one-turn notices) must not become
+	// an anchor, or every following turn rewrites the cached prefix.
+	let stableMessageEnd = messageEnd;
+	for (let index = 0; index <= messageEnd; index++) {
 		const message = params.messages[index];
-		if (!message || message.clear_at === "next_user_message") continue;
-		if (typeof message.content === "string") {
-			message.content = [
-				{ type: "text", text: message.content, cache_control: cloneAnthropicCacheControl(cacheControl) },
-			];
-			cacheBreakpointsUsed++;
-		} else if (Array.isArray(message.content) && applyCacheControlToLastBlock(message.content, cacheControl)) {
-			cacheBreakpointsUsed++;
+		if (message && (message.clear_at === "next_user_message" || isPerCallContextMessage(message))) {
+			stableMessageEnd = index - 1;
+			break;
 		}
+	}
+	const windowEnd = Math.min(messageEnd, stableMessageEnd);
+	const candidateEnd = messageBoundary === "before-final-message" ? windowEnd - 1 : windowEnd;
+	if (candidateEnd < 0) return;
+
+	// Decimation counts conversational turns, so it reads the provenance marker
+	// `convertAnthropicMessages` records rather than the wire role. A wire `user`
+	// can also be a serialized `developer` message, a tool_result run, an interior
+	// `Continue.` pad, or a synthesized note, none of which advance the user turn
+	// ordinal — counting them would shift every checkpoint off the real turns.
+	const userIndices: number[] = [];
+	for (let index = 0; index <= candidateEnd; index++) {
+		const message = params.messages[index];
+		if (message && isConversationalUser(message)) userIndices.push(index);
+	}
+	const decimationIndices = userIndices.filter((_, ordinal) => (ordinal + 1) % ANTHROPIC_DECIMATION_INTERVAL === 0);
+
+	// Priority: the newest trailing message, then the newest decimation
+	// checkpoints (stable anchors a long session grows into), then the message
+	// before the trailing one.
+	const trailingCandidates: number[] = [];
+	for (let index = candidateEnd; index >= 0 && trailingCandidates.length < 2; index--) {
+		trailingCandidates.push(index);
+	}
+	const candidateIndices: number[] = [];
+	const newestTrailing = trailingCandidates[0];
+	if (newestTrailing !== undefined) candidateIndices.push(newestTrailing);
+	for (let index = decimationIndices.length - 1; index >= 0; index--) {
+		const checkpoint = decimationIndices[index];
+		if (checkpoint !== undefined && !candidateIndices.includes(checkpoint)) candidateIndices.push(checkpoint);
+	}
+	for (const index of trailingCandidates) {
+		if (!candidateIndices.includes(index)) candidateIndices.push(index);
+	}
+
+	// Count only successful decorations: an uncacheable message (a thinking-only
+	// assistant, for one) must not spend a breakpoint it cannot carry.
+	let appliedCount = 0;
+	for (const index of candidateIndices) {
+		if (appliedCount >= messageBudget) break;
+		const message = params.messages[index];
+		if (message && applyCacheControlToMessage(message, cacheControl)) appliedCount++;
 	}
 }
 
@@ -4391,12 +4471,8 @@ function applyHeadCaching(
 	// 4-breakpoint budget because applyPromptCaching counts every breakpoint.
 	const systemAnchored = systemBlocks?.some(block => block.cache_control != null) ?? false;
 	const toolsAnchored = tools?.some(tool => tool.cache_control != null) ?? false;
-	// The OAuth Claude Code layout keeps first-party wire parity: its system
-	// breakpoints already cache every preceding tool (canonical tools → system
-	// order), so no tool anchor is added there.
-	const isOAuthLayout = systemBlocks?.[0]?.text?.startsWith(CLAUDE_BILLING_HEADER_PREFIX) === true;
 
-	if (tools && tools.length > 0 && !toolsAnchored && !isOAuthLayout) {
+	if (tools && tools.length > 0 && !toolsAnchored) {
 		// Deferred tools are not part of the checked prefix until referenced, so
 		// anchor the last tool that actually sits in the stable prefix.
 		for (let index = tools.length - 1; index >= 0; index--) {

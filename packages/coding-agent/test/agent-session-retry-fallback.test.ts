@@ -36,6 +36,7 @@ import {
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import * as piUtils from "@oh-my-pi/pi-utils";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 
@@ -3974,6 +3975,7 @@ describe("AgentSession retry fallback", () => {
 			modelRegistry,
 		});
 		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const sleepLongSpy = vi.spyOn(piUtils, "sleepLong").mockResolvedValue(undefined);
 		const { retryStartEvents, retryEndEvents } = trackRetryEvents(session);
 		session.subscribe(event => {
 			if (event.type === "retry_fallback_applied") {
@@ -3996,7 +3998,10 @@ describe("AgentSession retry fallback", () => {
 		});
 		expect(retryStartEvents[0].delayMs).toBeGreaterThan(0);
 		expect(retryStartEvents[0].delayMs).toBeLessThanOrEqual(5);
-		expect(waitSpy).toHaveBeenCalledWith(retryStartEvents[0].delayMs, { signal: expect.any(AbortSignal) });
+		// The backoff sleep is `sleepLong(delay, signal)` (pi-utils): the merged
+		// retry path chunks day-scale waits instead of calling `scheduler.wait`
+		// directly, so the abortable-wait contract is asserted on that primitive.
+		expect(sleepLongSpy).toHaveBeenCalledWith(retryStartEvents[0].delayMs, expect.any(AbortSignal));
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
 		expect(fallbackAppliedEvents).toHaveLength(0);

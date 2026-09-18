@@ -58,7 +58,6 @@ import type { DeltaPatchResult, NestedRepoPatch, WorktreeBaseline } from "./work
 import { captureBaseline, captureDeltaPatch, getRepoRoot, parseIsolationBackend } from "./worktree";
 import type { WorkPoolYieldItem } from "./workpool-yield";
 
-
 /** Validation behavior requested for an effective output schema. */
 export type StructuredSubagentSchemaMode = "permissive" | "strict";
 

@@ -2305,17 +2305,14 @@ export class SessionTools {
 	 * delivers its prepared messages after the originals, where the recall would
 	 * read as a second user turn.
 	 */
-	async buildAgentStartContext(
-		promptText: string,
-		options?: { stageMemory?: boolean },
-	): Promise<AgentStartContext> {
+	async buildAgentStartContext(promptText: string, options?: { stageMemory?: boolean }): Promise<AgentStartContext> {
 		const systemPrompt = this.#applySystemPromptOverlay(this.#baseSystemPrompt);
 		if (options?.stageMemory === false) return { systemPrompt };
 		const backend = await resolveMemoryBackend(this.#host.settings);
 		if (!backend.beforeAgentStartPrompt) return { systemPrompt };
 
 		try {
-			const preparation = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText);
+		const preparation = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText);
 			if (!preparation) return { systemPrompt };
 			const memoryContext = preparation.context;
 			return {

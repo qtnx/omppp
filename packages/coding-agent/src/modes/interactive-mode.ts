@@ -6291,7 +6291,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		// pending input callback against a session that is already disposing.
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
-		await this.#telegramCommandController.stop();
 
 		// Surface progress before any asynchronous cleanup, including live commands
 		// and BTW history writes, so the user sees a reason for the pause.
@@ -6305,6 +6304,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			// session is disposed, under the same still-closing progress notice.
 			await this.collabController.shutdown("host exited");
 			await this.#liveCommandController.stop();
+			// Telegram teardown is a network await like the others above: it must run
+			// after the progress notice is rendered, or `shutdown()` would go silent
+			// for however long the bot's abort takes.
+			await this.#telegramCommandController.stop();
 			await this.#btwController.dispose();
 			this.#omfgController.dispose();
 			this.#cleanseController.dispose();

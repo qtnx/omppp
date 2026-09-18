@@ -857,7 +857,7 @@ export class EventController {
 
 	/** Restore display state without replaying completion notifications or persistence. */
 	#seedHeldCompletionsFromPendingResults(): void {
-		const pending = this.ctx.viewSession.agent.getPendingToolResults();
+		const pending = this.ctx.viewSession?.agent?.getPendingToolResults?.() ?? [];
 		for (const result of pending) {
 			this.#orphanedToolCompletions.set(result.toolCallId, {
 				type: "tool_execution_end",

@@ -188,7 +188,10 @@ describe("lazy session resume", () => {
 		expect(messageText(readMessage(manager, "cold"))).toBe(fixture.coldTextOnDisk);
 		expect(messageImage(readMessage(manager, "kept")).data).toBe(KEPT_IMAGE);
 		expect(messageImage(readMessage(manager, "tail")).data).toBe(TAIL_IMAGE);
-		expect(readLatestFrame(manager).data).toBe(FRAME_IMAGE);
+		// The newest frames stay as blob refs on the entry; the context builder
+		// resolves them on demand (`resolveFrameData`), which the no-refs check
+		// below pins. Eagerly reading them on resume would defeat the lazy budget.
+		expect(readLatestFrame(manager).data).toStartWith("blob:sha256:");
 		expectNoBlobRefs(manager.buildSessionContext().messages);
 	});
 

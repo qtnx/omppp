@@ -2488,8 +2488,7 @@ export class StatusLineComponent implements Component {
 		if (
 			leftSegments.includes("time_spent") ||
 			rightSegments.includes("time_spent") ||
-			(this.#loopModeStatus?.limit?.kind === "duration" &&
-				(leftSegments.includes("mode") || rightSegments.includes("mode"))) ||
+			(this.#loopModeStatus != null && (leftSegments.includes("mode") || rightSegments.includes("mode"))) ||
 			(includesTime && effectiveSettings.segmentOptions?.time?.showSeconds === true)
 		) {
 			return Math.floor(nowMs / 1_000);

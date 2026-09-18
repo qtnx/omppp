@@ -242,6 +242,14 @@ export class MnemopiSessionState {
 	lastRetainedTurn: number;
 	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
+	/**
+	 * Whether {@link lastRecallSnippet} already went out as the volatile hidden
+	 * conversation message for this turn. The static developer instructions skip a
+	 * snippet that was delivered that way (it would be a second copy), and publish
+	 * it otherwise — e.g. when the background auto-recall won the race and no
+	 * volatile message was staged.
+	 */
+	recallDeliveredVolatile = false;
 	unsubscribe?: () => void;
 	#retentionCursorLoaded = false;
 	#recallGeneration = 0;
@@ -272,6 +280,7 @@ export class MnemopiSessionState {
 		this.#retentionCursorLoaded = false;
 		this.hasRecalledForFirstTurn = false;
 		this.lastRecallSnippet = undefined;
+		this.recallDeliveredVolatile = false;
 	}
 
 	getScopedRecallTargets(): readonly MnemopiScopedMemory[] {
@@ -490,10 +499,16 @@ export class MnemopiSessionState {
 		const context = await this.recallForContext(truncated);
 		return {
 			context,
-			commit: () => {
+			commit: (deliveredContext?: string) => {
 				if (this.#recallGeneration !== generation) return false;
 				this.hasRecalledForFirstTurn = true;
-				if (context) this.lastRecallSnippet = context;
+				if (context) {
+					this.lastRecallSnippet = context;
+					// Only a message that carried the WHOLE snippet replaces the static
+					// copy: a clamped or empty staged block would otherwise leave the
+					// untruncated recall on no surface at all.
+					this.recallDeliveredVolatile = deliveredContext !== undefined && deliveredContext === context;
+				}
 				return true;
 			},
 		};

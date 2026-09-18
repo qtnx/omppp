@@ -3039,21 +3039,65 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Fallback frame for hosts without a frame provider (tests, simple embeds):
-	 * compose the root children and paint the bottom `height` rows as the
-	 * mutable viewport. Nothing is ever appended to terminal history.
+	 * Fallback frame for hosts without a frame provider (tests, simple embeds).
+	 *
+	 * Stable rows above the focused editor commit once to native scrollback. A
+	 * changed prefix stays mutable rather than being replayed, so background
+	 * updates cannot bury interactive autocomplete below an unknown terminal
+	 * viewport, and the row the user is typing on is pinned inside the window —
+	 * a menu growing under it must never be the only thing left on screen.
 	 */
 	#renderChildrenFrame(width: number, height: number): void {
-		let viewport: string[];
+		if (this.#clearScrollbackOnNextRender) {
+			this.#legacyChildFrame = [];
+			this.#legacyChildCommittedRows = 0;
+			this.#legacyChildHistoryFrozen = false;
+		}
+		let frame: readonly string[] = [];
+		let viewport: string[] = [];
+		let history: HistoryBatch | undefined;
+		let committedRows = this.#legacyChildCommittedRows;
+		let historyFrozen = this.#legacyChildHistoryFrozen;
 		do {
 			this.#imageBudget.beginPass();
 			const composed = this.render(width);
-			this.#debugNextWindowTop = Math.max(0, composed.length - height);
-			viewport = composed.length > height ? composed.slice(composed.length - height) : Array.from(composed);
-			viewport = this.#compositeVisibleOverlays(viewport, width, height);
+			frame = composed;
+			let commonPrefix = 0;
+			while (
+				commonPrefix < this.#legacyChildFrame.length &&
+				commonPrefix < composed.length &&
+				this.#legacyChildFrame[commonPrefix] === composed[commonPrefix]
+			) {
+				commonPrefix++;
+			}
+			// A shrinking tree no longer proves which of its surviving rows are
+			// final, so the committed prefix stops growing and the tail is
+			// repainted instead of replayed.
+			if (!historyFrozen && composed.length <= committedRows) {
+				committedRows = commonPrefix;
+				historyFrozen = true;
+			}
+			const focusedRow = composed.findIndex(line => line.includes(CURSOR_MARKER));
+			const tailTop = Math.max(0, composed.length - height);
+			this.#debugNextWindowTop = tailTop;
+			const preferredTop = focusedRow === -1 ? tailTop : Math.max(0, Math.min(tailTop, focusedRow) - 1);
+			const canCommit =
+				!historyFrozen && (this.#legacyChildFrame.length === 0 || commonPrefix >= this.#legacyChildCommittedRows);
+			const commitTo = canCommit ? Math.max(committedRows, preferredTop) : committedRows;
+			const historyRows = composed.slice(committedRows, commitTo);
+			const viewportTop = historyFrozen ? preferredTop : Math.max(committedRows, preferredTop);
+			viewport = this.#compositeVisibleOverlays(composed.slice(viewportTop, viewportTop + height), width, height);
+			history =
+				historyRows.length > 0
+					? { id: ++this.#legacyHistoryBatchId, kind: "append", rows: Array.from(historyRows) }
+					: undefined;
+			committedRows = commitTo;
 		} while (this.#imageBudget.endPass());
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
-		this.#emitPlanFrame(width, height, viewport, undefined, undefined);
+		this.#emitPlanFrame(width, height, viewport, history, undefined);
+		this.#legacyChildFrame = Array.from(frame);
+		this.#legacyChildCommittedRows = committedRows;
+		this.#legacyChildHistoryFrozen = historyFrozen;
 	}
 
 	/**

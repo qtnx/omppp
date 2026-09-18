@@ -33,6 +33,34 @@ import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 const BASE = ["base identity", "base tools"];
 
+/** Markers the memory backends wrap a staged recall block in. */
+const MEMORY_BLOCK_MARKERS = ["<memories>", "<mental_models>"];
+
+/**
+ * The recall a request actually carries. Recall is staged as a hidden
+ * user-attributed memory message instead of being appended to the system prompt
+ * (keeping it out of the prompt preserves provider prefix caches), so a converted
+ * request keeps the recall text in `messages` with no custom type left to read —
+ * only the block markers identify it.
+ */
+function stagedRecall(request: Context | undefined): string {
+	return (request?.messages ?? [])
+		.flatMap(message => {
+			if (message.role !== "user") return [];
+			const text =
+				typeof message.content === "string"
+					? message.content
+					: message.content.flatMap(part => (part.type === "text" ? [part.text] : [])).join("");
+			return MEMORY_BLOCK_MARKERS.some(marker => text.includes(marker)) ? [text] : [];
+		})
+		.join("\n");
+}
+
+/** Everything a model sees for one request: the system prompt plus its staged recall. */
+function effectivePrompt(request: Context | undefined): string {
+	return [request?.systemPrompt?.join("\n") ?? "", stagedRecall(request)].filter(part => part.length > 0).join("\n");
+}
+
 function extension(name: string, handler: (event: BeforeAgentStartEvent) => Promise<unknown>): Extension {
 	return {
 		path: name,
@@ -244,23 +272,19 @@ describe("queued user delivery policy", () => {
 			await session.prompt("resume");
 			await session.waitForIdle();
 			expect(recalls).toBe(2);
-			expect(requests[0].systemPrompt?.join("\n")).toContain("recall-2");
-			expect(requests[0].systemPrompt?.join("\n")).not.toContain("recall-1");
+			expect(effectivePrompt(requests[0])).toContain("recall-2");
+			expect(effectivePrompt(requests[0])).not.toContain("recall-1");
 			await session.prompt("continue");
 			expect(recalls).toBe(2);
 			expect(
-				requests
-					.at(-1)
-					?.systemPrompt?.join("\n")
+				effectivePrompt(requests.at(-1))
 					.match(/recall-2/g),
 			).toHaveLength(1);
 			await session.refreshBaseSystemPrompt();
 			await session.prompt("after canonical rebuild");
 			expect(recalls).toBe(2);
 			expect(
-				requests
-					.at(-1)
-					?.systemPrompt?.join("\n")
+				effectivePrompt(requests.at(-1))
 					.match(/recall-2/g),
 			).toHaveLength(1);
 		},
@@ -304,9 +328,13 @@ describe("queued user delivery policy", () => {
 				return "recovered recall";
 			});
 			await session.prompt("lookup unavailable");
-			expect(requests[0].systemPrompt?.join("\n")).not.toContain("recovered recall");
+			// mnemopi's background agent_start lookup races the failed prompt lookup,
+			// wins it, and publishes the recovered snippet while turn 1's prompt is
+			// built. hindsight has no background path, so it retries on turn 2.
+			if (backendId === "mnemopi") expect(effectivePrompt(requests[0])).toContain("recovered recall");
 			await session.prompt("lookup recovered");
-			expect(requests[1].systemPrompt?.join("\n")).toContain("recovered recall");
+			expect(recalls).toBe(2);
+			expect(effectivePrompt(requests[1])).toContain("recovered recall");
 			await session.prompt("already recalled");
 			expect(recalls).toBe(2);
 		},
@@ -326,13 +354,13 @@ describe("queued user delivery policy", () => {
 			await session.steer("refresh tools during policy preparation");
 			await session.waitForIdle();
 			expect(requests[0].tools?.map(tool => tool.name)).toEqual(["new_tool"]);
-			const prompt = requests[0].systemPrompt?.join("\n");
+			const prompt = effectivePrompt(requests[0]);
 			expect(prompt).toContain("tools:new_tool");
 			expect(prompt).not.toContain("tools:old_tool");
-			expect(prompt?.match(/staged memory/g)).toHaveLength(1);
+			expect(prompt.match(/staged memory/g)).toHaveLength(1);
 			await session.prompt("next turn");
 			expect(recalls).toBe(1);
-			expect(requests[1].systemPrompt?.join("\n").match(/staged memory/g)).toHaveLength(1);
+			expect(effectivePrompt(requests[1]).match(/staged memory/g)).toHaveLength(1);
 		},
 	);
 
@@ -358,8 +386,8 @@ describe("queued user delivery policy", () => {
 			expect(requests).toEqual([]);
 			await session.prompt("replacement task");
 			expect(recalls).toBe(2);
-			expect(requests[0].systemPrompt?.join("\n")).toContain("current recall");
-			expect(requests[0].systemPrompt?.join("\n")).not.toContain("discarded recall");
+			expect(effectivePrompt(requests[0])).toContain("current recall");
+			expect(effectivePrompt(requests[0])).not.toContain("discarded recall");
 		},
 	);
 
@@ -382,8 +410,8 @@ describe("queued user delivery policy", () => {
 			expect(requests).toEqual([]);
 			pausePreparation(async () => {});
 			await session.prompt("new session task");
-			expect(requests[0].systemPrompt?.join("\n")).toContain("session-recall-2");
-			expect(requests[0].systemPrompt?.join("\n")).not.toContain("session-recall-1");
+			expect(effectivePrompt(requests[0])).toContain("session-recall-2");
+			expect(effectivePrompt(requests[0])).not.toContain("session-recall-1");
 		},
 	);
 
@@ -421,8 +449,8 @@ describe("queued user delivery policy", () => {
 			await session.prompt("resume valid delivery");
 			await session.waitForIdle();
 			expect(recalls).toBe(2);
-			expect(requests[0].systemPrompt?.join("\n")).toContain("owned-recall-2");
-			expect(requests[0].systemPrompt?.join("\n")).not.toContain("owned-recall-1");
+			expect(effectivePrompt(requests[0])).toContain("owned-recall-2");
+			expect(effectivePrompt(requests[0])).not.toContain("owned-recall-1");
 		},
 	);
 
@@ -473,7 +501,7 @@ describe("queued user delivery policy", () => {
 		await session.prompt("resume user delivery");
 		await session.waitForIdle();
 		expect(recalls).toBe(3);
-		const prompt = requests[0].systemPrompt?.join("\n");
+		const prompt = effectivePrompt(requests[0]);
 		expect(prompt).toContain("overlap-recall-3");
 		expect(prompt).not.toContain("overlap-recall-1");
 		expect(prompt).not.toContain("overlap-recall-2");
@@ -488,8 +516,9 @@ describe("queued user delivery policy", () => {
 		session.settings.set("mnemopi.injectionTokenLimit", limit);
 		await session.refreshBaseSystemPrompt();
 		await session.prompt("bounded first recall");
-		// The fixture's base/tool blocks precede the backend-owned instruction blocks.
-		const memoryPrompt = requests[0].systemPrompt?.slice(BASE.length + 1).join("\n\n") ?? "";
+		// Recall is staged as a hidden message, not appended to the prompt, so the
+		// budget bounds that block alone rather than the backend instructions.
+		const memoryPrompt = stagedRecall(requests[0]);
 		expect(memoryPrompt.length).toBeLessThanOrEqual(limit * 4);
 		expect(memoryPrompt).not.toContain("recall overflow");
 		if (limit === 64) {
@@ -502,6 +531,14 @@ describe("queued user delivery policy", () => {
 		await session.refreshBaseSystemPrompt();
 		await session.prompt("use the committed full recall");
 		expect(recalls).toBe(1);
+		// GAP (measured, mnemopi only): a raised budget cannot reach the full recall.
+		// Auto-recall is one-shot, so turn 2 never re-stages; the turn-1 message stays
+		// clamped to the old budget (limit 64: clamped to nothing, no message at all);
+		// and the static prompt stays empty because MnemopiSessionState.recallDeliveredVolatile
+		// is set from the pre-clamp context — true even when the staged copy was
+		// truncated or dropped. The backend still holds the full 7204-char snippet,
+		// so this assertion fails on every surface (message, static prompt) rather than
+		// on a missing recall.
 		expect(requests[1].systemPrompt?.join("\n")).toContain("recall overflow");
 	});
 
@@ -660,12 +697,12 @@ describe("queued user delivery policy", () => {
 			await session.waitForIdle();
 			expect(requests).toHaveLength(1);
 			expect(requests[0].tools?.map(tool => tool.name)).toEqual(["new_tool"]);
-			const prompt = requests[0].systemPrompt?.join("\n");
+			const prompt = effectivePrompt(requests[0]);
 			expect(prompt).toContain("policy:first");
 			expect(prompt).toContain("independent policy");
 			expect(prompt).toContain("tools:new_tool");
 			expect(prompt).not.toContain("tools:old_tool");
-			expect(prompt?.match(/override-memory-2/g)).toHaveLength(1);
+			expect(prompt.match(/override-memory-2/g)).toHaveLength(1);
 			expect(prompt).not.toContain("override-memory-1");
 			const context = JSON.stringify(requests[0].messages);
 			expect(context.match(/attempt-context-2/g)).toHaveLength(1);
@@ -677,8 +714,8 @@ describe("queued user delivery policy", () => {
 
 			await session.prompt("next turn");
 			expect(recalls).toBe(2);
-			expect(requests[1].systemPrompt?.join("\n")).toContain("override-memory-2");
-			expect(requests[1].systemPrompt?.join("\n")).not.toContain("override-memory-1");
+			expect(effectivePrompt(requests[1])).toContain("override-memory-2");
+			expect(effectivePrompt(requests[1])).not.toContain("override-memory-1");
 		},
 	);
 
@@ -787,8 +824,8 @@ describe("queued user delivery policy", () => {
 			pausePreparation(async () => {});
 			await session.prompt("resumed original");
 			await session.waitForIdle();
-			expect(requests[0].systemPrompt?.join("\n")).toContain("churn-memory-4");
-			expect(requests[0].systemPrompt?.join("\n")).not.toMatch(/churn-memory-[123]/);
+			expect(effectivePrompt(requests[0])).toContain("churn-memory-4");
+			expect(effectivePrompt(requests[0])).not.toMatch(/churn-memory-[123]/);
 		},
 	);
 
@@ -910,8 +947,8 @@ describe("queued user delivery policy", () => {
 		pausePreparation(async () => {});
 		await session.prompt("resume cancelled retry");
 		await session.waitForIdle();
-		expect(requests[0].systemPrompt?.join("\n")).toContain("retry-memory-3");
-		expect(requests[0].systemPrompt?.join("\n")).not.toMatch(/retry-memory-[12]/);
+		expect(effectivePrompt(requests[0])).toContain("retry-memory-3");
+		expect(effectivePrompt(requests[0])).not.toMatch(/retry-memory-[12]/);
 	});
 
 	it("declines a source-base change after preparation without partially committing memory or context", async () => {
@@ -940,8 +977,8 @@ describe("queued user delivery policy", () => {
 		await session.prompt("resume commit");
 		await session.waitForIdle();
 		expect(requests[0].tools?.map(tool => tool.name)).toEqual(["new_tool"]);
-		expect(requests[0].systemPrompt?.join("\n")).toContain("commit-memory-2");
-		expect(requests[0].systemPrompt?.join("\n")).not.toContain("commit-memory-1");
+		expect(effectivePrompt(requests[0])).toContain("commit-memory-2");
+		expect(effectivePrompt(requests[0])).not.toContain("commit-memory-1");
 	});
 
 	it.each(["memory lookup", "prompt rebuild", "extension hook", "extension hook after rebuild"] as const)(
@@ -963,6 +1000,14 @@ describe("queued user delivery policy", () => {
 					: undefined,
 			);
 			if (phase === "extension hook" || phase === "extension hook after rebuild") pausePreparation(pause);
+			// Recall now rides a hidden message instead of the prompt, so a queued batch
+			// never rebuilds the base prompt on its own; drive that rebuild the way an
+			// in-flight tool or policy change does.
+			if (phase === "prompt rebuild") {
+				pausePreparation(async () => {
+					await session.refreshBaseSystemPrompt();
+				});
+			}
 			const backend: MemoryBackend = {
 				id: "mnemopi",
 				async start() {},
@@ -983,7 +1028,12 @@ describe("queued user delivery policy", () => {
 			release.resolve();
 			await abort;
 			expect(requests).toEqual([]);
-			expect(session.systemPrompt).toEqual(BASE);
+			// A host-issued base rebuild is not part of the prepared policy: the abort
+			// discards the queued delivery, and the rebuild that was already in flight
+			// publishes its own base instead of the preparation's snapshot.
+			expect(session.systemPrompt).toEqual(
+				phase === "prompt rebuild" ? [...BASE, "rebuilt cancelled memory"] : BASE,
+			);
 			expect(agent.peekSteeringQueue()).toMatchObject([
 				{ content: [{ type: "text", text: "cancel memory preparation" }] },
 			]);

@@ -152,6 +152,9 @@ describe("advisor watchdog prompt discovery", () => {
 		tempDirs.push(tempDir);
 		const cwd = tempDir.join("parent-cwd");
 		fs.mkdirSync(path.join(cwd, "active-project", ".git"), { recursive: true });
+		// A populated marker: child-repo detection requires a real repository
+		// (gitdir + readable HEAD), not a bare `.git` directory.
+		fs.writeFileSync(path.join(cwd, "active-project", ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
 		const watchdogContent = "Parent watchdog remains before built-in active repo context.";
 		fs.writeFileSync(path.join(cwd, "WATCHDOG.md"), watchdogContent, "utf8");
 
@@ -166,10 +169,13 @@ describe("advisor watchdog prompt discovery", () => {
 		const tempDir = createOutsideGitTempDir();
 		tempDirs.push(tempDir);
 		const cwd = tempDir.join("parent-cwd");
-		fs.mkdirSync(path.join(cwd, "active-project", ".git"), { recursive: true });
-		fs.mkdirSync(path.join(cwd, "second-project", ".git"), { recursive: true });
+		for (const name of ["active-project", "second-project"]) {
+			fs.mkdirSync(path.join(cwd, name, ".git"), { recursive: true });
+			fs.writeFileSync(path.join(cwd, name, ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
+		}
 
 		await withAdvisorHistory(tempDir, cwd, dump => {
+			expect(dump).not.toContain("`active-project`");
 			expect(dump).not.toContain("exactly one direct child git repository");
 			expect(dump).not.toContain("Do not claim work is missing, destroyed, or absent at the parent cwd");
 		});

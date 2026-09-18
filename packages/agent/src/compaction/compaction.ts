@@ -525,6 +525,8 @@ export function findCutPoint(
 	startIndex: number,
 	endIndex: number,
 	keepRecentTokens: number,
+	/** Index of an entry that must stay in the retained tail (e.g. a live prompt). */
+	keepFromIndex?: number,
 ): CutPointResult {
 	const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
 
@@ -548,6 +550,11 @@ export function findCutPoint(
 		cutIndex = i;
 		cutPointIndex--;
 	}
+
+	// A protected entry (the live turn's own prompt, already pre-persisted but
+	// not reclaimable) pins the cut: summarizing it would drop the request the
+	// answer is being produced for.
+	if (keepFromIndex !== undefined && cutIndex > keepFromIndex) cutIndex = keepFromIndex;
 
 	const isTurnStart = isTurnStartEntry(entries[cutIndex]);
 	const turnStartIndex = isTurnStart ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
@@ -1398,6 +1405,11 @@ export function prepareCompaction(
 	settings: CompactionSettings,
 	activeModel?: Model,
 	tokenizer: Tokenizer = new Tokenizer(activeModel),
+	/**
+	 * Entry that must remain in the retained tail even when the retention budget
+	 * would cut past it — the live turn's own pre-persisted prompt.
+	 */
+	options?: { keepFromEntryId?: string },
 ): CompactionPreparation | undefined {
 	const lastEntry = pathEntries[pathEntries.length - 1];
 	// A speculative native record may leave uncovered messages before the record.
@@ -1474,7 +1486,28 @@ export function prepareCompaction(
 		}
 	}
 
-	const cutPoint = findCutPoint(compactionEntries, tokenizer, 0, compactionEntries.length, keepRecentTokens);
+	const keepFromEntryId = options?.keepFromEntryId;
+	const keepFromIndex = keepFromEntryId
+		? compactionEntries.findIndex(entry => entry.id === keepFromEntryId)
+		: -1;
+	const protectedCutPoint =
+		keepFromIndex >= 0
+			? findCutPoint(compactionEntries, tokenizer, 0, compactionEntries.length, keepRecentTokens, keepFromIndex)
+			: undefined;
+	// Every entry before the cut is summarized (for a split turn, its prefix up to
+	// the same index), so a cut at index 0 has nothing to summarize. Protecting the
+	// live prompt must not turn a viable pass into a no-op: when the in-flight turn
+	// is the branch's ONLY summarizable content — a fresh session's first tool loop,
+	// where the retained tail already starts at the live prompt — the pin leaves
+	// nothing for mid-run maintenance to summarize and the loop carries an
+	// over-threshold context until provider overflow. The pin exists to stop older
+	// turns from folding the request being answered, so fall back to the retention
+	// budget only when the pin has nothing older to summarize in its place.
+	const cutPoint =
+		protectedCutPoint !== undefined && protectedCutPoint.firstKeptEntryIndex > 0
+			? protectedCutPoint
+			: findCutPoint(compactionEntries, tokenizer, 0, compactionEntries.length, keepRecentTokens);
+
 
 	// Get ID of first kept entry
 	const firstKeptEntry = compactionEntries[cutPoint.firstKeptEntryIndex];

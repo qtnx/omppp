@@ -3143,7 +3143,9 @@ export class SessionManager {
 
 	/**
 	 * Rehydrate the active context tail before an entry path becomes readable by
-	 * provider or renderer code. Cold history remains blob-backed.
+	 * provider or renderer code. Cold history remains blob-backed, and snapcompact
+	 * frames stay as references — the context builder resolves only the newest
+	 * frames that fit its budget (`resolveFrameData`).
 	 */
 	rehydrateActivePath(): void {
 		const path = this.getBranch();
@@ -3156,13 +3158,15 @@ export class SessionManager {
 			}
 		}
 		if (latestCompactionIndex < 0) {
-			rehydrateEntries(path, this.#blobs);
+			rehydrateEntries(path, this.#blobs, { frames: false });
 			return;
 		}
 		const compaction = path[latestCompactionIndex];
 		if (compaction?.type !== "compaction") return;
 		const keptIndex = path.findIndex(entry => entry.id === compaction.firstKeptEntryId);
-		rehydrateEntries(path.slice(keptIndex >= 0 ? keptIndex : latestCompactionIndex), this.#blobs);
+		rehydrateEntries(path.slice(keptIndex >= 0 ? keptIndex : latestCompactionIndex), this.#blobs, {
+			frames: false,
+		});
 	}
 
 	/**

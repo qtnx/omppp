@@ -52,12 +52,12 @@ export const ASYNC_JOB_MANAGER_SHUTDOWN_REASON = Symbol("AsyncJobManager shutdow
  * the top rung is the longest a wait will ever block. A sufficiently long
  * reassessment gap resets to the floor.
  */
-export const POLL_WAIT_LADDER_MS = [300_000, 600_000] as const;
+export const POLL_WAIT_LADDER_MS = [5_000, 10_000, 30_000, 60_000, 300_000] as const;
 /**
  * Going at least this long between scheduled poll calls means the agent stepped
  * out of the wait loop to reassess or do real work, so the next poll resets.
  */
-const POLL_ESCALATION_RESET_MS = 120_000;
+const POLL_ESCALATION_RESET_MS = 60_000;
 
 interface PollEscalationState {
 	/** Index into POLL_WAIT_LADDER_MS used for the most recent wait. */

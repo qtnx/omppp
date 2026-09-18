@@ -2597,9 +2597,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		let extensionPaths: string[] = [];
 		let extensionsResult: LoadExtensionsResult;
 		try {
-			if (restrictToolNames || minimalExtensionRuntime) {
+			if (minimalExtensionRuntime) {
 				extensionsResult = await logger.time("loadExtensions", loadExtensions, [], cwd, eventBus);
-			} else if (options.preloadedExtensions) {
+			} else if (!restrictToolNames && options.preloadedExtensions) {
 				const preloadedExtensions = isHerdrSubagentSession
 					? options.preloadedExtensions.extensions.filter(
 							extension =>
@@ -2618,10 +2618,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					extensionsResult.extensions.map(ext => ext.resolvedPath).filter(p => !p.startsWith("<inline")),
 					true,
 				);
-			} else if (options.preloadedPreparedExtensions) {
+			} else if (restrictToolNames || options.preloadedPreparedExtensions) {
+				// Restricted children retain the OWNER's hooks (tool policy, path
+				// guards) while ambient discovery, new extension inputs, and
+				// parent-bound instances stay out. Tool admission stays clamped.
 				const preparedExtensions = isHerdrSubagentSession
-					? options.preloadedPreparedExtensions.filter(prepared => !isHerdrAgentStateExtensionPath(prepared.path))
-					: options.preloadedPreparedExtensions;
+					? (options.preloadedPreparedExtensions ?? []).filter(
+							prepared => !isHerdrAgentStateExtensionPath(prepared.path),
+						)
+					: (options.preloadedPreparedExtensions ?? []);
 				extensionPaths = filterSubagentExtensionPaths(
 					preparedExtensions.map(prepared => prepared.path),
 					true,
