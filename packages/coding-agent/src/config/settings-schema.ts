@@ -878,7 +878,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Signals",
 			label: "Advisor Review Gate",
 			description:
-				"Let the advisor skip in-progress turns TypeSafe rates as not worth reviewing. Final yields, user prompts, consults, and the deferred-turn cap always reach the advisor.",
+				"Let the advisor skip turns TypeSafe rates as not worth its attention (chit-chat, short answers, routine progress), whether in-progress or just yielded. Only a consult or an unclassified turn bypasses the classifier's verdict.",
 		},
 	},
 	"signals.advisorGate.reviewThreshold": {
@@ -888,17 +888,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "model",
 			group: "Signals",
 			label: "Advisor Review Threshold",
-			description: "needs-review probability (0-1) at or above which an in-progress turn is sent to the advisor.",
-		},
-	},
-	"signals.advisorGate.maxDeferredTurns": {
-		type: "number",
-		default: 4,
-		ui: {
-			tab: "model",
-			group: "Signals",
-			label: "Advisor Max Deferred Turns",
-			description: "Consecutive in-progress turns the gate may hold back before the advisor reviews them anyway.",
+			description: "Advisor-needed probability (0-1) at or above which a turn is sent to the advisor.",
 		},
 	},
 	"signals.stuckThreshold": {

@@ -13,10 +13,10 @@
 	},
 	"needs_review": {
 		"type": "noul",
-		"instructions": "Should a senior reviewer look at this transcript slice now, rather than waiting for a later turn? Yes when it contains something a reviewer would want to catch early: a landed diff or design decision, a claim of completion, a change of direction, a repeated failure, a risky or destructive command, or a question to the user. No when it is routine progress: reads, searches, a single passing check, small mechanical edits, or in-flight work with nothing decided yet.",
+		"instructions": "A senior advisor model watches this coding agent's session and can interject with critique or a course correction. Invoking it costs a full model call. Should the advisor be invoked on THIS transcript slice right now, whether the agent is mid-task or has just yielded? Yes only when the advisor can materially catch or improve something: a landed code change or design decision, a claim that work is done or fixed (especially without visible evidence), a risky or destructive command, a repeated failure or stuck loop, a change of direction, or a question to the user that deserves a second opinion. No when nothing would change by reviewing it: greetings, small talk, banter, a short factual answer, an acknowledgement, routine reads and searches, a single passing check, small mechanical edits, or in-flight work with nothing decided yet.",
 		"criteria": {
-			"true": "Contains a decision, landed change, completion claim, repeated failure, risky action, or deviation a reviewer should see now",
-			"false": "Routine exploration or mechanical progress; nothing a reviewer needs to act on yet"
+			"true": "The advisor can act on this slice now: a decision, landed change, completion claim, repeated failure, risky action, deviation, or an open question worth a second opinion",
+			"false": "Nothing for the advisor to act on: chit-chat, a short answer, routine exploration, or mechanical progress"
 		}
 	},
 	"progress": {
