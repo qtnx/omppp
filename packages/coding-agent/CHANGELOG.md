@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/model` now accepts a model selector (`/model sonnet:high`, `/model @smol`); `/effort` sets the session thinking level (`/effort high`).
+
 ### Fixed
 
 - Snapcompact now omits `¶think:` sections for Anthropic-backed models whose id does not classify as the Anthropic dialect (OpenAI-compat gateways with Anthropic `cache_control`), matching the compaction summarizer so replayed archives no longer trip `reasoning_extraction`.
