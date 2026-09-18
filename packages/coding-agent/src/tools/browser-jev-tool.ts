@@ -37,6 +37,8 @@ export interface JevStepReport {
 	/** DRAG only: the element the source was dropped onto. */
 	dropTarget?: { id: number; role: string; name?: string };
 	text?: string;
+	/** Set when the rescue helper chose this action; holds its one-line reason. */
+	rescue?: string;
 	pageChanged: boolean;
 	url: string;
 }
@@ -48,9 +50,13 @@ export interface JevRunReport {
 	title?: string;
 	elapsedMs: number;
 	pageText: string;
+	rescues: number;
+	reason?: string;
 }
 
 export interface BrowserJevDetails {
+	/** Rescue turns this run spent on a stuck page. */
+	rescues?: number;
 	/** Named isolated browser session this run drove, when one was requested. */
 	profile?: string;
 	status?: JevRunReport["status"];
@@ -87,7 +93,8 @@ function describeStep(step: JevStepReport): string {
 	const drop = step.dropTarget ? ` onto ${describe(step.dropTarget)}` : "";
 	const typed = step.text === undefined ? "" : ` = ${JSON.stringify(step.text)}`;
 	const changed = step.pageChanged ? "" : " (page unchanged)";
-	return `${step.step}. ${step.operation}${target}${drop}${typed}${changed}`;
+	const rescue = step.rescue ? ` [rescue: ${step.rescue}]` : "";
+	return `${step.step}. ${step.operation}${target}${drop}${typed}${changed}${rescue}`;
 }
 
 export function renderJevReport(goal: string, report: JevRunReport): string {
@@ -97,11 +104,17 @@ export function renderJevReport(goal: string, report: JevRunReport): string {
 		`url: ${report.url}`,
 	];
 	if (report.title) lines.push(`title: ${report.title}`);
+	if (report.rescues > 0) {
+		lines.push(`rescue turns: ${report.rescues} (helper model cleared or inspected a stuck page)`);
+	}
 	if (report.steps.length > 0) lines.push("", "steps:", ...report.steps.map(describeStep));
 	if (report.status === "blocked") {
 		lines.push(
 			"",
-			"Jev found no supported operation for the remaining work. Handle that step with `browser_use` (canvas/gesture) or the `browser` prelude (selectors/JS), then hand the rest back.",
+			report.reason
+				? `Blocked after a rescue turn: ${report.reason}`
+				: "Jev found no supported operation for the remaining work.",
+			"Handle that step with `browser_use` (canvas/gesture) or the `browser` prelude (selectors/JS), then hand the rest back.",
 		);
 	} else if (report.status === "max_steps") {
 		lines.push(
@@ -192,6 +205,7 @@ export class BrowserJevTool implements AgentTool<typeof browserJevSchema, Browse
 			details.url = report.url;
 			details.title = report.title;
 			details.elapsedMs = report.elapsedMs;
+			details.rescues = report.rescues;
 			return {
 				content: [{ type: "text", text: renderJevReport(params.goal, report) }],
 				details,

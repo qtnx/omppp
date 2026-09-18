@@ -6,7 +6,7 @@
 
 - Tool: `packages/coding-agent/src/tools/browser-jev-tool.ts`
 - Decision loop, action space, answer validation: `packages/coding-agent/src/tools/browser/jev.ts`
-- Model instructions: `packages/coding-agent/src/prompts/tools/browser-jev/{next-action,target,text-value}.md`
+- Model instructions: `packages/coding-agent/src/prompts/tools/browser-jev/{next-action,target,text-value,rescue}.md`
 - Registration and gate: `packages/coding-agent/src/tools/index.ts` (`browser_jev` factory; allowed when `browser.enabled` is true and `TYPESAFE_API_KEY` is set)
 - Browser acquisition and tab lifecycle: `packages/coding-agent/src/tools/browser/registry.ts`, `packages/coding-agent/src/tools/browser/tab-supervisor.ts`
 - Tests: `packages/coding-agent/src/tools/__tests__/browser-jev-tool.test.ts`, `packages/coding-agent/src/tools/browser/__tests__/jev.test.ts`
@@ -38,7 +38,8 @@ Unknown fields are rejected.
 2. One TypeSafe request per step returns the operation (`CLICK`, `TYPE_TEXT`, `SELECT`, `HOVER`, `PRESS_ENTER`, `DRAG`, `SCROLL_UP`, `SCROLL_DOWN`, `WAIT`, `DONE`, `BLOCKED`) and, speculatively, a target for each applicable head; only the head(s) matching the chosen operation can execute. `DRAG` answers two heads — the element to pick up and the drop target — in the same request.
 3. `TYPE_TEXT` resolves its value through the session `completion()` bridge — the `smol` tier first, the session `default` tier if that fails.
 4. Execute against the observed element id, re-observe, repeat. Model output never becomes a selector, coordinate, or script.
-5. Stop on `DONE`, `BLOCKED`, three consecutive non-`WAIT` actions that leave the page unchanged, or the step budget.
+5. A `BLOCKED` verdict, or three consecutive non-`WAIT` actions that changed nothing, spends one rescue turn: the `smol` helper (falling back to the session default) sees the goal, page text, element table, and recent actions, and must answer with ONE action from the SAME offered space — or `give_up` plus the obstacle it found. Up to `MAX_RESCUES` (2) per run; rescue steps carry a `rescue` reason. The rescue prompt forbids destructive actions the goal did not request.
+6. Stop on `DONE`, a rescue that gave up, or the step budget.
 
 ## Limits
 
@@ -49,5 +50,6 @@ Unknown fields are rejected.
 ## Result
 
 - Text report: `status` with the action count and elapsed time, the goal, final URL and title, the executed steps (operation, target role/name, typed value, `page unchanged` marker), and the readable page text of the final page.
-- `blocked` and `max_steps` append the takeover instruction (`browser_use` for canvas/gesture, the `browser` prelude for selectors/JS) and set `isError: true`.
-- `details`: `{ status?, stepCount, url?, title?, elapsedMs?, goal, profile? }`.
+- `blocked` and `max_steps` append the takeover instruction (`browser_use` for canvas/gesture, the `browser` prelude for selectors/JS) and set `isError: true`. A blocked run states the obstacle the rescue turn named.
+- Rescue turns are counted in the report (`rescue turns: N`) and in `details.rescues`.
+- `details`: `{ status?, stepCount, url?, title?, elapsedMs?, goal, profile?, rescues? }`.

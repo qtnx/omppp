@@ -103,9 +103,10 @@ function makeDriver(log: string[], overrides: Partial<JevDriver> & Pick<JevDrive
 		drag: async (from, to) => void log.push(`drag:${from}->${to}`),
 		scroll: async delta => void log.push(`scroll:${delta}`),
 		wait: async () => {},
-		fieldText: async context => {
-			log.push(`text:${context.field.label}`);
-			return "cats";
+		helper: async payload => {
+			const context = payload as { field?: { label: string } };
+			log.push(`text:${context.field?.label}`);
+			return { text: "cats" };
 		},
 		...overrides,
 	};
@@ -157,7 +158,10 @@ describe("runJevAct", () => {
 	test("routes SELECT through element activation and HOVER/PRESS_ENTER to their own operations", async () => {
 		const log: string[] = [];
 		const elements = [SEARCH, SUBMIT, { id: 9, role: "option", name: "Economy", states: [] }];
-		const driver = makeDriver(log, { observe: async () => observation(elements) });
+		let tick = 0;
+		const driver = makeDriver(log, {
+			observe: async () => observation(elements, `https://example.test/?step=${tick++}`),
+		});
 		const fetchImpl = fakeFetch([
 			body => answerAll(body, "SELECT", { select_target: "3" }),
 			body => answerAll(body, "HOVER", { hover_target: "2" }),
@@ -251,11 +255,114 @@ describe("runJevAct", () => {
 			fill: async () => {
 				throw new Error("must not fill");
 			},
-			fieldText: async () => null,
+			helper: async () => ({ text: null }),
 		});
 		const fetchImpl = fakeFetch([body => answerAll(body, "TYPE_TEXT", { type_text_target: "1" })]);
 		await expect(runJevAct(driver, "Fill the form", { apiKey: "test", fetch: fetchImpl })).rejects.toThrow(
 			/supplies no value for field "Search"/,
 		);
+	});
+});
+
+describe("runJevAct rescue turn", () => {
+	const MODAL = { id: 11, role: "button", name: "Close dialog", states: [] };
+
+	test("a BLOCKED verdict spends one helper turn, executes its plan, and continues the run", async () => {
+		const log: string[] = [];
+		let closed = false;
+		const driver = makeDriver(log, {
+			observe: async () =>
+				closed
+					? observation([SUBMIT], "https://example.test/open")
+					: observation([SUBMIT, MODAL], "https://example.test/modal"),
+			click: async id => {
+				log.push(`click:${id}`);
+				if (id === MODAL.id) closed = true;
+			},
+			helper: async payload => {
+				const context = payload as { stuck_because?: string; elements?: Array<{ index: string; label: string }> };
+				log.push(`rescue:${context.stuck_because}`);
+				const modal = context.elements?.find(e => e.label === "Close dialog");
+				return {
+					action: "recover",
+					operation: "CLICK",
+					element: modal?.index,
+					text: null,
+					reason: "closed the dialog",
+				};
+			},
+		});
+		const result = await runJevAct(driver, "Reach the page behind the dialog", {
+			apiKey: "test",
+			fetch: fakeFetch([body => answerAll(body, "BLOCKED"), body => answerAll(body, "DONE")]),
+		});
+		expect(log).toEqual(["rescue:policy_reported_blocked", "click:11"]);
+		expect(result.status).toBe("done");
+		expect(result.rescues).toBe(1);
+		expect(result.steps.map(s => [s.operation, s.target?.id, s.rescue, s.pageChanged])).toEqual([
+			["CLICK", 11, "closed the dialog", true],
+		]);
+	});
+
+	test("a give_up answer surfaces the named obstacle as the blocked reason", async () => {
+		const driver = makeDriver([], {
+			observe: async () => observation([SUBMIT]),
+			helper: async () => ({
+				action: "give_up",
+				operation: null,
+				element: null,
+				text: null,
+				reason: "the flow needs a payment card the goal does not supply",
+			}),
+		});
+		const result = await runJevAct(driver, "Complete checkout", {
+			apiKey: "test",
+			fetch: fakeFetch([body => answerAll(body, "BLOCKED")]),
+		});
+		expect(result.status).toBe("blocked");
+		expect(result.reason).toBe("the flow needs a payment card the goal does not supply");
+		expect(result.rescues).toBe(1);
+		expect(result.steps).toHaveLength(0);
+	});
+
+	test("a plan naming an element that was never offered executes nothing", async () => {
+		const log: string[] = [];
+		const driver = makeDriver(log, {
+			observe: async () => observation([SUBMIT]),
+			helper: async () => ({
+				action: "recover",
+				operation: "CLICK",
+				element: "99",
+				text: null,
+				reason: "clicking the hidden overlay",
+			}),
+		});
+		const result = await runJevAct(driver, "Do the thing", {
+			apiKey: "test",
+			fetch: fakeFetch([body => answerAll(body, "BLOCKED")]),
+		});
+		expect(log).toEqual([]);
+		expect(result.status).toBe("blocked");
+		expect(result.reason).toBe("clicking the hidden overlay");
+	});
+
+	test("three actions that change nothing trigger the rescue before giving up", async () => {
+		const log: string[] = [];
+		const driver = makeDriver(log, {
+			observe: async () => observation([SUBMIT]),
+			helper: async payload => {
+				log.push(`rescue:${(payload as { stuck_because?: string }).stuck_because}`);
+				return { action: "give_up", operation: null, element: null, text: null, reason: "the page never reacts" };
+			},
+		});
+		const clickGo = (body: Record<string, unknown>): Record<string, unknown> =>
+			answerAll(body, "CLICK", { click_target: "1" });
+		const result = await runJevAct(driver, "Open the thing", {
+			apiKey: "test",
+			fetch: fakeFetch([clickGo, clickGo, clickGo, clickGo]),
+		});
+		expect(log).toEqual(["click:2", "click:2", "click:2", "rescue:no_progress"]);
+		expect(result.status).toBe("blocked");
+		expect(result.reason).toBe("the page never reacts");
 	});
 });

@@ -5,12 +5,18 @@
  * the page, offers Jev an indexed element table, and lets one request pick both
  * the operation and its target. Model output never becomes a selector, coordinate,
  * or script — every executed target resolves from an observed element id.
- * Field values for TYPE_TEXT come from the session's `smol` completion tier.
+ *
+ * Two jobs go to the session's `smol` completion tier (falling back to the
+ * session default model): the value a TYPE_TEXT field needs, and a rescue turn
+ * that tries to clear a stuck page — a modal, consent banner, tutorial overlay,
+ * or end-of-round gate the choice-only policy cannot reason about — before the
+ * run reports `blocked` to its caller.
  */
 
 import { ToolError, throwIfAborted } from "../tool-errors";
 import nextActionRules from "../../prompts/tools/browser-jev/next-action.md" with { type: "text" };
 import targetRules from "../../prompts/tools/browser-jev/target.md" with { type: "text" };
+import rescueRules from "../../prompts/tools/browser-jev/rescue.md" with { type: "text" };
 import textValueRules from "../../prompts/tools/browser-jev/text-value.md" with { type: "text" };
 import type { Observation, ObservationEntry } from "./tab-protocol";
 
@@ -26,6 +32,10 @@ const SETTLE_MS = 150;
 const WAIT_MS = 500;
 const REQUEST_TIMEOUT_MS = 25_000;
 const RETRY_STATUSES: Record<number, true> = { 429: true, 503: true, 529: true };
+/** Rescue turns allowed per run; each costs one `smol` completion. */
+const MAX_RESCUES = 2;
+/** Consecutive non-WAIT actions that changed nothing before the run is considered stuck. */
+const STALL_LIMIT = 3;
 
 /** Jev is on by default whenever the TypeSafe key is present in the environment. */
 export function jevApiKey(): string | undefined {
@@ -104,6 +114,8 @@ export interface JevStep {
 	/** DRAG only: the element the source was dropped onto. */
 	dropTarget?: { id: number; role: string; name?: string };
 	text?: string;
+	/** Set when the rescue helper, not Jev, chose this action; holds its one-line reason. */
+	rescue?: string;
 	confidence: number;
 	probability: number;
 	latencyMs: number;
@@ -117,6 +129,10 @@ export interface JevActResult {
 	url: string;
 	title?: string;
 	elapsedMs: number;
+	/** Rescue turns spent on this run. */
+	rescues: number;
+	/** Why the run stopped, when a rescue turn named the remaining obstacle. */
+	reason?: string;
 }
 
 export interface JevFieldContext {
@@ -144,8 +160,29 @@ export interface JevDriver {
 	drag(fromId: number, toId: number): Promise<void>;
 	scroll(deltaY: number): Promise<void>;
 	wait(ms: number): Promise<void>;
-	/** Resolve the value to type; `null` means the goal does not supply one. */
-	fieldText(context: JevFieldContext, rules: string): Promise<string | null>;
+	/**
+	 * Ask the session's helper model for one structured answer (field value,
+	 * rescue plan). `rules` is the system prompt, `schema` the required JSON
+	 * shape; the returned value is parsed and validated by this module.
+	 */
+	helper(payload: object, rules: string, schema: object): Promise<unknown>;
+}
+
+export interface JevRescueContext {
+	goal: string;
+	stuck_because: "policy_reported_blocked" | "no_progress";
+	page: { url: string; title?: string; text: string };
+	offered_operations: string[];
+	elements: JevElement[];
+	recent_actions: Array<{ action: string; page_changed: boolean; rescue?: string }>;
+}
+
+/** One rescue answer, already validated against the offered action space. */
+interface JevRescuePlan {
+	operation: Exclude<JevOperation, "DONE" | "BLOCKED" | "DRAG">;
+	entry?: ObservationEntry;
+	text?: string;
+	reason: string;
 }
 
 export interface JevActOptions {
@@ -405,6 +442,64 @@ function fingerprint(observation: Observation): string {
 	return `${observation.url}|${Bun.hash(JSON.stringify(rows)).toString(36)}`;
 }
 
+const RESCUE_SCHEMA = {
+	type: "object",
+	properties: {
+		action: { enum: ["recover", "give_up"] },
+		operation: { type: ["string", "null"] },
+		element: { type: ["string", "null"] },
+		text: { type: ["string", "null"] },
+		reason: { type: "string" },
+	},
+	required: ["action", "reason"],
+	additionalProperties: false,
+} as const;
+
+/** Operations a rescue turn may choose; DRAG needs two endpoints and DONE/BLOCKED are verdicts. */
+const RESCUE_OPERATIONS: Record<string, true> = {
+	CLICK: true,
+	SELECT: true,
+	HOVER: true,
+	PRESS_ENTER: true,
+	TYPE_TEXT: true,
+	SCROLL_DOWN: true,
+	SCROLL_UP: true,
+	WAIT: true,
+};
+
+/**
+ * Validate a rescue answer against the SAME action space Jev was offered. An
+ * unusable answer (unknown operation, unoffered element, missing text) is not an
+ * error — it means no rescue happened, and the caller reports the real block.
+ */
+function parseRescuePlan(
+	value: unknown,
+	space: JevActionSpace,
+	operations: Record<string, string>,
+): { plan?: JevRescuePlan; reason: string } {
+	const record = (typeof value === "string" ? JSON.parse(value) : value) as Record<string, unknown> | null;
+	const reason =
+		record && typeof record.reason === "string" && record.reason.trim().length > 0
+			? record.reason.trim().slice(0, 300)
+			: "rescue turn returned no usable plan";
+	if (!record || record.action !== "recover") return { reason };
+	const operation = typeof record.operation === "string" ? record.operation.toUpperCase() : "";
+	if (!RESCUE_OPERATIONS[operation] || operations[operation] === undefined) return { reason };
+	const op = operation as JevRescuePlan["operation"];
+	if (op === "SCROLL_DOWN" || op === "SCROLL_UP" || op === "WAIT") return { plan: { operation: op, reason }, reason };
+	const head = op as JevTargetHead;
+	const entries = space.targets[head];
+	const index = typeof record.element === "string" ? record.element : "";
+	const entry = entries?.get(index);
+	if (!entry) return { reason };
+	if (op === "TYPE_TEXT") {
+		const text = typeof record.text === "string" ? record.text : "";
+		if (text.trim().length === 0 || text.length > 2000) return { reason };
+		return { plan: { operation: op, entry, text, reason }, reason };
+	}
+	return { plan: { operation: op, entry, reason }, reason };
+}
+
 /** Run the observe → choose → act loop until Jev reports DONE/BLOCKED or the step budget is spent. */
 export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOptions = {}): Promise<JevActResult> {
 	const task = goal.trim();
@@ -417,14 +512,86 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 	const started = performance.now();
 	const steps: JevStep[] = [];
 	let observation = await driver.observe();
+	let rescues = 0;
+	let stalled = 0;
 
-	const finish = (status: JevActResult["status"]): JevActResult => ({
+	const finish = (status: JevActResult["status"], reason?: string): JevActResult => ({
 		status,
 		steps,
 		url: observation.url,
 		title: observation.title,
 		elapsedMs: Math.round(performance.now() - started),
+		rescues,
+		reason,
 	});
+
+	/** Execute one resolved action; returns the page fingerprint taken before it. */
+	const apply = async (step: JevStep, plan: { operation: JevOperation; entry?: ObservationEntry; text?: string }) => {
+		const { operation, entry, text } = plan;
+		if (entry) step.target = { id: entry.id, role: entry.role, name: entry.name };
+		if (operation === "CLICK" || operation === "SELECT") await driver.click(entry!.id);
+		else if (operation === "HOVER") await driver.hover(entry!.id);
+		else if (operation === "PRESS_ENTER") await driver.pressEnter(entry!.id);
+		else if (operation === "TYPE_TEXT") {
+			step.text = text;
+			await driver.fill(entry!.id, text!);
+		} else if (operation === "SCROLL_DOWN" || operation === "SCROLL_UP") {
+			const delta = Math.max(200, Math.round(observation.viewport.height * 0.8));
+			await driver.scroll(operation === "SCROLL_DOWN" ? delta : -delta);
+		} else {
+			await driver.wait(WAIT_MS);
+			return;
+		}
+		await driver.wait(SETTLE_MS);
+	};
+
+	/**
+	 * One helper turn that tries to clear a stuck page before the run gives up.
+	 * Returns the rescue reason when an action ran, otherwise the obstacle the
+	 * helper named, which becomes the run's `reason`.
+	 */
+	const rescue = async (
+		why: JevRescueContext["stuck_because"],
+		pageText: string,
+		space: JevActionSpace,
+		operations: Record<string, string>,
+	): Promise<{ recovered: boolean; reason: string }> => {
+		if (rescues >= MAX_RESCUES) return { recovered: false, reason: "rescue budget spent" };
+		rescues++;
+		const context: JevRescueContext = {
+			goal: task,
+			stuck_because: why,
+			page: { url: observation.url, title: observation.title, text: pageText.slice(0, PAGE_TEXT_CAP) },
+			offered_operations: Object.keys(operations),
+			elements: space.elements,
+			recent_actions: steps.slice(-8).map(s => ({
+				action: describeStep(s),
+				page_changed: s.pageChanged,
+				rescue: s.rescue,
+			})),
+		};
+		const answer = await driver.helper(context, rescueRules, RESCUE_SCHEMA);
+		const { plan, reason } = parseRescuePlan(answer, space, operations);
+		if (!plan) return { recovered: false, reason };
+		const before = fingerprint(observation);
+		const step: JevStep = {
+			step: steps.length + 1,
+			operation: plan.operation,
+			rescue: plan.reason,
+			confidence: 0,
+			probability: 0,
+			latencyMs: 0,
+			pageChanged: false,
+			url: observation.url,
+		};
+		await apply(step, plan);
+		steps.push(step);
+		observation = await driver.observe();
+		step.pageChanged = fingerprint(observation) !== before;
+		step.url = observation.url;
+		stalled = 0;
+		return { recovered: true, reason: plan.reason };
+	};
 
 	while (steps.length < maxSteps) {
 		throwIfAborted(signal);
@@ -437,7 +604,14 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 		const operationAnswer = validateChoice(answers.operation, Object.keys(operations));
 		const operation = operationAnswer.choice as JevOperation;
 		if (operation === "DONE") return finish("done");
-		if (operation === "BLOCKED") return finish("blocked");
+		if (operation === "BLOCKED") {
+			// Jev only chooses among offered actions; a modal, consent banner, or
+			// end-of-round gate reads as "blocked" to it. Spend one helper turn
+			// before handing the cost back to the caller.
+			const attempt = await rescue("policy_reported_blocked", pageText, space, operations);
+			if (attempt.recovered) continue;
+			return finish("blocked", attempt.reason);
+		}
 
 		const before = fingerprint(observation);
 		const step: JevStep = {
@@ -467,103 +641,63 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 			step.dropTarget = { id: to.id, role: to.role, name: to.name };
 			await driver.drag(from.id, to.id);
 			await driver.wait(SETTLE_MS);
-		} else if (
-			operation === "CLICK" ||
-			operation === "TYPE_TEXT" ||
-			operation === "SELECT" ||
-			operation === "HOVER" ||
-			operation === "PRESS_ENTER"
-		) {
-			const entry = resolveTarget(operation);
-			step.target = { id: entry.id, role: entry.role, name: entry.name };
-			if (operation === "CLICK" || operation === "SELECT") await driver.click(entry.id);
-			else if (operation === "HOVER") await driver.hover(entry.id);
-			else if (operation === "PRESS_ENTER") await driver.pressEnter(entry.id);
-			else {
-				const text = await driver.fieldText(
-					{
-						goal: task,
-						field: {
-							label: entry.name ?? entry.description ?? "",
-							role: entry.role,
-							value: entry.value === undefined ? undefined : String(entry.value),
-						},
-						page: { title: observation.title, text: pageText.slice(0, PAGE_TEXT_CAP) },
-						recent_actions: steps.slice(-6).map(s => ({ action: describeStep(s), text: s.text })),
+		} else {
+			const entry =
+				operation === "SCROLL_DOWN" || operation === "SCROLL_UP" || operation === "WAIT"
+					? undefined
+					: resolveTarget(operation as JevTargetHead);
+			let text: string | undefined;
+			if (operation === "TYPE_TEXT") {
+				const value = await fieldText(driver, {
+					goal: task,
+					field: {
+						label: entry!.name ?? entry!.description ?? "",
+						role: entry!.role,
+						value: entry!.value === undefined ? undefined : String(entry!.value),
 					},
-					textValueRules,
-				);
-				if (text === null || text.trim().length === 0) {
+					page: { title: observation.title, text: pageText.slice(0, PAGE_TEXT_CAP) },
+					recent_actions: steps.slice(-6).map(s => ({ action: describeStep(s), text: s.text })),
+				});
+				if (value === null || value.trim().length === 0) {
 					throw new ToolError(
-						`tab.act(): the goal supplies no value for field ${JSON.stringify(step.target.name ?? entry.role)} (element ${entry.id}); nothing typed.`,
+						`tab.act(): the goal supplies no value for field ${JSON.stringify(entry!.name ?? entry!.role)} (element ${entry!.id}); nothing typed.`,
 					);
 				}
-				step.text = text;
-				await driver.fill(entry.id, text);
+				text = value;
 			}
-			await driver.wait(SETTLE_MS);
-		} else if (operation === "SCROLL_DOWN" || operation === "SCROLL_UP") {
-			const delta = Math.max(200, Math.round(observation.viewport.height * 0.8));
-			await driver.scroll(operation === "SCROLL_DOWN" ? delta : -delta);
-			await driver.wait(SETTLE_MS);
-		} else {
-			await driver.wait(WAIT_MS);
+			await apply(step, { operation, entry, text });
 		}
 		steps.push(step);
 		observation = await driver.observe();
 		step.pageChanged = fingerprint(observation) !== before;
 		step.url = observation.url;
 
-		const recent = steps.slice(-3);
-		if (recent.length === 3 && recent.every(s => !s.pageChanged && s.operation !== "WAIT")) {
-			return finish("blocked");
+		stalled = step.pageChanged || step.operation === "WAIT" ? 0 : stalled + 1;
+		if (stalled >= STALL_LIMIT) {
+			const attempt = await rescue("no_progress", pageText, space, operations);
+			if (!attempt.recovered) return finish("blocked", attempt.reason);
 		}
 	}
 	return finish("max_steps");
 }
 
-type TextHelperTier = "smol" | "default";
+type HelperTier = "smol" | "default";
 
-/** Prompt payload for the text helper; shared so both backends build the same completion call. */
-function fieldTextCompletionArgs(
-	context: JevFieldContext,
-	rules: string,
-	tier: TextHelperTier,
-): Record<string, unknown> {
-	return {
-		prompt: JSON.stringify(context),
-		model: tier,
-		system: rules,
-		schema: {
-			type: "object",
-			properties: { text: { type: ["string", "null"] } },
-			required: ["text"],
-			additionalProperties: false,
-		},
-	};
+/** Completion arguments for one helper turn; both backends build the same call. */
+function helperCompletionArgs(payload: object, rules: string, schema: object, tier: HelperTier) {
+	return { prompt: JSON.stringify(payload), model: tier, system: rules, schema };
 }
 
-const INVALID_FIELD_TEXT = "Text helper returned no valid field value; nothing typed.";
-
-/** Parse the structured `{ text }` result returned by the completion bridge. */
-export function parseFieldText(value: unknown): string | null {
-	const record: unknown = typeof value === "string" ? JSON.parse(value) : value;
-	if (!record || typeof record !== "object" || !("text" in record)) throw new ToolError(INVALID_FIELD_TEXT);
-	const text = record.text;
-	if (text === null) return null;
-	if (typeof text !== "string" || text.length > 2000) throw new ToolError(INVALID_FIELD_TEXT);
-	return text;
-}
-
-async function completeFieldText(
+async function completeHelper(
 	callTool: (name: string, args: unknown) => Promise<unknown>,
-	context: JevFieldContext,
+	payload: object,
 	rules: string,
-	tier: TextHelperTier,
-): Promise<string | null> {
-	const handle = await callTool("__completion__", fieldTextCompletionArgs(context, rules, tier));
+	schema: object,
+	tier: HelperTier,
+): Promise<unknown> {
+	const handle = await callTool("__completion__", helperCompletionArgs(payload, rules, schema, tier));
 	if (!handle || typeof handle !== "object" || !("id" in handle) || typeof handle.id !== "string") {
-		throw new ToolError("Text helper did not return a completion handle");
+		throw new ToolError("Helper model did not return a completion handle");
 	}
 	const waited = await callTool("__wait__", { items: [{ kind: "completion", id: handle.id }] });
 	const snapshot: unknown =
@@ -575,33 +709,55 @@ async function completeFieldText(
 			snapshot && typeof snapshot === "object" && "error" in snapshot && typeof snapshot.error === "string"
 				? snapshot.error
 				: "no result";
-		throw new ToolError(`Text helper (${tier}) failed: ${reason}`);
+		throw new ToolError(`Helper model (${tier}) failed: ${reason}`);
 	}
-	if ("data" in snapshot && snapshot.data !== undefined) return parseFieldText(snapshot.data);
-	return parseFieldText("text" in snapshot ? snapshot.text : undefined);
+	if ("data" in snapshot && snapshot.data !== undefined) return snapshot.data;
+	return "text" in snapshot ? snapshot.text : undefined;
 }
 
 /**
- * Resolve a TYPE_TEXT value through the session's `completion()` bridge
+ * Run one helper turn through the session's `completion()` bridge
  * (`__completion__` returns a handle; `__wait__` settles it). The cheap `smol`
  * tier goes first; a provider/credit failure there falls back to the session's
- * `default` model so one exhausted small-model account cannot strand the run.
+ * `default` model so one exhausted small-model account cannot strand a run.
  */
-export async function fieldTextViaBridge(
+export async function helperViaBridge(
 	callTool: (name: string, args: unknown) => Promise<unknown>,
-	context: JevFieldContext,
+	payload: object,
 	rules: string,
-): Promise<string | null> {
+	schema: object,
+): Promise<unknown> {
 	try {
-		return await completeFieldText(callTool, context, rules, "smol");
+		return await completeHelper(callTool, payload, rules, schema, "smol");
 	} catch (error) {
-		if (error instanceof ToolError && error.message.startsWith(INVALID_FIELD_TEXT)) throw error;
 		const smolFailure = error instanceof Error ? error.message : String(error);
 		try {
-			return await completeFieldText(callTool, context, rules, "default");
+			return await completeHelper(callTool, payload, rules, schema, "default");
 		} catch (fallbackError) {
 			const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
 			throw new ToolError(`${message} (after smol tier failed: ${smolFailure})`);
 		}
 	}
+}
+
+const FIELD_TEXT_SCHEMA = {
+	type: "object",
+	properties: { text: { type: ["string", "null"] } },
+	required: ["text"],
+	additionalProperties: false,
+} as const;
+
+/** Ask the helper model for one field value; `null` means the goal supplies none. */
+async function fieldText(driver: JevDriver, context: JevFieldContext): Promise<string | null> {
+	const value = await driver.helper(context, textValueRules, FIELD_TEXT_SCHEMA);
+	const record: unknown = typeof value === "string" ? JSON.parse(value) : value;
+	if (!record || typeof record !== "object" || !("text" in record)) {
+		throw new ToolError("Text helper returned no valid field value; nothing typed.");
+	}
+	const text = record.text;
+	if (text === null) return null;
+	if (typeof text !== "string" || text.length > 2000) {
+		throw new ToolError("Text helper returned no valid field value; nothing typed.");
+	}
+	return text;
 }

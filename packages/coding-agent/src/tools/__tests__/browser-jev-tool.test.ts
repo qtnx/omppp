@@ -33,6 +33,7 @@ function report(overrides: Partial<JevRunReport> = {}): JevRunReport {
 		title: "Results",
 		elapsedMs: 4200,
 		pageText: "Two hotels found",
+		rescues: 0,
 		...overrides,
 	};
 }
@@ -60,6 +61,30 @@ describe("renderJevReport", () => {
 		expect(text).toContain('2. CLICK button "Search" (page unchanged)');
 		expect(text).toContain("page text:\nTwo hotels found");
 		expect(text).not.toContain("browser_use");
+	});
+
+	test("names the rescue turn and its verdict in the report", () => {
+		const text = renderJevReport(
+			"g",
+			report({
+				status: "blocked",
+				rescues: 1,
+				reason: "the flow needs a payment card the goal does not supply",
+				steps: [
+					{
+						step: 1,
+						operation: "CLICK",
+						target: { id: 4, role: "button", name: "Close" },
+						rescue: "closed the consent dialog",
+						pageChanged: true,
+						url: "https://example.test/",
+					},
+				],
+			}),
+		);
+		expect(text).toContain("rescue turns: 1");
+		expect(text).toContain('1. CLICK button "Close" [rescue: closed the consent dialog]');
+		expect(text).toContain("Blocked after a rescue turn: the flow needs a payment card the goal does not supply");
 	});
 
 	test("tells the caller how to take over on blocked and how to resume on max_steps", () => {

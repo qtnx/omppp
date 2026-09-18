@@ -39,7 +39,7 @@ import {
 import { ToolAbortError, ToolError, throwIfAborted } from "../tool-errors";
 import { disableAnnotationMode, enableAnnotationMode } from "./annotate";
 import { elementCenter, selectObservedOptionInPage } from "./jev-dom";
-import { fieldTextViaBridge, type JevActOptions, type JevActResult, runJevAct } from "./jev";
+import { helperViaBridge, type JevActOptions, type JevActResult, runJevAct } from "./jev";
 import {
 	type AriaSnapshotOptions,
 	assertSelectorString,
@@ -1750,8 +1750,8 @@ export class WorkerCore {
 							scroll: deltaY =>
 								untilAborted(sig, () => dispatchScroll(() => page.mouse.wheel({ deltaX: 0, deltaY }))),
 							wait: ms => untilAborted(sig, () => Bun.sleep(ms)),
-							fieldText: (context, rules) =>
-								fieldTextViaBridge((name, args) => this.#callTool(active, name, args), context, rules),
+							helper: (payload, rules, schema) =>
+								helperViaBridge((name, args) => this.#callTool(active, name, args), payload, rules, schema),
 						},
 						goal,
 						{ maxSteps: opts?.maxSteps, signal: sig },

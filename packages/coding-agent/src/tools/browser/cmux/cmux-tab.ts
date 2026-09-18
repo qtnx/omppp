@@ -22,7 +22,7 @@ import { ToolAbortError, ToolError, throwIfAborted } from "../../tool-errors";
 import { type AriaSnapshotOptions, assertSelectorString, buildAriaSnapshotScript } from "../aria/aria-snapshot";
 import { DEFAULT_VIEWPORT } from "../launch";
 import { elementCenter, selectObservedOptionInPage } from "../jev-dom";
-import { fieldTextViaBridge, type JevActOptions, type JevActResult, runJevAct } from "../jev";
+import { helperViaBridge, type JevActOptions, type JevActResult, runJevAct } from "../jev";
 import { extractReadableFromHtml, type ReadableFormat } from "../readable";
 import { cloneSafe, RunOutput } from "../run-output";
 import type { Observation, ReadyInfo, RunResultOk, ScreenshotResult, SessionSnapshot } from "../tab-protocol";
@@ -464,11 +464,12 @@ export class CmuxTab {
 				},
 				scroll: deltaY => this.scroll(0, deltaY),
 				wait: ms => untilAborted(signal, () => Bun.sleep(ms)),
-				fieldText: (fieldContext, rules) =>
-					fieldTextViaBridge(
+				helper: (payload, rules, schema) =>
+					helperViaBridge(
 						(name, args) => callSessionTool(name, args, { session: context.toolSession, signal }),
-						fieldContext,
+						payload,
 						rules,
+						schema,
 					),
 			},
 			goal,
