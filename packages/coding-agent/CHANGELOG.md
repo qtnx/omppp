@@ -2,10 +2,13 @@
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-09-18
+
 ### Added
 
 - `duo_change_phase` lets the model move the duo session between work phases itself (`preplanning`, `planning`, `implementing`, `verifying`, `debugging`, `blocked`, `reporting`) with a one-line rationale, putting that phase's configured model on the main stream without waiting for the classifier's confidence/streak gates.
 - New `preplanning` work phase, default `anthropic/claude-opus-5:high`: a fresh duo session opens on it to brainstorm the request and scout the code, then the model moves on to `planning`. The classifier never emits this phase — it holds until `duo_change_phase` (or a four-turn dwell) releases it.
+- Live learning novelty check: before storing a new guideline, Jev judges whether an existing learning already covers the lesson; a confident duplicate reinforces the existing entry instead of writing another one (`learning.novelty.*`).
 
 ### Changed
 
@@ -15,48 +18,6 @@
 
 - A usage-limit failure now falls through to the configured `retry.fallbackChains` after one sibling-credential wait instead of retrying the capped model until the retry budget runs out. A pool whose "sibling" claim never freed a fresh window previously re-hit the spent quota up to `retry.maxRetries` times before the chain was consulted; the chain's cross-provider candidate is now used, with the exhausted provider excluded.
 - Live learnings are injected per request instead of as a static system-prompt block: Jev (TypeSafe System One) scores each stored learning against the current request and only the relevant ones are added — once per conversation, as a hidden context message — so the provider prompt cache stays byte-stable. Falls back to the stored rank when Jev is unavailable (`learning.relevance.*`).
-
-### Added
-
-- Live learning novelty check: before storing a new guideline, Jev judges whether an existing learning already covers the lesson; a confident duplicate reinforces the existing entry instead of writing another one (`learning.novelty.*`).
-
-## [1.9.0] - 2026-09-18
-
-### Added
-
-- `duo.phaseModels` now ships with a default model routing map: planning/verifying/blocked run Astra-led chains, implementing/reporting run the DeepSeek executor, and debugging starts on Opus with DeepSeek fallback — each phase keeps its own thinking level and registers later entries as automatic rate-limit/quota fallbacks (`duo.phaseSwitch.minConfidence` still gates the switch).
-- Duo re-resolves its planner/executor pair at each re-check point: a side that degraded because its configured model (e.g. the DeepSeek executor) was not yet available is swapped to the configured model as soon as it resolves, instead of running the family fallback for the whole session.
-- The setup default `retry.fallbackChains` now covers the default duo planner: a Fable model that exhausts quota falls through to `openai-codex/gpt-6-astra:high` then `anthropic/claude-opus-5:high` (setup config version 9).
-- Jev can now hand a step over itself: `ESCALATE` is an offered operation, so when the policy is not confident which action is right it asks the reasoning model to drive the next actions instead of guessing. Jev traffic keeps going through the shared `codemc` proxy, which holds the TypeSafe key — `browser_jev` no longer needs a local `TYPESAFE_API_KEY` to be available.
-- Jev rescue turns now escalate to the session's reasoning model (instead of the cheap tier), may drive up to four actions each, and are allowed six per run (`max_rescues`) — a stuck flow gets real reasoning and room to work before the run reports `blocked`.
-- `browser_jev` gained viewport presets (`desktop`, `tablet`, `mobile`, `mobile-landscape`) so one goal can be checked at several breakpoints, automatic screenshots (start, each rescue, final state) listed in the report, and a UX/accessibility review of the finished flow (summary plus evidence-backed findings; skip with `review: false`).
-- Browser observation can now recover visible controls the accessibility tree drops (`aria-hidden` game HUDs) and therefore drives canvas apps that publish an accessibility mirror — e.g. XLords' `#a11y-layer` building buttons: 2 controls visible before, ~81 after.
-- Added `evals/browser-jev/` — a four-task XLords eval suite (upgrade a building, collect a map resource, send chat, claim a quest) run across desktop/tablet/mobile, with a runner that records the tool's own report and never turns a `blocked` result into a pass.
-- Jev browser automation self-unblocks: a `blocked` verdict or three actions that change nothing now spend one `smol` helper turn (max 2 per run) that must clear the obstacle — modal, consent banner, tutorial overlay, end-of-round gate, collapsed section, off-screen control — using only observed elements. `blocked` now means the rescue failed too and names the remaining obstacle, so the main model is called in far less often.
-- New `browser_jev` tool: hand it one browser goal and the Jev DOM policy plus a small text-helper model finish the whole flow, returning a text report (status, executed steps, final URL/title, page text) instead of making the main model drive clicks through screenshots. Appears only when `TYPESAFE_API_KEY` is set; keeps its own `jev` tab so a flow can continue across calls.
-- Jev browser automation (`browser_jev`, `tab.act`) gained `SELECT`, `HOVER`, `PRESS_ENTER`, and `DRAG`: native `<select>` options now commit through their select instead of failing on an unclickable option node, hover-only menus open, a field can be submitted with Enter when no visible submit control exists, and one observed element can be dragged onto another.
-- Browser tools accept `profile: "<name>"` (plus `fresh: true`): each named profile is its own Chromium with its own cookies, storage, and login, so several accounts can be driven side by side — `browser.open({ profile })` in eval and `browser_jev({ profile })`, which also keeps a `jev-<profile>` tab per account.
-- Browser guidance now has one order — `browser_jev` → `browser_use` → the raw `browser` prelude — in the system prompt, the `browser_qa` and `ui_ux_reviewer` agents (both gain the tool), and the `git-craft` publish step, so a DOM flow is driven by goal instead of screenshot-per-click.
-- `/duo status` now prints a Jev debug line — the model, step cap, and endpoint `tab.act` would use, whether the key is local or proxy-held, and whether `tab.act` is currently advertised in the browser docs.
-- TypeSafe turn signals are on by default: each primary turn's transcript is classified by TypeSafe System One into a work phase (planning, implementing, verifying, debugging, blocked, reporting) plus needs-review, stuck, done-without-evidence, and parallel-slices scores, and the classification adjusts the advisor, duo phase, takeover, handoff, learning, and delegation-reminder behavior. Tunable under `signals.*`; `signals.baseUrl: ""` (or `signals.enabled: false`) opts out, and an unreachable endpoint costs three failed requests per session before signals go quiet.
-- Signals default to the TypeSafe proxy on the tailnet (`signals.baseUrl` = `http://codemc:8791/v1/systemone`), which holds the API key, so a session needs no `TYPESAFE_API_KEY`; point `signals.baseUrl` at `https://api.typesafe.ai/v1/systemone` to call TypeSafe directly, or leave it empty to require a local key.
-- Browser `tab.act(goal)` (TypeSafe Jev) now calls the same tailnet proxy by default, so it works without a local `TYPESAFE_API_KEY`; set `TYPESAFE_SYSTEMONE_URL` to point Jev at TypeSafe directly (which then needs the key).
-- A `phase` status-line segment shows the TypeSafe work phase for the current turn (planning, implementing, verifying, debugging, blocked, reporting), coloured by how the turn is going and hidden until the first classification; it ships in the built-in presets and can be moved in the status-line settings.
-- `duo.phaseModels` maps each detected work phase to one model selector or an ordered fallback list; duo switches the executor at the next turn boundary once the phase holds (immediately for `blocked`) and registers the rest of the list as rate-limit fallbacks. Unlisted phases keep the planner/executor models. `/duo status` shows the detected phase and active phase model.
-
-### Changed
-
-- Idle topic-switch compaction now asks jev (TypeSafe System One signals) whether a new prompt is unrelated to the prior context and compacts before sending it; the previous smol-model relevance classifier is removed. New `compaction.topicSwitchThreshold` (default 0.7) sets the probability at which the stale context is compacted.
-- Duo's executor default is now `tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high`, and the matching `retry.fallbackChains` key moves with it. The previous `tnx/ds/deepseek-v4-flash` id no longer exists, so duo silently degraded the executor to Opus every session (and logged `retry.fallbackChains key references unknown model`); existing configs carrying the old chain key should rename it.
-- The advisor now skips in-progress turns TypeSafe rates as not worth reviewing (`signals.advisorGate.*`); final yields, user prompts, consults, and every fourth held turn still reach it, and a completion claim TypeSafe scores as evidence-free is bounced back to the executor without an advisor consult.
-- The duo advisor now follows the planner model (Fable) instead of defaulting to a codex model whose rate-limit chain landed it on Opus; set `duo.advisorModel` to pin a different advisor.
-- An explicit `duo.*Model` / `duo.phaseModels` selector that matches nothing in the session's available models now also tries the provider/id registry lookup before falling back, and duo logs the reason (`duo model pattern unavailable`) plus the planner/executor/advisor it settled on, so a degraded side is visible instead of silent.
-- Duo raises an automatic recover takeover after two consecutive turns TypeSafe scores as stuck (`signals.stuckThreshold`), `duo_handoff` without an explicit scope lets TypeSafe pick `multi` for genuinely multi-phase briefs and notes when a brief reads unlocked, `save_learning` rejects case-specific notes, and the delegation reminder stays quiet on turns judged to hold a single slice.
-
-### Fixed
-
-- Duo now auto-returns the main stream to the executor when a takeover or plan-mode planner's turns are classified as implementing or verifying (two consecutive confident signals) — a planner that drifts into execution is pulled back instead of implementing on the planner model until nudged.
-- Browser `tab.act(goal)` is advertised whenever a System One endpoint is configured, not only when a local `TYPESAFE_API_KEY` exists — the gate was lost when the browser prelude moved into its own module.
 
 ## [18.2.3] - 2026-09-17
 
@@ -1743,4 +1704,4 @@
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
 
-Older entries are archived in [packages/coding-agent/CHANGELOG.md@9320d562c84e](https://github.com/can1357/oh-my-pi/blob/9320d562c84e4598ed922779bc61432c63efd938/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@2be877ff6a46](https://github.com/can1357/oh-my-pi/blob/2be877ff6a4614e7347edae25edb5f413da8a47d/packages/coding-agent/CHANGELOG.md).
