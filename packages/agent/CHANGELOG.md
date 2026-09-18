@@ -1385,6 +1385,12 @@
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
 
+## [1.8.8] - 2026-09-18
+
+### Fixed
+
+- Compaction summarizers that terminate on Anthropic (native Claude or OpenAI-compat gateways with Anthropic `cache_control`) now drop prior assistant reasoning from summary input even when the model id does not classify as the Anthropic dialect, so turn-prefix compaction no longer trips `reasoning_extraction` refusals.
+
 ## [1.7.6] - 2026-08-28
 
 ### Changed

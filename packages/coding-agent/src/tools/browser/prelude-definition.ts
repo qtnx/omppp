@@ -1,6 +1,8 @@
+import { prompt } from "@oh-my-pi/pi-utils";
 import type { EvalPreludeDefinition } from "../../eval/preludes";
 import browserDescription from "../../prompts/tools/browser.md" with { type: "text" };
 import type { ToolSession } from "../../sdk";
+import { jevApiKey } from "./jev";
 // @ts-expect-error Bun imports this declaration source as text instead of a TypeScript module.
 import browserDeclarations from "./declarations.d.ts" with { type: "text" };
 // @ts-expect-error Bun imports this JavaScript source as text instead of evaluating its module shape.
@@ -14,7 +16,7 @@ export function createBrowserPreludeDefinition(
 ): EvalPreludeDefinition {
 	return {
 		name: "browser",
-		documentation: browserDescription,
+		documentation: prompt.render(browserDescription, { jev: jevApiKey() !== undefined }),
 		javascript: browserJavascript,
 		python: browserPython,
 		exports: ["browser"],

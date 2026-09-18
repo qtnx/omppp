@@ -38,6 +38,7 @@ import {
 } from "../run-scope";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tool-errors";
 import { disableAnnotationMode, enableAnnotationMode } from "./annotate";
+import { fieldTextViaBridge, type JevActOptions, type JevActResult, runJevAct } from "./jev";
 import {
 	type AriaSnapshotOptions,
 	assertSelectorString,
@@ -252,6 +253,7 @@ interface TabApi {
 		opts?: { waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2" },
 	): Promise<void>;
 	observe(opts?: { includeAll?: boolean; viewportOnly?: boolean }): Promise<Observation>;
+	act(goal: string, opts?: Pick<JevActOptions, "maxSteps">): Promise<JevActResult>;
 	ariaSnapshot(selector?: string, opts?: AriaSnapshotOptions): Promise<string>;
 	screenshot(opts?: ScreenshotOptions): Promise<string>;
 	extract(format?: ReadableFormat): Promise<string>;
@@ -1705,6 +1707,34 @@ export class WorkerCore {
 					}
 				}),
 			observe: opts => op("tab.observe()", quickOpMs, sig => this.#collectObservation({ ...opts, signal: sig })),
+			act: (goal, opts) =>
+				op(`tab.act(${JSON.stringify(goal)})`, INF, sig =>
+					runJevAct(
+						{
+							observe: () => this.#collectObservation({ signal: sig }),
+							pageText: () =>
+								untilAborted(sig, () =>
+									page.evaluate(() => {
+										const doc = (globalThis as unknown as { document: { body?: { innerText?: string } } })
+											.document;
+										return doc.body?.innerText ?? "";
+									}),
+								) as Promise<string>,
+							click: async id => {
+								const handle = await this.#resolveCachedHandle(id);
+								await untilAborted(sig, () => handle.click());
+							},
+							fill: async (id, text) => fillViaHandle(await this.#resolveCachedHandle(id), text, sig),
+							scroll: deltaY =>
+								untilAborted(sig, () => dispatchScroll(() => page.mouse.wheel({ deltaX: 0, deltaY }))),
+							wait: ms => untilAborted(sig, () => Bun.sleep(ms)),
+							fieldText: (context, rules) =>
+								fieldTextViaBridge((name, args) => this.#callTool(active, name, args), context, rules),
+						},
+						goal,
+						{ maxSteps: opts?.maxSteps, signal: sig },
+					),
+				),
 			ariaSnapshot: (selector, opts) =>
 				op(
 					selector ? `tab.ariaSnapshot(${JSON.stringify(selector)})` : "tab.ariaSnapshot()",

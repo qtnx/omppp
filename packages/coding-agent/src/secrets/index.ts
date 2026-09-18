@@ -191,6 +191,12 @@ const SECRET_ENV_PATTERNS = /(?:KEY|SECRET|TOKEN|PASSWORD|PASS|AUTH|CREDENTIAL|P
 
 /** Extracts the password group from a `scheme://user:password@host` value. */
 const CONNECTION_URL_PASSWORD_RE = /^[a-z][a-z0-9+.-]*:\/\/[^/:@?#\s]*:([^/?#\s]+)@/i;
+/**
+ * Filesystem-path-shaped values (`SSH_AUTH_SOCK`, `*_KEY_FILE`, `*_KEY_PATH`)
+ * are locations of secrets, not secrets: obfuscating them only litters
+ * provider-visible tool output with placeholders for ordinary paths.
+ */
+const PATH_LIKE_VALUE = /^(?:\/|~\/|[A-Za-z]:[\\/])/;
 
 /** Collect environment variable values that look like secrets. */
 export function collectEnvSecrets(): SecretEntry[] {
@@ -199,6 +205,7 @@ export function collectEnvSecrets(): SecretEntry[] {
 	for (const [name, value] of Object.entries(process.env)) {
 		if (!value || value.length < MIN_ENV_VALUE_LENGTH) continue;
 		if (!SECRET_ENV_PATTERNS.test(name)) continue;
+		if (PATH_LIKE_VALUE.test(value)) continue;
 		if (seen.has(value)) continue;
 		seen.add(value);
 		entries.push({ type: "plain", content: value, mode: "obfuscate" });

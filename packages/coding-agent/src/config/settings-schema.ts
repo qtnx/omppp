@@ -6715,7 +6715,7 @@ export const SETTINGS_SCHEMA = {
 	// Secret handling
 	"secrets.enabled": {
 		type: "boolean",
-		default: false,
+		default: true,
 		ui: {
 			tab: "providers",
 			group: "Privacy",
