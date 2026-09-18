@@ -13,6 +13,7 @@ export const TAB_VALUE_METHODS: readonly string[] = [
 	"title",
 	"goto",
 	"observe",
+	"act",
 	"ariaSnapshot",
 	"screenshot",
 	"extract",

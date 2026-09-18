@@ -212,6 +212,48 @@ interface BrowserObservation {
 	elements: BrowserObservationEntry[];
 }
 
+/** Options for a goal-driven `tab.act` run. */
+interface BrowserActOptions {
+	/** Maximum executed actions before the run stops (default 30). */
+	maxSteps?: number;
+}
+
+/** One executed action recorded by `tab.act`. */
+interface BrowserActStep {
+	/** 1-based step number. */
+	step: number;
+	/** Operation Jev chose. */
+	operation: "CLICK" | "TYPE_TEXT" | "SCROLL_UP" | "SCROLL_DOWN" | "WAIT";
+	/** Observed element the operation targeted, when any. */
+	target?: { id: number; role: string; name?: string };
+	/** Text typed for TYPE_TEXT. */
+	text?: string;
+	/** Operation confidence reported by Jev. */
+	confidence: number;
+	/** Probability of the executed choice. */
+	probability: number;
+	/** Jev request latency in milliseconds. */
+	latencyMs: number;
+	/** Whether the observed page changed after the action. */
+	pageChanged: boolean;
+	/** Page URL after the action. */
+	url: string;
+}
+
+/** Result returned by `tab.act`. */
+interface BrowserActResult {
+	/** `done` when Jev saw every requirement satisfied; `blocked` when no operation could progress. */
+	status: "done" | "blocked" | "max_steps";
+	/** Executed actions in order. */
+	steps: BrowserActStep[];
+	/** Final page URL. */
+	url: string;
+	/** Final page title. */
+	title?: string;
+	/** Wall time of the run in milliseconds. */
+	elapsedMs: number;
+}
+
 /** Polling/sleep helper available to a browser run function. */
 interface BrowserWait {
 	/** Sleep for a number of milliseconds. */
@@ -234,6 +276,8 @@ interface BrowserTabHelpers {
 	goto(url: string, options?: BrowserGotoOptions): Promise<void>;
 	/** Capture a structured accessibility observation. */
 	observe(options?: BrowserObserveOptions): Promise<BrowserObservation>;
+	/** Drive the page toward `goal` with TypeSafe Jev (requires `TYPESAFE_API_KEY`). */
+	act(goal: string, options?: BrowserActOptions): Promise<BrowserActResult>;
 	/** Capture a Playwright-format ARIA snapshot. */
 	ariaSnapshot(selector?: string, options?: BrowserAriaSnapshotOptions): Promise<string>;
 	/** Capture the page or one matching element and return the saved path. */

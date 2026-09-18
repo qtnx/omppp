@@ -154,6 +154,9 @@ def _make_browser():
         async def observe(self, *args, **kwargs):
             return await self._method("observe", args, kwargs)
 
+        async def act(self, *args, **kwargs):
+            return await self._method("act", args, kwargs)
+
         async def ariaSnapshot(self, *args, **kwargs):
             return await self._method("ariaSnapshot", args, kwargs)
 

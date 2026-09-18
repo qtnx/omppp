@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Browser tool: `tab.act(goal)` drives multi-step DOM interaction with TypeSafe Jev (port of browser-use/jev-ultrafast) — one request per step picks the operation and an observed element; typed values come from the session's `smol` completion tier with a `default`-tier fallback. Enabled automatically when `TYPESAFE_API_KEY` is set; the browser tool docs then present it as the default for forms, search, and navigation.
+
 ### Changed
 
 - Duo now defaults the planner to `anthropic/claude-fable-5-1:medium` and the executor to `tnx/ds/deepseek-v4-flash:high`; when a configured duo model is unavailable the side degrades to the newest Fable/Opus-family model instead of disabling duo, and a non-Anthropic pair is recognized by identity so a manual switch onto it no longer disables duo.
