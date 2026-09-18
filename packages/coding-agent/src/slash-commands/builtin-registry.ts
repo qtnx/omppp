@@ -87,7 +87,10 @@ function formatDuoStatusText(status: DuoStatus, orchestratorOn: boolean): string
 	if (status.executionScope === "single") {
 		paren = orchestratorOn ? "orchestrator — direct disable refused: user-owned" : "direct";
 	}
-	return sanitizeText(`${base}\nscope: ${status.executionScope} (${paren})`);
+	const phaseLine = status.workPhase
+		? `\nwork phase: ${status.workPhase} (model ${status.phaseModelId ?? "executor"})`
+		: "";
+	return sanitizeText(`${base}\nscope: ${status.executionScope} (${paren})${phaseLine}`);
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;

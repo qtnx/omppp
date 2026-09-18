@@ -41,6 +41,7 @@ import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
 import type { TimeBudgetSnapshot } from "../session/time-budget";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
+import type { TurnSignalService } from "../signals/index";
 import { TaskTool } from "../task";
 import type { MacOSSandboxRelaunchResult } from "../task/omp-command";
 import type { AgentOutputManager } from "../task/output-manager";
@@ -650,6 +651,8 @@ export interface ToolSession {
 	isAdvisorEnabled?: () => boolean;
 	/** Handoff an approved duo planner/takeover turn back to the executor. */
 	duoHandoffToExecutor?: (resolution: string, scope?: DuoExecutionScope) => Promise<DuoHandoffResult>;
+	/** Session-scoped TypeSafe turn classifier; undefined when signals are disabled or have no key. */
+	turnSignals?: TurnSignalService;
 	/** Escalate an executor turn back to the duo planner. */
 	duoEscalateToPlanner?: (reason: string) => Promise<"ok" | "unavailable">;
 	/** Session-scoped loop scheduler for the `loop` tool. Iterations are delivered as
@@ -739,7 +742,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	duo_handoff: s =>
 		new DuoHandoffTool(async (resolution, scope) => {
 			return (await s.duoHandoffToExecutor?.(resolution, scope)) ?? "no-controller";
-		}),
+		}, s.turnSignals),
 	duo_escalate: s => new DuoEscalateTool(async reason => (await s.duoEscalateToPlanner?.(reason)) ?? "unavailable"),
 	read: s => new ReadTool(s),
 	security_scan: s => new SecurityScanTool(s),

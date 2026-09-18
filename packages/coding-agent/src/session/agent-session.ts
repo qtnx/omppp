@@ -213,7 +213,7 @@ import {
 	obfuscateProviderContext,
 } from "../secrets/message-transform";
 import { type SecretEntry, SecretObfuscator } from "../secrets/obfuscator";
-import { createTurnSignalService, type TurnSignalService } from "../signals/index";
+import { createTurnSignalService, TURN_SIGNALS_CHANNEL, type TurnSignalService } from "../signals/index";
 import { maskSecretValue, normalizeSecretName, type SecretVaultLike, vaultSecretEntry } from "../secrets/vault";
 import { releaseSharpshooterSession } from "../sharpshooter/backend";
 import { flushSharpshooterExtraction } from "../sharpshooter/extract";
@@ -2047,7 +2047,13 @@ export class AgentSession {
 			restoredDuoSnapshot,
 			initialCosts: config.initialAdvisorCosts,
 			turnSignals: this.#turnSignals,
-			onTurnSignals: signals => this.#duoOrchestrator.onTurnSignals(signals),
+			onTurnSignals: signals => {
+				this.#duoOrchestrator.onTurnSignals(signals);
+				// Publish to the session bus so extensions that gate on the
+				// classification (delegation-reminder plugin) can read values this
+				// session already paid for. No bus, no subscriber: a no-op.
+				config.toolSession?.eventBus?.emit(TURN_SIGNALS_CHANNEL, signals);
+			},
 		});
 		const duoHost: SessionDuoOrchestratorHost = {
 			settings: this.settings,

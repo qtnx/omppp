@@ -31,6 +31,14 @@ export interface TurnSignals {
 	inputTokens: number;
 }
 
+/**
+ * Extension EventBus channel carrying every resolved {@link TurnSignals}
+ * (payload: one `TurnSignals` object). Extensions that gate on a turn
+ * classification subscribe through `pi.events`; the delegation-reminder
+ * plugin uses it to tell a parallel-slice turn from a single-slice one.
+ */
+export const TURN_SIGNALS_CHANNEL = "signals:turn";
+
 /** Judgments over a planner's handoff resolution. */
 export interface HandoffSignals {
 	scope: "single" | "multi";

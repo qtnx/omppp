@@ -416,6 +416,16 @@ describe("DuoStateMachine transitions", () => {
 		expect(machine.executionScope).toBe("single");
 		expect(machine.snapshot.executionScope).toBe("single");
 	});
+
+	it("carries the classified work phase into the persisted snapshot and back", () => {
+		const machine = new DuoStateMachine(config);
+		expect(machine.workPhase).toBeUndefined();
+
+		machine.setWorkPhase("debugging");
+		expect(machine.snapshot.workPhase).toBe("debugging");
+
+		expect(new DuoStateMachine(config, machine.snapshot).workPhase).toBe("debugging");
+	});
 });
 
 describe("DuoStateMachine takeover signals", () => {

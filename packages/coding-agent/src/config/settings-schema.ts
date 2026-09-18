@@ -776,7 +776,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Phase Models",
 			description:
-				'JSON object mapping a detected work phase (planning, implementing, verifying, debugging, blocked, reporting) to a model selector or an ordered list of selectors, e.g. {"debugging":["anthropic/claude-opus-5:high","anthropic/claude-fable-5-1:high"],"reporting":"tnx/ds/deepseek-v4-flash:low"}. The first available selector is used; later entries become rate-limit fallbacks. Phases not listed use the planner (planning, blocked) or executor model. Requires TypeSafe signals (signals.enabled + TYPESAFE_API_KEY).',
+				'JSON object mapping a detected work phase (planning, implementing, verifying, debugging, blocked, reporting) to a model selector or an ordered list of selectors, e.g. {"debugging":["anthropic/claude-opus-5:high","anthropic/claude-fable-5-1:high"],"reporting":"tnx/ds/deepseek-v4-flash:low"}. The first available selector is used; later entries become rate-limit fallbacks. Phases without an entry keep the executor model (the planner keeps planning and takeovers as before). Requires TypeSafe signals (signals.enabled + TYPESAFE_API_KEY).',
 		},
 	},
 	"duo.phaseSwitch.minConfidence": {

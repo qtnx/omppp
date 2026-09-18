@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import type { WorkPhase } from "../signals/index";
 
 export type DuoPhase = "inactive" | "planning" | "executing" | "takeover" | "suspended" | "degraded";
 export type DuoExecutionScope = "single" | "multi";
@@ -14,6 +15,8 @@ export type DuoSuspendReason = "set-model-failed" | "unresolvable";
 export interface DuoStateSnapshot {
 	phase: DuoPhase;
 	executionScope?: DuoExecutionScope;
+	/** Last TypeSafe-classified work phase of the executor stream; informational (drives phase models and `/duo status`). */
+	workPhase?: WorkPhase;
 	plannerId?: string;
 	executorId?: string;
 	advisorModelId?: string;
@@ -78,6 +81,14 @@ export class DuoStateMachine {
 
 	get executionScope(): DuoExecutionScope {
 		return this.#state.executionScope ?? "single";
+	}
+
+	get workPhase(): WorkPhase | undefined {
+		return this.#state.workPhase;
+	}
+
+	setWorkPhase(phase: WorkPhase): void {
+		this.#state.workPhase = phase;
 	}
 
 	evaluateActivation(input: DuoActivationInput): DuoPhase {

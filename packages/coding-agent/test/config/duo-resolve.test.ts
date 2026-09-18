@@ -35,6 +35,18 @@ const fable4 = anthropicModel("claude-fable-4");
 const fable5 = anthropicModel("claude-fable-5");
 const opus47 = anthropicModel("claude-opus-4.7");
 const opus48 = anthropicModel("claude-opus-4.8");
+const openaiSol = buildModel({
+	id: "gpt-5.6-sol",
+	name: "GPT 5.6 Sol",
+	api: "openai-responses",
+	provider: "openai",
+	baseUrl: "https://api.openai.com/v1",
+	reasoning: true,
+	input: ["text"],
+	cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1 },
+	contextWindow: 200000,
+	maxTokens: 8192,
+});
 
 const registry = {
 	hasConfiguredAuth(model: Model) {
@@ -196,5 +208,72 @@ describe("resolveDuoConfig", () => {
 			loopThreshold: 3,
 			planningNeeded: true,
 		});
+	});
+
+	test("phase models resolve array and string values, keep order, and split the thinking suffix", () => {
+		const resolved = resolveDuoConfig(
+			settings({
+				"duo.phaseModels": {
+					debugging: [
+						"anthropic/claude-fable-5:high",
+						"anthropic/claude-opus-4.8",
+						"anthropic/claude-fable-5:high",
+					],
+					reporting: "anthropic/claude-fable-4:max",
+				},
+			}),
+			[fable5, fable4, opus48],
+			registry,
+		);
+
+		expect(resolved?.phaseModels.debugging?.map(candidate => candidate.selector)).toEqual([
+			"anthropic/claude-fable-5",
+			"anthropic/claude-opus-4.8",
+		]);
+		expect(resolved?.phaseModels.debugging?.[0]?.thinkingLevel).toBe(ThinkingLevel.High);
+		expect(resolved?.phaseModels.debugging?.[1]?.thinkingLevel).toBeUndefined();
+		expect(resolved?.phaseModels.reporting?.map(candidate => candidate.selector)).toEqual([
+			"anthropic/claude-fable-4",
+		]);
+		expect(resolved?.phaseModels.reporting?.[0]?.thinkingLevel).toBe(ThinkingLevel.Max);
+	});
+
+	test("an unauthenticated phase model is skipped and the remaining candidates survive", () => {
+		const resolved = resolveDuoConfig(
+			settings({
+				"duo.phaseModels": {
+					verifying: ["anthropic/claude-fable-5:high", "openai/gpt-5.6-sol", "anthropic/claude-opus-4.8"],
+				},
+			}),
+			[fable5, openaiSol, opus48],
+			registry,
+		);
+
+		expect(resolved?.phaseModels.verifying?.map(candidate => candidate.selector)).toEqual([
+			"anthropic/claude-fable-5",
+			"anthropic/claude-opus-4.8",
+		]);
+	});
+
+	test("unknown phase keys and unresolvable phases are dropped", () => {
+		const unknown = resolveDuoConfig(
+			settings({ "duo.phaseModels": { shipping: "anthropic/claude-fable-5" } }),
+			[fable5, opus48],
+			registry,
+		);
+		const unresolvable = resolveDuoConfig(
+			settings({ "duo.phaseModels": { debugging: ["openai/gpt-5.6-sol"] } }),
+			[fable5, openaiSol, opus48],
+			registry,
+		);
+
+		expect(unknown?.phaseModels).toEqual({});
+		expect(unresolvable?.phaseModels).toEqual({});
+	});
+
+	test("no configured phase models resolves to an empty map", () => {
+		const resolved = resolveDuoConfig(settings(), [fable5, opus48], registry);
+
+		expect(resolved?.phaseModels).toEqual({});
 	});
 });

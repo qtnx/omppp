@@ -6,6 +6,7 @@ import type {
 	ToolResultEventResult,
 	TurnEndEvent,
 } from "@oh-my-pi/pi-coding-agent";
+import { TURN_SIGNALS_CHANNEL, type TurnSignals } from "@oh-my-pi/pi-coding-agent/signals/index";
 import delegationReminderExtension, {
 	createDelegationReminderExtension,
 	DELEGATION_REMINDER_CUSTOM_TYPE,
@@ -24,9 +25,16 @@ interface AppendedEntry {
 	data: unknown;
 }
 
+interface FakeEventBus {
+	handlers: Map<string, unknown[]>;
+	on(channel: string, handler: unknown): () => void;
+	emit(channel: string, data: unknown): void;
+}
+
 interface FakePi {
 	labels: string[];
 	handlers: Map<string, unknown[]>;
+	events: FakeEventBus;
 	appendedEntries: AppendedEntry[];
 	setLabel(label: string): void;
 	on(event: string, handler: unknown): void;
@@ -34,9 +42,27 @@ interface FakePi {
 }
 
 function createFakePi(): FakePi {
+	const events: FakeEventBus = {
+		handlers: new Map(),
+		on(channel: string, handler: unknown): () => void {
+			const handlers = events.handlers.get(channel) ?? [];
+			handlers.push(handler);
+			events.handlers.set(channel, handlers);
+			return () => {
+				const current = events.handlers.get(channel);
+				if (current) current.splice(current.indexOf(handler), 1);
+			};
+		},
+		emit(channel: string, data: unknown): void {
+			for (const handler of events.handlers.get(channel) ?? []) {
+				(handler as (payload: unknown) => void)(data);
+			}
+		},
+	};
 	return {
 		labels: [],
 		handlers: new Map(),
+		events,
 		appendedEntries: [],
 		setLabel(label: string): void {
 			this.labels.push(label);
@@ -132,6 +158,20 @@ function runHandsOn(fakePi: FakePi, count: number, toolName = "edit"): ToolResul
 		last = resultFor(fakePi, toolName);
 	}
 	return last;
+}
+
+/** Publish a TypeSafe turn classification on the session bus, as AgentSession does. */
+function emitTurnSignals(fakePi: FakePi, parallelSlices: number): void {
+	fakePi.events.emit(TURN_SIGNALS_CHANNEL, {
+		phase: "implementing",
+		phaseConfidence: 0.9,
+		needsReview: 0.1,
+		stuck: 0,
+		doneWithoutEvidence: 0,
+		parallelSlices,
+		model: "test-model",
+		inputTokens: 1,
+	} satisfies TurnSignals);
 }
 
 describe("delegationReminderExtension", () => {
@@ -301,5 +341,63 @@ describe("delegationReminderExtension", () => {
 			callTool(handsOn, toolName);
 			expect(resultFor(handsOn, toolName)?.content).toBeDefined();
 		}
+	});
+
+	it("suppresses the nudge when the classified turn holds one slice", () => {
+		const fakePi = createFakePi();
+		createDelegationReminderExtension({ threshold: 2 })(fakePi as unknown as ExtensionAPI);
+		emitTurnSignals(fakePi, 0.2);
+		startTurn(fakePi);
+		callTool(fakePi, "edit");
+		expect(resultFor(fakePi, "edit")).toBeUndefined();
+		callTool(fakePi, "edit");
+		expect(resultFor(fakePi, "edit")).toBeUndefined();
+		endTurn(fakePi);
+		expect(fakePi.appendedEntries).toEqual([]);
+	});
+
+	it("keeps the nudge when the classified turn holds parallel slices", () => {
+		const parallel = createFakePi();
+		createDelegationReminderExtension({ threshold: 2 })(parallel as unknown as ExtensionAPI);
+		emitTurnSignals(parallel, 0.8);
+		startTurn(parallel);
+		expect(runHandsOn(parallel, 2)?.content).toBeDefined();
+	});
+
+	it("nudges at the single-slice boundary and when no classification arrived", () => {
+		const boundary = createFakePi();
+		createDelegationReminderExtension({ threshold: 2 })(boundary as unknown as ExtensionAPI);
+		emitTurnSignals(boundary, 0.5);
+		startTurn(boundary);
+		expect(runHandsOn(boundary, 2)?.content).toBeDefined();
+
+		const silent = createFakePi();
+		createDelegationReminderExtension({ threshold: 2 })(silent as unknown as ExtensionAPI);
+		startTurn(silent);
+		expect(runHandsOn(silent, 2)?.content).toBeDefined();
+	});
+
+	it("gates each turn on the newest classification and ignores malformed frames", () => {
+		const fakePi = createFakePi();
+		createDelegationReminderExtension({ threshold: 1 })(fakePi as unknown as ExtensionAPI);
+
+		emitTurnSignals(fakePi, 0.2);
+		startTurn(fakePi);
+		callTool(fakePi, "edit");
+		expect(resultFor(fakePi, "edit")).toBeUndefined();
+		endTurn(fakePi);
+
+		// A malformed frame must not overwrite the last valid classification.
+		fakePi.events.emit(TURN_SIGNALS_CHANNEL, { parallelSlices: "many" });
+		startTurn(fakePi);
+		callTool(fakePi, "edit");
+		expect(resultFor(fakePi, "edit")).toBeUndefined();
+		endTurn(fakePi);
+
+		// The newest valid classification (parallel) releases the nudge again.
+		emitTurnSignals(fakePi, 0.9);
+		startTurn(fakePi);
+		callTool(fakePi, "edit");
+		expect(resultFor(fakePi, "edit")?.content).toBeDefined();
 	});
 });

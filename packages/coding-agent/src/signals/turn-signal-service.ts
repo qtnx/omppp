@@ -41,6 +41,7 @@ export class TurnSignalService {
 	readonly #client: TypeSafeClient;
 	readonly #maxStateChars: number;
 	#latest: TurnSignals | undefined;
+	#inFlight: Promise<TurnSignals | undefined> | undefined;
 
 	constructor(client: TypeSafeClient, options: { maxStateChars?: number } = {}) {
 		this.#client = client;
@@ -52,11 +53,27 @@ export class TurnSignalService {
 		return this.#latest;
 	}
 
+	/** `latest` once any in-flight turn classification has resolved (bounded by the client timeout). */
+	async settled(): Promise<TurnSignals | undefined> {
+		await this.#inFlight;
+		return this.#latest;
+	}
+
 	#clip(text: string): string {
 		return text.length <= this.#maxStateChars ? text : text.slice(text.length - this.#maxStateChars);
 	}
 
-	async classifyTurn(
+	classifyTurn(
+		deltaText: string,
+		context: { wip: boolean; duoPhase?: string },
+		signal?: AbortSignal,
+	): Promise<TurnSignals | undefined> {
+		const run = this.#classifyTurn(deltaText, context, signal);
+		this.#inFlight = run;
+		return run;
+	}
+
+	async #classifyTurn(
 		deltaText: string,
 		context: { wip: boolean; duoPhase?: string },
 		signal?: AbortSignal,
