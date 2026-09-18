@@ -269,6 +269,7 @@ export class DuoController {
 			this.#persistSnapshot();
 		}
 		if (this.#machine.phase !== "executing") {
+			this.#watchPlannerTakeoverDrift(signals, policy.minConfidence);
 			return;
 		}
 		this.#switchPhaseModel(signals, policy.minConfidence);
@@ -824,6 +825,40 @@ export class DuoController {
 			return;
 		}
 		this.#plannerDwellTurns = 0;
+	}
+
+	/**
+	 * The return watch: while a takeover or plan-mode planning holds the main
+	 * stream, the classified work phase is the trigger back to the executor. A
+	 * planner whose turns read as implementing or verifying has drifted into
+	 * executor-domain work, so hand the stream back automatically instead of
+	 * relying on the soft handoff nudges. Mirrors the phase-model switch gates
+	 * (confidence and a two-turn streak) so one noisy classification never yanks
+	 * the stream.
+	 */
+	#watchPlannerTakeoverDrift(signals: TurnSignals, minConfidence: number): void {
+		const phase = this.#machine.phase;
+		if (phase !== "takeover" && phase !== "planning") return;
+		if (signals.phase !== "implementing" && signals.phase !== "verifying") return;
+		if (signals.phaseConfidence < minConfidence || this.#phaseStreak < 2) return;
+		void this.#returnStreamFromPlanner(signals.phase);
+	}
+
+	async #returnStreamFromPlanner(classifiedPhase: WorkPhase): Promise<void> {
+		const result = await this.handoffToExecutor(
+			`Auto-returned: the planner's last turns were classified as ${classifiedPhase}, which is executor work.`,
+		);
+		if (result === "ok") {
+			this.#host.emitNotice(
+				"info",
+				`Duo returned the stream to the executor: the planner was ${classifiedPhase} instead of handing off; ${this.#formatModel(this.#resolvedExecutor)} now executes.`,
+			);
+		} else if (result === "switch-failed") {
+			this.#host.emitNotice(
+				"warning",
+				"Duo could not auto-return the stream to the executor; the planner keeps the stream for now.",
+			);
+		}
 	}
 
 	#syncAdvisorSelfPause(): void {

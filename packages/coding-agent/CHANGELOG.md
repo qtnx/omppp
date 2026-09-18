@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Duo now auto-returns the main stream to the executor when a takeover or plan-mode planner's turns are classified as implementing or verifying (two consecutive confident signals) — a planner that drifts into execution is pulled back instead of implementing on the planner model until nudged.
 - Browser `tab.act(goal)` is advertised whenever a System One endpoint is configured, not only when a local `TYPESAFE_API_KEY` exists — the gate was lost when the browser prelude moved into its own module.
 
 ### Added
