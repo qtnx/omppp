@@ -419,6 +419,9 @@
 - `/loop 10 <prompt>` now repeats 10 times at the default interval instead of sleeping 10 seconds between unlimited repeats; a time unit (`/loop 10s`, `/loop 2m`) still sets the interval, and both can be combined in either order (`/loop 10 30s …`).
 
 ### Changed
+- Browser annotate submissions now arrive as visible queued follow-up messages by default (queue chip in the UI, processed after the current turn); set `browser.annotateDelivery` to `steer` to restore mid-turn injection. The untrusted-content notice wrapper around annotation text was removed.
+- `/time-budget` now applies real pressure: activation and checkpoint reminders demand a newly verified slice per 5-minute interval, every post-deadline checkpoint escalates in the overtime register instead of decaying to wrap-up copy, and subagent runtime caps are automatically clamped to the remaining budget so the executor's early-yield notice and hard stop engage.
+- Secret hiding (`secrets.enabled`) is now on by default: configured secrets, vault entries, and credential-shaped tokens are obfuscated before provider requests. The vault encryption key is now created lazily on the first stored secret instead of at session startup, so sessions that never store a secret create no keychain entry or key file.
 
 - Improved edit-tool error guidance for operations missing the `»` separator, identifying redundant context-only operations
 - Fixed OAuth provider `modifyModels` projections being silently dropped after a discovery refresh introduced live-config headers.

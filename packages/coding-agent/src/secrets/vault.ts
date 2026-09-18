@@ -28,6 +28,8 @@ export interface SecretVaultLike {
 	readonly keyBackend: VaultKeyBackend;
 	/** Raw key material registered as a one-way replace-mode secret so a model-issued keychain/CLI read cannot exfiltrate it. */
 	readonly keyMaterialToRedact: string;
+	/** Optional hook fired when key material is first created mid-session (lazy key path). */
+	onKeyMaterialCreated?: ((keyMaterialToRedact: string) => void) | undefined;
 }
 
 interface StoredSecret {
@@ -165,10 +167,18 @@ function encryptVault(payload: VaultPayload, key: Buffer): VaultFile {
 export class SecretVault implements SecretVaultLike {
 	#agentDir: string;
 	#key: Buffer | undefined;
+	#keyPromise: Promise<Buffer> | undefined;
 	#secrets: Record<string, StoredSecret>;
 	#degradedReason: string | undefined;
-	readonly keyBackend: VaultKeyBackend;
-	readonly keyMaterialToRedact: string;
+	#keyBackend: VaultKeyBackend;
+	#keyMaterialToRedact: string;
+	/**
+	 * Fired when a lazily created vault key first produces key material
+	 * mid-session. The session wires this to the live obfuscator so the raw key
+	 * bytes are redacted from provider-visible text from that moment on — the
+	 * startup obfuscator only knows key material that existed when it was built.
+	 */
+	onKeyMaterialCreated: ((keyMaterialToRedact: string) => void) | undefined;
 
 	constructor(
 		agentDir: string,
@@ -180,10 +190,18 @@ export class SecretVault implements SecretVaultLike {
 	) {
 		this.#agentDir = agentDir;
 		this.#key = key;
-		this.keyBackend = keyBackend;
-		this.keyMaterialToRedact = keyMaterialToRedact;
+		this.#keyBackend = keyBackend;
+		this.#keyMaterialToRedact = keyMaterialToRedact;
 		this.#secrets = secrets;
 		this.#degradedReason = degradedReason;
+	}
+
+	get keyBackend(): VaultKeyBackend {
+		return this.#keyBackend;
+	}
+
+	get keyMaterialToRedact(): string {
+		return this.#keyMaterialToRedact;
 	}
 
 	static #degraded(
@@ -199,24 +217,35 @@ export class SecretVault implements SecretVaultLike {
 		return new SecretVault(agentDir, undefined, keyBackend, keyMaterialToRedact, {}, reason);
 	}
 
+	/**
+	 * Open the vault without creating key material. When no vault file exists the
+	 * returned vault is empty and keyless: the key is loaded or created lazily on
+	 * the first write ({@link set}), so a secrets-enabled session that never
+	 * stores a secret spawns no keychain/libsecret subprocess and writes no key
+	 * file. Only an existing vault file forces key retrieval at open time.
+	 */
 	static async open(agentDir: string): Promise<SecretVault> {
 		const vaultPath = path.join(agentDir, VAULT_FILE_NAME);
+		const vaultFile = Bun.file(vaultPath);
+		if (!(await vaultFile.exists())) {
+			return new SecretVault(agentDir, undefined, "file", "", {});
+		}
+
 		let vaultKey: VaultKey;
 		try {
 			vaultKey = await loadOrCreateVaultKey(agentDir);
 		} catch (error) {
 			const keyBackend = error instanceof VaultKeyRetrievalError ? error.backend : "file";
-			if (error instanceof VaultKeyRetrievalError || (await Bun.file(vaultPath).exists())) {
-				return SecretVault.#degraded(agentDir, vaultPath, keyBackend, DEGRADED_VAULT_INERT_KEY_MATERIAL, error);
-			}
-			throw error;
+			return SecretVault.#degraded(agentDir, vaultPath, keyBackend, DEGRADED_VAULT_INERT_KEY_MATERIAL, error);
 		}
 
 		try {
-			const secrets = decryptVault(await Bun.file(vaultPath).text(), vaultKey.key).secrets;
+			const secrets = decryptVault(await vaultFile.text(), vaultKey.key).secrets;
 			return new SecretVault(agentDir, vaultKey.key, vaultKey.backend, vaultKey.keyMaterialToRedact, secrets);
 		} catch (error) {
 			if (isEnoent(error)) {
+				// Vault removed between the existence probe and the read: fall back
+				// to an empty vault that reuses the already-loaded key.
 				return new SecretVault(agentDir, vaultKey.key, vaultKey.backend, vaultKey.keyMaterialToRedact, {});
 			}
 			return SecretVault.#degraded(agentDir, vaultPath, vaultKey.backend, vaultKey.keyMaterialToRedact, error);
@@ -282,9 +311,30 @@ export class SecretVault implements SecretVaultLike {
 		if (this.#degradedReason) throw new Error(this.#degradedReason);
 	}
 
+	/**
+	 * Resolve the encryption key, loading or creating it on first use. The
+	 * promise is memoized so concurrent first writes share one key retrieval; a
+	 * failed retrieval clears the memo so a later write can retry.
+	 */
+	async #ensureKey(): Promise<Buffer> {
+		if (this.#key) return this.#key;
+		if (!this.#keyPromise) {
+			this.#keyPromise = loadOrCreateVaultKey(this.#agentDir).then(vaultKey => {
+				this.#key = vaultKey.key;
+				this.#keyBackend = vaultKey.backend;
+				this.#keyMaterialToRedact = vaultKey.keyMaterialToRedact;
+				this.onKeyMaterialCreated?.(vaultKey.keyMaterialToRedact);
+				return vaultKey.key;
+			});
+			this.#keyPromise.catch(() => {
+				this.#keyPromise = undefined;
+			});
+		}
+		return this.#keyPromise;
+	}
+
 	async #persist(secrets: Record<string, StoredSecret>): Promise<void> {
-		const key = this.#key;
-		if (!key) throw new Error("Secret vault has no encryption key");
+		const key = await this.#ensureKey();
 		await fs.mkdir(this.#agentDir, { recursive: true });
 		const vaultPath = path.join(this.#agentDir, VAULT_FILE_NAME);
 		const temporaryPath = path.join(this.#agentDir, `.${VAULT_FILE_NAME}.${crypto.randomUUID()}.tmp`);

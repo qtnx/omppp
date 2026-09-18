@@ -183,16 +183,39 @@ describe("SecretVault", () => {
 		});
 	});
 
-	it("registers raw key material for every backend", async () => {
+	it("creates no key material until the first write", async () => {
+		await withAgentDir(async agentDir => {
+			vi.spyOn(vaultKeychainRuntime, "platform").mockReturnValue("win32");
+			const vault = await SecretVault.open(agentDir);
+
+			// Open of a missing vault is inert: no key file, no key material.
+			expect(vault.keyMaterialToRedact).toBe("");
+			expect(await Bun.file(path.join(agentDir, "secret-vault.key")).exists()).toBe(false);
+
+			const created: string[] = [];
+			vault.onKeyMaterialCreated = keyMaterialToRedact => created.push(keyMaterialToRedact);
+			await vault.set("TOKEN", "first-secret-value", "user");
+			await vault.set("OTHER", "second-secret-value", "user");
+
+			// First write mints the key, fires the hook once, and persists 0o600.
+			expect(Buffer.from(vault.keyMaterialToRedact, "base64")).toHaveLength(32);
+			expect(created).toEqual([vault.keyMaterialToRedact]);
+			expect(await Bun.file(path.join(agentDir, "secret-vault.key")).exists()).toBe(true);
+		});
+	});
+
+	it("registers raw key material for every backend after the first write", async () => {
 		await withAgentDir(async agentDir => {
 			vi.spyOn(vaultKeychainRuntime, "platform").mockReturnValue("win32");
 			const fileVault = await SecretVault.open(agentDir);
+			await fileVault.set("TOKEN", "file-backend-secret", "user");
 			expect(Buffer.from(fileVault.keyMaterialToRedact, "base64")).toHaveLength(32);
 
 			vi.spyOn(vaultKeychainRuntime, "platform").mockReturnValue("darwin");
 			const key = Buffer.alloc(32, 0x31);
 			vi.spyOn(vaultKeychainRuntime, "loadMacosKey").mockResolvedValue(key);
 			const keychainVault = await SecretVault.open(path.join(agentDir, "keychain"));
+			await keychainVault.set("TOKEN", "keychain-backend-secret", "user");
 			expect(keychainVault.keyBackend).toBe("keychain");
 			expect(keychainVault.keyMaterialToRedact).toBe(key.toString("base64"));
 
@@ -200,6 +223,7 @@ describe("SecretVault", () => {
 			const libsecretKey = Buffer.alloc(32, 0x42);
 			vi.spyOn(vaultKeychainRuntime, "loadLinuxKey").mockResolvedValue(libsecretKey);
 			const libsecretVault = await SecretVault.open(path.join(agentDir, "libsecret"));
+			await libsecretVault.set("TOKEN", "libsecret-backend-secret", "user");
 			expect(libsecretVault.keyBackend).toBe("libsecret");
 			expect(libsecretVault.keyMaterialToRedact).toBe(libsecretKey.toString("base64"));
 		});

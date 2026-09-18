@@ -97,7 +97,9 @@ function collectRegexMatches(
 }
 
 /**
- * Single forward pass over `<secret>…</secret>` tags.
+ * Single forward pass over `<secret>…</secret>` / `<sec>…</sec>` tags (the
+ * short form is an alias; `<s>` and `<>` are deliberately NOT accepted — HTML
+ * strikethrough and JSX fragments would turn pasted code into "secrets").
  *
  * A lazy `([\s\S]*?)` regex re-scans the remainder of the text from EVERY
  * `<secret` opening, so N unclosed openings cost O(N * len) — 64k openings
@@ -106,8 +108,8 @@ function collectRegexMatches(
  */
 function collectSecretTags(text: string): Array<{ start: number; end: number; value: string; name?: string }> {
 	const tags: Array<{ start: number; end: number; value: string; name?: string }> = [];
-	const openPattern = /<secret(?:\s+name\s*=\s*(?:"([^"]*)"|'([^']*)'))?\s*>/gi;
-	const closeTag = /<\/secret\s*>/gi;
+	const openPattern = /<sec(?:ret)?(?:\s+name\s*=\s*(?:"([^"]*)"|'([^']*)'))?\s*>/gi;
+	const closeTag = /<\/sec(?:ret)?\s*>/gi;
 	let cursor = 0;
 	while (cursor < text.length) {
 		openPattern.lastIndex = cursor;
