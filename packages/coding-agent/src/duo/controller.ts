@@ -19,6 +19,7 @@ import takeoverBrief from "./prompts/takeover-brief.md" with { type: "text" };
 import {
 	type DuoActivationInput,
 	type DuoExecutionScope,
+	type DuoMode,
 	type DuoPhase,
 	DuoStateMachine,
 	type DuoStateSnapshot,
@@ -54,6 +55,8 @@ export interface DuoControllerHost {
 	requestAgentContinue?(): void;
 	/** Add or remove `duo_handoff`/`duo_escalate` from the active tool surface after a phase change. */
 	syncToolSurface?(): Promise<void> | void;
+	/** Live `duo.mode`; falls back to the resolved config's mode when absent. Keeps `/duo off` authoritative after the controller was built. */
+	duoMode?(): DuoMode;
 }
 
 export type DuoHandoffResult = "ok" | "no-controller" | "wrong-phase" | "already-executor" | "switch-failed";
@@ -96,6 +99,8 @@ export class DuoController {
 	#plannerDwellTurns = 0;
 	#planningHandoffNudges = 0;
 	#planningSignalNudged = false;
+	/** Set when the user switched to a foreign model; blocks silent auto re-activation. */
+	#optedOutByManualSwitch = false;
 	/** Advisor-selected executor effort; persisted separately from the user's configured default. */
 	#executorThinkingOverride: ThinkingLevel | undefined;
 
@@ -121,7 +126,7 @@ export class DuoController {
 			executor: snapshot.executorId ?? this.#formatModel(this.#config.executor),
 			takeoverPurpose: snapshot.takeoverPurpose,
 			takeoverCount: snapshot.takeoverCount,
-			executionScope: snapshot.executionScope ?? "multi",
+			executionScope: snapshot.executionScope ?? "single",
 			advisorPaused: this.#advisorPaused,
 		};
 	}
@@ -131,8 +136,9 @@ export class DuoController {
 		const previousPhase = this.#machine.phase;
 		const previousPreDuoThinking = this.#machine.snapshot.preDuoThinking;
 		const nextPhase = this.#machine.evaluateActivation(activationInput);
-		const activated = previousPhase === "inactive" && nextPhase !== "inactive";
-		const deactivated = previousPhase !== "inactive" && nextPhase === "inactive";
+		const wasDormant = previousPhase === "inactive" || previousPhase === "suspended";
+		const activated = wasDormant && nextPhase !== "inactive";
+		const deactivated = !wasDormant && nextPhase === "inactive";
 		const preDuoThinking = activated ? this.#host.configuredThinkingLevel() : previousPreDuoThinking;
 		this.#refreshSnapshotMetadata(preDuoThinking);
 		if (activated || deactivated) await this.#host.syncToolSurface?.();
@@ -258,6 +264,13 @@ export class DuoController {
 		}
 		const phase = this.#machine.phase;
 		if (phase === "inactive" || phase === "suspended") {
+			// Dormant duo in auto mode: a manual switch onto the planner (documented
+			// `auto` trigger, same as at startup) activates duo — unless the user
+			// already opted out by switching to a foreign model.
+			const mode = this.#host.duoMode?.() ?? this.#config.mode;
+			if (mode === "auto" && !this.#optedOutByManualSwitch && this.#mainModelKind(model) === "fable") {
+				void this.reevaluate();
+			}
 			return;
 		}
 		this.#pendingSwitch = undefined;
@@ -577,21 +590,28 @@ export class DuoController {
 		this.#pendingSwitch = undefined;
 	}
 
-	#activationInput(): DuoActivationInput {
-		const currentModel = this.#host.currentModel();
-		const identity = currentModel
-			? classifyModel(currentModel.provider, currentModel.id, { lenient: true })
-			: undefined;
-		let mainModelKind: DuoActivationInput["mainModelKind"] = "other";
-		if (identity?.class === "anthropic" && identity.family === "opus") {
-			mainModelKind = "opus";
-		} else if (identity?.class === "anthropic" && (identity.family === "fable" || identity.family === "mythos")) {
-			mainModelKind = "fable";
+	#mainModelKind(model: Model | undefined): DuoActivationInput["mainModelKind"] {
+		if (!model) return "other";
+		// The configured pair wins over family detection so a non-Anthropic
+		// executor (or planner) is still recognized once duo is live.
+		if (modelsAreEqual(model, this.#config.executor) || modelsAreEqual(model, this.#resolvedExecutor)) {
+			return "opus";
 		}
+		if (modelsAreEqual(model, this.#config.planner) || modelsAreEqual(model, this.#resolvedPlanner)) {
+			return "fable";
+		}
+		const identity = classifyModel(model.provider, model.id, { lenient: true });
+		if (identity.class !== "anthropic") return "other";
+		if (identity.family === "opus") return "opus";
+		if (identity.family === "fable" || identity.family === "mythos") return "fable";
+		return "other";
+	}
+
+	#activationInput(): DuoActivationInput {
 		return {
-			mode: this.#config.mode,
+			mode: this.#host.duoMode?.() ?? this.#config.mode,
 			orchestratorEnabled: this.#config.orchestrator === "always" || this.#host.orchestratorEnabled(),
-			mainModelKind,
+			mainModelKind: this.#mainModelKind(this.#host.currentModel()),
 			plannerResolvable: Boolean(this.#config.planner),
 			executorResolvable: Boolean(this.#config.executor),
 			planModeActive: this.#host.planModeActive(),
@@ -762,6 +782,7 @@ export class DuoController {
 	#disableForForeignManualSwitch(model: Model): void {
 		const snapshot = this.#machine.snapshot;
 		this.#machine.onDuoOff();
+		this.#optedOutByManualSwitch = true;
 		this.#pendingSwitch = undefined;
 		this.#host.setPlanModeEnabled(false);
 		this.#host.stopDuoAdvisor();
@@ -775,7 +796,7 @@ export class DuoController {
 		void this.#host.setOrchestratorEnabled(false);
 		this.#host.emitNotice(
 			"info",
-			`Duo disabled: main model ${this.#formatModel(model)} is outside the Fable/Opus pair.`,
+			`Duo disabled: main model ${this.#formatModel(model)} is outside the duo planner/executor pair (${this.#formatModel(this.#resolvedPlanner)} / ${this.#formatModel(this.#resolvedExecutor)}).`,
 		);
 		this.#refreshSnapshotMetadata(snapshot.preDuoThinking);
 		this.#persistSnapshot();

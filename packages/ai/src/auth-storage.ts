@@ -1870,6 +1870,7 @@ export class AuthStorage {
 	#setStoredCredentials(provider: string, credentials: StoredCredential[]): void {
 		const current = this.#data.get(provider) ?? [];
 		if (storedCredentialArraysEqual(current, credentials)) return;
+		this.#remapCredentialBackoffIndices(provider, current, credentials);
 		const trackedBearerFingerprints = this.#oauthBearerFingerprints.get(provider);
 		if (trackedBearerFingerprints) {
 			const activeOAuthIds = new Set(
@@ -1886,6 +1887,50 @@ export class AuthStorage {
 			this.#data.set(provider, credentials);
 		}
 		this.#bumpGeneration("credentials");
+	}
+
+	/**
+	 * In-memory backoff maps are keyed by positional index, while the persisted
+	 * blocks are keyed by durable row id. When the credential list changes shape
+	 * (an external logout, login, or dedupe shifts positions), move every
+	 * in-memory block to the index its credential now occupies and drop blocks
+	 * whose credential is gone. Otherwise a long-lived process keeps a deleted
+	 * account's multi-hour deadline at index N and merges it (longest-wins) onto
+	 * whichever sibling slides into N on its next short throttle, which then
+	 * persists the stolen deadline to that sibling's row.
+	 */
+	#remapCredentialBackoffIndices(provider: string, previous: StoredCredential[], next: StoredCredential[]): void {
+		if (previous.length === 0) return;
+		const nextIndexById = new Map<number, number>();
+		next.forEach((entry, index) => nextIndexById.set(entry.id, index));
+		const indexMap = new Map<number, number>();
+		let identical = previous.length === next.length;
+		previous.forEach((entry, index) => {
+			const nextIndex = nextIndexById.get(entry.id);
+			if (nextIndex !== undefined && next[nextIndex]!.credential.type === entry.credential.type) {
+				indexMap.set(index, nextIndex);
+				if (nextIndex !== index) identical = false;
+			} else {
+				identical = false;
+			}
+		});
+		if (identical) return;
+		const prefix = `${provider}:`;
+		const remap = <T>(maps: Map<string, Map<number, T>>): void => {
+			for (const [key, byIndex] of maps) {
+				if (!key.startsWith(prefix)) continue;
+				const moved = new Map<number, T>();
+				for (const [index, value] of byIndex) {
+					const nextIndex = indexMap.get(index);
+					if (nextIndex !== undefined) moved.set(nextIndex, value);
+				}
+				if (moved.size === 0) maps.delete(key);
+				else maps.set(key, moved);
+			}
+		};
+		remap(this.#credentialBackoff);
+		remap(this.#credentialBackoffProviderTimed);
+		remap(this.#credentialBackoffProbeAfter);
 	}
 
 	#apiKeyCredentialResolutionKey(provider: string, index: number, credential: ApiKeyCredential): string {

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Duo now defaults the planner to `anthropic/claude-fable-5-1:medium` and the executor to `tnx/ds/deepseek-v4-flash:high`; when a configured duo model is unavailable the side degrades to the newest Fable/Opus-family model instead of disabling duo, and a non-Anthropic pair is recognized by identity so a manual switch onto it no longer disables duo.
+- Duo executor rate-limit and quota failures now fall through to `anthropic/claude-opus-5:high` via the default `retry.fallbackChains` (setup config version 8).
+- Duo planner, advisor, executor, and takeover prompts now share one hold-vs-handoff rule — decide/diagnose/design stays with the planner, edit/run/test/delegate goes to the executor — with explicit takeover-vs-advise criteria and a handback exit for every takeover.
+- `ompx --duo` starts the session in duo mode (session-scoped, like `--advisor`).
+- `/duo on|off` no longer rewrites the persisted `duo.mode`; the toggle is session-scoped, so `auto` survives the next launch.
+- Duo `auto` now activates when the user switches onto the planner model mid-session, resumes from a suspended model-switch failure on the next re-evaluation, and stays off after `/duo off` across later model switches.
+- The advisor now acts as the senior beside the executor: it sets the business frame and work order for each task, gives direction and domain opinions, makes the small calls a senior would make instead of sending the executor to the user, and reviews landed diffs like a merge reviewer with one decisive change per verdict.
+- Advisors gain `save_learning`: after correcting a caught mistake (hallucinated API/path, done claim without evidence, symptom fix, retry loop, ignored correction) the advisor stores the generic rule behind it, and future sessions receive it through Live Learning Guidance; identical rules reinforce instead of duplicating.
+- Duo no longer defaults to Safe orchestrator mode: handoffs and plan approvals run the executor with direct tools (`scope: single`); `scope: multi` is reserved for long-running multi-phase implementation with several independent workstreams, and the executor may enter or leave orchestrator mode itself as the work turns out to need it.
+
+## [1.8.8] - 2026-09-18
+
+### Added
+
+- `/model` now accepts a model selector (`/model sonnet:high`, `/model @smol`); `/effort` sets the session thinking level (`/effort high`).
+
 ### Fixed
 
 - Snapcompact now omits `¶think:` sections for Anthropic-backed models whose id does not classify as the Anthropic dialect (OpenAI-compat gateways with Anthropic `cache_control`), matching the compaction summarizer so replayed archives no longer trip `reasoning_extraction`.
@@ -2566,6 +2584,17 @@
 - `xd://` device docs now render the parameter schema as a comment-annotated TypeScript type (via `jsonSchemaToTypeScript`, the same renderer the in-band tool inventory uses) instead of a raw JSON Schema dump, shrinking system-prompt device sections while keeping descriptions inline.
 - Added a `/vision [on|off|auto|status]` slash command for session-scoped control of the `inspect_image` vision-delegation tool, modeled on `/computer`: `on`/`off` force the tool for the current session only, `auto` returns to the persisted setting, and `status` reports the effective mode, session override, tool state, and active-model image capability.
 - Replaced the `inspect_image.enabled` boolean with the tri-state `inspect_image.mode` (`auto`|`on`|`off`, default `auto`). In `auto` the tool is registered only when the active model lacks native image input, so vision-capable models (e.g. `kimi-code/k3`) read images inline with their own capabilities instead of delegating to a separate vision model; the tool set is re-evaluated on every model switch with a status notice when it flips. The `read` tool now follows the effective state dynamically rather than the raw setting, so it returns decoded image blocks again whenever `inspect_image` is hidden. Existing `inspect_image.enabled: true/false` configs migrate to `inspect_image.mode: on/off`.
+
+## [1.8.7] - 2026-09-14
+
+### Changed
+
+- Agents now prioritize autonomous, requirement-driven completion, clarify only blocking ambiguity, and reduce unnecessary cost without weakening verification or safety.
+- Subagents now stop at a per-tier wall-clock default when the spawn omits `max_runtime_seconds` and `task.maxRuntimeMs` is 0 (quick_task 5m; task, scout, explore 10m; other agents 15m) instead of running unbounded; an explicit `max_runtime_seconds: 0` still runs unlimited.
+- OpenAI GPT model notes now carry an understand-before-acting flow, an outcome-driven reasoning loop, an "asked for one, deliver ten" coverage checklist, delegation and momentum rules, and a done gate.
+- Orchestrating agents now run the task's own closing gate themselves (all named test files/packages in one invocation, summary line quoted), carry locked contracts verbatim into subagent briefs and grep returned diffs for every locked name, block-wait on their own subagents instead of yielding early, and cap delegation at one implementation wave plus one corrective wave.
+- `task` and `quick_task` workers now copy LOCKED identifiers, paths, and payload shapes into code verbatim and check their own diff for them before yielding.
+- Launch broker now refuses to report readiness on a port already served by a foreign process and names a free alternative instead.
 
 ## [1.8.6] - 2026-09-12
 

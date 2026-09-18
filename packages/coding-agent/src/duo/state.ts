@@ -64,7 +64,7 @@ export class DuoStateMachine {
 						consecutiveTakeovers: 0,
 						cooldownRemaining: 0,
 					}),
-			executionScope: restored?.executionScope ?? "multi",
+			executionScope: restored?.executionScope ?? "single",
 		};
 	}
 
@@ -77,37 +77,37 @@ export class DuoStateMachine {
 	}
 
 	get executionScope(): DuoExecutionScope {
-		return this.#state.executionScope ?? "multi";
+		return this.#state.executionScope ?? "single";
 	}
 
 	evaluateActivation(input: DuoActivationInput): DuoPhase {
 		const nextPhase = activationPhase(input);
-		const keepsSingleScopeAutoActive =
-			input.mode === "auto" &&
-			this.#state.executionScope === "single" &&
-			input.plannerResolvable &&
-			input.executorResolvable;
+		if (this.#state.phase === "suspended") {
+			// A re-evaluation (startup, /duo on, revive) is the resume signal; a
+			// suspended session otherwise had no way back except /duo off + on.
+			return this.onResume(input);
+		}
 		if (this.#state.phase === "degraded") {
-			this.#state.phase = canActivate(input) || keepsSingleScopeAutoActive ? "executing" : "inactive";
+			this.#state.phase = canActivate(input) ? "executing" : "inactive";
 			return this.#state.phase;
 		}
 		if (this.#state.phase === "inactive") {
 			this.#state.phase = nextPhase;
 			if (this.#state.phase === "planning") {
-				this.#state.executionScope = "multi";
+				this.#state.executionScope = "single";
 			}
 			return this.#state.phase;
 		}
 
 		if (this.#state.phase === "planning" || this.#state.phase === "executing") {
-			if (nextPhase === "inactive" && !keepsSingleScopeAutoActive) {
+			if (nextPhase === "inactive") {
 				this.#state.phase = "inactive";
 				this.#state.takeoverPurpose = undefined;
 				this.#state.suspendReason = undefined;
-				this.#state.executionScope = "multi";
+				this.#state.executionScope = "single";
 			}
 			if (this.#state.phase === "planning") {
-				this.#state.executionScope = "multi";
+				this.#state.executionScope = "single";
 			}
 			return this.#state.phase;
 		}
@@ -120,7 +120,7 @@ export class DuoStateMachine {
 			return false;
 		}
 		this.#state.phase = "executing";
-		this.#state.executionScope = "multi";
+		this.#state.executionScope = "single";
 		return true;
 	}
 
@@ -152,7 +152,7 @@ export class DuoStateMachine {
 			return false;
 		}
 		this.#state.phase = "planning";
-		this.#state.executionScope = "multi";
+		this.#state.executionScope = "single";
 		this.#state.takeoverPurpose = undefined;
 		return true;
 	}
@@ -232,7 +232,7 @@ export class DuoStateMachine {
 		this.#state.takeoverPurpose = undefined;
 		this.#state.phase = activationPhase(input);
 		if (this.#state.phase === "planning") {
-			this.#state.executionScope = "multi";
+			this.#state.executionScope = "single";
 		}
 		return this.#state.phase;
 	}
@@ -241,7 +241,7 @@ export class DuoStateMachine {
 		this.#state.phase = "inactive";
 		this.#state.suspendReason = undefined;
 		this.#state.takeoverPurpose = undefined;
-		this.#state.executionScope = "multi";
+		this.#state.executionScope = "single";
 		this.#state.executorThinkingOverride = undefined;
 	}
 

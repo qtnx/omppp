@@ -324,12 +324,12 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 7,
-			currentVersion: 7,
+			setupVersion: 8,
+			currentVersion: 8,
 		});
 
 		const onDisk = await readSettings();
-		expect(onDisk.setupVersion).toBe(7);
+		expect(onDisk.setupVersion).toBe(8);
 		expect(onDisk.modelRoles).toEqual({
 			default: "custom/default",
 			task: "openai-codex/gpt-5.6-terra:medium",
@@ -360,6 +360,7 @@ describe("config update", () => {
 				smol: ["openai-codex/gpt-5.3-codex-spark", "anthropic/claude-haiku-4-5"],
 				plan: ["anthropic/claude-fable-5:high", "anthropic/claude-opus-4-8:max", "openai-codex/gpt-5.5:xhigh"],
 				"openai-codex/gpt-5.6-sol": ["custom/sol-primary"],
+				"tnx/ds/deepseek-v4-flash": ["anthropic/claude-opus-5:high"],
 			},
 		});
 		expect(onDisk.workflow).toBeUndefined();
@@ -379,10 +380,10 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: true,
-			setupVersion: 7,
-			currentVersion: 7,
+			setupVersion: 8,
+			currentVersion: 8,
 		});
-		expect((await readSettings()).setupVersion).toBe(7);
+		expect((await readSettings()).setupVersion).toBe(8);
 	});
 
 	it("reports unchanged JSON and leaves config stable on a second run", async () => {
@@ -402,8 +403,8 @@ describe("config update", () => {
 		expect(typeof payload).toBe("string");
 		expect(JSON.parse(String(payload))).toMatchObject({
 			changed: false,
-			setupVersion: 7,
-			currentVersion: 7,
+			setupVersion: 8,
+			currentVersion: 8,
 		});
 		expect(await readSettings()).toEqual(firstMigration);
 	});
@@ -432,8 +433,8 @@ describe("config update", () => {
 		const firstPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
 		expect(firstPayload).toEqual({
 			changed: true,
-			setupVersion: 7,
-			currentVersion: 7,
+			setupVersion: 8,
+			currentVersion: 8,
 			changedPaths: [
 				"dev.autoqaConsent",
 				"display.syntaxHighlighting",
@@ -447,7 +448,7 @@ describe("config update", () => {
 			],
 		});
 		const firstMigration = await readSettings();
-		expect(firstMigration.setupVersion).toBe(7);
+		expect(firstMigration.setupVersion).toBe(8);
 		expect(firstMigration.modelRoles).toEqual({
 			default: "openai-codex/gpt-5.6-sol:xhigh",
 			task: "openai-codex/gpt-5.6-terra:medium",
@@ -479,8 +480,8 @@ describe("config update", () => {
 		const secondPayload = JSON.parse(String(logSpy.mock.calls.at(-1)?.[0]));
 		expect(secondPayload).toEqual({
 			changed: false,
-			setupVersion: 7,
-			currentVersion: 7,
+			setupVersion: 8,
+			currentVersion: 8,
 			changedPaths: [],
 		});
 		expect(await readSettings()).toEqual(firstMigration);

@@ -11,6 +11,7 @@ import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
+import { CLI_THINKING_LEVELS, getConfiguredThinkingLevelMetadata, parseCliThinkingLevel } from "../thinking";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
@@ -77,6 +78,25 @@ function formatFastModeStatus(session: AgentSession): string {
 /** `/extended-context status` label for the premium long-context window setting. */
 function formatExtendedContextStatus(settings: Settings): string {
 	return settings.get("extendedContext") ? "on" : "off";
+}
+
+/** `/effort status` label for the session thinking selector. */
+function formatEffortStatus(session: AgentSession): string {
+	if (!session.model?.reasoning) return "unsupported";
+	return session.configuredThinkingLevel() ?? "default";
+}
+
+const EFFORT_USAGE = `Usage: /effort [${CLI_THINKING_LEVELS.join("|")}]`;
+
+/** Applies an `/effort` argument and returns operator feedback, or undefined for bad usage. */
+function applyEffortCommand(session: AgentSession, args: string): string | undefined {
+	if (!session.model?.reasoning) return "Current model does not support thinking";
+	const arg = args.trim().toLowerCase();
+	if (!arg || arg === "status") return `Thinking level is ${formatEffortStatus(session)}.`;
+	const level = parseCliThinkingLevel(arg);
+	if (level === undefined) return undefined;
+	session.setThinkingLevel(level);
+	return `Thinking level set to ${level}.`;
 }
 
 /** Applies an `/extended-context` argument and returns its operator feedback. */
@@ -346,8 +366,11 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		name: "model",
 		aliases: ["models"],
 		icon: "model",
-		description: "Switch model for this session",
-		acpDescription: "Show current model selection",
+		description: "Switch model for this session; accepts fuzzy ids, provider/id, @role, :level",
+		acpDescription: "Show or switch the session model",
+		acpInputHint: "[model]",
+		inlineHint: "[model]",
+		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
 			const model = runtime.ctx.session.model;
 			return model ? `Model: ${model.provider}/${model.id}` : "Model: none selected";
@@ -381,9 +404,27 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			);
 			return commandConsumed();
 		},
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showModelSelector();
+		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
+			const selector = command.args.trim();
+			if (!selector) {
+				runtime.ctx.showModelSelector();
+				return;
+			}
+			const resolved = resolveSessionModelSelector(selector, runtime.ctx.session, runtime.ctx.settings);
+			if (!resolved.model) {
+				runtime.ctx.showError(`Unknown model: ${selector}`);
+				return;
+			}
+			try {
+				if (resolved.warning) runtime.ctx.showStatus(resolved.warning);
+				await runtime.ctx.session.setModel(resolved.model);
+				if (resolved.thinkingLevel !== undefined) runtime.ctx.session.setThinkingLevel(resolved.thinkingLevel);
+				refreshStatusLine(runtime.ctx);
+				runtime.ctx.showStatus(`Model set to ${resolved.model.provider}/${resolved.model.id}.`);
+			} catch (error) {
+				runtime.ctx.showError(`Failed to set model: ${errorMessage(error)}`);
+			}
 		},
 	},
 	{
@@ -433,6 +474,39 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			if (resolved.warning) runtime.ctx.showStatus(resolved.warning);
 			await runtime.ctx.switchSessionModel(resolved.model, resolved.thinkingLevel);
+		},
+	},
+	{
+		name: "effort",
+		description: "Set thinking level for this session",
+		acpInputHint: `[${CLI_THINKING_LEVELS.join("|")}]`,
+		inlineHint: `[${CLI_THINKING_LEVELS.join("|")}]`,
+		allowArgs: true,
+		subcommands: [
+			{ name: "status", description: "Show current thinking level" },
+			...CLI_THINKING_LEVELS.flatMap(name => {
+				const level = parseCliThinkingLevel(name);
+				return level === undefined
+					? []
+					: [{ name, description: getConfiguredThinkingLevelMetadata(level).description }];
+			}),
+		],
+		getTuiAutocompleteDescription: runtime => `Effort: ${formatEffortStatus(runtime.ctx.session)}`,
+		handle: async (command, runtime) => {
+			const result = applyEffortCommand(runtime.session, command.args);
+			if (result === undefined) return usage(EFFORT_USAGE, runtime);
+			await runtime.output(result);
+			return commandConsumed();
+		},
+		handleTui: (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			const result = applyEffortCommand(runtime.ctx.session, command.args);
+			if (result === undefined) {
+				runtime.ctx.showStatus(EFFORT_USAGE);
+				return;
+			}
+			refreshStatusLine(runtime.ctx);
+			runtime.ctx.showStatus(result);
 		},
 	},
 	{

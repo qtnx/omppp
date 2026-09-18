@@ -955,4 +955,46 @@ describe("AuthStorage forceRefresh + rotateSessionCredential", () => {
 		expect(shortWindow.blockedUntilMs!).toBeGreaterThan(Date.now() + 7_100_000);
 		expect(shortWindow.blockedUntilMs!).toBeLessThanOrEqual(Date.now() + 7_200_000);
 	});
+
+	test("a logged-out account's block does not follow its index onto the sibling that takes its slot", async () => {
+		// Long-lived process: account A hits a multi-hour cap, the user logs A
+		// out elsewhere, and B slides into A's positional slot. B's next short
+		// throttle must persist B's own deadline, not inherit A's window —
+		// otherwise B is parked for hours and the pool reports "no sibling".
+		if (!authStorage || !store) throw new Error("test setup failed");
+		registerProvider();
+		await authStorage.set(PROVIDER, [
+			{ type: "oauth", access: "acc-A", refresh: "ref-A", expires: farExpiry() },
+			{ type: "oauth", access: "acc-B", refresh: "ref-B", expires: farExpiry() },
+		]);
+
+		const rows = store.listAuthCredentials(PROVIDER);
+		const cappedRow = rows.find(row => row.credential.type === "oauth" && row.credential.access === "acc-A");
+		if (!cappedRow) throw new Error("expected the capped credential row");
+		const cappedKey = "acc-A";
+		const longWindow = await authStorage.markUsageLimitReached(PROVIDER, undefined, {
+			credentialId: cappedRow.id,
+			retryAfterMs: 7_200_000,
+		});
+		expect(longWindow.switched).toBe(true);
+
+		// Another process logs A out; this process only observes the new list.
+		store.deleteAuthCredential(cappedRow.id, "deleted by user");
+		await authStorage.reload();
+
+		const survivorKey = await authStorage.getApiKey(PROVIDER, "sess-b");
+		expect(survivorKey).not.toBe(cappedKey);
+		const before = Date.now();
+		const shortWindow = await authStorage.markUsageLimitReached(PROVIDER, "sess-b", { retryAfterMs: 60_000 });
+		expect(shortWindow.blockedUntilMs).toBeDefined();
+		expect(shortWindow.blockedUntilMs!).toBeGreaterThanOrEqual(before + 60_000);
+		expect(shortWindow.blockedUntilMs!).toBeLessThanOrEqual(Date.now() + 60_000);
+
+		const survivorRow = store
+			.listAuthCredentials(PROVIDER)
+			.find(row => row.credential.type === "oauth" && row.credential.access === survivorKey);
+		if (!survivorRow) throw new Error("expected the surviving credential row");
+		const [persisted] = authStorage.listCredentialBlocks([survivorRow.id]);
+		expect(persisted?.blockedUntilMs).toBe(shortWindow.blockedUntilMs!);
+	});
 });

@@ -70,6 +70,7 @@ import {
 	quarantineAdvisorUnsafeOutput,
 	ReadAdvisorStateTool,
 	resolveAdvisorDeliveryChannel,
+	SaveLearningTool,
 	SetTodosTool,
 	slugifyAdvisorName,
 	UpdateAdvisorStateTool,
@@ -1446,9 +1447,13 @@ export class SessionAdvisors {
 			const names =
 				config.tools === undefined ? new Set([...ADVISOR_DEFAULT_TOOL_NAMES, "recall"]) : new Set(config.tools);
 			const tools = (this.#advisorTools ?? []).filter(t => names.has(t.name));
+			// `save_learning` is an oversight tool like `advise`: every advisor with a
+			// tool session may record a caught mistake as a generic rule for later runs.
+			const saveLearningTool = this.#toolSession ? SaveLearningTool.createIf(this.#toolSession) : null;
 			const advisorLoopTools: AgentTool<any>[] = [
 				adviseTool,
 				doneVerdictTool,
+				...(saveLearningTool ? [saveLearningTool] : []),
 				...duoTakeoverTools,
 				...duoAdvisorTools,
 				...tools,

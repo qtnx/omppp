@@ -77,6 +77,9 @@ export const launchHelp = {
 		advisor: Flags.boolean({
 			description: "Enable the advisor runtime (passively reviews each turn and injects notes)",
 		}),
+		duo: Flags.boolean({
+			description: "Start in duo mode (planner/executor auto model switch with advisor takeover) for this session",
+		}),
 		"external-thinking": Flags.boolean({
 			description:
 				"Use a private scratchpad while disabling supported GPT, Claude, and Gemini reasoning (at your own risk: providers have flagged this request shape as abuse)",

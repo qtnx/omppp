@@ -461,14 +461,14 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				await runtime.output(
 					status
 						? `Duo enabled. (phase: ${status.phase})`
-						: "Duo could not start: no Fable/Opus pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
+						: "Duo could not start: no duo planner/executor pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
 				);
 			};
 			const showStatus = async (): Promise<void> => {
 				const status = runtime.session.getDuoStatus();
 				if (!status) {
 					await runtime.output(
-						"Duo is unavailable: no Fable/Opus pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
+						"Duo is unavailable: no duo planner/executor pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
 					);
 					return;
 				}
@@ -531,7 +531,7 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				runtime.ctx.showStatus(
 					status
 						? `Duo enabled. (phase: ${status.phase})`
-						: "Duo could not start: no Fable/Opus pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
+						: "Duo could not start: no duo planner/executor pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
 				);
 				refreshStatusLine(runtime.ctx);
 				runtime.ctx.editor.setText("");
@@ -540,7 +540,7 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				const status = runtime.ctx.session.getDuoStatus();
 				if (!status) {
 					runtime.ctx.showStatus(
-						"Duo is unavailable: no Fable/Opus pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
+						"Duo is unavailable: no duo planner/executor pair resolvable from authenticated models (check duo.plannerModel/duo.executorModel and provider auth).",
 					);
 					runtime.ctx.editor.setText("");
 					return;
@@ -1049,7 +1049,7 @@ function materializeTuiBuiltinSlashCommand(
 	} else if (cmd.name === "move") {
 		materialized.getArgumentCompletions = buildDirectoryArgumentCompletions();
 		if (cmd.inlineHint) materialized.getInlineHint = buildStaticInlineHint(cmd.inlineHint);
-	} else if (cmd.name === "switch" && runtime) {
+	} else if ((cmd.name === "switch" || cmd.name === "model") && runtime) {
 		materialized.getArgumentCompletions = buildModelSelectorCompletions(runtime);
 		if (cmd.inlineHint) materialized.getInlineHint = buildStaticInlineHint(cmd.inlineHint);
 	} else if (cmd.inlineHint) {

@@ -701,24 +701,24 @@ export const SETTINGS_SCHEMA = {
 	},
 	"duo.plannerModel": {
 		type: "string",
-		default: "",
+		default: "anthropic/claude-fable-5-1:medium",
 		ui: {
 			tab: "model",
 			group: "Duo",
 			label: "Duo Planner Model",
 			description:
-				"Planner model pattern; empty auto-detects the newest Fable/Opus-family model; supports :thinking suffix.",
+				"Planner model pattern; supports :thinking suffix. Falls back to the newest Fable/Mythos-family model when the pattern is unavailable; empty auto-detects.",
 		},
 	},
 	"duo.executorModel": {
 		type: "string",
-		default: "",
+		default: "tnx/ds/deepseek-v4-flash:high",
 		ui: {
 			tab: "model",
 			group: "Duo",
 			label: "Duo Executor Model",
 			description:
-				"Executor model pattern; empty auto-detects the newest Fable/Opus-family model; supports :thinking suffix.",
+				"Executor model pattern; supports :thinking suffix. Falls back to the newest Opus-family model when the pattern is unavailable; empty auto-detects.",
 		},
 	},
 	"duo.plannerThinking": {

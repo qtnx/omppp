@@ -12,7 +12,7 @@ const handoffSchema = type({
 		"Brief for the executor and advisor: what was planned or resolved, current state, and next steps.",
 	),
 	"scope?": type("'single' | 'multi'").describe(
-		"Task scope for the executor: 'single' = one-phase task, executor works directly with full tools; 'multi' = multi-phase work, executor runs in Safe orchestrator mode and delegates. Omit to keep the current scope.",
+		"Task scope for the executor: 'single' (default) = executor works directly with full tools; 'multi' = long-running multi-phase implementation with several independent workstreams, executor runs in Safe orchestrator mode and delegates. Omit to keep the current scope.",
 	),
 });
 

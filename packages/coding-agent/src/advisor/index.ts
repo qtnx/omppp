@@ -5,6 +5,7 @@ export * from "./done-verdict-tool";
 export * from "./emission-guard";
 export * from "./loop-guard";
 export * from "./runtime";
+export * from "./save-learning-tool";
 export * from "./set-todos-tool";
 export * from "./state-tool";
 export * from "./thinking-artifacts";

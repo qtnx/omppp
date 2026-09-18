@@ -192,12 +192,16 @@ export class SessionDuoOrchestrator {
 	}
 
 	async setDuoEnabled(enabled: boolean): Promise<void> {
-		this.#host.settings.set("duo.mode", enabled ? "on" : "off");
+		// Session-scoped: `/duo on|off` and `--duo` must not rewrite the user's
+		// persisted `duo.mode` (which would silently turn `auto` into a permanent
+		// `on`/`off`). Persistent changes go through settings/config.
+		this.#host.settings.override("duo.mode", enabled ? "on" : "off");
 		if (!enabled) {
 			this.#clearAdvisorRetry();
 			await this.#controller?.deactivate();
 			return;
 		}
+		this.#clearAdvisorRetry();
 		this.#controller?.dispose();
 		this.#controller = undefined;
 		await this.#ensureController()?.reevaluate();
@@ -283,7 +287,13 @@ export class SessionDuoOrchestrator {
 	}
 
 	notifyManualModelChange(): void {
-		this.#controller?.notifyManualModelChange();
+		if (this.#controller) {
+			this.#controller.notifyManualModelChange();
+			return;
+		}
+		// No controller yet (session started outside the duo pair in auto mode):
+		// a switch onto the pair is the activation signal, the same as at startup.
+		void this.#ensureController()?.reevaluate();
 	}
 
 	notifyPlanApproved(): void {
@@ -360,6 +370,7 @@ export class SessionDuoOrchestrator {
 				planModeActive: () => this.#host.getPlanModeState()?.enabled === true,
 				requestAgentContinue: () => this.#host.requestAgentContinue(),
 				syncToolSurface: () => this.#host.syncDuoToolSurface?.(),
+				duoMode: () => this.#host.settings.get("duo.mode"),
 			},
 			config,
 			restored,
@@ -368,17 +379,17 @@ export class SessionDuoOrchestrator {
 	}
 
 	#couldActivate(): boolean {
+		// Documented `auto` trigger (duo.mode description): orchestrator mode, or a
+		// Fable/Mythos-family main model. The executor model alone never
+		// auto-starts duo; the state machine only uses it to stay live.
 		const mode = this.#host.settings.get("duo.mode");
 		if (mode === "off") return false;
 		if (mode === "on" || this.#host.settings.get("duo.orchestrator") === "always") return true;
+		if (this.#orchestratorModeState?.enabled === true) return true;
 		const currentModel = this.#host.currentModel();
-		const identity = currentModel
-			? classifyModel(currentModel.provider, currentModel.id, { lenient: true })
-			: undefined;
-		return (
-			this.#orchestratorModeState?.enabled === true ||
-			(identity?.class === "anthropic" && (identity.family === "fable" || identity.family === "mythos"))
-		);
+		if (!currentModel) return false;
+		const identity = classifyModel(currentModel.provider, currentModel.id, { lenient: true });
+		return identity.class === "anthropic" && (identity.family === "fable" || identity.family === "mythos");
 	}
 
 	async #setDuoOrchestratorEnabled(enabled: boolean): Promise<void> {

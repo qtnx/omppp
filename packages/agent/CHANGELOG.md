@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.8.8] - 2026-09-18
+
 ### Fixed
 
 - Compaction summarizers that terminate on Anthropic (native Claude or OpenAI-compat gateways with Anthropic `cache_control`) now drop prior assistant reasoning from summary input even when the model id does not classify as the Anthropic dialect, so turn-prefix compaction no longer trips `reasoning_extraction` refusals.
