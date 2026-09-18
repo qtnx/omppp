@@ -20,6 +20,7 @@ function createContext(loopMode: SegmentContext["loopMode"]): SegmentContext {
 		vibeMode: null,
 		vim: null,
 		collab: null,
+		workPhase: null,
 		usageStats: {
 			input: 0,
 			output: 0,

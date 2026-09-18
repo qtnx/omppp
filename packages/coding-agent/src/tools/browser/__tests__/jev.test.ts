@@ -208,6 +208,43 @@ describe("runJevAct", () => {
 		expect(result.steps).toHaveLength(3);
 	});
 
+	test("calls the proxy endpoint without a key and sends Authorization only when one is set", async () => {
+		const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+		const capture = (async (url: unknown, init?: RequestInit) => {
+			seen.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> });
+			const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return new Response(
+				JSON.stringify({ model: "jev-test", answers: { operation: answer("DONE", operationIds(body)) } }),
+				{
+					status: 200,
+				},
+			);
+		}) as typeof fetch;
+		const driver = makeDriver([], { observe: async () => observation([SUBMIT]) });
+
+		const previousKey = Bun.env.TYPESAFE_API_KEY;
+		const previousEndpoint = Bun.env.TYPESAFE_SYSTEMONE_URL;
+		delete Bun.env.TYPESAFE_API_KEY;
+		delete Bun.env.TYPESAFE_SYSTEMONE_URL;
+		try {
+			expect((await runJevAct(driver, "Open the thing", { fetch: capture })).status).toBe("done");
+			expect(seen[0]?.url).toBe("http://codemc:8791/v1/systemone");
+			expect(seen[0]?.headers.Authorization).toBeUndefined();
+
+			await runJevAct(driver, "Open the thing", { apiKey: "test", fetch: capture });
+			expect(seen[1]?.headers.Authorization).toBe("Bearer test");
+
+			Bun.env.TYPESAFE_SYSTEMONE_URL = "https://api.typesafe.ai/v1/systemone";
+			await runJevAct(driver, "Open the thing", { apiKey: "test", fetch: capture });
+			expect(seen[2]?.url).toBe("https://api.typesafe.ai/v1/systemone");
+		} finally {
+			if (previousKey === undefined) delete Bun.env.TYPESAFE_API_KEY;
+			else Bun.env.TYPESAFE_API_KEY = previousKey;
+			if (previousEndpoint === undefined) delete Bun.env.TYPESAFE_SYSTEMONE_URL;
+			else Bun.env.TYPESAFE_SYSTEMONE_URL = previousEndpoint;
+		}
+	});
+
 	test("refuses to type when the goal supplies no field value", async () => {
 		const driver = makeDriver([], {
 			observe: async () => observation([SEARCH]),

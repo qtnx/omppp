@@ -135,6 +135,10 @@ it.each(["concern", "nit", "blocker"] as const)(
 			"compaction.enabled": false,
 			"retry.enabled": false,
 			"advisor.syncBacklog": "off",
+			// Turn signals are on by default and would reach the TypeSafe proxy from
+			// the turn-end path; this test asserts advisor routing, not signals, and
+			// must not wait out a network timeout per turn.
+			"signals.enabled": false,
 		});
 		settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
 		const session = new AgentSession({

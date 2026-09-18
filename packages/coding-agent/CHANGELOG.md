@@ -7,6 +7,29 @@
 - New `browser_jev` tool: hand it one browser goal and the Jev DOM policy plus a small text-helper model finish the whole flow, returning a text report (status, executed steps, final URL/title, page text) instead of making the main model drive clicks through screenshots. Appears only when `TYPESAFE_API_KEY` is set; keeps its own `jev` tab so a flow can continue across calls.
 - Jev browser automation (`browser_jev`, `tab.act`) gained `SELECT`, `HOVER`, `PRESS_ENTER`, and `DRAG`: native `<select>` options now commit through their select instead of failing on an unclickable option node, hover-only menus open, a field can be submitted with Enter when no visible submit control exists, and one observed element can be dragged onto another.
 - Browser tools accept `profile: "<name>"` (plus `fresh: true`): each named profile is its own Chromium with its own cookies, storage, and login, so several accounts can be driven side by side — `browser.open({ profile })` in eval and `browser_jev({ profile })`, which also keeps a `jev-<profile>` tab per account.
+### Changed
+
+- Duo's executor default is now `tnx/openrouter/~deepseek/deepseek-v4-flash-latest:high`, and the matching `retry.fallbackChains` key moves with it. The previous `tnx/ds/deepseek-v4-flash` id no longer exists, so duo silently degraded the executor to Opus every session (and logged `retry.fallbackChains key references unknown model`); existing configs carrying the old chain key should rename it.
+
+### Fixed
+
+- Browser `tab.act(goal)` is advertised whenever a System One endpoint is configured, not only when a local `TYPESAFE_API_KEY` exists — the gate was lost when the browser prelude moved into its own module.
+
+### Added
+
+- `/duo status` now prints a Jev debug line — the model, step cap, and endpoint `tab.act` would use, whether the key is local or proxy-held, and whether `tab.act` is currently advertised in the browser docs.
+- TypeSafe turn signals are on by default: each primary turn's transcript is classified by TypeSafe System One into a work phase (planning, implementing, verifying, debugging, blocked, reporting) plus needs-review, stuck, done-without-evidence, and parallel-slices scores, and the classification adjusts the advisor, duo phase, takeover, handoff, learning, and delegation-reminder behavior. Tunable under `signals.*`; `signals.baseUrl: ""` (or `signals.enabled: false`) opts out, and an unreachable endpoint costs three failed requests per session before signals go quiet.
+- Signals default to the TypeSafe proxy on the tailnet (`signals.baseUrl` = `http://codemc:8791/v1/systemone`), which holds the API key, so a session needs no `TYPESAFE_API_KEY`; point `signals.baseUrl` at `https://api.typesafe.ai/v1/systemone` to call TypeSafe directly, or leave it empty to require a local key.
+- Browser `tab.act(goal)` (TypeSafe Jev) now calls the same tailnet proxy by default, so it works without a local `TYPESAFE_API_KEY`; set `TYPESAFE_SYSTEMONE_URL` to point Jev at TypeSafe directly (which then needs the key).
+- A `phase` status-line segment shows the TypeSafe work phase for the current turn (planning, implementing, verifying, debugging, blocked, reporting), coloured by how the turn is going and hidden until the first classification; it ships in the built-in presets and can be moved in the status-line settings.
+- `duo.phaseModels` maps each detected work phase to one model selector or an ordered fallback list; duo switches the executor at the next turn boundary once the phase holds (immediately for `blocked`) and registers the rest of the list as rate-limit fallbacks. Unlisted phases keep the planner/executor models. `/duo status` shows the detected phase and active phase model.
+
+### Changed
+
+- The advisor now skips in-progress turns TypeSafe rates as not worth reviewing (`signals.advisorGate.*`); final yields, user prompts, consults, and every fourth held turn still reach it, and a completion claim TypeSafe scores as evidence-free is bounced back to the executor without an advisor consult.
+- The duo advisor now follows the planner model (Fable) instead of defaulting to a codex model whose rate-limit chain landed it on Opus; set `duo.advisorModel` to pin a different advisor.
+- An explicit `duo.*Model` / `duo.phaseModels` selector that matches nothing in the session's available models now also tries the provider/id registry lookup before falling back, and duo logs the reason (`duo model pattern unavailable`) plus the planner/executor/advisor it settled on, so a degraded side is visible instead of silent.
+- Duo raises an automatic recover takeover after two consecutive turns TypeSafe scores as stuck (`signals.stuckThreshold`), `duo_handoff` without an explicit scope lets TypeSafe pick `multi` for genuinely multi-phase briefs and notes when a brief reads unlocked, `save_learning` rejects case-specific notes, and the delegation reminder stays quiet on turns judged to hold a single slice.
 
 ## [1.8.9] - 2026-09-18
 

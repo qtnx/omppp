@@ -19,6 +19,7 @@ import {
 import { detectPlanningNeeded } from "../duo/takeover-signals";
 import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, type OrchestratorModeState } from "../orchestrator-mode/state";
 import type { PlanModeState } from "../plan-mode/state";
+import { isWorkPhase, type TurnSignals } from "../signals/index";
 import type { ConfiguredThinkingLevel } from "../thinking";
 
 export interface SessionDuoOrchestratorHost {
@@ -88,6 +89,7 @@ export function parseDuoStateSnapshot(value: unknown): DuoStateSnapshot | undefi
 		executorId: typeof record.executorId === "string" ? record.executorId : undefined,
 		executionScope:
 			record.executionScope === "single" || record.executionScope === "multi" ? record.executionScope : undefined,
+		workPhase: isWorkPhase(record.workPhase) ? record.workPhase : undefined,
 		advisorModelId,
 		duoOwnsAdvisor: typeof record.duoOwnsAdvisor === "boolean" ? record.duoOwnsAdvisor : advisorModelId !== undefined,
 		takeoverPurpose:
@@ -286,6 +288,11 @@ export class SessionDuoOrchestrator {
 		await this.#controller?.notifyTurnEnd();
 	}
 
+	/** Every resolved TypeSafe turn classification; drives phase models and stuck signals. */
+	onTurnSignals(signals: TurnSignals): void {
+		this.#controller?.notifyTurnSignals(signals);
+	}
+
 	notifyManualModelChange(): void {
 		if (this.#controller) {
 			this.#controller.notifyManualModelChange();
@@ -371,6 +378,18 @@ export class SessionDuoOrchestrator {
 				requestAgentContinue: () => this.#host.requestAgentContinue(),
 				syncToolSurface: () => this.#host.syncDuoToolSurface?.(),
 				duoMode: () => this.#host.settings.get("duo.mode"),
+				isSelectorSuppressed: selector => this.#host.modelRegistry.isSelectorSuppressed(selector),
+				installFallbackChain: (selector, chain) => {
+					const settings = this.#host.settings;
+					settings.override("retry.fallbackChains", {
+						...settings.get("retry.fallbackChains"),
+						[selector]: chain,
+					});
+				},
+				phasePolicy: () => ({
+					minConfidence: this.#host.settings.get("duo.phaseSwitch.minConfidence"),
+					stuckThreshold: this.#host.settings.get("signals.stuckThreshold"),
+				}),
 			},
 			config,
 			restored,

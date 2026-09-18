@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { SaveLearningTool } from "@oh-my-pi/pi-coding-agent/advisor/save-learning-tool";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as learningStorage from "@oh-my-pi/pi-coding-agent/learnings/storage";
+import { TurnSignalService, TypeSafeClient } from "@oh-my-pi/pi-coding-agent/signals/index";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { getAgentDbPath } from "@oh-my-pi/pi-utils";
@@ -27,6 +28,22 @@ async function createFixture(enabled = true): Promise<{ agentDir: string; cwd: s
 		getSessionSpawns: () => "*",
 	} as ToolSession;
 	return { agentDir, cwd, session };
+}
+
+/** Classifier whose learning verdict is fixed; `undefined` verdicts come from an explicit API failure. */
+function learningService(genericRule: number | "unavailable"): TurnSignalService {
+	const client = new TypeSafeClient({
+		apiKey: "k",
+		fetch: (async (_url: string | URL | Request, _init?: RequestInit) => {
+			if (genericRule === "unavailable") return new Response("boom", { status: 500 });
+			return Response.json({
+				model: "jev",
+				answers: { generic_rule: { type: "noul", noul: genericRule } },
+				usage: { input_tokens: 1, output_tokens: 1 },
+			});
+		}) as typeof fetch,
+	});
+	return new TurnSignalService(client);
 }
 
 function activeRows(agentDir: string): Array<{ content: string; trigger: string; scope: string; strength: number }> {
@@ -79,5 +96,41 @@ describe("SaveLearningTool", () => {
 	test("is not created when learning is disabled", async () => {
 		const fixture = await createFixture(false);
 		expect(SaveLearningTool.createIf(fixture.session)).toBeNull();
+	});
+
+	test("rejects a case-specific entry judged below the generic-rule threshold and stores nothing", async () => {
+		const fixture = await createFixture();
+		const tool = SaveLearningTool.createIf(fixture.session, learningService(0.2));
+		if (!tool) throw new Error("tool missing");
+		const content =
+			"Reverting the paginate change in src/list.ts broke the last-page case; re-apply it exactly as written there.";
+
+		await expect(tool.execute("1", { content, scope: "repo", failure_class: "case-specific" })).rejects.toThrow(
+			/reads as case-specific/,
+		);
+		expect(activeRows(fixture.agentDir)).toHaveLength(0);
+	});
+
+	test("stores an entry judged as a generic rule", async () => {
+		const fixture = await createFixture();
+		const tool = SaveLearningTool.createIf(fixture.session, learningService(0.9));
+		if (!tool) throw new Error("tool missing");
+		const content =
+			"When a fix touches a shared helper, migrate every caller in the same change instead of adding a second path.";
+
+		await tool.execute("1", { content, scope: "global", failure_class: "partial-cutover" });
+
+		expect(activeRows(fixture.agentDir)).toHaveLength(1);
+	});
+
+	test("stores the entry when the classifier is unavailable", async () => {
+		const fixture = await createFixture();
+		const tool = SaveLearningTool.createIf(fixture.session, learningService("unavailable"));
+		if (!tool) throw new Error("tool missing");
+		const content = "Before claiming a fix works, run the reported path once and quote its output in the report.";
+
+		await tool.execute("1", { content, scope: "global", failure_class: "done-without-evidence" });
+
+		expect(activeRows(fixture.agentDir)).toHaveLength(1);
 	});
 });
