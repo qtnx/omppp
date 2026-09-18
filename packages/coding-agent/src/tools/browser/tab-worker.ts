@@ -254,7 +254,10 @@ interface TabApi {
 		opts?: { waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2" },
 	): Promise<void>;
 	observe(opts?: { includeAll?: boolean; viewportOnly?: boolean }): Promise<Observation>;
-	act(goal: string, opts?: Pick<JevActOptions, "maxSteps" | "review" | "screenshots">): Promise<JevActResult>;
+	act(
+		goal: string,
+		opts?: Pick<JevActOptions, "maxSteps" | "review" | "screenshots" | "maxRescues">,
+	): Promise<JevActResult>;
 	ariaSnapshot(selector?: string, opts?: AriaSnapshotOptions): Promise<string>;
 	screenshot(opts?: ScreenshotOptions): Promise<string>;
 	extract(format?: ReadableFormat): Promise<string>;
@@ -1891,11 +1894,23 @@ export class WorkerCore {
 								await Bun.write(dest, buffer);
 								return dest;
 							},
-							helper: (payload, rules, schema) =>
-								helperViaBridge((name, args) => this.#callTool(active, name, args), payload, rules, schema),
+							helper: (payload, rules, schema, prefer) =>
+								helperViaBridge(
+									(name, args) => this.#callTool(active, name, args),
+									payload,
+									rules,
+									schema,
+									prefer,
+								),
 						},
 						goal,
-						{ maxSteps: opts?.maxSteps, signal: sig, review: opts?.review, screenshots: opts?.screenshots },
+						{
+							maxSteps: opts?.maxSteps,
+							signal: sig,
+							review: opts?.review,
+							screenshots: opts?.screenshots,
+							maxRescues: opts?.maxRescues,
+						},
 					),
 				),
 			ariaSnapshot: (selector, opts) =>

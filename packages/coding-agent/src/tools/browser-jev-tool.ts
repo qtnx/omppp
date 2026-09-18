@@ -30,6 +30,9 @@ const browserJevSchema = type({
 		"Viewport preset for this run: desktop 1280x720, tablet 834x1112, mobile 390x844, mobile-landscape 844x390. Mobile and tablet presets enable touch-capability flags; use them to test responsive behaviour.",
 	),
 	"review?": type("boolean").describe("Run the UX/accessibility review of the finished flow (default true)"),
+	"max_rescues?": type("number").describe(
+		"Rescue turns allowed before the run reports blocked (default 6); each turn escalates to the reasoning model and may drive up to 4 actions",
+	),
 	"profile?": type("string").describe(
 		"Named isolated browser session (own cookies/login) — use one name per account under test",
 	),
@@ -97,6 +100,7 @@ export function jevRunCode(params: BrowserJevParams): string {
 	const actOptions = JSON.stringify({
 		...(params.max_steps === undefined ? {} : { maxSteps: params.max_steps }),
 		...(params.review === undefined ? {} : { review: params.review }),
+		...(params.max_rescues === undefined ? {} : { maxRescues: params.max_rescues }),
 	});
 	const preset = params.viewport === undefined ? undefined : VIEWPORTS[params.viewport];
 	const viewport =

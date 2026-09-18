@@ -33,8 +33,14 @@ const SETTLE_MS = 150;
 const WAIT_MS = 500;
 const REQUEST_TIMEOUT_MS = 25_000;
 const RETRY_STATUSES: Record<number, true> = { 429: true, 503: true, 529: true };
-/** Rescue turns allowed per run; each costs one `smol` completion. */
-const MAX_RESCUES = 2;
+/**
+ * Rescue turns allowed per run. Each costs one helper completion, and each turn
+ * may drive several actions, so the budget is spent only when the helper is
+ * actually called — a run that keeps making progress never touches it.
+ */
+const DEFAULT_MAX_RESCUES = 6;
+/** Actions one rescue turn may drive before the policy gets the page back. */
+const MAX_RESCUE_STEPS = 4;
 /** Consecutive non-WAIT actions that changed nothing before the run is considered stuck. */
 const STALL_LIMIT = 3;
 
@@ -186,7 +192,13 @@ export interface JevDriver {
 	 * rescue plan). `rules` is the system prompt, `schema` the required JSON
 	 * shape; the returned value is parsed and validated by this module.
 	 */
-	helper(payload: object, rules: string, schema: object): Promise<unknown>;
+	helper(
+		payload: object,
+		rules: string,
+		schema: object,
+		/** Tier to try first; the other tier is the fallback. */
+		prefer?: "smol" | "default",
+	): Promise<unknown>;
 }
 
 export interface JevRescueContext {
@@ -198,11 +210,17 @@ export interface JevRescueContext {
 	recent_actions: Array<{ action: string; page_changed: boolean; rescue?: string }>;
 }
 
-/** One rescue answer, already validated against the offered action space. */
+/** One action from a rescue answer, already validated against the offered action space. */
 interface JevRescuePlan {
 	operation: Exclude<JevOperation, "DONE" | "BLOCKED" | "DRAG">;
 	entry?: ObservationEntry;
 	text?: string;
+	reason: string;
+}
+
+/** A rescue answer: why the page was stuck, plus the actions the model wants driven. */
+interface JevRescueSequence {
+	plans: JevRescuePlan[];
 	reason: string;
 }
 
@@ -211,6 +229,8 @@ export interface JevActOptions {
 	screenshots?: boolean;
 	/** Run a UX/accessibility review of the run with the helper model. */
 	review?: boolean;
+	/** Rescue turns allowed (default 6); each turn may drive up to 4 actions. */
+	maxRescues?: number;
 	maxSteps?: number;
 	signal?: AbortSignal;
 	apiKey?: string;
@@ -471,10 +491,20 @@ const RESCUE_SCHEMA = {
 	type: "object",
 	properties: {
 		action: { enum: ["recover", "give_up"] },
-		operation: { type: ["string", "null"] },
-		element: { type: ["string", "null"] },
-		text: { type: ["string", "null"] },
 		reason: { type: "string" },
+		steps: {
+			type: "array",
+			items: {
+				type: "object",
+				properties: {
+					operation: { type: "string" },
+					element: { type: ["string", "null"] },
+					text: { type: ["string", "null"] },
+				},
+				required: ["operation"],
+				additionalProperties: false,
+			},
+		},
 	},
 	required: ["action", "reason"],
 	additionalProperties: false,
@@ -493,36 +523,46 @@ const RESCUE_OPERATIONS: Record<string, true> = {
 };
 
 /**
- * Validate a rescue answer against the SAME action space Jev was offered. An
- * unusable answer (unknown operation, unoffered element, missing text) is not an
- * error — it means no rescue happened, and the caller reports the real block.
+ * Validate a rescue answer against the SAME action space Jev was offered, and
+ * keep the longest valid prefix of its steps: a model that plans four actions
+ * but names a stale element on the third still gets the first two driven, and
+ * the report says what it could not do. An unusable answer is not an error — it
+ * means no rescue happened, and the caller reports the real block.
  */
 function parseRescuePlan(
 	value: unknown,
 	space: JevActionSpace,
 	operations: Record<string, string>,
-): { plan?: JevRescuePlan; reason: string } {
+): { sequence?: JevRescueSequence; reason: string } {
 	const record = (typeof value === "string" ? JSON.parse(value) : value) as Record<string, unknown> | null;
 	const reason =
 		record && typeof record.reason === "string" && record.reason.trim().length > 0
 			? record.reason.trim().slice(0, 300)
 			: "rescue turn returned no usable plan";
 	if (!record || record.action !== "recover") return { reason };
-	const operation = typeof record.operation === "string" ? record.operation.toUpperCase() : "";
-	if (!RESCUE_OPERATIONS[operation] || operations[operation] === undefined) return { reason };
-	const op = operation as JevRescuePlan["operation"];
-	if (op === "SCROLL_DOWN" || op === "SCROLL_UP" || op === "WAIT") return { plan: { operation: op, reason }, reason };
-	const head = op as JevTargetHead;
-	const entries = space.targets[head];
-	const index = typeof record.element === "string" ? record.element : "";
-	const entry = entries?.get(index);
-	if (!entry) return { reason };
-	if (op === "TYPE_TEXT") {
-		const text = typeof record.text === "string" ? record.text : "";
-		if (text.trim().length === 0 || text.length > 2000) return { reason };
-		return { plan: { operation: op, entry, text, reason }, reason };
+	const rawSteps = Array.isArray(record.steps) ? record.steps.slice(0, MAX_RESCUE_STEPS) : [];
+	const plans: JevRescuePlan[] = [];
+	for (const raw of rawSteps) {
+		const step = (raw ?? {}) as Record<string, unknown>;
+		const operation = typeof step.operation === "string" ? step.operation.toUpperCase() : "";
+		if (!RESCUE_OPERATIONS[operation] || operations[operation] === undefined) break;
+		const op = operation as JevRescuePlan["operation"];
+		if (op === "SCROLL_DOWN" || op === "SCROLL_UP" || op === "WAIT") {
+			plans.push({ operation: op, reason });
+			continue;
+		}
+		const entry = space.targets[op as JevTargetHead]?.get(typeof step.element === "string" ? step.element : "");
+		if (!entry) break;
+		if (op === "TYPE_TEXT") {
+			const text = typeof step.text === "string" ? step.text : "";
+			if (text.trim().length === 0 || text.length > 2000) break;
+			plans.push({ operation: op, entry, text, reason });
+			continue;
+		}
+		plans.push({ operation: op, entry, reason });
 	}
-	return { plan: { operation: op, entry, reason }, reason };
+	if (plans.length === 0) return { reason };
+	return { sequence: { plans, reason }, reason };
 }
 
 const REVIEW_SCHEMA = {
@@ -622,6 +662,7 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 	const apiKey = opts.apiKey ?? jevApiKey();
 	const model = opts.model ?? Bun.env[JEV_MODEL_ENV]?.trim() ?? DEFAULT_MODEL;
 	const maxSteps = opts.maxSteps ?? DEFAULT_MAX_STEPS;
+	const maxRescues = opts.maxRescues ?? DEFAULT_MAX_RESCUES;
 	const fetchImpl = opts.fetch ?? fetch;
 	const signal = opts.signal;
 	const started = performance.now();
@@ -690,7 +731,10 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 
 	/**
 	 * One helper turn that tries to clear a stuck page before the run gives up.
-	 * Returns the rescue reason when an action ran, otherwise the obstacle the
+	 * The turn escalates to the session's reasoning tier (`default`) rather than
+	 * the cheap one, because this is the decision that the choice-only policy
+	 * cannot make, and it may drive several actions before handing the page back.
+	 * Returns the rescue reason when anything ran, otherwise the obstacle the
 	 * helper named, which becomes the run's `reason`.
 	 */
 	const rescue = async (
@@ -699,7 +743,7 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 		space: JevActionSpace,
 		operations: Record<string, string>,
 	): Promise<{ recovered: boolean; reason: string }> => {
-		if (rescues >= MAX_RESCUES) return { recovered: false, reason: "rescue budget spent" };
+		if (rescues >= maxRescues) return { recovered: false, reason: "rescue budget spent" };
 		rescues++;
 		const context: JevRescueContext = {
 			goal: task,
@@ -713,28 +757,36 @@ export async function runJevAct(driver: JevDriver, goal: string, opts: JevActOpt
 				rescue: s.rescue,
 			})),
 		};
-		const answer = await driver.helper(context, rescueRules, RESCUE_SCHEMA);
-		const { plan, reason } = parseRescuePlan(answer, space, operations);
-		if (!plan) return { recovered: false, reason };
+		const answer = await driver.helper(context, rescueRules, RESCUE_SCHEMA, "default");
+		const { sequence, reason } = parseRescuePlan(answer, space, operations);
+		if (!sequence) return { recovered: false, reason };
 		await capture(`rescue-${rescues}`);
-		const before = fingerprint(observation);
-		const step: JevStep = {
-			step: steps.length + 1,
-			operation: plan.operation,
-			rescue: plan.reason,
-			confidence: 0,
-			probability: 0,
-			latencyMs: 0,
-			pageChanged: false,
-			url: observation.url,
-		};
-		await apply(step, plan);
-		steps.push(step);
-		observation = await driver.observe();
-		step.pageChanged = fingerprint(observation) !== before;
-		step.url = observation.url;
+		let drove = 0;
+		for (const plan of sequence.plans) {
+			const before = fingerprint(observation);
+			const step: JevStep = {
+				step: steps.length + 1,
+				operation: plan.operation,
+				rescue: plan.reason,
+				confidence: 0,
+				probability: 0,
+				latencyMs: 0,
+				pageChanged: false,
+				url: observation.url,
+			};
+			await apply(step, plan);
+			steps.push(step);
+			observation = await driver.observe();
+			step.pageChanged = fingerprint(observation) !== before;
+			step.url = observation.url;
+			drove++;
+			// The page moved, or the sequence ran out of useful work: hand back to
+			// the policy, which now sees whatever the rescue uncovered.
+			if (step.pageChanged) break;
+		}
+		if (drove === 0) return { recovered: false, reason };
 		stalled = 0;
-		return { recovered: true, reason: plan.reason };
+		return { recovered: true, reason: sequence.reason };
 	};
 
 	while (steps.length < maxSteps) {
@@ -870,16 +922,22 @@ export async function helperViaBridge(
 	payload: object,
 	rules: string,
 	schema: object,
+	prefer?: "smol" | "default",
 ): Promise<unknown> {
+	// `prefer` picks which tier goes first; the other is the fallback, so an
+	// exhausted small-model account or a rate-limited reasoning model both
+	// degrade instead of failing the turn.
+	const first: HelperTier = prefer ?? "smol";
+	const second: HelperTier = first === "smol" ? "default" : "smol";
 	try {
-		return await completeHelper(callTool, payload, rules, schema, "smol");
+		return await completeHelper(callTool, payload, rules, schema, first);
 	} catch (error) {
-		const smolFailure = error instanceof Error ? error.message : String(error);
+		const firstFailure = error instanceof Error ? error.message : String(error);
 		try {
-			return await completeHelper(callTool, payload, rules, schema, "default");
+			return await completeHelper(callTool, payload, rules, schema, second);
 		} catch (fallbackError) {
 			const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-			throw new ToolError(`${message} (after smol tier failed: ${smolFailure})`);
+			throw new ToolError(`${message} (after ${first} tier failed: ${firstFailure})`);
 		}
 	}
 }

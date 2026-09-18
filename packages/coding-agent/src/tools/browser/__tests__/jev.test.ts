@@ -292,10 +292,8 @@ describe("runJevAct rescue turn", () => {
 				const modal = context.elements?.find(e => e.label === "Close dialog");
 				return {
 					action: "recover",
-					operation: "CLICK",
-					element: modal?.index,
-					text: null,
 					reason: "closed the dialog",
+					steps: [{ operation: "CLICK", element: modal?.index, text: null }],
 				};
 			},
 		});
@@ -316,10 +314,8 @@ describe("runJevAct rescue turn", () => {
 			observe: async () => observation([SUBMIT]),
 			helper: async () => ({
 				action: "give_up",
-				operation: null,
-				element: null,
-				text: null,
 				reason: "the flow needs a payment card the goal does not supply",
+				steps: [],
 			}),
 		});
 		const result = await runJevAct(driver, "Complete checkout", {
@@ -338,10 +334,8 @@ describe("runJevAct rescue turn", () => {
 			observe: async () => observation([SUBMIT]),
 			helper: async () => ({
 				action: "recover",
-				operation: "CLICK",
-				element: "99",
-				text: null,
 				reason: "clicking the hidden overlay",
+				steps: [{ operation: "CLICK", element: "99", text: null }],
 			}),
 		});
 		const result = await runJevAct(driver, "Do the thing", {
@@ -359,7 +353,7 @@ describe("runJevAct rescue turn", () => {
 			observe: async () => observation([SUBMIT]),
 			helper: async payload => {
 				log.push(`rescue:${(payload as { stuck_because?: string }).stuck_because}`);
-				return { action: "give_up", operation: null, element: null, text: null, reason: "the page never reacts" };
+				return { action: "give_up", reason: "the page never reacts", steps: [] };
 			},
 		});
 		const clickGo = (body: Record<string, unknown>): Record<string, unknown> =>
@@ -424,5 +418,83 @@ describe("runJevAct reporting", () => {
 		expect(result.status).toBe("done");
 		expect(result.review?.unavailable).toContain("provider rate limited");
 		expect(result.review?.findings).toEqual([]);
+	});
+});
+
+describe("runJevAct rescue depth", () => {
+	test("drives a multi-step rescue plan and asks the reasoning tier first", async () => {
+		const log: string[] = [];
+		const tiers: Array<string | undefined> = [];
+		let closed = false;
+		let acknowledged = false;
+		const modal = { id: 11, role: "button", name: "Collect rewards", states: [] };
+		const confirm = { id: 12, role: "button", name: "Confirm", states: [] };
+		const driver = makeDriver(log, {
+			observe: async () =>
+				closed
+					? observation([confirm], "https://example.test/step-2")
+					: acknowledged
+						? observation([confirm, modal], "https://example.test/step-1")
+						: observation([modal], "https://example.test/modal"),
+			click: async id => {
+				log.push(`click:${id}`);
+				if (id === modal.id) acknowledged = true;
+				if (id === confirm.id) closed = true;
+			},
+			helper: async (_payload, _rules, _schema, prefer) => {
+				tiers.push(prefer);
+				const context = _payload as { elements?: Array<{ index: string; label: string }> };
+				const indexOf = (label: string): string | undefined =>
+					context.elements?.find(entry => entry.label.startsWith(label))?.index;
+				return {
+					action: "recover",
+					reason: "cleared the round summary, then confirmed",
+					steps: [
+						{ operation: "CLICK", element: indexOf("Collect"), text: null },
+						{ operation: "CLICK", element: indexOf("Confirm"), text: null },
+					],
+				};
+			},
+		});
+		const result = await runJevAct(driver, "Claim the round reward", {
+			apiKey: "test",
+			screenshots: false,
+			review: false,
+			fetch: fakeFetch([body => answerAll(body, "BLOCKED"), body => answerAll(body, "DONE")]),
+		});
+		// The first click changed the page, so the sequence handed back to the policy,
+		// which then finished; the rescue itself escalated to the reasoning tier.
+		expect(tiers).toEqual(["default"]);
+		expect(result.rescues).toBe(1);
+		expect(result.status).toBe("done");
+		expect(log).toEqual(["click:11"]);
+		expect(result.steps.map(step => [step.operation, step.target?.id, step.rescue])).toEqual([
+			["CLICK", 11, "cleared the round summary, then confirmed"],
+		]);
+	});
+
+	test("keeps driving a rescue plan whose actions leave the page unchanged, up to the plan length", async () => {
+		const log: string[] = [];
+		const driver = makeDriver(log, {
+			observe: async () => observation([{ id: 7, role: "button", name: "Acknowledge", states: [] }]),
+			click: async id => void log.push(`click:${id}`),
+			helper: async () => ({
+				action: "recover",
+				reason: "clicked through the gate",
+				steps: [
+					{ operation: "CLICK", element: "1", text: null },
+					{ operation: "CLICK", element: "1", text: null },
+				],
+			}),
+		});
+		const result = await runJevAct(driver, "Get past the gate", {
+			apiKey: "test",
+			screenshots: false,
+			review: false,
+			fetch: fakeFetch([body => answerAll(body, "BLOCKED"), body => answerAll(body, "DONE")]),
+		});
+		expect(log).toEqual(["click:7", "click:7"]);
+		expect(result.rescues).toBe(1);
+		expect(result.steps).toHaveLength(2);
 	});
 });
