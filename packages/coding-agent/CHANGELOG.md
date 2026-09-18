@@ -4,6 +4,7 @@
 
 ### Added
 
+- `/duo status` now prints a Jev debug line — the model, step cap, and endpoint `tab.act` would use, whether the key is local or proxy-held, and whether `tab.act` is currently advertised in the browser docs.
 - TypeSafe turn signals are on by default: each primary turn's transcript is classified by TypeSafe System One into a work phase (planning, implementing, verifying, debugging, blocked, reporting) plus needs-review, stuck, done-without-evidence, and parallel-slices scores, and the classification adjusts the advisor, duo phase, takeover, handoff, learning, and delegation-reminder behavior. Tunable under `signals.*`; `signals.baseUrl: ""` (or `signals.enabled: false`) opts out, and an unreachable endpoint costs three failed requests per session before signals go quiet.
 - Signals default to the TypeSafe proxy on the tailnet (`signals.baseUrl` = `http://codemc:8791/v1/systemone`), which holds the API key, so a session needs no `TYPESAFE_API_KEY`; point `signals.baseUrl` at `https://api.typesafe.ai/v1/systemone` to call TypeSafe directly, or leave it empty to require a local key.
 - Browser `tab.act(goal)` (TypeSafe Jev) now calls the same tailnet proxy by default, so it works without a local `TYPESAFE_API_KEY`; set `TYPESAFE_SYSTEMONE_URL` to point Jev at TypeSafe directly (which then needs the key).

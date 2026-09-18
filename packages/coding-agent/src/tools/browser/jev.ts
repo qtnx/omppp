@@ -38,6 +38,25 @@ export function jevEndpoint(): string {
 	return Bun.env[JEV_ENDPOINT_ENV]?.trim() || JEV_PROXY_ENDPOINT;
 }
 
+/**
+ * One-line debug summary of the Jev driver as this process would call it:
+ * endpoint (tailnet proxy unless overridden), where the key comes from, and the
+ * model and step cap a goal would use. The key itself is never rendered.
+ */
+export function jevDebugSummary(): string {
+	const override = Bun.env[JEV_MODEL_ENV]?.trim();
+	const model = override || DEFAULT_MODEL;
+	const endpointOverride = Bun.env[JEV_ENDPOINT_ENV]?.trim();
+	const route = endpointOverride ? `(${JEV_ENDPOINT_ENV})` : "(proxy default)";
+	const auth = jevApiKey()
+		? `key ${JEV_API_KEY_ENV}`
+		: endpointOverride
+			? `no key — ${JEV_API_KEY_ENV} unset and the endpoint is not the proxy`
+			: "key held by the proxy";
+	const gate = jevApiKey() ? "" : `; tab.act hidden from browser docs (${JEV_API_KEY_ENV} unset)`;
+	return `Jev: model ${model} ${override ? `(${JEV_MODEL_ENV})` : "(default)"}, maxSteps ${DEFAULT_MAX_STEPS}, endpoint ${jevEndpoint()} ${route}, ${auth}${gate}`;
+}
+
 export type JevOperation = "CLICK" | "TYPE_TEXT" | "SCROLL_UP" | "SCROLL_DOWN" | "WAIT" | "DONE" | "BLOCKED";
 
 const FILL_ROLES: Record<string, true> = { textbox: true, searchbox: true, combobox: true, spinbutton: true };
