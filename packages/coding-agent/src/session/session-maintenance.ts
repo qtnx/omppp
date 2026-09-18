@@ -80,6 +80,7 @@ import type { MemoryBackendOperationContext } from "../memory-backend/types";
 import type { NonMessageTokenSource } from "../modes/utils/context-usage";
 import { computeNonMessageTokens } from "../modes/utils/context-usage";
 import { createPlanReadMatcher } from "../plan-mode/plan-protection";
+import type { TurnSignalService } from "../signals/index";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ContextUsageBreakdown, HandoffResult, SessionHandoffOptions } from "./agent-session-types";
@@ -109,6 +110,7 @@ import {
 import type { SessionContext } from "./session-context";
 import { buildSessionContext, getLatestCompactionEntry, getOpenAiRemoteCompactionPayload } from "./session-context";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
+import { contentToText } from "./session-history-format";
 import type { SessionManager } from "./session-manager";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { resolveSpeculationLeadTokens, SPECULATION_LEAD_MIN_TOKENS } from "./speculation-lead";
@@ -194,7 +196,7 @@ function hasConfiguredCompactionMethod(settings: ConfiguredCompactionSettings): 
  */
 function isCompactionMethodUsable(
 	candidate: CompactionMethod,
-	reason: "overflow" | "threshold" | "idle" | "incomplete" | "requested",
+	reason: "overflow" | "threshold" | "idle" | "incomplete" | "requested" | "topic-switch",
 	model: Model | undefined,
 	settings: ConfiguredCompactionSettings,
 	excludeMedia = false,
@@ -204,7 +206,7 @@ function isCompactionMethodUsable(
 		: candidate === "snapcompact"
 			? !excludeMedia && model?.input.includes("image") === true
 			: candidate === "handoff"
-				? reason !== "overflow"
+				? reason !== "overflow" && reason !== "topic-switch"
 				: true;
 }
 
@@ -233,7 +235,7 @@ function inFlightMessageKey(message: AgentMessage): string {
  * reported as available and then silently no-op in `runAutoCompaction` (#11482).
  */
 function hasUsableCompactionMethod(
-	reason: "overflow" | "threshold" | "idle" | "incomplete" | "requested",
+	reason: "overflow" | "threshold" | "idle" | "incomplete" | "requested" | "topic-switch",
 	model: Model | undefined,
 	settings: ConfiguredCompactionSettings,
 	excludeMedia = false,
@@ -443,6 +445,8 @@ export interface SessionMaintenanceHost {
 	promptGeneration(): number;
 	sessionId(): string;
 	messages(): AgentMessage[];
+	/** TypeSafe (jev) classifier; undefined when signals are disabled or unavailable. */
+	turnSignals?(): TurnSignalService | undefined;
 	contextGcDbPath(): string | undefined;
 	baseSystemPrompt(): string[];
 	goalModeState(): GoalModeState | undefined;
@@ -1716,7 +1720,7 @@ export class SessionMaintenance {
 	 * and LLM summaries all rewrite the active representation of raw history.
 	 */
 	async #runExperimentalContextRollover(
-		reason: "overflow" | "threshold" | "idle" | "incomplete" | "requested",
+		reason: "overflow" | "threshold" | "idle" | "incomplete" | "requested" | "topic-switch",
 		willRetry: boolean,
 		options: {
 			autoContinue?: boolean;
@@ -2553,6 +2557,89 @@ export class SessionMaintenance {
 		tokens += this.#tokenizer.countMessages(preparation.turnPrefixMessages, opts);
 		tokens += this.#tokenizer.countMessages(preparation.recentMessages, opts);
 		return tokens;
+	}
+
+	/**
+	 * Idle topic-switch check for a new user prompt. After a long idle gap, a
+	 * request that does not need the prior context should not inherit its tokens:
+	 * jev (TypeSafe System One) judges the request against a cheap digest of the
+	 * session, and a confident switch compacts before the prompt is sent. Fails
+	 * open — signals disabled or unavailable, a short gap, a small context, or a
+	 * verdict under the threshold leaves the turn untouched. Returns whether
+	 * history was rewritten.
+	 */
+	async runTopicSwitchCompactionIfNeeded(request: string): Promise<boolean> {
+		const compactionSettings = this.#host.settings.getGroup("compaction");
+		if (!compactionSettings.topicSwitchEnabled || !compactionSettings.enabled) return false;
+		// Session isStreaming() also counts this very dispatch as in flight, so
+		// gate on the agent's real streaming state: a live model turn (a second,
+		// queued prompt) must never have its history rewritten underneath it.
+		if (this.#host.agent.state.isStreaming || this.isCompacting || this.#host.isDisposed()) return false;
+		const signals = this.#host.turnSignals?.();
+		const trimmedRequest = request.trim();
+		if (!signals || !trimmedRequest) return false;
+		const idleSeconds = this.#idleSecondsSinceLastActivity();
+		if (idleSeconds === undefined || idleSeconds < compactionSettings.topicSwitchIdleSeconds) return false;
+		if (this.#estimateStoredContextTokens() < compactionSettings.topicSwitchMinContextTokens) return false;
+		const digest = this.#buildTopicDigest();
+		if (!digest) return false;
+
+		const judged = await signals.classifyTopicSwitch(digest, trimmedRequest);
+		if (!judged || judged.topicSwitch < compactionSettings.topicSwitchThreshold) return false;
+		// State may have changed across the round trip.
+		if (this.#host.agent.state.isStreaming || this.isCompacting || this.#host.isDisposed()) return false;
+		logger.debug("topic-switch: compacting stale context", { idleSeconds, topicSwitch: judged.topicSwitch });
+		const outcome = await this.runAutoCompaction("topic-switch", false, false, false, {
+			autoContinue: false,
+			suppressContinuation: true,
+			phase: "pre_turn",
+		});
+		return outcome.historyRewritten === true;
+	}
+
+	/**
+	 * Seconds since the most recent message in the active context, or undefined
+	 * when there is no prior activity. Message timestamps are persisted, so this
+	 * survives session resume (resuming a days-old session counts as idle).
+	 */
+	#idleSecondsSinceLastActivity(): number | undefined {
+		const messages = this.#host.messages();
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const ts = messages[i]?.timestamp;
+			if (typeof ts === "number" && ts > 0) return Math.max(0, (Date.now() - ts) / 1000);
+		}
+		return undefined;
+	}
+
+	/**
+	 * Cheap digest of what the session has been about for the topic-switch
+	 * classifier: session title, the latest compaction summary, and the last few
+	 * user requests — never the full transcript.
+	 */
+	#buildTopicDigest(): string | undefined {
+		const parts: string[] = [];
+		const title = this.#host.sessionManager.getSessionName();
+		if (title) parts.push(`Title: ${title}`);
+
+		const summary = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		const summaryText = summary?.shortSummary ?? summary?.summary;
+		if (summaryText) parts.push(`Prior summary: ${summaryText}`);
+
+		const recentRequests: string[] = [];
+		const messages = this.#host.messages();
+		for (let i = messages.length - 1; i >= 0 && recentRequests.length < 3; i--) {
+			const message = messages[i];
+			if (message?.role !== "user") continue;
+			const text = contentToText(message.content).slice(0, 500).trim();
+			if (text) recentRequests.push(text);
+		}
+		if (recentRequests.length > 0) {
+			recentRequests.reverse();
+			parts.push(`Recent requests:\n${recentRequests.map(text => `- ${text}`).join("\n")}`);
+		}
+
+		const digest = parts.join("\n\n").trim();
+		return digest.length > 0 ? digest : undefined;
 	}
 
 	async runPrePromptCompactionIfNeeded(messages: AgentMessage[]): Promise<void> {
@@ -4209,7 +4296,7 @@ export class SessionMaintenance {
 	 * @returns whether auto-compaction scheduled a follow-up turn.
 	 */
 	async runAutoCompaction(
-		reason: "requested" | "overflow" | "threshold" | "idle" | "incomplete",
+		reason: "requested" | "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch",
 		willRetry: boolean,
 		deferred = false,
 		allowDefer = true,
@@ -5167,7 +5254,7 @@ export class SessionMaintenance {
 		method: CompactionMethod | undefined;
 		providerReplayThroughEntryId?: string;
 		action: "context-full" | "handoff" | "snapcompact" | "remote";
-		reason: "requested" | "overflow" | "threshold" | "idle" | "incomplete";
+		reason: "requested" | "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch";
 		willRetry: boolean;
 		generation: number;
 		shouldAutoContinue: boolean;
@@ -5349,7 +5436,7 @@ export class SessionMaintenance {
 	 * method; returns a check result when shake handled the maintenance itself.
 	 */
 	async #runAutoShake(
-		reason: "requested" | "overflow" | "threshold" | "idle" | "incomplete",
+		reason: "requested" | "overflow" | "threshold" | "idle" | "incomplete" | "topic-switch",
 		willRetry: boolean,
 		generation: number,
 		autoContinue: boolean,

@@ -3441,8 +3441,9 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Topic-switch compaction: after a long idle gap, classify whether the next
-	// user request is still related to the prior conversation; compact when it isn't.
+	// Topic-switch compaction: after a long idle gap, jev (TypeSafe System One)
+	// judges whether the next user request still relates to the prior
+	// conversation; compact before sending it when it does not.
 	"compaction.topicSwitchEnabled": {
 		type: "boolean",
 		default: true,
@@ -3451,7 +3452,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Compaction",
 			label: "Topic-Switch Compaction",
 			description:
-				"After a long idle gap, use the fast model to detect an unrelated new request and compact the stale context",
+				"After a long idle gap, ask jev (TypeSafe signals) whether the new request is unrelated to the prior context and compact before sending it. Needs signals enabled; unavailable signals leave the turn untouched",
 		},
 	},
 
@@ -3487,6 +3488,17 @@ export const SETTINGS_SCHEMA = {
 				{ value: "50000", label: "50K tokens" },
 				{ value: "100000", label: "100K tokens" },
 			],
+		},
+	},
+
+	"compaction.topicSwitchThreshold": {
+		type: "number",
+		default: 0.7,
+		ui: {
+			tab: "context",
+			group: "Compaction",
+			label: "Topic-Switch Threshold",
+			description: "topic-switch probability (0-1) at or above which the stale context is compacted",
 		},
 	},
 
@@ -7791,6 +7803,7 @@ export interface CompactionSettings {
 	topicSwitchEnabled: boolean;
 	topicSwitchIdleSeconds: number;
 	topicSwitchMinContextTokens: number;
+	topicSwitchThreshold: number;
 	supersedeReads: boolean;
 	dropUseless: boolean;
 }

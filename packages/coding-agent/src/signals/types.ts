@@ -53,6 +53,12 @@ export interface LearningSignals {
 	genericRule: number;
 }
 
+/** Judgment over a new user request against the session's prior context. */
+export interface TopicSignals {
+	/** Probability the request starts work the prior context is not needed for. */
+	topicSwitch: number;
+}
+
 /** TypeSafe System One question shapes (subset used here). */
 export type NoulQuestion = {
 	type: "noul";

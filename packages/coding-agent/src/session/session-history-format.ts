@@ -135,7 +135,7 @@ export function formatExecutionSourcePreview(source: string): string {
 }
 
 /** Join the text blocks of a string-or-blocks content field. Images become `[image]`. */
-function contentToText(content: string | readonly (TextContent | ImageContent)[]): string {
+export function contentToText(content: string | readonly (TextContent | ImageContent)[]): string {
 	if (typeof content === "string") return content;
 	const parts: string[] = [];
 	for (const block of content) {
