@@ -75,6 +75,7 @@ import { type DumpTarget, writeSessionTranscriptDump } from "../../utils/session
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { collapseSharedUsageReports } from "../../utils/usage-display";
 import { resolveWorkspaceRootReference } from "../../workspace-roots";
+import { type CacheSummary, renderCacheSummaryLines } from "../components/usage-dashboard";
 import { formatRemainingOnlyTotal, isUsedOnlyAbsoluteAmount } from "../usage-amounts";
 
 const LEARNING_CLEAR_SCOPE_LABELS = {
@@ -2320,6 +2321,7 @@ export function renderUsageReports(
 	availableWidth: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
 	usageModelSelectors: readonly string[] = [],
+	cacheSummary?: CacheSummary,
 ): string {
 	const displayReports = collapseSharedUsageReports(reports);
 	const lines: string[] = [];
@@ -2517,5 +2519,9 @@ export function renderUsageReports(
 		// No per-provider footer; global header shows last check.
 	}
 
+	if (cacheSummary) {
+		lines.push("");
+		lines.push(...renderCacheSummaryLines(cacheSummary, availableWidth));
+	}
 	return lines.join("\n");
 }

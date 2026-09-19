@@ -123,7 +123,7 @@ import { SettingsSelectorComponent } from "../components/settings-selector";
 import { ToolExecutionComponent } from "../components/tool-execution";
 import { TranscriptBlock } from "../components/transcript-container";
 import { TreeSelectorComponent } from "../components/tree-selector";
-import { UsageDashboardComponent } from "../components/usage-dashboard";
+import { buildCacheSummary, UsageDashboardComponent } from "../components/usage-dashboard";
 import { WorkflowHubOverlayComponent } from "../components/workflow-hub";
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { renderUsageReports } from "./command-controller";
@@ -360,6 +360,7 @@ export class SelectorController {
 				)
 			: undefined;
 		const usageModelSelectors = this.ctx.session.getUsageReportingModelSelectors(reports);
+		const cacheSummary = buildCacheSummary(this.ctx.session.getSessionStats());
 		const done = () => {
 			overlayHandle?.hide();
 			this.focusActiveEditorArea();
@@ -367,6 +368,7 @@ export class SelectorController {
 		};
 		const dashboard = new UsageDashboardComponent({
 			reports,
+			cacheSummary,
 			renderDetail: width =>
 				renderUsageReports(
 					reports,
@@ -375,6 +377,7 @@ export class SelectorController {
 					width,
 					provider => (provider === currentProvider ? activeAccount : undefined),
 					usageModelSelectors,
+					cacheSummary,
 				),
 			loadActivity: loadDailyActivity,
 			requestRender: () => this.ctx.ui.requestRender(),

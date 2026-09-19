@@ -17,8 +17,9 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { colorLuma, formatDuration, hexToRgb, rgbToHex, sanitizeText } from "@oh-my-pi/pi-utils";
+import { colorLuma, formatDuration, formatNumber, hexToRgb, rgbToHex, sanitizeText } from "@oh-my-pi/pi-utils";
 import { formatProviderName } from "../../slash-commands/helpers/format";
+import type { SessionStats } from "../../session/agent-session-types";
 import { collapseSharedUsageReports } from "../../utils/usage-display";
 import { colorToAnsi } from "../theme/color";
 import { ensureThemeSync, theme } from "../theme/theme";
@@ -273,6 +274,120 @@ export function buildHeatmapLayout(points: DailyActivityPoint[], weeks: number, 
 }
 
 // =============================================================================
+// Prompt-cache model
+// =============================================================================
+
+/** Session prompt-cache composition and cost, or undefined when no prompt tokens were billed. */
+export interface CacheSummary {
+	/** Prompt tokens billed this session: cache reads + cache writes + uncached input. */
+	promptTokens: number;
+	hitFraction: number;
+	writeFraction: number;
+	missFraction: number;
+	/** USD actually charged per bucket, from the summed `Usage.cost` fields. */
+	cost: { read: number; write: number; uncached: number };
+	/** Estimated USD saved by cache hits vs paying the session-average input price; undefined when not derivable. */
+	estimatedSavings?: number;
+}
+
+/** USD with cents below $1, matching the heatmap summary's cost formatting. */
+function formatUsd(value: number): string {
+	return value >= 1
+		? `$${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value)}`
+		: `$${value.toFixed(2)}`;
+}
+
+/**
+ * Bar glyph count per segment. Cells use largest-remainder apportionment: the
+ * rounding residual goes to the segments closest to their next whole cell, so a
+ * 0% bucket (remainder 0) never paints a cell while a small-but-real share still
+ * shows, and the cells always total `width`.
+ */
+function cacheBarCells(summary: CacheSummary, width: number): [number, number, number] {
+	const fractions = [summary.hitFraction, summary.writeFraction, summary.missFraction];
+	const exact = fractions.map(fraction => fraction * width);
+	const cells = exact.map(value => Math.floor(value));
+	const byRemainder = exact
+		.map((value, index) => ({ index, remainder: value - Math.floor(value) }))
+		.sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+	for (let i = 0; i < width - (cells[0] + cells[1] + cells[2]); i++) cells[byRemainder[i].index]++;
+	return [cells[0], cells[1], cells[2]];
+}
+
+/**
+ * Compose the session's prompt-cache picture from aggregated stats.
+ *
+ * The hit rate shares the status line's denominator (`cacheRead + cacheWrite +
+ * input`): cached reads, newly cached writes, and uncached input are the whole
+ * prompt. Costs come from the provider-priced `Usage.cost` buckets, while the
+ * savings estimate prices the hit tokens at the session-average uncached input
+ * rate — approximate once a session spans models with different pricing.
+ */
+export function buildCacheSummary(stats: Pick<SessionStats, "tokens" | "costBreakdown">): CacheSummary | undefined {
+	const { cacheRead, cacheWrite, input } = stats.tokens;
+	const promptTokens = cacheRead + cacheWrite + input;
+	if (promptTokens <= 0) return undefined;
+	const cost = {
+		read: stats.costBreakdown.cacheRead,
+		write: stats.costBreakdown.cacheWrite,
+		uncached: stats.costBreakdown.input,
+	};
+	// Both rates are needed to price the saving: without billed uncached input
+	// there is no reference price (DeepSeek-style rows report the miss as input
+	// with no cache-read charge, but a session with no uncached tokens at all
+	// has nothing to compare against).
+	const estimatedSavings =
+		input > 0 && cacheRead > 0 ? cacheRead * (cost.uncached / input - cost.read / cacheRead) : undefined;
+	return {
+		promptTokens,
+		hitFraction: cacheRead / promptTokens,
+		writeFraction: cacheWrite / promptTokens,
+		missFraction: input / promptTokens,
+		cost,
+		...(estimatedSavings !== undefined && estimatedSavings > 0 ? { estimatedSavings } : {}),
+	};
+}
+
+/**
+ * Render the session cache block: a header, one stacked prompt bar, and the
+ * cost split. Percentages always print beside the bar so the reading survives
+ * monochrome terminals.
+ */
+export function renderCacheSummaryLines(summary: CacheSummary, width: number): string[] {
+	const barWidth = Math.max(10, Math.min(width - 2, 40));
+	const [hitCells, writeCells, missCells] = cacheBarCells(summary, barWidth);
+	const missColor = summary.missFraction >= 0.5 ? "error" : "dim";
+	// Distinct glyphs per bucket (the `renderUsageBar` idiom) so the split stays
+	// readable without color; the legend carries the exact percentages.
+	const bar =
+		theme.fg("success", "█".repeat(hitCells)) +
+		theme.fg("warning", "▓".repeat(writeCells)) +
+		theme.fg(missColor, "░".repeat(missCells));
+	const pct = (fraction: number): string => `${Math.round(fraction * 100)}%`;
+	const legend = [
+		theme.fg("success", `hit ${pct(summary.hitFraction)}`),
+		theme.fg("warning", `write ${pct(summary.writeFraction)}`),
+		theme.fg(missColor, `miss ${pct(summary.missFraction)}`),
+	].join(theme.fg("dim", " · "));
+
+	const costParts = [
+		`${formatUsd(summary.cost.read)} read`,
+		`${formatUsd(summary.cost.write)} write`,
+		`${formatUsd(summary.cost.uncached)} uncached`,
+	];
+	if (summary.estimatedSavings !== undefined) costParts.push(`saved ≈${formatUsd(summary.estimatedSavings)}`);
+
+	return [
+		truncateToWidth(
+			`${theme.bold(theme.fg("accent", "Cache"))}${theme.fg("dim", ` · this session · ${formatNumber(summary.promptTokens)} prompt tokens`)}`,
+			width,
+		),
+		truncateToWidth(`${bar}  ${legend}`, width),
+		truncateToWidth(`  ${theme.fg("dim", costParts.join(" · "))}`, width),
+	];
+}
+
+// =============================================================================
 // Component
 // =============================================================================
 
@@ -291,6 +406,8 @@ export interface UsageDashboardOptions {
 	 * the dashboard closes so an in-flight sync can stop early.
 	 */
 	loadActivity: (push: (points: DailyActivityPoint[]) => void, signal: AbortSignal) => Promise<void>;
+	/** Session prompt-cache composition; omitted when the session billed no prompt tokens. */
+	cacheSummary?: CacheSummary;
 	requestRender: () => void;
 	onClose: () => void;
 }
@@ -502,10 +619,7 @@ export class UsageDashboardComponent implements Component {
 		const ramp = this.#heatRamp();
 		const reset = "\x1b[39m";
 
-		const cost =
-			layout.totalCost >= 1
-				? `$${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(layout.totalCost)}`
-				: `$${layout.totalCost.toFixed(2)}`;
+		const cost = formatUsd(layout.totalCost);
 		const requests = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
 			layout.totalRequests,
 		);
@@ -544,6 +658,10 @@ export class UsageDashboardComponent implements Component {
 	#overviewLines(innerWidth: number): string[] {
 		const lines: string[] = [];
 		lines.push(...this.#renderCardsGrid(innerWidth));
+		if (this.#options.cacheSummary) {
+			lines.push("");
+			lines.push(...renderCacheSummaryLines(this.#options.cacheSummary, innerWidth));
+		}
 		lines.push("");
 		lines.push(...this.#renderHeatmap(innerWidth));
 		return lines;

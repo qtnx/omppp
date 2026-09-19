@@ -506,6 +506,13 @@ export interface SessionStats {
 	};
 	premiumRequests: number;
 	cost: number;
+	/** Provider-priced USD split of `cost`; each bucket sums the matching `Usage.cost` field. */
+	costBreakdown: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+	};
 	credits?: {
 		cost: number;
 		committedCost: number;

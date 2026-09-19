@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
+import { buildCacheSummary } from "@oh-my-pi/pi-coding-agent/modes/components/usage-dashboard";
 import { renderUsageReports } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 
@@ -109,5 +110,31 @@ describe("renderUsageReports multi-account column alignment (#6067)", () => {
 		expect(summaryStart).toBeGreaterThanOrEqual(0);
 		expect(Bun.stringWidth(labelRow)).toBe(11);
 		expect(Bun.stringWidth(amountRow.slice(2, summaryStart))).toBe(9);
+	});
+});
+
+describe("renderUsageReports session cache block", () => {
+	const summary = buildCacheSummary({
+		tokens: { input: 2_000, output: 0, reasoning: 0, cacheRead: 90_000, cacheWrite: 8_000, total: 100_000 },
+		costBreakdown: { input: 0.006, output: 0.5, cacheRead: 0.027, cacheWrite: 0.03 },
+	});
+
+	it("appends the cache block after the provider sections", () => {
+		const reports = [acct("alice@example.test", 0.2, 0.3)];
+		const lines = stripVTControlCharacters(
+			renderUsageReports(reports, theme, Date.now(), 120, undefined, [], summary),
+		).split("\n");
+		const cacheRow = lines.findIndex(line => line.includes("Cache · this session"));
+		const accountRow = lines.findIndex(line => line.includes("alice@example.test"));
+
+		expect(cacheRow).toBeGreaterThan(accountRow);
+		expect(lines[cacheRow + 1]).toContain("hit 90%");
+	});
+
+	it("omits the block when the session billed no prompt tokens", () => {
+		const reports = [acct("alice@example.test", 0.2, 0.3)];
+		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 120));
+
+		expect(text).not.toContain("Cache · this session");
 	});
 });
