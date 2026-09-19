@@ -27,7 +27,7 @@ export const DEFAULT_MAX_STATE_CHARS = 80_000;
 /** Consecutive unusable responses before the session stops calling the endpoint. */
 const FAILURE_BUDGET = 3;
 
-const TURN_QUESTIONS = turnQuestions as Record<string, Question>;
+const TURN_QUESTIONS = { ...turnQuestions, ...promptQuestions } as Record<string, Question>;
 const HANDOFF_QUESTIONS = handoffQuestions as Record<string, Question>;
 const LEARNING_QUESTIONS = learningQuestions as Record<string, Question>;
 const TOPIC_QUESTIONS = topicQuestions as Record<string, Question>;
@@ -44,6 +44,50 @@ function isContextTrimAction(value: string): value is ContextTrimSignals["action
 
 function noul(answer: Answer | undefined): number | undefined {
 	return answer?.type === "noul" && Number.isFinite(answer.noul) ? answer.noul : undefined;
+}
+type PromptThinking = "medium" | "high" | "xhigh";
+
+const PROMPT_THINKING: Record<PromptThinking, true> = { medium: true, high: true, xhigh: true };
+
+function isProbability(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function hasValidProbabilities(value: unknown): value is Record<string, number> {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+	const probabilities = value as Record<string, unknown>;
+	const values = Object.values(probabilities);
+	return values.length > 0 && values.every(isProbability);
+}
+
+function isPromptThinking(value: unknown): value is PromptThinking {
+	return typeof value === "string" && PROMPT_THINKING[value as PromptThinking] === true;
+}
+
+function parsePromptSignals(answers: Record<string, Answer>): PromptSignals | undefined {
+	const difficulty = answers.difficulty;
+	const thinking = answers.thinking;
+	const risk = answers.risk_domain;
+	if (
+		difficulty?.type !== "choice" ||
+		!isPromptDifficulty(difficulty.choice) ||
+		!isProbability(difficulty.confidence) ||
+		!hasValidProbabilities(difficulty.probabilities) ||
+		thinking?.type !== "choice" ||
+		!isPromptThinking(thinking.choice) ||
+		!isProbability(thinking.confidence) ||
+		!hasValidProbabilities(thinking.probabilities) ||
+		risk?.type !== "noul" ||
+		!isProbability(risk.noul)
+	) {
+		return undefined;
+	}
+	return {
+		difficulty: difficulty.choice,
+		difficultyConfidence: difficulty.confidence,
+		thinking: thinking.choice,
+		risk: risk.noul,
+	};
 }
 
 /** Maps a Score answer onto 0..1 across its levels (first level 0, last level 1). */
@@ -64,6 +108,9 @@ export class TurnSignalService {
 	readonly #maxStateChars: number;
 	#latest: TurnSignals | undefined;
 	#inFlight: Promise<TurnSignals | undefined> | undefined;
+	#promptState: { request: string; prior_context?: string } | undefined;
+	#requestGeneration = 0;
+	#turnSequence = 0;
 	#failures = 0;
 	#unavailable = false;
 
@@ -88,8 +135,8 @@ export class TurnSignalService {
 		return this.#latest;
 	}
 
-	#clip(text: string): string {
-		return text.length <= this.#maxStateChars ? text : text.slice(text.length - this.#maxStateChars);
+	#clip(text: string, maxChars = this.#maxStateChars): string {
+		return text.length <= maxChars ? text : text.slice(text.length - maxChars);
 	}
 
 	/** A dead or unreachable endpoint must not cost every turn the request timeout. */
@@ -110,7 +157,9 @@ export class TurnSignalService {
 		context: { wip: boolean; duoPhase?: string },
 		signal?: AbortSignal,
 	): Promise<TurnSignals | undefined> {
-		const run = this.#classifyTurn(deltaText, context, signal);
+		const generation = this.#requestGeneration;
+		const sequence = ++this.#turnSequence;
+		const run = this.#classifyTurn(deltaText, context, signal, generation, sequence);
 		this.#inFlight = run;
 		return run;
 	}
@@ -118,17 +167,22 @@ export class TurnSignalService {
 	async #classifyTurn(
 		deltaText: string,
 		context: { wip: boolean; duoPhase?: string },
-		signal?: AbortSignal,
+		signal: AbortSignal | undefined,
+		generation: number,
+		sequence: number,
 	): Promise<TurnSignals | undefined> {
 		if (this.#unavailable) return undefined;
+		const contextChars = (this.#promptState?.request.length ?? 0) + (this.#promptState?.prior_context?.length ?? 0);
 		const state = {
 			turn_status: context.wip
 				? "in progress: the agent will keep working after this slice"
 				: "turn ended: the agent yielded",
 			...(context.duoPhase ? { duo_phase: context.duoPhase } : {}),
-			transcript: this.#clip(deltaText),
+			transcript: this.#clip(deltaText, this.#maxStateChars - contextChars),
+			...this.#promptState,
 		};
 		const response = await this.#client.systemOne(state, TURN_QUESTIONS, signal);
+		if (generation !== this.#requestGeneration || sequence !== this.#turnSequence) return undefined;
 		this.#record(response !== undefined);
 		if (!response) return undefined;
 		const phaseAnswer = response.answers.phase;
@@ -140,6 +194,7 @@ export class TurnSignalService {
 		if (
 			phaseAnswer?.type !== "choice" ||
 			!isWorkPhase(phaseAnswer.choice) ||
+			!isProbability(phaseAnswer.confidence) ||
 			needsReview === undefined ||
 			stuck === undefined ||
 			doneWithoutEvidence === undefined ||
@@ -147,6 +202,7 @@ export class TurnSignalService {
 		) {
 			return undefined;
 		}
+		const routing = parsePromptSignals(response.answers);
 		const signals: TurnSignals = {
 			phase: phaseAnswer.choice,
 			phaseConfidence: phaseAnswer.confidence,
@@ -155,6 +211,7 @@ export class TurnSignalService {
 			doneWithoutEvidence,
 			parallelSlices,
 			...(openEndedDiscovery === undefined ? {} : { openEndedDiscovery }),
+			...(routing === undefined ? {} : { routing }),
 			model: response.model,
 			inputTokens: response.usage.input_tokens,
 		};
@@ -217,20 +274,21 @@ export class TurnSignalService {
 		priorContext: string | undefined,
 		signal?: AbortSignal,
 	): Promise<PromptSignals | undefined> {
-		if (this.#unavailable) return undefined;
-		const state = {
-			request: this.#clip(request),
-			...(priorContext ? { prior_context: this.#clip(priorContext) } : {}),
+		const generation = ++this.#requestGeneration;
+		this.#latest = undefined;
+		this.#inFlight = undefined;
+		this.#promptState = {
+			request: this.#clip(request, Math.floor(this.#maxStateChars / 4)),
+			...(priorContext === undefined
+				? {}
+				: { prior_context: this.#clip(priorContext, Math.floor(this.#maxStateChars / 4)) }),
 		};
-		const response = await this.#client.systemOne(state, PROMPT_QUESTIONS, signal);
+		if (this.#unavailable) return undefined;
+		const response = await this.#client.systemOne(this.#promptState, PROMPT_QUESTIONS, signal);
+		if (generation !== this.#requestGeneration) return undefined;
 		this.#record(response !== undefined);
 		if (!response) return undefined;
-		const difficulty = response.answers.difficulty;
-		const risk = noul(response.answers.risk_domain);
-		if (difficulty?.type !== "choice" || !isPromptDifficulty(difficulty.choice) || risk === undefined) {
-			return undefined;
-		}
-		return { difficulty: difficulty.choice, difficultyConfidence: difficulty.confidence, risk };
+		return parsePromptSignals(response.answers);
 	}
 
 	/**

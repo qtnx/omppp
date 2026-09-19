@@ -1639,6 +1639,7 @@ describe("DuoController difficulty routing", () => {
 		const controller = new DuoController(host, routingConfig);
 		await controller.reevaluate();
 		expect(controller.status.phase).toBe("executing");
+		await controller.requestPhaseChange("implementing");
 		host.switches = [];
 		host.fallbackChains = [];
 		return { host, controller };
@@ -1679,7 +1680,7 @@ describe("DuoController difficulty routing", () => {
 
 		expect(decision).toMatchObject({ tier: "hard", risk: true, selector: "anthropic/claude-fable-5" });
 		expect(host.switches).toEqual([{ model: top, thinkingLevel: ThinkingLevel.High }]);
-		expect(host.fallbackChains).toEqual([]);
+		expect(host.fallbackChains).toEqual([{ selector: "anthropic/claude-fable-5", chain: [] }]);
 	});
 
 	test("falls back down the ladder when every rung at or above the tier is usage-limited", async () => {
@@ -1693,33 +1694,134 @@ describe("DuoController difficulty routing", () => {
 		expect(host.switches).toEqual([{ model: mid, thinkingLevel: ThinkingLevel.XHigh }]);
 	});
 
-	test("a routed request keeps its model across phase classifications until the next prompt re-routes", async () => {
+	test("reassesses model and effort during a running request, then applies them at a turn boundary", async () => {
 		const { host, controller } = await executingController();
 		await controller.routeUserPrompt({ difficulty: "easy", difficultyConfidence: 0.8, risk: 0 });
 		host.switches = [];
-
-		// The debugging phase has a configured phase model; routing outranks it.
-		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
-		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
+		host.streaming = true;
+		const harder = turnSignals({
+			phase: "debugging",
+			phaseConfidence: 0.9,
+			routing: { difficulty: "extreme", difficultyConfidence: 0.9, risk: 0, thinking: "xhigh" },
+		});
+		controller.notifyTurnSignals(harder);
 		expect(host.switches).toEqual([]);
-		expect(controller.status).toMatchObject({ workPhase: "debugging", phaseModelId: "anthropic/claude-haiku-4-5" });
+		controller.notifyTurnSignals(harder);
+		expect(host.switches).toEqual([]);
+		host.streaming = false;
+		await controller.flushPendingSwitch();
+		expect(host.switches).toEqual([{ model: top, thinkingLevel: ThinkingLevel.XHigh }]);
 
-		await controller.routeUserPrompt({ difficulty: "hard", difficultyConfidence: 0.8, risk: 0 });
-		expect(host.switches).toEqual([{ model: strong, thinkingLevel: ThinkingLevel.High }]);
-		expect(controller.status.routedTier).toBe("hard");
+		host.switches = [];
+		const simpler = turnSignals({
+			phase: "implementing",
+			phaseConfidence: 0.9,
+			routing: { difficulty: "easy", difficultyConfidence: 0.9, risk: 0, thinking: "medium" },
+		});
+		controller.notifyTurnSignals(simpler);
+		expect(host.switches).toEqual([]);
+		controller.notifyTurnSignals(simpler);
+		expect(host.switches).toEqual([{ model: cheap, thinkingLevel: ThinkingLevel.Medium }]);
 	});
 
-	test("does not route while the planner owns the stream", async () => {
+	test("an easy label cannot put the executor on brainstorming, including an explicit phase change", async () => {
+		const { host, controller } = await executingController();
+		await controller.requestPhaseChange("preplanning");
+		host.switches = [];
+		const decision = await controller.routeUserPrompt({
+			difficulty: "easy",
+			difficultyConfidence: 0.95,
+			risk: 0,
+			thinking: "high",
+		});
+		expect(decision?.selector).toBe(ladder[1].selector);
+		expect(host.switches).toEqual([{ model: mid, thinkingLevel: ThinkingLevel.High }]);
+		await controller.requestPhaseChange("implementing");
+		expect(host.switches.at(-1)?.model).toEqual(cheap);
+		await controller.requestPhaseChange("planning");
+		expect(host.switches.at(-1)?.model).toEqual(mid);
+	});
+
+	test("unavailable reasoning models never fall back to the executor for brainstorming", async () => {
+		const { host, controller } = await executingController({
+			suppressedSelectors: ladder.slice(1).map(candidate => candidate.selector),
+		});
+		await controller.requestPhaseChange("preplanning");
+		host.switches = [];
+		const decision = await controller.routeUserPrompt({
+			difficulty: "easy",
+			difficultyConfidence: 0.9,
+			risk: 0,
+			thinking: "high",
+		});
+		expect(decision).toBeUndefined();
+		expect(host.switches).toEqual([]);
+	});
+
+	test("planning can adjust reasoning but a recovery takeover retains planner control", async () => {
 		const host = fakeHost({ model: planner, planModeOn: true });
 		const controller = new DuoController(host, routingConfig);
 		await controller.reevaluate();
 		expect(controller.status.phase).toBe("planning");
 		host.switches = [];
+		const decision = await controller.routeUserPrompt({
+			difficulty: "easy",
+			difficultyConfidence: 0.9,
+			risk: 0,
+			thinking: "high",
+		});
+		expect(decision?.selector).toBe(ladder[1].selector);
+		expect(host.switches).toEqual([{ model: mid, thinkingLevel: ThinkingLevel.High }]);
+		const active = await executingController();
+		expect(active.controller.requestTakeover("recover", "drift", "investigate repeated failures")).toBe("accepted");
+		active.host.switches = [];
+		expect(
+			await active.controller.routeUserPrompt({
+				difficulty: "easy",
+				difficultyConfidence: 0.9,
+				risk: 0,
+			}),
+		).toBeUndefined();
+		expect(active.host.switches).toEqual([]);
+	});
 
-		const decision = await controller.routeUserPrompt({ difficulty: "easy", difficultyConfidence: 0.9, risk: 0 });
+	test("missing ladder entries do not demote difficult work and repeated effort changes do not churn models", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, {
+			...routingConfig,
+			routing: { ...routingConfig.routing!, ladder: [ladder[0], undefined, ladder[2], ladder[3]] },
+		});
+		await controller.reevaluate();
+		await controller.requestPhaseChange("implementing");
+		host.switches = [];
+		await controller.routeUserPrompt({ difficulty: "hard", difficultyConfidence: 0.9, risk: 0, thinking: "high" });
+		expect(host.switches).toEqual([{ model: strong, thinkingLevel: ThinkingLevel.High }]);
+		host.switches = [];
+		const effort = turnSignals({
+			phase: "implementing",
+			phaseConfidence: 0.9,
+			routing: { difficulty: "hard", difficultyConfidence: 0.9, risk: 0, thinking: "xhigh" },
+		});
+		controller.notifyTurnSignals(effort);
+		controller.notifyTurnSignals(effort);
+		controller.notifyTurnSignals(effort);
+		expect(host.switches).toEqual([{ model: strong, thinkingLevel: ThinkingLevel.XHigh }]);
+	});
 
-		expect(decision).toBeUndefined();
+	test("uncertain or missing transcript routing does not demote a running hard task", async () => {
+		const { host, controller } = await executingController();
+		await controller.routeUserPrompt({ difficulty: "hard", difficultyConfidence: 0.9, risk: 0, thinking: "high" });
+		host.switches = [];
+		const uncertain = turnSignals({
+			phase: "implementing",
+			phaseConfidence: 0.9,
+			routing: { difficulty: "easy", difficultyConfidence: 0.1, risk: 0, thinking: "medium" },
+		});
+		controller.notifyTurnSignals(uncertain);
+		controller.notifyTurnSignals(uncertain);
+		controller.notifyTurnSignals(turnSignals({ phase: "implementing", phaseConfidence: 0.9 }));
 		expect(host.switches).toEqual([]);
+		expect(controller.status.routedTier).toBe("hard");
 	});
 });
 describe("DuoController planner auto-return watch", () => {
@@ -1840,6 +1942,22 @@ describe("DuoController preplanning and model-requested phase changes", () => {
 		expect(host.fallbackChains).toEqual([{ selector: PHASE_MODEL_SELECTOR, chain: [PHASE_FALLBACK_SELECTOR] }]);
 		expect(host.persisted.at(-1)?.workPhase).toBe("preplanning");
 		expect(host.notices.at(-1)?.text).toContain("preplanning");
+	});
+
+	test("reapplying the active phase model keeps duo live, but a foreign selection disables it", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, PREPLANNING_CONFIG);
+		await controller.reevaluate();
+
+		controller.notifyManualModelChange();
+		expect(controller.status.phase).toBe("executing");
+		expect(await controller.requestPhaseChange("planning")).toBe("ok");
+		expect(host.model).toEqual(planner);
+
+		await controller.requestPhaseChange("preplanning");
+		host.model = otherModel;
+		controller.notifyManualModelChange();
+		expect(controller.status.phase).toBe("inactive");
 	});
 
 	test("keeps the executor on the stream when no preplanning phase is configured", async () => {

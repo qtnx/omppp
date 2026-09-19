@@ -132,7 +132,7 @@ import { getOpenAiRemoteCompactionPayload } from "./session-context";
 import { formatSessionDumpText } from "./session-dump-format";
 import { resolveDuoAdvisorStopAction, shouldRunDuoDoneGate } from "./session-duo-orchestrator";
 import type { CompactionEntry, SessionEntry } from "./session-entries";
-import { formatSessionHistoryMarkdown } from "./session-history-format";
+import { formatRoutingHistory, formatSessionHistoryMarkdown } from "./session-history-format";
 import type { SessionManager } from "./session-manager";
 import { buildSessionMetadata } from "./session-metadata";
 import type { YieldQueue } from "./yield-queue";
@@ -577,6 +577,38 @@ export class SessionAdvisors {
 		this.#initialDuoPhase = undefined;
 	}
 
+	/** Classifies the latest primary step with a bounded window of preceding messages. */
+	#classifyPrimaryTurn(
+		messages: AgentMessage[],
+		willContinue: boolean | undefined,
+		signal: AbortSignal | undefined,
+	): Promise<TurnSignals | undefined> | undefined {
+		const turnSignals = this.#turnSignals;
+		if (!turnSignals) return undefined;
+		let assistantIndex = -1;
+		for (let index = messages.length - 1; index >= 0; index--) {
+			if (messages[index]?.role === "assistant") {
+				assistantIndex = index;
+				break;
+			}
+		}
+		if (assistantIndex < 0) return Promise.resolve(undefined);
+		let end = assistantIndex + 1;
+		while (end < messages.length && messages[end]?.role === "toolResult") end++;
+		const transcript = formatRoutingHistory(messages, end);
+		if (!transcript.trim()) return Promise.resolve(undefined);
+		return turnSignals
+			.classifyTurn(transcript, { wip: willContinue === true, duoPhase: this.#host.duoStatus()?.workPhase }, signal)
+			.then(signals => {
+				if (signals) this.#onTurnSignals?.(signals);
+				return signals;
+			})
+			.catch(error => {
+				logger.debug("turn signal classification failed", { err: String(error) });
+				return undefined;
+			});
+	}
+
 	/** Delivers one completed primary turn to every live advisor. */
 	async onPrimaryTurnEnd(
 		messages: AgentMessage[],
@@ -587,6 +619,7 @@ export class SessionAdvisors {
 		if (terminalBoundary) this.#terminalUnwindActive = true;
 		try {
 			this.#advisorPrimaryTurnsCompleted++;
+			const sharedSignals = this.#classifyPrimaryTurn(messages, willContinue, signal);
 			for (const advisor of this.#advisors) {
 				if (advisor.runtime.disposed) continue;
 				// Only the terminal primary boundary owns the deferred flush. Continuing
@@ -594,11 +627,15 @@ export class SessionAdvisors {
 				// resets the per-update budget — no new advisor update starts here.
 				if (willContinue !== true) advisor.adviseTool.flushDeferredNotes();
 				try {
-					advisor.runtime.onTurnEnd(messages, { willContinue });
+					advisor.runtime.onTurnEnd(
+						messages,
+						sharedSignals ? { willContinue, signals: sharedSignals } : { willContinue },
+					);
 				} catch (error) {
 					logger.warn("advisor onTurnEnd threw; delta dropped", { advisor: advisor.name, err: String(error) });
 				}
 			}
+			if (sharedSignals) await sharedSignals;
 			const syncBacklog = this.#host.settings.get("advisor.syncBacklog");
 			if (this.#advisors.length === 0 || syncBacklog === "off") return;
 			const threshold = Number.parseInt(syncBacklog, 10);

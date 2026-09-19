@@ -97,6 +97,27 @@ export interface HistoryFormatOptions {
 	watchedRoleState?: { lastLabel: string | undefined };
 }
 
+/** Bounded recent conversation shared by prompt and in-flight difficulty routing. */
+export function formatRoutingHistory(messages: AgentMessage[], end = messages.length): string {
+	const recent: AgentMessage[] = [];
+	for (let index = end - 1; index >= 0 && recent.length < 8; index--) {
+		const message = messages[index];
+		if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") {
+			recent.push(message);
+		}
+	}
+	return truncateMiddle(
+		formatSessionHistoryMarkdown(recent.reverse(), {
+			includeThinking: true,
+			watchedRoles: true,
+			errorResultLines: 8,
+			expandToolIO: true,
+			renderThinking: text => truncateMiddle(text, { maxBytes: 2000 }).content,
+		}),
+		{ maxBytes: 16000, maxLines: 240 },
+	).content;
+}
+
 /** Max length of the primary-arg summary inside `→ tool(...)` lines. */
 const PRIMARY_ARG_MAX = 120;
 /** Per-tool budget for expanded advisor input/output. */

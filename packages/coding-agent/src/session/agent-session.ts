@@ -439,6 +439,7 @@ import {
 	type SessionMaintenanceHost,
 	stripUserCompactIntent,
 } from "./session-maintenance";
+import { formatRoutingHistory } from "./session-history-format";
 import { cleanupEmptyMoveSession, copySessionArtifacts, type SessionManager } from "./session-manager";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
@@ -2238,7 +2239,13 @@ export class AgentSession {
 			goalModeEnabled: () => this.#goalModeState?.enabled === true,
 			classifyPrompt: (request, signal) =>
 				this.#turnSignals
-					? this.#turnSignals.classifyPrompt(request, undefined, signal)
+					? this.#turnSignals.classifyPrompt(
+							request,
+							[this.#maintenance.buildTopicDigest(), formatRoutingHistory(this.agent.state.messages)]
+								.filter(Boolean)
+								.join("\n\n"),
+							signal,
+						)
 					: Promise.resolve(undefined),
 		};
 		this.#duoOrchestrator = new SessionDuoOrchestrator(duoHost, restoredDuoSnapshot);
@@ -7442,6 +7449,11 @@ export class AgentSession {
 			return true;
 		}
 
+		// Difficulty routing must land before the turn starts (a switch during the
+		// stream is deferred to the next turn, which would miss this request).
+		if (options?.userInitiated ?? !options?.synthetic) {
+			await this.#duoOrchestrator.routeUserPrompt(expandedText);
+		}
 		// Skip eager preludes when the user has already queued a directive
 		const hasPendingUserDirective = this.#toolChoiceQueue.inspect().includes("user-force");
 		const activeModel = this.agent.state.model;
@@ -7458,11 +7470,6 @@ export class AgentSession {
 		const eagerTaskPrelude =
 			!options?.synthetic && !hasPendingUserDirective ? this.#todo.createEagerTaskPrelude(expandedText) : undefined;
 		const videoAttachmentNotices = this.#createVideoAttachmentNotices(options?.images, submittedAt);
-		// Difficulty routing must land before the turn starts (a switch during the
-		// stream is deferred to the next turn, which would miss this request).
-		if (options?.userInitiated ?? !options?.synthetic) {
-			await this.#duoOrchestrator.routeUserPrompt(expandedText);
-		}
 		const normalizedImages = await this.#normalizeImagesForModel(options?.images);
 
 		// Guard hoisted to the callsite: awaiting the builder for mention-free text

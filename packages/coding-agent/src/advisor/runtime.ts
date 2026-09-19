@@ -604,7 +604,10 @@ export class AdvisorRuntime {
 	 * queues it for the advisor model. `willContinue` marks a tool-in-progress
 	 * update so the advisor does not critique partial work as terminal output.
 	 */
-	onTurnEnd(messages?: AgentMessage[], opts?: { willContinue?: boolean }): void {
+	onTurnEnd(
+		messages?: AgentMessage[],
+		opts?: { willContinue?: boolean; signals?: Promise<TurnSignals | undefined> },
+	): void {
 		if (this.disposed || this.#quotaExhausted || this.#halted) return;
 		const all = messages ?? this.host.snapshotMessages();
 		this.#latestMessages = all;
@@ -615,22 +618,28 @@ export class AdvisorRuntime {
 		try {
 			const pending = this.#renderPendingDelta(all, 1, wip);
 			if (!pending) return;
-			// Start the classification now (never awaited here: the primary turn
-			// must not block on the classifier) so the drain loop can decide
-			// without a second round trip. `pending.text` is already obfuscated.
-			const turnSignals = this.host.turnSignals;
-			if (turnSignals) {
-				const duoPhase = this.host.duoWorkPhase?.();
-				pending.signals = turnSignals
-					.classifyTurn(pending.text, duoPhase ? { wip, duoPhase } : { wip })
-					.then(signals => {
-						if (signals) this.host.onTurnSignals?.(signals);
-						return signals;
-					})
-					.catch(err => {
-						logger.debug("turn signal classification failed", { err: String(err) });
-						return undefined;
-					});
+			// A shared classification belongs to the primary tool-loop step. The
+			// session starts it before delivering deltas so every advisor shares the
+			// same result and callback.
+			if (opts?.signals !== undefined) {
+				pending.signals = opts.signals;
+			} else {
+				// Standalone runtimes retain their direct classification behavior.
+				// `pending.text` is already obfuscated.
+				const turnSignals = this.host.turnSignals;
+				if (turnSignals) {
+					const duoPhase = this.host.duoWorkPhase?.();
+					pending.signals = turnSignals
+						.classifyTurn(pending.text, duoPhase ? { wip, duoPhase } : { wip })
+						.then(signals => {
+							if (signals) this.host.onTurnSignals?.(signals);
+							return signals;
+						})
+						.catch(err => {
+							logger.debug("turn signal classification failed", { err: String(err) });
+							return undefined;
+						});
+				}
 			}
 			this.#pending.push(pending);
 			this.#backlog++;
