@@ -1687,6 +1687,16 @@
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
 
+## [1.10.4] - 2026-09-20
+
+### Changed
+
+- The `duo.extendedContext` setting description now spells out that leaving the window unset also raises a smaller explicit context-window override, not just the standard-pricing cap.
+
+### Fixed
+
+- Duo-routed models parked exactly on their premium long-context threshold (for example `openai/gpt-6-astra` capped at 272K) get their full catalog window back — 1.05M — so `duo.extendedContext` no longer hands the model a standard-pricing window and forces an immediate compaction.
+
 ## [1.10.3] - 2026-09-19
 
 ### Changed
