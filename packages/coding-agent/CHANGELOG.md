@@ -2,19 +2,6 @@
 
 ## [Unreleased]
 
-## [1.10.3] - 2026-09-19
-
-### Changed
-
-- Duo now adjusts reasoning effort on the current model from a single confident Jev judgment, taking effect on the next request even mid-turn — so finishing steps such as running known tests, committing, or opening a PR/MR after a hard implementation run at medium effort. Switching to a different model still waits for two agreeing judgments.
-- Duo routing now skips a model whose account has no quota headroom left (5-hour or weekly usage window spent, live usage-limit block) instead of routing onto it and failing with a multi-hour `retry-after`, and the top rung's fallback chain now continues down the ladder so a usage-limited planner model has somewhere to fall.
-- Duo-routed models keep their full context window (`duo.extendedContext`, on by default): switching to GPT-6 Astra mid-task gets its 1.05M window instead of the 272K standard-pricing cap, so the switch no longer forces an immediate compaction. Requests above the standard threshold bill at the provider's long-context rate, and leaving duo puts the registry's standard window back on the stream.
-
-### Fixed
-
-- Duo no longer keeps a planner-grade model on the main stream for exploration: reading, grepping, and globbing code with no edit landing routes to the executor rung whatever the task's difficulty or risk, so a risky or extreme task stops paying Fable/Astra prices to read the repository.
-- `duo_handoff`, `duo_escalate`, and `duo_change_phase` are now registered in every session instead of only when a duo controller happened to be live at tool-registry build time, which left an activated duo session with no handoff tool.
-
 ## [18.2.3] - 2026-09-17
 
 ### Breaking Changes
@@ -1699,6 +1686,19 @@
 - `/retry` and `/handoff` now work over ACP, so editor clients (Zed) list them and can run them instead of sending the text to the model.
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
+
+## [1.10.3] - 2026-09-19
+
+### Changed
+
+- Duo now adjusts reasoning effort on the current model from a single confident Jev judgment, taking effect on the next request even mid-turn — so finishing steps such as running known tests, committing, or opening a PR/MR after a hard implementation run at medium effort. Switching to a different model still waits for two agreeing judgments.
+- Duo routing now skips a model whose account has no quota headroom left (5-hour or weekly usage window spent, live usage-limit block) instead of routing onto it and failing with a multi-hour `retry-after`, and the top rung's fallback chain now continues down the ladder so a usage-limited planner model has somewhere to fall.
+- Duo-routed models keep their full context window (`duo.extendedContext`, on by default): switching to GPT-6 Astra mid-task gets its 1.05M window instead of the 272K standard-pricing cap, so the switch no longer forces an immediate compaction. Requests above the standard threshold bill at the provider's long-context rate, and leaving duo puts the registry's standard window back on the stream.
+
+### Fixed
+
+- Duo no longer keeps a planner-grade model on the main stream for exploration: reading, grepping, and globbing code with no edit landing routes to the executor rung whatever the task's difficulty or risk, so a risky or extreme task stops paying Fable/Astra prices to read the repository.
+- `duo_handoff`, `duo_escalate`, and `duo_change_phase` are now registered in every session instead of only when a duo controller happened to be live at tool-registry build time, which left an activated duo session with no handoff tool.
 
 ## [1.10.2] - 2026-09-19
 
