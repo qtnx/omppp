@@ -32,6 +32,13 @@ export interface DeferredUnloadSessionState {
 	 * while the model that just answered keeps a live prefix.
 	 */
 	lastResponseByModel: Map<string, ModelResponseRecord>;
+	/**
+	 * Message counts of the last two provider requests, oldest first. The delta
+	 * `[counts[0], counts[1])` is exactly the slice the model read once in the
+	 * immediately previous request — the only records a warm-cache shed can drop
+	 * without paying for a prefix the provider already cached.
+	 */
+	requestMessageCounts: number[];
 }
 
 /** What one completed turn proved about its model's prompt cache. */
@@ -95,7 +102,7 @@ export function decideDeferredUnloads(input: DeferredUnloadDecisionInput): Defer
  * before that write is free. Only tool-output-like kinds qualify; skills and
  * file mentions carry instructions the model did not ask to drop.
  */
-const AUTO_SHAKE_KINDS: Record<string, true> = {
+export const AUTO_SHAKE_KINDS: Record<string, true> = {
 	tool_result: true,
 	file_read: true,
 	bash_execution: true,
@@ -192,6 +199,51 @@ export function livePrefixTokens(state: DeferredUnloadSessionState, now: number,
 	const record = state.lastResponseByModel.get(modelKey);
 	if (record === undefined || now - record.at >= PROMPT_CACHE_TTL_MS) return 0;
 	return record.prefixTokens;
+}
+
+/** Remember this request's message count, keeping only the two most recent. */
+export function recordRequestMessageCount(state: DeferredUnloadSessionState, count: number): void {
+	if (!Number.isFinite(count) || count < 0) return;
+	state.requestMessageCounts.push(Math.trunc(count));
+	if (state.requestMessageCounts.length > 2)
+		state.requestMessageCounts.splice(0, state.requestMessageCounts.length - 2);
+}
+
+/**
+ * Records first sent in the immediately previous request — the slice the model
+ * has read exactly once. Everything before it sits in a prefix the provider
+ * already cached (dropping it would pay for that prefix again), and everything
+ * after it the model has not seen at all.
+ *
+ * `undefined` until two requests have been observed, or when the previous
+ * request added nothing.
+ */
+export function hotTrimWindow(state: DeferredUnloadSessionState): { start: number; end: number } | undefined {
+	if (state.requestMessageCounts.length < 2) return undefined;
+	const start = state.requestMessageCounts[0] ?? 0;
+	const end = state.requestMessageCounts[1] ?? 0;
+	return end > start ? { start, end } : undefined;
+}
+
+/**
+ * Whether shedding on a warm cache pays back on the very next request.
+ *
+ * Rewriting `suffixTokens` costs the difference between the rewrite price and
+ * the read price it gives up — `max(cacheWrite, input) − cacheRead`, because a
+ * provider that charges nothing for a cache write (OpenAI, DeepSeek) still
+ * re-bills those tokens at the full input price. The gain is the shed tokens
+ * times what a cache read of them would have cost, charged on every later
+ * request; requiring `S · rewrite ≤ T · read` makes the shed pay for itself in
+ * one request rather than betting on session length.
+ */
+export function hotTrimPaysOff(input: {
+	shedTokens: number;
+	suffixTokens: number;
+	cacheReadPrice: number;
+	rewritePrice: number;
+}): boolean {
+	if (input.cacheReadPrice <= 0 || input.shedTokens <= 0) return false;
+	return input.suffixTokens * Math.max(0, input.rewritePrice) <= input.shedTokens * input.cacheReadPrice;
 }
 
 /**

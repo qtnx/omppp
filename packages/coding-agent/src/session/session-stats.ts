@@ -136,6 +136,10 @@ export class SessionStatsTracker {
 		let totalCacheWrite = 0;
 		let totalTokens = 0;
 		let totalCost = 0;
+		let costInput = 0;
+		let costOutput = 0;
+		let costCacheRead = 0;
+		let costCacheWrite = 0;
 		let totalPremiumRequests = 0;
 		let creditCost = 0;
 		let committedCreditCost = 0;
@@ -151,6 +155,10 @@ export class SessionStatsTracker {
 			totalTokens += usage.totalTokens;
 			totalPremiumRequests += usage.premiumRequests ?? 0;
 			totalCost += usage.cost.total;
+			costInput += usage.cost.input;
+			costOutput += usage.cost.output;
+			costCacheRead += usage.cost.cacheRead;
+			costCacheWrite += usage.cost.cacheWrite;
 			const credits = usage.credits;
 			if (credits !== undefined) {
 				hasCredits = true;
@@ -195,6 +203,7 @@ export class SessionStatsTracker {
 				total: totalTokens,
 			},
 			cost: totalCost,
+			costBreakdown: { input: costInput, output: costOutput, cacheRead: costCacheRead, cacheWrite: costCacheWrite },
 			premiumRequests: totalPremiumRequests,
 			...(hasCredits
 				? {

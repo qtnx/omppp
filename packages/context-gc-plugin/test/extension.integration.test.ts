@@ -75,7 +75,7 @@ interface FakeContextUsage {
 interface FakeContext {
 	cwd: string;
 	getContextUsage(): FakeContextUsage | undefined;
-	model?: { provider: string; id: string; cost: { cacheWrite: number } };
+	model?: { provider: string; id: string; cost: { cacheWrite: number; cacheRead?: number; input?: number } };
 	classifyContextTrim?: (input: {
 		upcomingRequest: string;
 		sessionDigest: string;
@@ -557,6 +557,157 @@ describe("contextGcExtension", () => {
 		expect(unloads[0]?.reason).toBe("auto-trim: prompt cache cold");
 		expect((shed?.messages?.[15] as { content?: string } | undefined)?.content).toBe("filler 14");
 		shutdown(fakePi);
+	});
+
+	describe("hot-cache tail trim", () => {
+		// Anthropic-shaped per-token prices: input 3, cache read 0.3, cache write 3.75 (per M).
+		const model = {
+			provider: "anthropic",
+			id: "claude-opus-5",
+			cost: { input: 3 / 1_000_000, cacheRead: 0.3 / 1_000_000, cacheWrite: 3.75 / 1_000_000 },
+		};
+		const usage = { tokens: 400_000, contextWindow: 1_000_000, percent: 40 };
+		const filler = (index: number) => ({ role: "user", content: `filler ${index}`, timestamp: index + 2 });
+		const consumed = {
+			role: "pythonExecution",
+			entryId: "python-consumed-entry",
+			code: "print('consumed')",
+			output: "consumed output\n".repeat(3_000),
+			exitCode: 0,
+			timestamp: 1,
+		};
+		// Twice the consumed record: pricing this never-cached tail would refuse every trim.
+		const freshBig = {
+			role: "bashExecution",
+			entryId: "bash-fresh-entry",
+			command: "rg fresh",
+			output: "fresh output\n".repeat(6_000),
+			exitCode: 0,
+			timestamp: 20,
+		};
+
+		const judged = (keep: Record<string, number>): FakeContext => ({
+			...createFakeContext(usage),
+			model,
+			classifyContextTrim: async input => ({
+				keep: Object.fromEntries(input.candidates.map(candidate => [candidate.id, keep[candidate.id] ?? 0.5])),
+				action: "shake",
+				actionConfidence: 0.9,
+				handoffSufficient: 0.9,
+			}),
+		});
+
+		/** Three requests: 10 fillers; + the consumed record and two fillers; + a big fresh tail. */
+		function buildRequests(consumedIndex: 2 | 10): { first: unknown[]; second: unknown[]; third: unknown[] } {
+			const fillers = Array.from({ length: 10 }, (_, index) => filler(index));
+			const first = consumedIndex === 2 ? [...fillers.slice(0, 2), consumed, ...fillers.slice(2)] : fillers;
+			const second =
+				consumedIndex === 2
+					? [...first, filler(10), filler(11), filler(12)]
+					: [...first, consumed, filler(10), filler(11)];
+			const third = [...second, filler(13), freshBig, filler(15)];
+			return { first, second, third };
+		}
+
+		async function runThreeRequests(
+			fakePi: FakePi,
+			requests: { first: unknown[]; second: unknown[]; third: unknown[] },
+			keepForConsumed: number,
+			warmth: "turn_end" | "message_end" = "turn_end",
+		): Promise<{ third: { messages: unknown[] } | undefined; recordId: string | undefined }> {
+			const contextHandler = getHandler<ContextHandler>(fakePi, "context");
+			const warmHandler = getHandler<(event: unknown, ctx: FakeContext) => void>(fakePi, warmth);
+			if (!contextHandler || !warmHandler) throw new Error("handlers missing");
+			// One model reply marks this model's prompt cache warm for every request below.
+			warmHandler(
+				warmth === "turn_end"
+					? { type: "turn_end" }
+					: { type: "message_end", message: { role: "assistant", usage: { cacheRead: 90_000, cacheWrite: 0 } } },
+				judged({}),
+			);
+			await contextHandler({ type: "context", messages: requests.first }, judged({}));
+			await contextHandler({ type: "context", messages: requests.second }, judged({}));
+			const inspect = openContextGcStore({ dbPath: getContextGcDbPath(tempDir) });
+			const recordId = inspect
+				.listRecords({ sessionId: "session-a", includePinned: true })
+				.find(record => record.kind === "python_execution")?.id;
+			const third = await contextHandler(
+				{ type: "context", messages: requests.third },
+				judged(recordId ? { [recordId]: keepForConsumed } : {}),
+			);
+			return { third, recordId };
+		}
+
+		it("sheds a consumed record from the previous request's slice while the cache is warm", async () => {
+			const fakePi = createFakePi();
+			createContextGcExtension({ dbPath: getContextGcDbPath(tempDir), now: () => 1_000_000 })(
+				fakePi as unknown as ExtensionAPI,
+			);
+			const { third, recordId } = await runThreeRequests(fakePi, buildRequests(10), 0.02);
+			expect(recordId).toBeDefined();
+
+			const projected = third?.messages?.[10] as { customType?: string } | undefined;
+			expect(projected?.customType).toBe("context-gc-projected");
+			const unloads = unloadDeltas(fakePi);
+			expect(unloads).toHaveLength(1);
+			expect(unloads[0]?.reason).toBe("auto-trim: consumed tool result");
+			// The fresh tail is written to cache either way, so its size never blocks the shed.
+			expect((third?.messages?.[14] as { role?: string } | undefined)?.role).toBe("bashExecution");
+			expect((third?.messages?.[15] as { content?: string } | undefined)?.content).toBe("filler 15");
+			shutdown(fakePi);
+		});
+
+		it("keeps a consumed record the judgment still needs", async () => {
+			const fakePi = createFakePi();
+			createContextGcExtension({ dbPath: getContextGcDbPath(tempDir), now: () => 1_000_000 })(
+				fakePi as unknown as ExtensionAPI,
+			);
+			const { third } = await runThreeRequests(fakePi, buildRequests(10), 0.9);
+			expect((third?.messages?.[10] as { role?: string } | undefined)?.role).toBe("pythonExecution");
+			expect(unloadDeltas(fakePi)).toHaveLength(0);
+			shutdown(fakePi);
+		});
+
+		it("leaves a record older than the previous request alone while the cache is warm", async () => {
+			const fakePi = createFakePi();
+			createContextGcExtension({ dbPath: getContextGcDbPath(tempDir), now: () => 1_000_000 })(
+				fakePi as unknown as ExtensionAPI,
+			);
+			// The record sits in a prefix the provider already cached; only the cold path may drop it.
+			const { third } = await runThreeRequests(fakePi, buildRequests(2), 0.02);
+			expect((third?.messages?.[2] as { role?: string } | undefined)?.role).toBe("pythonExecution");
+			expect(unloadDeltas(fakePi)).toHaveLength(0);
+			shutdown(fakePi);
+		});
+
+		it("sheds mid-turn from a per-message cache-warmth signal, before the turn ends", async () => {
+			const fakePi = createFakePi();
+			createContextGcExtension({ dbPath: getContextGcDbPath(tempDir), now: () => 1_000_000 })(
+				fakePi as unknown as ExtensionAPI,
+			);
+			// Real agent loops answer many requests inside one turn: warmth must come
+			// from the model's own replies, not only from the turn boundary.
+			const { third, recordId } = await runThreeRequests(fakePi, buildRequests(10), 0.02, "message_end");
+			expect(recordId).toBeDefined();
+			expect((third?.messages?.[10] as { customType?: string } | undefined)?.customType).toBe(
+				"context-gc-projected",
+			);
+			expect(unloadDeltas(fakePi).map(delta => delta.reason)).toEqual(["auto-trim: consumed tool result"]);
+			shutdown(fakePi);
+		});
+
+		it("stays off when hotTrimOnWarmCache is disabled", async () => {
+			const fakePi = createFakePi();
+			createContextGcExtension({
+				dbPath: getContextGcDbPath(tempDir),
+				now: () => 1_000_000,
+				hotTrimOnWarmCache: false,
+			})(fakePi as unknown as ExtensionAPI);
+			const { third } = await runThreeRequests(fakePi, buildRequests(10), 0.02);
+			expect((third?.messages?.[10] as { role?: string } | undefined)?.role).toBe("pythonExecution");
+			expect(unloadDeltas(fakePi)).toHaveLength(0);
+			shutdown(fakePi);
+		});
 	});
 
 	it("does not inventory Context GC inspection tool results as unload candidates", async () => {

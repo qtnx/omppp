@@ -19,10 +19,14 @@ import {
 import contextGcSystemPrompt from "./context-gc-system-prompt.md" with { type: "text" };
 import { isContextGcInspectionTool, projectUnloadedContext } from "./context-transform";
 import {
+	AUTO_SHAKE_KINDS,
 	type DeferredUnloadSessionState,
 	type TrimCandidate,
 	decideDeferredUnloads,
+	hotTrimPaysOff,
+	hotTrimWindow,
 	isCacheCold,
+	recordRequestMessageCount,
 	selectAutoShakeRecords,
 	selectTrimByJudgment,
 	trimPaysOff,
@@ -77,6 +81,12 @@ export interface ContextGcExtensionOptions {
 	 * unavoidable cache rewrite starts from a smaller prompt. Default on; `OMP_CONTEXT_GC_AUTO_SHAKE=0` disables.
 	 */
 	autoShakeOnColdCache?: boolean;
+	/**
+	 * Shed consumed tool output from the slice the previous request introduced even while the
+	 * prompt cache is warm: dropping it re-bills only the rest of that slice, never the older
+	 * prefix the provider already cached. Default on; `OMP_CONTEXT_GC_HOT_TRIM=0` disables.
+	 */
+	hotTrimOnWarmCache?: boolean;
 	/** Clock for prompt-cache idle detection; tests inject a controllable one. */
 	now?: () => number;
 }
@@ -254,6 +264,137 @@ function buildTrimCandidates(
 		.filter(candidate => candidate.tokens > 0)
 		.sort((a, b) => b.tokens - a.tokens)
 		.slice(0, TRIM_MAX_CANDIDATES);
+}
+
+/**
+ * Records to shed on a WARM cache: the slice the previous request introduced.
+ *
+ * Shedding there re-bills only the rest of that slice (the tail produced since
+ * is written to cache either way), so this path may run while the provider
+ * still holds a live prefix — unlike the cold-cache trim, which rewrites a
+ * prefix the provider already paid to cache. Position alone cannot
+ * tell whether the model is done with a result, so only the jev judgment picks;
+ * without a classifier the hot path stays off (the kind-based heuristic keeps
+ * the tail by design).
+ */
+async function selectHotTrimRecords(input: {
+	analysis: ActiveContextAnalysis;
+	messages: readonly AgentMessage[];
+	ctx: ExtensionContext;
+	window: { start: number; end: number };
+	onSkip?: (
+		why: "no-classifier" | "no-candidates" | "no-judgment" | "judgment-keeps",
+		detail?: Record<string, number>,
+	) => void;
+}): Promise<ContextRecord[]> {
+	const { analysis, messages, ctx, window, onSkip } = input;
+	if (!ctx.classifyContextTrim) {
+		onSkip?.("no-classifier");
+		return [];
+	}
+	const candidates = [...analysis.matches.values()]
+		.filter(
+			match =>
+				match.record.status === "candidate" &&
+				AUTO_SHAKE_KINDS[match.record.kind] === true &&
+				match.messageIndex >= window.start &&
+				match.messageIndex < window.end &&
+				match.estimate.netTokens > 0,
+		)
+		.map(match => ({
+			record: match.record,
+			id: match.record.id,
+			kind: match.record.kind,
+			ageTurns: turnsAfterIndex(messages, match.messageIndex),
+			tokens: match.estimate.netTokens,
+			summary: match.record.summary,
+			messageIndex: match.messageIndex,
+		}))
+		.sort((a, b) => b.tokens - a.tokens)
+		.slice(0, TRIM_MAX_CANDIDATES);
+	if (candidates.length === 0) {
+		onSkip?.("no-candidates");
+		return [];
+	}
+	const contextTokens = ctx.getContextUsage()?.tokens ?? null;
+	const judgment = await ctx.classifyContextTrim({
+		upcomingRequest: latestRequestText(messages),
+		sessionDigest: sessionDigest(ctx, messages),
+		contextTokens,
+		candidates: candidates.map(candidate => ({
+			id: candidate.id,
+			kind: candidate.kind,
+			ageTurns: candidate.ageTurns,
+			tokens: candidate.tokens,
+			summary: candidate.summary.slice(0, TRIM_SUMMARY_CHARS),
+		})),
+	});
+	if (!judgment) {
+		onSkip?.("no-judgment", { candidates: candidates.length });
+		return [];
+	}
+	const shed = selectTrimByJudgment(candidates, judgment, TRIM_KEEP_THRESHOLD);
+	if (shed.length === 0) {
+		onSkip?.("judgment-keeps", { candidates: candidates.length });
+		return [];
+	}
+	const shedTokens = shed.reduce((sum, candidate) => sum + candidate.tokens, 0);
+	const shedIndexes = new Set(shed.map(candidate => candidate.messageIndex));
+	const suffixTokens = estimateSuffixTokens(analysis, messages, Math.min(...shedIndexes), window.end, shedIndexes);
+	const cacheReadPrice = ctx.model?.cost.cacheRead ?? 0;
+	const rewritePrice = Math.max(ctx.model?.cost.cacheWrite ?? 0, ctx.model?.cost.input ?? 0) - cacheReadPrice;
+	const pays = hotTrimPaysOff({ shedTokens, suffixTokens, cacheReadPrice, rewritePrice });
+	logger.debug("Context GC: hot trim judgment", {
+		candidates: candidates.length,
+		shed: shed.length,
+		shedTokens,
+		suffixTokens,
+		pays,
+	});
+	return pays ? shed.map(candidate => candidate.record) : [];
+}
+
+/** Conversational turns between `index` and the tail. */
+function turnsAfterIndex(messages: readonly AgentMessage[], index: number): number {
+	let turns = 0;
+	for (let i = index + 1; i < messages.length; i++) {
+		if (messages[i]?.role === "user") turns += 1;
+	}
+	return turns;
+}
+
+/**
+ * Tokens the provider would pay to rewrite because of the shed records: the
+ * non-shed messages from the cut to the END OF THE PREVIOUS REQUEST.
+ *
+ * Everything past `endIndex` (the assistant step and tool results produced
+ * since) is written to cache on this request whether or not anything was shed,
+ * so pricing it here would refuse every real trim — a fresh tool result is
+ * usually as large as the one being dropped. Known records keep their measured
+ * size, shed ones collapse to a placeholder (counted as free), and plain
+ * messages fall back to the shared text estimate.
+ */
+function estimateSuffixTokens(
+	analysis: ActiveContextAnalysis,
+	messages: readonly AgentMessage[],
+	startIndex: number,
+	endIndex: number,
+	shedIndexes: ReadonlySet<number>,
+): number {
+	const known = new Map<number, number>();
+	for (const match of analysis.matches.values()) known.set(match.messageIndex, match.estimate.potentialTokens);
+	let total = 0;
+	for (let index = startIndex; index < Math.min(endIndex, messages.length); index++) {
+		if (shedIndexes.has(index)) continue;
+		const measured = known.get(index);
+		if (measured !== undefined) {
+			total += measured;
+			continue;
+		}
+		const message = messages[index];
+		if (message) total += estimateTokens(extractMessagePayload(message).text);
+	}
+	return total;
 }
 
 /** The latest duo handoff brief, else the last user request — what work comes next. */
@@ -669,10 +810,11 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 	const deferredUnloads = new Map<string, DeferredUnloadSessionState>();
 	const now = options.now ?? Date.now;
 	const autoShake = options.autoShakeOnColdCache ?? process.env.OMP_CONTEXT_GC_AUTO_SHAKE !== "0";
+	const hotTrim = options.hotTrimOnWarmCache ?? process.env.OMP_CONTEXT_GC_HOT_TRIM !== "0";
 	const deferredUnloadState = (sessionId: string): DeferredUnloadSessionState => {
 		let state = deferredUnloads.get(sessionId);
 		if (!state) {
-			state = { applied: new Set(), lastResponseByModel: new Map() };
+			state = { applied: new Set(), lastResponseByModel: new Map(), requestMessageCounts: [] };
 			deferredUnloads.set(sessionId, state);
 		}
 		return state;
@@ -754,6 +896,60 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 				analysis = analyzeActiveContext(event.messages, records);
 			}
 		}
+		// Hot-cache trim: the previous request introduced a slice the model has now
+		// read exactly once, and that slice sits after every anchor the provider
+		// cached — dropping a consumed record from it costs only the rest of that
+		// slice, not the live prefix. Cold-cache trim above owns the opposite case.
+		if (hotTrim && !isCacheCold(deferred, now(), modelKey)) {
+			const window = hotTrimWindow(deferred);
+			if (window) {
+				const shed = await selectHotTrimRecords({
+					analysis,
+					messages: event.messages,
+					ctx,
+					window,
+					// One line per skipped request: without it a production run that never
+					// trims is indistinguishable from a run with nothing to trim.
+					onSkip: (why, detail) =>
+						logger.debug("Context GC: hot trim skipped", { model: modelKey, why, window, ...detail }),
+				});
+				if (shed.length > 0) {
+					const reason = "auto-trim: consumed tool result";
+					const result = await runContextUnload(
+						store,
+						currentState.sessionId,
+						{ ids: shed.map(record => record.id), summary: "", reason },
+						deriveBranchStatuses(currentState.deltas.filter(delta => delta.sessionId === currentState.sessionId)),
+					);
+					const projected: string[] = [];
+					for (const record of shed) {
+						if (!result.unloaded.includes(record.id)) continue;
+						pi.appendEntry(CONTEXT_GC_CUSTOM_TYPE, buildContextGcDelta(record, "unload", reason, record.summary));
+						projected.push(record.id);
+					}
+					if (projected.length > 0) {
+						// Project on THIS request: leaving it to the lazy path would keep the
+						// record in the very prompt the trim was priced to shrink.
+						for (const id of projected) deferred.applied.add(id);
+						logger.debug("Context GC: hot trim applied", {
+							model: modelKey,
+							records: projected.length,
+							window,
+						});
+						currentState = readContextGcSessionState(ctx);
+						records = branchRecords(store, currentState);
+						analysis = analyzeActiveContext(event.messages, records);
+					}
+				}
+			} else {
+				logger.debug("Context GC: hot trim skipped", {
+					model: modelKey,
+					why: "no-window",
+					requestMessageCounts: deferred.requestMessageCounts,
+					messagesLength: event.messages.length,
+				});
+			}
+		}
 		activeSnapshots.set(currentState.sessionId, createActiveSnapshot(currentState, analysis));
 		// Unloads are honored lazily: rewriting an early message re-writes the provider
 		// prompt cache for everything after it, so pending unloads wait until the cache is
@@ -775,13 +971,23 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 				applied: decision.newlyApplied.length,
 			});
 		}
+		// The count is the request as built, before projection (which is 1:1), so the
+		// next call can tell which records this one introduced.
+		recordRequestMessageCount(deferred, event.messages.length);
 		return { messages: projectUnloadedContext(event.messages, records, analysis, decision.projectIds) };
 	});
 
-	pi.on("turn_end", (event, ctx) => {
+	// Warmth is a per-REQUEST fact: every assistant message the provider returned
+	// left a cached prefix behind. Keying it on `turn_end` alone reads cold for
+	// the whole first tool loop of a session (the eval: 14 requests, zero hot
+	// trims), so the hot path — which only exists for mid-turn work — never ran.
+	const recordModelResponse = (message: unknown, ctx: ExtensionContext): void => {
+		// Only a model reply proves a cached prefix; a turn that ended on a user or
+		// tool message says nothing about warmth.
+		if (message && typeof message === "object" && "role" in message && message.role !== "assistant") return;
 		const state = deferredUnloadState(readContextGcSessionState(ctx).sessionId);
 		const model = ctx.model;
-		const { cacheRead, cacheWrite } = readCacheUsage(event.message);
+		const { cacheRead, cacheWrite } = readCacheUsage(message);
 		const modelKey = modelKeyOf(model);
 		const wasCold = isCacheCold(state, now(), modelKey);
 		state.lastResponseByModel.set(modelKey, {
@@ -789,11 +995,13 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 			prefixTokens: cacheRead + cacheWrite,
 			writePricePerToken: model?.cost.cacheWrite ?? 0,
 		});
-		// The first turn on a cold prefix is the one a trim was meant to shrink.
+		// The first request on a cold prefix is the one a trim was meant to shrink.
 		if (wasCold && cacheWrite > 0) {
 			logger.debug("Context GC: cold-prefix write", { model: modelKey, cacheWrite, cacheRead });
 		}
-	});
+	};
+	pi.on("message_end", (event, ctx) => recordModelResponse(event.message, ctx));
+	pi.on("turn_end", (event, ctx) => recordModelResponse(event.message, ctx));
 
 	pi.on("before_agent_start", (event, ctx) => {
 		const systemPrompt = appendContextGcSystemPrompt(event.systemPrompt);

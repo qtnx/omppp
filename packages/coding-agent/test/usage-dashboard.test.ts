@@ -3,9 +3,11 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import type { DailyActivityPoint } from "@oh-my-pi/omp-stats/shared-types";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import {
+	buildCacheSummary,
 	buildHeatmapLayout,
 	buildProviderCards,
 	formatActivityErrorDetail,
+	renderCacheSummaryLines,
 	UsageDashboardComponent,
 } from "@oh-my-pi/pi-coding-agent/modes/components/usage-dashboard";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -192,9 +194,117 @@ describe("buildProviderCards", () => {
 		]);
 	});
 });
+describe("buildCacheSummary", () => {
+	const tokens = (input: number, cacheRead: number, cacheWrite: number) => ({
+		input,
+		output: 0,
+		reasoning: 0,
+		cacheRead,
+		cacheWrite,
+		total: input + cacheRead + cacheWrite,
+	});
+
+	it("returns undefined when the session billed no prompt tokens", () => {
+		const stats = {
+			tokens: tokens(0, 0, 0),
+			costBreakdown: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		};
+		expect(buildCacheSummary(stats)).toBeUndefined();
+	});
+
+	it("splits the prompt into hit/write/miss and prices the cache saving", () => {
+		const stats = {
+			tokens: tokens(2_000, 90_000, 8_000),
+			costBreakdown: { input: 0.006, output: 0.5, cacheRead: 0.027, cacheWrite: 0.03 },
+		};
+		const summary = buildCacheSummary(stats);
+		expect(summary).toBeDefined();
+		expect(summary?.promptTokens).toBe(100_000);
+		expect(summary?.hitFraction).toBeCloseTo(0.9, 10);
+		expect(summary?.writeFraction).toBeCloseTo(0.08, 10);
+		expect(summary?.missFraction).toBeCloseTo(0.02, 10);
+		expect(summary?.cost).toEqual({ read: 0.027, write: 0.03, uncached: 0.006 });
+		// Hits priced at the session's uncached input rate minus what they cost.
+		expect(summary?.estimatedSavings).toBeCloseTo(90_000 * (0.006 / 2_000 - 0.027 / 90_000), 10);
+	});
+
+	it("omits the saving when there is no uncached input to price it against", () => {
+		// DeepSeek-style: the miss is reported as input, cache writes are never charged.
+		const stats = {
+			tokens: tokens(0, 50_000, 0),
+			costBreakdown: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		};
+		const summary = buildCacheSummary(stats);
+		expect(summary?.writeFraction).toBe(0);
+		expect(summary?.estimatedSavings).toBeUndefined();
+	});
+});
+
+describe("renderCacheSummaryLines", () => {
+	beforeAll(async () => {
+		await initTheme(false);
+	});
+
+	const summary = buildCacheSummary({
+		tokens: { input: 2_000, output: 0, reasoning: 0, cacheRead: 90_000, cacheWrite: 8_000, total: 100_000 },
+		costBreakdown: { input: 0.006, output: 0.5, cacheRead: 0.027, cacheWrite: 0.03 },
+	});
+
+	it("fills the bar to its full width and labels every bucket with its share", () => {
+		const lines = renderCacheSummaryLines(summary!, 80).map(line => Bun.stripANSI(line));
+		const bar = lines[1];
+		// barWidth = min(width - 2, 40); the cells must always total it.
+		expect([...bar].filter(char => "█▓░".includes(char))).toHaveLength(40);
+		expect(bar).toContain("hit 90%");
+		expect(bar).toContain("write 8%");
+		expect(bar).toContain("miss 2%");
+		// 2% of 40 cells is under one cell: apportionment must still show it.
+		expect(bar).toContain("░");
+		expect(lines[0]).toContain("100K prompt tokens");
+		expect(lines[2]).toContain("$0.03 read");
+		expect(lines[2]).toContain("saved ≈$0.24");
+	});
+
+	it("never paints a cell for a bucket at zero percent", () => {
+		// hit + write == 1: rounding must not leak a residual miss cell.
+		const full = buildCacheSummary({
+			tokens: { input: 0, output: 0, reasoning: 0, cacheRead: 55, cacheWrite: 45, total: 100 },
+			costBreakdown: { input: 0, output: 0, cacheRead: 0.01, cacheWrite: 0.02 },
+		});
+		const bar = Bun.stripANSI(renderCacheSummaryLines(full!, 80)[1]);
+		expect(bar).not.toContain("░");
+		expect(bar).toContain("miss 0%");
+	});
+});
+
 describe("UsageDashboardComponent", () => {
 	beforeAll(async () => {
 		await initTheme(false);
+	});
+	it("places the session cache block between the subscriptions grid and the heatmap", async () => {
+		const { promise: rendered, resolve: markRendered } = Promise.withResolvers<void>();
+		const component = new UsageDashboardComponent({
+			reports: [report("anthropic", "user@example.test", [limit("anthropic", "acct", "5h", "Claude", 0.4, "ok")])],
+			cacheSummary: buildCacheSummary({
+				tokens: { input: 2_000, output: 0, reasoning: 0, cacheRead: 90_000, cacheWrite: 8_000, total: 100_000 },
+				costBreakdown: { input: 0.006, output: 0.5, cacheRead: 0.027, cacheWrite: 0.03 },
+			}),
+			renderDetail: () => "",
+			loadActivity: push => {
+				push([day("2026-08-31", 3)]);
+				return Promise.resolve();
+			},
+			requestRender: () => markRendered(),
+			onClose: () => {},
+		});
+
+		await rendered;
+		const lines = component.render(120).map(line => Bun.stripANSI(line));
+		const cacheRow = lines.findIndex(line => line.includes("Cache · this session"));
+		const heatmapRow = lines.findIndex(line => line.includes("Activity"));
+		expect(cacheRow).toBeGreaterThan(0);
+		expect(heatmapRow).toBeGreaterThan(cacheRow);
+		expect(lines[cacheRow + 1]).toContain("hit 90%");
 	});
 	it("renders specific error reason when activity loading fails instead of generic DB read error", async () => {
 		const { promise: rendered, resolve: markRendered } = Promise.withResolvers<void>();
