@@ -1785,7 +1785,7 @@ describe("DuoController difficulty routing", () => {
 		expect(active.host.switches).toEqual([]);
 	});
 
-	test("missing ladder entries do not demote difficult work and repeated effort changes do not churn models", async () => {
+	test("missing ladder entries do not demote difficult work and effort changes never churn the model", async () => {
 		const host = fakeHost({ model: otherModel, planModeOn: false });
 		const controller = new DuoController(host, {
 			...routingConfig,
@@ -1797,6 +1797,7 @@ describe("DuoController difficulty routing", () => {
 		await controller.routeUserPrompt({ difficulty: "hard", difficultyConfidence: 0.9, risk: 0, thinking: "high" });
 		expect(host.switches).toEqual([{ model: strong, thinkingLevel: ThinkingLevel.High }]);
 		host.switches = [];
+		host.thinkingChanges = [];
 		const effort = turnSignals({
 			phase: "implementing",
 			phaseConfidence: 0.9,
@@ -1805,7 +1806,46 @@ describe("DuoController difficulty routing", () => {
 		controller.notifyTurnSignals(effort);
 		controller.notifyTurnSignals(effort);
 		controller.notifyTurnSignals(effort);
-		expect(host.switches).toEqual([{ model: strong, thinkingLevel: ThinkingLevel.XHigh }]);
+		expect(host.switches).toEqual([]);
+		expect(host.thinkingChanges).toEqual([ThinkingLevel.XHigh]);
+		expect(host.model).toEqual(strong);
+	});
+
+	test("one confident judgment adjusts effort on the current model, even mid-stream, while a model change still waits for agreement", async () => {
+		const { host, controller } = await executingController();
+		await controller.routeUserPrompt({ difficulty: "hard", difficultyConfidence: 0.9, risk: 0, thinking: "high" });
+		host.switches = [];
+		host.thinkingChanges = [];
+		host.streaming = true;
+
+		// Same rung (strong), lower effort: applied at once without a model switch.
+		controller.notifyTurnSignals(
+			turnSignals({
+				phase: "implementing",
+				phaseConfidence: 0.9,
+				routing: { difficulty: "hard", difficultyConfidence: 0.9, risk: 0, thinking: "medium" },
+			}),
+		);
+		expect(host.thinkingChanges).toEqual([ThinkingLevel.Medium]);
+		expect(host.switches).toEqual([]);
+		expect(host.notices.at(-1)?.text).toContain("Duo effort");
+
+		// Different rung (cheap): the first judgment changes nothing, the second switches.
+		const easy = turnSignals({
+			phase: "implementing",
+			phaseConfidence: 0.9,
+			routing: { difficulty: "easy", difficultyConfidence: 0.9, risk: 0, thinking: "medium" },
+		});
+		host.streaming = false;
+		controller.notifyTurnSignals(easy);
+		expect(host.switches).toEqual([]);
+		expect(host.thinkingChanges).toEqual([ThinkingLevel.Medium]);
+		const switched = Promise.withResolvers<void>();
+		host.onSwitch = () => switched.resolve();
+		controller.notifyTurnSignals(easy);
+		await switched.promise;
+		expect(host.switches).toEqual([{ model: cheap, thinkingLevel: ThinkingLevel.Medium }]);
+		expect(controller.status.routedTier).toBe("easy");
 	});
 
 	test("uncertain or missing transcript routing does not demote a running hard task", async () => {

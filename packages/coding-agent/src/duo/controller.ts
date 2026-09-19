@@ -355,7 +355,11 @@ export class DuoController {
 		return this.#routeWork(signals, this.#machine.workPhase ?? "preplanning", "request");
 	}
 
-	/** Two agreeing transcript judgments gate changes, including effort-only adjustments. */
+	/**
+	 * Effort on the current model adjusts from one confident judgment: it costs
+	 * nothing and applies to the next request. A model change waits for two
+	 * agreeing judgments.
+	 */
 	#routeTurnSignals(signals: TurnSignals, phase: WorkPhase, minConfidence: number): void {
 		const judged = signals.routing;
 		if (!judged || judged.difficultyConfidence < minConfidence || signals.phaseConfidence < minConfidence) {
@@ -366,16 +370,39 @@ export class DuoController {
 		const key = `${phase}:${judged.difficulty}:${judged.thinking}:${judged.risk >= ROUTING_RISK_MIN}`;
 		this.#routingStreak = this.#routingKey === key ? this.#routingStreak + 1 : 1;
 		this.#routingKey = key;
-		if (this.#routingStreak < 2) return;
+		if (this.#routingStreak < 2) {
+			this.#adaptEffort(judged, phase);
+			return;
+		}
 		this.#routingSignals = judged;
 		void this.#routeWork(judged, phase, "transcript");
 	}
 
-	async #routeWork(
+	#adaptEffort(signals: PromptSignals, phase: WorkPhase): void {
+		const route = this.#selectRoute(signals, phase);
+		if (!route || this.#pendingSwitch !== undefined) return;
+		if (!modelsAreEqual(this.#host.currentModel(), route.chosen.model)) return;
+		if (this.#host.configuredThinkingLevel() === route.thinkingLevel) return;
+		this.#host.setThinkingLevel(route.thinkingLevel);
+		this.#routedTier = route.tier;
+		this.#phaseModelSelector = route.chosen.selector;
+		this.#phaseModelSwitch = { model: route.chosen.model, thinkingLevel: route.thinkingLevel };
+		this.#persistSnapshot();
+		this.#host.emitNotice("info", `Duo effort: ${phase}, ${route.tier} (transcript) → ${route.thinkingLevel}`);
+	}
+
+	#selectRoute(
 		signals: PromptSignals,
 		phase: WorkPhase,
-		source: "request" | "transcript" | "phase",
-	): Promise<DuoRoutingDecision | undefined> {
+	):
+		| {
+				tier: PromptDifficulty;
+				risk: boolean;
+				chosen: DuoPhaseModelCandidate;
+				chain: string[];
+				thinkingLevel: ConfiguredThinkingLevel;
+		  }
+		| undefined {
 		const routing = this.#config.routing;
 		if (!routing || !isDuoPhaseLive(this.#machine.phase) || this.#machine.phase === "takeover") return undefined;
 		const risk = signals.risk >= ROUTING_RISK_MIN;
@@ -400,6 +427,22 @@ export class DuoController {
 			parseConfiguredThinkingLevel(signals.thinking) ??
 			routing.thinking[tier] ??
 			this.#executorThinking();
+		const chain: string[] = [];
+		for (let index = chosenIndex + 1; index < routing.ladder.length; index++) {
+			const candidate = routing.ladder[index];
+			if (candidate && free[index] && candidate.selector !== chosen.selector) chain.push(candidate.selector);
+		}
+		return { tier, risk, chosen, chain, thinkingLevel };
+	}
+
+	async #routeWork(
+		signals: PromptSignals,
+		phase: WorkPhase,
+		source: "request" | "transcript" | "phase",
+	): Promise<DuoRoutingDecision | undefined> {
+		const route = this.#selectRoute(signals, phase);
+		if (!route) return undefined;
+		const { tier, risk, chosen, chain, thinkingLevel } = route;
 		const decision = { tier, risk, selector: chosen.selector, thinkingLevel };
 		if (
 			this.#phaseModelSelector === chosen.selector &&
@@ -408,11 +451,6 @@ export class DuoController {
 		) {
 			this.#routedTier = tier;
 			return decision;
-		}
-		const chain: string[] = [];
-		for (let index = chosenIndex + 1; index < routing.ladder.length; index++) {
-			const candidate = routing.ladder[index];
-			if (candidate && free[index] && candidate.selector !== chosen.selector) chain.push(candidate.selector);
 		}
 		// An empty replacement also clears a chain installed before quota availability changed.
 		this.#host.installFallbackChain?.(chosen.selector, chain);

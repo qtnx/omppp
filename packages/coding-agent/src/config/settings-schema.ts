@@ -830,7 +830,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Routing Thinking",
 			description:
-				'Default thinking levels when no Jev effort choice is available, e.g. {"easy":"medium","moderate":"high","hard":"high","extreme":"xhigh"}. A :thinking suffix on a model overrides Jev.',
+				'Default thinking levels when no Jev effort choice is available, e.g. {"easy":"medium","moderate":"high","hard":"high","extreme":"xhigh"}. A :thinking suffix on a model overrides Jev. Effort on the current model follows one confident judgment and applies to the next request; a model change waits for two agreeing judgments.',
 		},
 	},
 	"duo.phaseSwitch.minConfidence": {

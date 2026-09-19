@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Duo now adjusts reasoning effort on the current model from a single confident Jev judgment, taking effect on the next request even mid-turn — so finishing steps such as running known tests, committing, or opening a PR/MR after a hard implementation run at medium effort. Switching to a different model still waits for two agreeing judgments.
+
 ## [1.10.2] - 2026-09-19
 
 ### Added
