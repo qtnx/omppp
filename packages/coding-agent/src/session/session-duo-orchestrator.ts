@@ -425,6 +425,15 @@ export class SessionDuoOrchestrator {
 				requestAgentContinue: () => this.#host.requestAgentContinue(),
 				duoMode: () => this.#host.settings.get("duo.mode"),
 				isSelectorSuppressed: selector => this.#host.modelRegistry.isSelectorSuppressed(selector),
+				hasUsageHeadroom: model => {
+					try {
+						return this.#host.modelRegistry.authStorage.getUsageHeadroom(model).hasRoom;
+					} catch {
+						// Headroom is advisory: an unreadable usage snapshot must not
+						// strand routing on the lowest rung.
+						return true;
+					}
+				},
 				installFallbackChain: (selector, chain) => {
 					const settings = this.#host.settings;
 					settings.override("retry.fallbackChains", {

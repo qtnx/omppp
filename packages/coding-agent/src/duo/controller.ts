@@ -80,6 +80,13 @@ export interface DuoControllerHost {
 	isSelectorSuppressed?(selector: string): boolean;
 	/** Register the remaining phase candidates as rate-limit fallbacks of the chosen selector. */
 	installFallbackChain?(selector: string, chain: string[]): void;
+	/**
+	 * Whether the model's credential still has quota headroom (5h/weekly usage
+	 * windows, live usage-limit blocks). A spent window must not be routed onto:
+	 * the provider answers 429 with a multi-hour retry-after, which no retry
+	 * budget can absorb.
+	 */
+	hasUsageHeadroom?(model: Model): boolean;
 	/** Phase-switch policy thresholds (`duo.phaseSwitch.minConfidence`, `signals.stuckThreshold`). */
 	phasePolicy?(): DuoPhasePolicy;
 }
@@ -433,7 +440,10 @@ export class DuoController {
 		const rung = discovery ? floor : Math.max(floor, Math.min(tierIndex, routing.ladder.length - 1));
 		const free = routing.ladder.map(
 			(candidate, index) =>
-				index >= floor && candidate !== undefined && !this.#host.isSelectorSuppressed?.(candidate.selector),
+				index >= floor &&
+				candidate !== undefined &&
+				!this.#host.isSelectorSuppressed?.(candidate.selector) &&
+				(this.#host.hasUsageHeadroom?.(candidate.model) ?? true),
 		);
 		let chosenIndex = free.findIndex((ok, index) => ok && index >= rung);
 		if (chosenIndex === -1) chosenIndex = free.lastIndexOf(true, rung);
@@ -446,8 +456,15 @@ export class DuoController {
 					// with the risk-inflated difficulty, and reading code never needs it.
 					(routing.thinking[tier] ?? this.#executorThinking())
 				: (parseConfiguredThinkingLevel(signals.thinking) ?? routing.thinking[tier] ?? this.#executorThinking()));
+		// Stronger rungs first, then weaker ones: the top rung is the one most
+		// likely to hit a multi-hour usage limit, and an upward-only chain would
+		// leave it with nowhere to fall.
 		const chain: string[] = [];
 		for (let index = chosenIndex + 1; index < routing.ladder.length; index++) {
+			const candidate = routing.ladder[index];
+			if (candidate && free[index] && candidate.selector !== chosen.selector) chain.push(candidate.selector);
+		}
+		for (let index = chosenIndex - 1; index >= 0; index--) {
 			const candidate = routing.ladder[index];
 			if (candidate && free[index] && candidate.selector !== chosen.selector) chain.push(candidate.selector);
 		}

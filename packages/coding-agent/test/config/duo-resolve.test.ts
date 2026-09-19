@@ -35,6 +35,20 @@ const fable4 = anthropicModel("claude-fable-4");
 const fable5 = anthropicModel("claude-fable-5");
 const opus47 = anthropicModel("claude-opus-4.7");
 const opus48 = anthropicModel("claude-opus-4.8");
+const opusCapped = buildModel({
+	id: "claude-opus-4.9",
+	name: "Claude Opus 4.9",
+	api: "anthropic-messages",
+	provider: "anthropic",
+	baseUrl: "https://api.anthropic.com",
+	reasoning: true,
+	thinking: { mode: "budget", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.Max] },
+	input: ["text"],
+	cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1 },
+	contextWindow: 272_000,
+	maxContextWindow: 1_050_000,
+	maxTokens: 8192,
+});
 const openaiSol = buildModel({
 	id: "gpt-5.6-sol",
 	name: "GPT 5.6 Sol",
@@ -88,6 +102,22 @@ describe("resolveDuoConfig", () => {
 
 		expect(resolved?.planner.id).toBe("claude-fable-4");
 		expect(resolved?.executor.id).toBe("claude-opus-4.8");
+	});
+
+	test("duo models take their full window so a routing switch does not land in an overflowing context", () => {
+		const extended = resolveDuoConfig(
+			settings({ "duo.executorModel": "anthropic/claude-opus-4.9" }),
+			[fable5, opusCapped],
+			registry,
+		);
+		expect(extended?.executor.contextWindow).toBe(1_050_000);
+
+		const standard = resolveDuoConfig(
+			settings({ "duo.executorModel": "anthropic/claude-opus-4.9", "duo.extendedContext": false }),
+			[fable5, opusCapped],
+			registry,
+		);
+		expect(standard?.executor.contextWindow).toBe(272_000);
 	});
 
 	test(":thinking suffix produces that explicit level", () => {

@@ -81,6 +81,7 @@ interface FakeHost extends DuoControllerHost {
 	revives: number;
 	continueRequests: number;
 	suppressedSelectors: string[];
+	exhaustedModels: Model[];
 	fallbackChains: FallbackChainCall[];
 	onSwitch?: () => void;
 }
@@ -127,6 +128,7 @@ function fakeHost(overrides: Partial<FakeHost> = {}): FakeHost {
 		revives: 0,
 		continueRequests: 0,
 		suppressedSelectors: [],
+		exhaustedModels: [],
 		fallbackChains: [],
 		currentModel() {
 			return this.model;
@@ -198,6 +200,9 @@ function fakeHost(overrides: Partial<FakeHost> = {}): FakeHost {
 		},
 		isSelectorSuppressed(selector: string) {
 			return this.suppressedSelectors.includes(selector);
+		},
+		hasUsageHeadroom(model: Model) {
+			return !this.exhaustedModels.some(exhausted => exhausted.id === model.id);
 		},
 		installFallbackChain(selector: string, chain: string[]) {
 			this.fallbackChains.push({ selector, chain });
@@ -1680,7 +1685,14 @@ describe("DuoController difficulty routing", () => {
 
 		expect(decision).toMatchObject({ tier: "hard", risk: true, selector: "anthropic/claude-fable-5" });
 		expect(host.switches).toEqual([{ model: top, thinkingLevel: ThinkingLevel.High }]);
-		expect(host.fallbackChains).toEqual([{ selector: "anthropic/claude-fable-5", chain: [] }]);
+		// The top rung falls back down the ladder: an upward-only chain would leave
+		// a usage-limited planner-grade model with nowhere to go.
+		expect(host.fallbackChains).toEqual([
+			{
+				selector: "anthropic/claude-fable-5",
+				chain: ["anthropic/claude-sonnet-4.5", "anthropic/claude-haiku-4-5"],
+			},
+		]);
 	});
 
 	test("falls back down the ladder when every rung at or above the tier is usage-limited", async () => {
@@ -1689,6 +1701,20 @@ describe("DuoController difficulty routing", () => {
 		});
 
 		const decision = await controller.routeUserPrompt({ difficulty: "extreme", difficultyConfidence: 0.9, risk: 0 });
+
+		expect(decision).toMatchObject({ tier: "extreme", selector: "anthropic/claude-sonnet-4.5" });
+		expect(host.switches).toEqual([{ model: mid, thinkingLevel: ThinkingLevel.XHigh }]);
+	});
+
+	test("a rung whose credential has no usage headroom is skipped like a suppressed one", async () => {
+		const { host, controller } = await executingController();
+		host.exhaustedModels = [top, strong];
+
+		const decision = await controller.routeUserPrompt({
+			difficulty: "extreme",
+			difficultyConfidence: 0.9,
+			risk: 0,
+		});
 
 		expect(decision).toMatchObject({ tier: "extreme", selector: "anthropic/claude-sonnet-4.5" });
 		expect(host.switches).toEqual([{ model: mid, thinkingLevel: ThinkingLevel.XHigh }]);
