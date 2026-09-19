@@ -18,7 +18,9 @@
 
 ### Fixed
 
+- Duo no longer keeps a planner-grade model on the main stream for exploration: reading, grepping, and globbing code with no edit landing routes to the executor rung whatever the task's difficulty or risk, so a risky or extreme task stops paying Fable/Astra prices to read the repository.
 - Duo now adjusts models and reasoning effort during a running task using recent conversation history; short follow-ups retain context, and the executor no longer replaces the brainstorming model.
+- `duo_handoff`, `duo_escalate`, and `duo_change_phase` are now registered in every session instead of only when a duo controller happened to be live at tool-registry build time, which left an activated duo session with no handoff tool.
 - Everything sent to the TypeSafe signals endpoint (transcript slices, plans, prompts, context digests) is now scrubbed first: the session's known secrets are replaced by their placeholders and credential-shaped tokens by `[REDACTED]`.
 
 ## [18.2.3] - 2026-09-17
