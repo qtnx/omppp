@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Consumed tool output is now shed mid-turn while the prompt cache is still warm: a large tool result the model has read exactly once (the slice the previous request introduced) is replaced by its recall placeholder when Jev judges the upcoming work no longer needs it and the rewrite pays back on the next request. Set `OMP_CONTEXT_GC_HOT_TRIM=0` to disable.
+
 ### Changed
 
 - Prompt-cache warmth is tracked per model instead of per session: switching model (duo planner/executor, manual switch) reads cold only for the model that will serve the next request, so a switch trims stale prompt records while the model that just answered keeps its live prefix. The cold-cache trim is now judged by Jev against the upcoming work when signals are available, and falls back to the previous kind-based heuristic otherwise.

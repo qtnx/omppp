@@ -6,9 +6,12 @@ import {
 	type DeferredUnloadSessionState,
 	decideDeferredUnloads,
 	FLIP_BACK_P,
+	hotTrimPaysOff,
+	hotTrimWindow,
 	isCacheCold,
 	livePrefixTokens,
 	PROMPT_CACHE_TTL_MS,
+	recordRequestMessageCount,
 	selectAutoShakeRecords,
 	selectTrimByJudgment,
 	trimPaysOff,
@@ -30,6 +33,7 @@ function warmState(applied: string[] = []): DeferredUnloadSessionState {
 		lastResponseByModel: new Map([
 			[MODEL, { at: NOW - 30_000, prefixTokens: 90_000, writePricePerToken: 10 / 1_000_000 }],
 		]),
+		requestMessageCounts: [],
 	};
 }
 
@@ -55,6 +59,7 @@ describe("decideDeferredUnloads", () => {
 			lastResponseByModel: new Map([
 				[MODEL, { at: NOW - PROMPT_CACHE_TTL_MS, prefixTokens: 90_000, writePricePerToken: 10 / 1_000_000 }],
 			]),
+			requestMessageCounts: [],
 		};
 		const decision = decideDeferredUnloads({
 			unloaded: [record("a", 10_000), record("b", 500)],
@@ -71,7 +76,7 @@ describe("decideDeferredUnloads", () => {
 	it("treats a process without a completed turn as cold", () => {
 		const decision = decideDeferredUnloads({
 			unloaded: [record("a", 1_000)],
-			state: { applied: new Set(), lastResponseByModel: new Map() },
+			state: { applied: new Set(), lastResponseByModel: new Map(), requestMessageCounts: [] },
 			contextTokens: 400_000,
 			modelKey: MODEL,
 			now: NOW,
@@ -213,7 +218,11 @@ describe("selectTrimByJudgment", () => {
 describe("trimPaysOff", () => {
 	const stateWith = (
 		models: Array<[string, { at: number; prefixTokens: number; writePricePerToken: number }]>,
-	): DeferredUnloadSessionState => ({ applied: new Set(), lastResponseByModel: new Map(models) });
+	): DeferredUnloadSessionState => ({
+		applied: new Set(),
+		lastResponseByModel: new Map(models),
+		requestMessageCounts: [],
+	});
 	const PRICE = 10 / 1_000_000;
 
 	it("pays when the shed tokens outweigh the other model's live prefix", () => {
@@ -235,5 +244,84 @@ describe("trimPaysOff", () => {
 		const breakEven = 100_000 * FLIP_BACK_P;
 		expect(trimPaysOff(state, NOW, OTHER_MODEL, breakEven + 1, PRICE)).toBe(true);
 		expect(trimPaysOff(state, NOW, OTHER_MODEL, breakEven - 1, PRICE)).toBe(false);
+	});
+});
+
+describe("hotTrimWindow", () => {
+	const stateWithCounts = (counts: number[]): DeferredUnloadSessionState => ({
+		applied: new Set(),
+		lastResponseByModel: new Map(),
+		requestMessageCounts: counts,
+	});
+
+	it("has no window until two requests have been observed", () => {
+		expect(hotTrimWindow(stateWithCounts([]))).toBeUndefined();
+		expect(hotTrimWindow(stateWithCounts([10]))).toBeUndefined();
+	});
+
+	it("spans exactly the messages the previous request introduced", () => {
+		expect(hotTrimWindow(stateWithCounts([10, 14]))).toEqual({ start: 10, end: 14 });
+	});
+
+	it("has no window when the previous request added nothing (a retry)", () => {
+		expect(hotTrimWindow(stateWithCounts([12, 12]))).toBeUndefined();
+		expect(hotTrimWindow(stateWithCounts([12, 11]))).toBeUndefined();
+	});
+
+	it("keeps only the two most recent counts", () => {
+		const state = stateWithCounts([]);
+		recordRequestMessageCount(state, 10);
+		recordRequestMessageCount(state, 12);
+		recordRequestMessageCount(state, 15);
+		expect(state.requestMessageCounts).toEqual([12, 15]);
+		expect(hotTrimWindow(state)).toEqual({ start: 12, end: 15 });
+	});
+});
+
+describe("hotTrimPaysOff", () => {
+	// Anthropic-shaped prices per token: input 3, read 0.3, write 3.75 (per M).
+	const read = 0.3 / 1_000_000;
+	const rewrite = (3.75 - 0.3) / 1_000_000;
+
+	it("pays when the shed tokens cover the rewritten remainder within one request", () => {
+		// 40k shed vs 2k remainder: 2k*3.45 = 6.9k <= 40k*0.3 = 12k.
+		expect(
+			hotTrimPaysOff({ shedTokens: 40_000, suffixTokens: 2_000, cacheReadPrice: read, rewritePrice: rewrite }),
+		).toBe(true);
+	});
+
+	it("refuses when the kept remainder of the slice would cost more to rewrite than the shed saves", () => {
+		// 20k shed vs 22k sibling kept in the same slice: 22k*3.45 > 20k*0.3.
+		expect(
+			hotTrimPaysOff({ shedTokens: 20_000, suffixTokens: 22_000, cacheReadPrice: read, rewritePrice: rewrite }),
+		).toBe(false);
+	});
+
+	it("prices a zero-write provider at the lost read discount, not for free", () => {
+		// OpenAI-shaped: input 1.25, read 0.125, write 0 -> rewrite = 1.125.
+		const openaiRead = 0.125 / 1_000_000;
+		const openaiRewrite = (Math.max(0, 1.25) - 0.125) / 1_000_000;
+		expect(
+			hotTrimPaysOff({
+				shedTokens: 10_000,
+				suffixTokens: 5_000,
+				cacheReadPrice: openaiRead,
+				rewritePrice: openaiRewrite,
+			}),
+		).toBe(false);
+		expect(
+			hotTrimPaysOff({
+				shedTokens: 50_000,
+				suffixTokens: 5_000,
+				cacheReadPrice: openaiRead,
+				rewritePrice: openaiRewrite,
+			}),
+		).toBe(true);
+	});
+
+	it("never sheds without a cache-read price to save", () => {
+		expect(hotTrimPaysOff({ shedTokens: 100_000, suffixTokens: 0, cacheReadPrice: 0, rewritePrice: rewrite })).toBe(
+			false,
+		);
 	});
 });
