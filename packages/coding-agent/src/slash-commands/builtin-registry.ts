@@ -88,7 +88,10 @@ function formatDuoStatusText(status: DuoStatus, orchestratorOn: boolean): string
 	const phaseLine = status.workPhase
 		? `\nwork phase: ${status.workPhase} (model ${status.phaseModelId ?? "executor"})`
 		: "";
-	return sanitizeText(`${base}\nscope: ${status.executionScope} (${paren})${phaseLine}\n${jevDebugSummary()}`);
+	const routingLine = status.routedTier ? `\nrouted: ${status.routedTier} request → ${status.phaseModelId}` : "";
+	return sanitizeText(
+		`${base}\nscope: ${status.executionScope} (${paren})${phaseLine}${routingLine}\n${jevDebugSummary()}`,
+	);
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;

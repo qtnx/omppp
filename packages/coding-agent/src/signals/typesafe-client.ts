@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { redactMemorySecrets, redactNested } from "../memory-backend/redact";
 import type { Question, SystemOneResponse } from "./types";
 
 export const TYPESAFE_SYSTEMONE_URL = "http://codemc:8791/v1/systemone";
@@ -11,6 +12,12 @@ export interface TypeSafeClientOptions {
 	/** Test seam; defaults to the global fetch. */
 	fetch?: typeof fetch;
 	baseUrl?: string;
+	/**
+	 * Extra scrub applied to every string in the state before the credential
+	 * pattern pass (the session's secret obfuscator, which knows the exact
+	 * env/vault values). The pattern pass always runs.
+	 */
+	redact?: (text: string) => string;
 }
 
 /**
@@ -24,6 +31,7 @@ export class TypeSafeClient {
 	readonly #timeoutMs: number;
 	readonly #fetch: typeof fetch;
 	readonly #url: string;
+	readonly #redact: ((text: string) => string) | undefined;
 
 	constructor(options: TypeSafeClientOptions) {
 		this.#apiKey = options.apiKey;
@@ -31,6 +39,7 @@ export class TypeSafeClient {
 		this.#timeoutMs = options.timeoutMs ?? 4000;
 		this.#fetch = options.fetch ?? fetch;
 		this.#url = options.baseUrl ?? TYPESAFE_SYSTEMONE_URL;
+		this.#redact = options.redact;
 	}
 
 	async systemOne(
@@ -38,6 +47,10 @@ export class TypeSafeClient {
 		questions: Record<string, Question>,
 		signal?: AbortSignal,
 	): Promise<SystemOneResponse | undefined> {
+		// Transcript slices, plans, and prompts reach a third-party endpoint here;
+		// nothing else on this path scrubs them, so every string leaf is redacted.
+		const extra = this.#redact;
+		const scrubbed = redactNested(state, extra ? text => redactMemorySecrets(extra(text)) : redactMemorySecrets);
 		const timeout = AbortSignal.timeout(this.#timeoutMs);
 		const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
 		const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -46,7 +59,7 @@ export class TypeSafeClient {
 			const response = await this.#fetch(this.#url, {
 				method: "POST",
 				headers,
-				body: JSON.stringify({ state, model: this.model, questions }),
+				body: JSON.stringify({ state: scrubbed, model: this.model, questions }),
 				signal: combined,
 			});
 			if (!response.ok) {

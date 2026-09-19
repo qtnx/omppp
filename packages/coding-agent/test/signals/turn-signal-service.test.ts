@@ -96,6 +96,7 @@ describe("TurnSignalService", () => {
 		expect(Object.keys(sent?.questions as object).sort()).toEqual([
 			"done_without_evidence",
 			"needs_review",
+			"open_ended_discovery",
 			"parallel_slices",
 			"phase",
 			"progress",
@@ -238,6 +239,65 @@ describe("TurnSignalService", () => {
 			),
 		});
 		expect(await new TurnSignalService(client).classifyTopicSwitch("digest", "request")).toBeUndefined();
+	});
+
+	test("classifyPrompt maps difficulty and risk, and rejects an unknown tier", async () => {
+		let state: Record<string, unknown> | undefined;
+		const answersFor = (choice: string) => ({
+			model: "jev",
+			answers: {
+				difficulty: { type: "choice", choice, probabilities: { [choice]: 0.7 }, confidence: 0.64 },
+				risk_domain: { type: "noul", noul: 0.88 },
+			},
+			usage: { input_tokens: 1, output_tokens: 1 },
+		});
+		let choice = "hard";
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: fakeFetch(body => {
+				state = body.state as Record<string, unknown>;
+				return Response.json(answersFor(choice));
+			}),
+		});
+		const service = new TurnSignalService(client);
+
+		expect(await service.classifyPrompt("Migrate the ledger table", "Title: billing")).toEqual({
+			difficulty: "hard",
+			difficultyConfidence: 0.64,
+			risk: 0.88,
+		});
+		expect(state).toEqual({ request: "Migrate the ledger table", prior_context: "Title: billing" });
+
+		choice = "impossible";
+		expect(await service.classifyPrompt("x", undefined)).toBeUndefined();
+	});
+
+	test("credentials never reach the endpoint: pattern secrets and obfuscator-known values are scrubbed from every state leaf", async () => {
+		let sent = "";
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: ((_url: string | URL | Request, init?: RequestInit) => {
+				sent = String(init?.body);
+				return Promise.resolve(
+					Response.json({ model: "jev", answers: {}, usage: { input_tokens: 1, output_tokens: 1 } }),
+				);
+			}) as typeof fetch,
+			redact: text => text.replaceAll("hunter2-vault-value", "#SECRET_1#"),
+		});
+
+		await client.systemOne(
+			{
+				transcript: "export GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 && curl -u hunter2-vault-value",
+				nested: { items: ["password_aB3dEfGh1JkLmN9", "plain text"] },
+			},
+			{},
+		);
+
+		expect(sent).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123");
+		expect(sent).not.toContain("hunter2-vault-value");
+		expect(sent).not.toContain("aB3dEfGh1JkLmN9");
+		expect(sent).toContain("#SECRET_1#");
+		expect(sent).toContain("plain text");
 	});
 });
 

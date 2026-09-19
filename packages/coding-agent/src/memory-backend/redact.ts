@@ -169,12 +169,12 @@ const TEXT_FIELDS = [
  * free text in it (`mnemopi/backend.ts` copies `MemoryBackendSaveInput.context` to
  * `metadata.context`), so its strings need the same treatment as `content`.
  */
-function redactNested(value: unknown): unknown {
-	if (typeof value === "string") return redactMemorySecrets(value);
+export function redactNested(value: unknown, redact: (text: string) => string = redactMemorySecrets): unknown {
+	if (typeof value === "string") return redact(value);
 	if (Array.isArray(value)) {
 		let changed = false;
 		const out = value.map(item => {
-			const next = redactNested(item);
+			const next = redactNested(item, redact);
 			if (next !== item) changed = true;
 			return next;
 		});
@@ -184,7 +184,7 @@ function redactNested(value: unknown): unknown {
 	const source = value as Record<string, unknown>;
 	let out: Record<string, unknown> | undefined;
 	for (const [key, item] of Object.entries(source)) {
-		const next = redactNested(item);
+		const next = redactNested(item, redact);
 		if (next === item) continue;
 		out ??= { ...source };
 		out[key] = next;

@@ -14,13 +14,14 @@ import {
 	type DuoPhaseChangeResult,
 	type DuoStateSnapshot,
 	type DuoStatus,
+	isDuoPhaseLive,
 	type TakeoverDecision,
 	type TakeoverPurpose,
 } from "../duo";
 import { detectPlanningNeeded } from "../duo/takeover-signals";
 import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, type OrchestratorModeState } from "../orchestrator-mode/state";
 import type { PlanModeState } from "../plan-mode/state";
-import { isWorkPhase, type TurnSignals, type WorkPhase } from "../signals/index";
+import { isWorkPhase, type PromptSignals, type TurnSignals, type WorkPhase } from "../signals/index";
 import type { ConfiguredThinkingLevel } from "../thinking";
 
 export interface SessionDuoOrchestratorHost {
@@ -53,7 +54,12 @@ export interface SessionDuoOrchestratorHost {
 	emitModeChanged(mode: "orchestrator" | "none"): Promise<void>;
 	persistModeChange(enabled: boolean): void;
 	goalModeEnabled(): boolean;
+	/** TypeSafe judgment of a new user request (difficulty, risk); `undefined` when signals are off or unavailable. */
+	classifyPrompt?(request: string, signal: AbortSignal): Promise<PromptSignals | undefined>;
 }
+
+/** Upper bound on the pre-turn routing judgment; past it the prompt runs on whatever model is current. */
+export const PROMPT_ROUTING_TIMEOUT_MS = 2500;
 
 export function shouldRunDuoDoneGate(
 	advisorDoneGate: boolean,
@@ -310,6 +316,19 @@ export class SessionDuoOrchestrator {
 	/** Every resolved TypeSafe turn classification; drives phase models and stuck signals. */
 	onTurnSignals(signals: TurnSignals): void {
 		this.#controller?.notifyTurnSignals(signals);
+	}
+
+	/**
+	 * Before a user-authored prompt starts its turn: judge its difficulty and put
+	 * the matching routing-ladder rung on the main stream. Bounded by
+	 * {@link PROMPT_ROUTING_TIMEOUT_MS}; a missing or late judgment changes nothing.
+	 */
+	async routeUserPrompt(request: string): Promise<void> {
+		const controller = this.#controller;
+		if (!controller || !this.#host.classifyPrompt || !isDuoPhaseLive(controller.status.phase)) return;
+		const signals = await this.#host.classifyPrompt(request, AbortSignal.timeout(PROMPT_ROUTING_TIMEOUT_MS));
+		if (!signals) return;
+		await controller.routeUserPrompt(signals);
 	}
 
 	notifyManualModelChange(): void {

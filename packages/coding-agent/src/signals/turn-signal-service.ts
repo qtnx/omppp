@@ -3,6 +3,7 @@ import type { Settings } from "../config/settings";
 import contextTrimQuestions from "./questions/context-trim.json";
 import handoffQuestions from "./questions/handoff.json";
 import learningQuestions from "./questions/learning.json";
+import promptQuestions from "./questions/prompt.json";
 import topicQuestions from "./questions/topic.json";
 import turnQuestions from "./questions/turn.json";
 import { TypeSafeClient } from "./typesafe-client";
@@ -12,7 +13,9 @@ import {
 	type ContextTrimSignals,
 	type HandoffSignals,
 	isWorkPhase,
+	isPromptDifficulty,
 	type LearningSignals,
+	type PromptSignals,
 	type Question,
 	type TopicSignals,
 	type TurnSignals,
@@ -28,6 +31,7 @@ const TURN_QUESTIONS = turnQuestions as Record<string, Question>;
 const HANDOFF_QUESTIONS = handoffQuestions as Record<string, Question>;
 const LEARNING_QUESTIONS = learningQuestions as Record<string, Question>;
 const TOPIC_QUESTIONS = topicQuestions as Record<string, Question>;
+const PROMPT_QUESTIONS = promptQuestions as Record<string, Question>;
 const CONTEXT_TRIM_QUESTIONS = contextTrimQuestions as Record<string, Question> & { keep: Question };
 
 /** Candidate summaries are clipped so a large candidate set stays inside the state cap. */
@@ -132,6 +136,7 @@ export class TurnSignalService {
 		const stuck = normalizedScore(response.answers.progress);
 		const doneWithoutEvidence = noul(response.answers.done_without_evidence);
 		const parallelSlices = noul(response.answers.parallel_slices);
+		const openEndedDiscovery = noul(response.answers.open_ended_discovery);
 		if (
 			phaseAnswer?.type !== "choice" ||
 			!isWorkPhase(phaseAnswer.choice) ||
@@ -149,6 +154,7 @@ export class TurnSignalService {
 			stuck,
 			doneWithoutEvidence,
 			parallelSlices,
+			...(openEndedDiscovery === undefined ? {} : { openEndedDiscovery }),
 			model: response.model,
 			inputTokens: response.usage.input_tokens,
 		};
@@ -198,6 +204,33 @@ export class TurnSignalService {
 		this.#record(response !== undefined);
 		const topicSwitch = noul(response?.answers.topic_switch);
 		return topicSwitch === undefined ? undefined : { topicSwitch };
+	}
+
+	/**
+	 * Judge a new user request before any work starts: how hard it is and
+	 * whether it touches a risk domain. Runs on the prompt (plus an optional
+	 * short digest of prior context), never the transcript, so it can gate the
+	 * turn start with a tight timeout.
+	 */
+	async classifyPrompt(
+		request: string,
+		priorContext: string | undefined,
+		signal?: AbortSignal,
+	): Promise<PromptSignals | undefined> {
+		if (this.#unavailable) return undefined;
+		const state = {
+			request: this.#clip(request),
+			...(priorContext ? { prior_context: this.#clip(priorContext) } : {}),
+		};
+		const response = await this.#client.systemOne(state, PROMPT_QUESTIONS, signal);
+		this.#record(response !== undefined);
+		if (!response) return undefined;
+		const difficulty = response.answers.difficulty;
+		const risk = noul(response.answers.risk_domain);
+		if (difficulty?.type !== "choice" || !isPromptDifficulty(difficulty.choice) || risk === undefined) {
+			return undefined;
+		}
+		return { difficulty: difficulty.choice, difficultyConfidence: difficulty.confidence, risk };
 	}
 
 	/**
@@ -266,7 +299,7 @@ export function resolveTypeSafeApiKey(settings: Settings): string | undefined {
 /** Builds the service when signals are enabled and a key exists; otherwise `undefined`. */
 export function createTurnSignalService(
 	settings: Settings,
-	options: { fetch?: typeof fetch } = {},
+	options: { fetch?: typeof fetch; redact?: (text: string) => string } = {},
 ): TurnSignalService | undefined {
 	if (!settings.get("signals.enabled")) return undefined;
 	const apiKey = resolveTypeSafeApiKey(settings);
@@ -278,6 +311,7 @@ export function createTurnSignalService(
 		model: settings.get("signals.model"),
 		timeoutMs: settings.get("signals.timeoutMs"),
 		fetch: options.fetch,
+		redact: options.redact,
 	});
 	return new TurnSignalService(client);
 }

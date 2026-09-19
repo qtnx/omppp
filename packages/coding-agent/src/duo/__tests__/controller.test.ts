@@ -1609,6 +1609,119 @@ describe("DuoController phase models from turn signals", () => {
 		expect(controller.status.phaseModelId).toBeUndefined();
 	});
 });
+
+describe("DuoController difficulty routing", () => {
+	const cheap = anthropicModel("claude-haiku-4-5");
+	const mid = anthropicModel("claude-sonnet-4.5");
+	const strong = anthropicModel("claude-opus-4.8");
+	const top = anthropicModel("claude-fable-5");
+	const ladder = [
+		{ selector: "anthropic/claude-haiku-4-5", model: cheap },
+		{ selector: "anthropic/claude-sonnet-4.5", model: mid },
+		{ selector: "anthropic/claude-opus-4.8", model: strong },
+		{ selector: "anthropic/claude-fable-5", model: top },
+	];
+	const routingConfig = duoConfig({
+		phaseModels: { debugging: [{ selector: PHASE_MODEL_SELECTOR, model: phaseModel }] },
+		routing: {
+			ladder,
+			thinking: {
+				easy: ThinkingLevel.Medium,
+				moderate: ThinkingLevel.High,
+				hard: ThinkingLevel.High,
+				extreme: ThinkingLevel.XHigh,
+			},
+		},
+	});
+
+	async function executingController(overrides: Partial<FakeHost> = {}) {
+		const host = fakeHost({ model: otherModel, planModeOn: false, ...overrides });
+		const controller = new DuoController(host, routingConfig);
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("executing");
+		host.switches = [];
+		host.fallbackChains = [];
+		return { host, controller };
+	}
+
+	test("an easy request lands on the cheapest rung with its tier thinking and the rungs above as fallbacks", async () => {
+		const { host, controller } = await executingController();
+
+		const decision = await controller.routeUserPrompt({ difficulty: "easy", difficultyConfidence: 0.8, risk: 0.1 });
+
+		expect(decision).toEqual({
+			tier: "easy",
+			risk: false,
+			selector: "anthropic/claude-haiku-4-5",
+			thinkingLevel: ThinkingLevel.Medium,
+		});
+		expect(host.switches).toEqual([{ model: cheap, thinkingLevel: ThinkingLevel.Medium }]);
+		expect(host.fallbackChains).toEqual([
+			{
+				selector: "anthropic/claude-haiku-4-5",
+				chain: ["anthropic/claude-sonnet-4.5", "anthropic/claude-opus-4.8", "anthropic/claude-fable-5"],
+			},
+		]);
+		expect(controller.status).toMatchObject({ routedTier: "easy", phaseModelId: "anthropic/claude-haiku-4-5" });
+	});
+
+	test("a risk-domain request moves one rung up and a usage-limited rung is skipped upward", async () => {
+		const { host, controller } = await executingController({
+			suppressedSelectors: ["anthropic/claude-opus-4.8"],
+		});
+
+		// moderate + risk → hard rung (opus), which is in cooldown → fable, xhigh stays the hard-tier level.
+		const decision = await controller.routeUserPrompt({
+			difficulty: "moderate",
+			difficultyConfidence: 0.6,
+			risk: 0.9,
+		});
+
+		expect(decision).toMatchObject({ tier: "hard", risk: true, selector: "anthropic/claude-fable-5" });
+		expect(host.switches).toEqual([{ model: top, thinkingLevel: ThinkingLevel.High }]);
+		expect(host.fallbackChains).toEqual([]);
+	});
+
+	test("falls back down the ladder when every rung at or above the tier is usage-limited", async () => {
+		const { host, controller } = await executingController({
+			suppressedSelectors: ["anthropic/claude-opus-4.8", "anthropic/claude-fable-5"],
+		});
+
+		const decision = await controller.routeUserPrompt({ difficulty: "extreme", difficultyConfidence: 0.9, risk: 0 });
+
+		expect(decision).toMatchObject({ tier: "extreme", selector: "anthropic/claude-sonnet-4.5" });
+		expect(host.switches).toEqual([{ model: mid, thinkingLevel: ThinkingLevel.XHigh }]);
+	});
+
+	test("a routed request keeps its model across phase classifications until the next prompt re-routes", async () => {
+		const { host, controller } = await executingController();
+		await controller.routeUserPrompt({ difficulty: "easy", difficultyConfidence: 0.8, risk: 0 });
+		host.switches = [];
+
+		// The debugging phase has a configured phase model; routing outranks it.
+		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
+		controller.notifyTurnSignals(turnSignals({ phase: "debugging", phaseConfidence: 0.9 }));
+		expect(host.switches).toEqual([]);
+		expect(controller.status).toMatchObject({ workPhase: "debugging", phaseModelId: "anthropic/claude-haiku-4-5" });
+
+		await controller.routeUserPrompt({ difficulty: "hard", difficultyConfidence: 0.8, risk: 0 });
+		expect(host.switches).toEqual([{ model: strong, thinkingLevel: ThinkingLevel.High }]);
+		expect(controller.status.routedTier).toBe("hard");
+	});
+
+	test("does not route while the planner owns the stream", async () => {
+		const host = fakeHost({ model: planner, planModeOn: true });
+		const controller = new DuoController(host, routingConfig);
+		await controller.reevaluate();
+		expect(controller.status.phase).toBe("planning");
+		host.switches = [];
+
+		const decision = await controller.routeUserPrompt({ difficulty: "easy", difficultyConfidence: 0.9, risk: 0 });
+
+		expect(decision).toBeUndefined();
+		expect(host.switches).toEqual([]);
+	});
+});
 describe("DuoController planner auto-return watch", () => {
 	test("takeover returns the stream once two confident turns classify as implementing", async () => {
 		const host = fakeHost({ model: otherModel, planModeOn: false });

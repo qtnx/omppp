@@ -16,7 +16,13 @@ import plannerNotice from "./prompts/planner-notice.md" with { type: "text" };
 import plannerSummon from "./prompts/planner-summon.md" with { type: "text" };
 import planningSignalNudge from "./prompts/planning-signal-nudge.md" with { type: "text" };
 import takeoverBrief from "./prompts/takeover-brief.md" with { type: "text" };
-import type { TurnSignals, WorkPhase } from "../signals/index";
+import {
+	PROMPT_DIFFICULTIES,
+	type PromptDifficulty,
+	type PromptSignals,
+	type TurnSignals,
+	type WorkPhase,
+} from "../signals/index";
 import {
 	type DuoActivationInput,
 	type DuoExecutionScope,
@@ -30,6 +36,17 @@ import {
 	type TakeoverRequestOptions,
 } from "./state";
 import type { TakeoverSignalReport } from "./takeover-signals";
+
+/** Risk-domain probability at or above which a request moves one rung up the routing ladder. */
+export const ROUTING_RISK_MIN = 0.7;
+
+/** What difficulty routing put on the main stream for the current request. */
+export interface DuoRoutingDecision {
+	tier: PromptDifficulty;
+	risk: boolean;
+	selector: string;
+	thinkingLevel: ConfiguredThinkingLevel;
+}
 
 export interface DuoControllerHost {
 	currentModel(): Model | undefined;
@@ -96,6 +113,8 @@ export interface DuoStatus {
 	workPhase?: WorkPhase;
 	/** Selector of the phase model currently holding the executor stream; absent means the resolved executor. */
 	phaseModelId?: string;
+	/** Difficulty tier the current request was routed at; absent when routing is off or nothing was routed yet. */
+	routedTier?: PromptDifficulty;
 }
 
 interface PendingSwitch {
@@ -141,6 +160,8 @@ export class DuoController {
 	#phaseModelSwitch: { model: Model; thinkingLevel: ConfiguredThinkingLevel } | undefined;
 	/** Turns spent in the sticky preplanning phase; the classifier may take over after the bounded dwell. */
 	#preplanningTurns = 0;
+	/** Difficulty tier routed for the current request; while set, the routed model outranks phase models. */
+	#routedTier: PromptDifficulty | undefined;
 
 	constructor(host: DuoControllerHost, config: DuoResolvedConfig, restored?: DuoStateSnapshot) {
 		this.#host = host;
@@ -168,6 +189,7 @@ export class DuoController {
 			advisorPaused: this.#advisorPaused,
 			workPhase: snapshot.workPhase,
 			phaseModelId: this.#phaseModelSelector,
+			...(this.#routedTier === undefined ? {} : { routedTier: this.#routedTier }),
 		};
 	}
 
@@ -315,6 +337,51 @@ export class DuoController {
 		}
 		this.#switchPhaseModel(signals, policy.minConfidence);
 		this.#triggerStuckTakeover();
+	}
+
+	/**
+	 * Route a new user request onto the ladder rung its judged difficulty earns.
+	 * A risk-domain request moves one rung up. Rungs in a usage-limit or auth
+	 * cooldown are skipped upward (then downward when nothing above is free);
+	 * the free rungs above the chosen one become its rate-limit fallbacks. The
+	 * routed model holds the executor stream for the whole request: phase-model
+	 * switches from the classifier are suspended until the next prompt.
+	 */
+	async routeUserPrompt(signals: PromptSignals): Promise<DuoRoutingDecision | undefined> {
+		const routing = this.#config.routing;
+		if (!routing || !isDuoPhaseLive(this.#machine.phase) || !this.#isExecutingLike()) return undefined;
+		const risk = signals.risk >= ROUTING_RISK_MIN;
+		const tierIndex = Math.min(
+			PROMPT_DIFFICULTIES.indexOf(signals.difficulty) + (risk ? 1 : 0),
+			PROMPT_DIFFICULTIES.length - 1,
+		);
+		const tier = PROMPT_DIFFICULTIES[tierIndex];
+		const free = routing.ladder.map(candidate => this.#host.isSelectorSuppressed?.(candidate.selector) !== true);
+		const rung = Math.min(tierIndex, routing.ladder.length - 1);
+		let chosenIndex = free.findIndex((ok, index) => ok && index >= rung);
+		if (chosenIndex === -1) chosenIndex = free.lastIndexOf(true, rung);
+		if (chosenIndex === -1) return undefined;
+		const chosen = routing.ladder[chosenIndex];
+		const thinkingLevel = chosen.thinkingLevel ?? routing.thinking[tier] ?? this.#executorThinking();
+		const chain = routing.ladder
+			.filter((candidate, index) => index > chosenIndex && free[index] && candidate.selector !== chosen.selector)
+			.map(candidate => candidate.selector);
+		if (chain.length > 0) this.#host.installFallbackChain?.(chosen.selector, chain);
+		this.#routedTier = tier;
+		this.#phaseModelSelector = chosen.selector;
+		this.#phaseModelSwitch = { model: chosen.model, thinkingLevel };
+		const current = this.#host.currentModel();
+		const alreadyOn =
+			current !== undefined &&
+			modelsAreEqual(current, chosen.model) &&
+			this.#host.configuredThinkingLevel() === thinkingLevel;
+		if (!alreadyOn && !(await this.#applySwitch(chosen.model, thinkingLevel))) return undefined;
+		this.#persistSnapshot();
+		this.#host.emitNotice(
+			"info",
+			`Duo routing: ${tier} request${risk ? " (risk domain)" : ""} → ${chosen.selector}:${thinkingLevel}`,
+		);
+		return { tier, risk, selector: chosen.selector, thinkingLevel };
 	}
 
 	async notifyTurnEnd(): Promise<void> {
@@ -664,6 +731,8 @@ export class DuoController {
 		this.#advisorPaused = false;
 		this.#executorThinkingOverride = undefined;
 		this.#phaseModelSelector = undefined;
+		this.#phaseModelSwitch = undefined;
+		this.#routedTier = undefined;
 		this.#plannerDwellTurns = 0;
 		const restoredThinking = parseConfiguredThinkingLevel(snapshot.preDuoThinking);
 		if (restoredThinking !== undefined) {
@@ -713,7 +782,10 @@ export class DuoController {
 			case "degraded":
 				// The sticky preplanning phase keeps its own model across reevaluations
 				// (a session restore must not drop back to the executor mid-brainstorm).
-				if (this.#machine.workPhase === "preplanning" && this.#phaseModelSwitch) {
+				if (
+					(this.#machine.workPhase === "preplanning" || this.#routedTier !== undefined) &&
+					this.#phaseModelSwitch
+				) {
 					return this.#phaseModelSwitch;
 				}
 				return { model: this.#config.executor, thinkingLevel: this.#executorThinking() };
@@ -735,6 +807,9 @@ export class DuoController {
 
 	/** Phase-model selection: hysteresis, suppressed candidates skipped, and restore to the resolved executor. */
 	#switchPhaseModel(signals: TurnSignals, minConfidence: number): void {
+		// Difficulty routing already picked the model for this request; the phase
+		// map would only churn it. The next user prompt re-routes.
+		if (this.#routedTier !== undefined) return;
 		const candidates = this.#config.phaseModels[signals.phase];
 		if (candidates && candidates.length > 0) {
 			if (signals.phaseConfidence < minConfidence) return;
@@ -771,6 +846,16 @@ export class DuoController {
 			this.#phaseStreak = 1;
 		}
 		const suffix = reason?.trim() ? ` — ${reason.trim()}` : "";
+		if (this.#routedTier !== undefined) {
+			// The routed model owns the request; the phase label still moves so
+			// the tool surface, plan mode, and the classifier context follow it.
+			this.#persistSnapshot();
+			this.#host.emitNotice(
+				"info",
+				`Duo phase → ${phase}: the routed ${this.#phaseModelSelector} keeps the main stream${suffix}.`,
+			);
+			return "ok";
+		}
 		if (!chosen) {
 			// Unlisted phase: the resolved executor is authoritative.
 			this.#phaseModelSelector = undefined;
@@ -1030,6 +1115,8 @@ export class DuoController {
 		this.#planningHandoffNudges = 0;
 		this.#executorThinkingOverride = undefined;
 		this.#phaseModelSelector = undefined;
+		this.#phaseModelSwitch = undefined;
+		this.#routedTier = undefined;
 		const restoredThinking = parseConfiguredThinkingLevel(snapshot.preDuoThinking);
 		if (restoredThinking !== undefined) this.#host.setThinkingLevel(restoredThinking);
 		void this.#host.setOrchestratorEnabled(false);

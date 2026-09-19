@@ -2132,7 +2132,10 @@ export class AgentSession {
 			[advisorSkillsAndRulesPrompt, config.advisorContextPrompt]
 				.filter((value): value is string => typeof value === "string" && value.length > 0)
 				.join("\n\n") || undefined;
-		this.#turnSignals = createTurnSignalService(this.settings);
+		const obfuscator = this.#obfuscator;
+		this.#turnSignals = createTurnSignalService(this.settings, {
+			redact: obfuscator ? text => obfuscator.obfuscate(text) : undefined,
+		});
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: resolveAdvisorEnabled(this.settings, this.model),
 			tools: config.advisorTools,
@@ -2233,6 +2236,10 @@ export class AgentSession {
 				}
 			},
 			goalModeEnabled: () => this.#goalModeState?.enabled === true,
+			classifyPrompt: (request, signal) =>
+				this.#turnSignals
+					? this.#turnSignals.classifyPrompt(request, undefined, signal)
+					: Promise.resolve(undefined),
 		};
 		this.#duoOrchestrator = new SessionDuoOrchestrator(duoHost, restoredDuoSnapshot);
 		this.#tools.setSystemPromptOverlay(baseSystemPrompt => {
@@ -7451,6 +7458,11 @@ export class AgentSession {
 		const eagerTaskPrelude =
 			!options?.synthetic && !hasPendingUserDirective ? this.#todo.createEagerTaskPrelude(expandedText) : undefined;
 		const videoAttachmentNotices = this.#createVideoAttachmentNotices(options?.images, submittedAt);
+		// Difficulty routing must land before the turn starts (a switch during the
+		// stream is deferred to the next turn, which would miss this request).
+		if (options?.userInitiated ?? !options?.synthetic) {
+			await this.#duoOrchestrator.routeUserPrompt(expandedText);
+		}
 		const normalizedImages = await this.#normalizeImagesForModel(options?.images);
 
 		// Guard hoisted to the callsite: awaiting the builder for mention-free text

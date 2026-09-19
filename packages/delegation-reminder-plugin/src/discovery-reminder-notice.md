@@ -1,0 +1,3 @@
+<system-notice>
+You have made {{count}} read/grep/glob calls this run (discovery threshold {{threshold}}) without a single edit and without dispatching a scout. That is open-ended discovery: you are mapping an unfamiliar area by hand, one file at a time, and paying for every page of it in your own context. Stop scouting by hand and dispatch `scout`/`explore` subagents now — one batch of 3-5 aspects in a single fan-out, each brief naming the exact question to answer plus the files and symbols you have already found, so no aspect restarts from zero. Continue from their reports instead of from raw file reads. Keep reading yourself ONLY for a targeted lookup of a file or symbol you already know, or a re-read immediately before an edit.
+</system-notice>

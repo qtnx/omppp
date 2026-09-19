@@ -36,7 +36,7 @@ import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { DuoMode } from "../duo/state";
 import MODEL_PRIO from "../priority.json" with { type: "json" };
 import type { AuthStorage } from "../session/auth-storage";
-import { isWorkPhase, type WorkPhase } from "../signals/types";
+import { isPromptDifficulty, isWorkPhase, type PromptDifficulty, type WorkPhase } from "../signals/types";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -1861,6 +1861,13 @@ export interface DuoPhaseModelCandidate {
 	thinkingLevel?: ConfiguredThinkingLevel;
 }
 
+export interface DuoRoutingConfig {
+	/** Resolved `duo.routing.models`, ascending capability; a rung's own `thinkingLevel` beats the per-tier level. */
+	ladder: DuoPhaseModelCandidate[];
+	/** Thinking level per judged difficulty; a missing tier inherits the executor level. */
+	thinking: Partial<Record<PromptDifficulty, ConfiguredThinkingLevel>>;
+}
+
 export interface DuoResolvedConfig {
 	mode: DuoMode;
 	orchestrator: "auto" | "always";
@@ -1879,6 +1886,8 @@ export interface DuoResolvedConfig {
 	manualSwitchIntent: "plan" | "summon";
 	/** Configured per-phase candidates; a phase absent here falls back to planner/executor. */
 	phaseModels: Partial<Record<WorkPhase, DuoPhaseModelCandidate[]>>;
+	/** Difficulty-routed model ladder (least capable first); absent when `duo.routing.models` is empty or nothing resolves. */
+	routing?: DuoRoutingConfig;
 	signals: {
 		enabled: boolean;
 		sentiment: boolean;
@@ -1955,26 +1964,61 @@ function resolveDuoPhaseModels(
 			logger.debug("Ignoring unknown duo.phaseModels phase", { phase: key });
 			continue;
 		}
-		const candidates: DuoPhaseModelCandidate[] = [];
-		const seenSelectors = new Set<string>();
-		const patterns = (Array.isArray(value) ? value : [value])
-			.map(pattern => (typeof pattern === "string" ? pattern.trim() : ""))
-			.filter(pattern => pattern.length > 0);
-		for (const pattern of patterns) {
-			const resolved = resolveExplicitDuoModel(pattern, availableModels, settings, modelRegistry);
-			if (!resolved) continue;
-			const selector = `${resolved.model.provider}/${resolved.model.id}`;
-			if (seenSelectors.has(selector)) continue;
-			seenSelectors.add(selector);
-			candidates.push({
-				selector,
-				model: resolved.model,
-				...(resolved.thinkingLevel !== undefined ? { thinkingLevel: resolved.thinkingLevel } : {}),
-			});
-		}
+		const candidates = resolveDuoCandidates(
+			Array.isArray(value) ? value : [value],
+			availableModels,
+			settings,
+			modelRegistry,
+		);
 		if (candidates.length > 0) phaseModels[key] = candidates;
 	}
 	return phaseModels;
+}
+
+/** Resolve one ordered selector list into unique candidates; unresolvable patterns are skipped. */
+function resolveDuoCandidates(
+	patterns: readonly string[],
+	availableModels: Model<Api>[],
+	settings: Settings,
+	modelRegistry: CanonicalModelRegistry,
+): DuoPhaseModelCandidate[] {
+	const candidates: DuoPhaseModelCandidate[] = [];
+	const seenSelectors = new Set<string>();
+	for (const raw of patterns) {
+		const pattern = typeof raw === "string" ? raw.trim() : "";
+		if (!pattern) continue;
+		const resolved = resolveExplicitDuoModel(pattern, availableModels, settings, modelRegistry);
+		if (!resolved) continue;
+		const selector = `${resolved.model.provider}/${resolved.model.id}`;
+		if (seenSelectors.has(selector)) continue;
+		seenSelectors.add(selector);
+		candidates.push({
+			selector,
+			model: resolved.model,
+			...(resolved.thinkingLevel !== undefined ? { thinkingLevel: resolved.thinkingLevel } : {}),
+		});
+	}
+	return candidates;
+}
+
+/** Resolve `duo.routing.models` + `duo.routing.thinking`; `undefined` when routing is off or no rung resolves. */
+function resolveDuoRouting(
+	settings: Settings,
+	availableModels: Model<Api>[],
+	modelRegistry: CanonicalModelRegistry,
+): DuoRoutingConfig | undefined {
+	const ladder = resolveDuoCandidates(settings.get("duo.routing.models"), availableModels, settings, modelRegistry);
+	if (ladder.length === 0) return undefined;
+	const thinking: Partial<Record<PromptDifficulty, ConfiguredThinkingLevel>> = {};
+	for (const [key, value] of Object.entries(settings.get("duo.routing.thinking"))) {
+		if (!isPromptDifficulty(key)) {
+			logger.debug("Ignoring unknown duo.routing.thinking tier", { tier: key });
+			continue;
+		}
+		const level = parseConfiguredThinkingLevel(value);
+		if (level !== undefined) thinking[key] = level;
+	}
+	return { ladder, thinking };
 }
 
 /**
@@ -2034,6 +2078,7 @@ export function resolveDuoConfig(
 
 	const orchestrator = settings.get("duo.orchestrator");
 	const phaseModels = resolveDuoPhaseModels(settings, availableModels, registry);
+	const routing = resolveDuoRouting(settings, availableModels, registry);
 
 	logger.debug("duo config resolved", {
 		planner: `${planner.model.provider}/${planner.model.id}`,
@@ -2069,6 +2114,7 @@ export function resolveDuoConfig(
 		orchestrator: orchestrator === "always" ? "always" : "auto",
 		manualSwitchIntent: settings.get("duo.manualSwitchIntent"),
 		phaseModels,
+		...(routing ? { routing } : {}),
 		signals: {
 			enabled: settings.get("duo.takeover.signals.enabled"),
 			sentiment: settings.get("duo.takeover.signals.sentiment"),
