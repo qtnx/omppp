@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { shouldCompact } from "@oh-my-pi/pi-agent-core/compaction";
 import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { applyModelOverride } from "../../src/config/model-patch";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import { resolveDuoConfig } from "../../src/config/model-resolver";
 import { Settings } from "../../src/config/settings";
@@ -35,20 +38,6 @@ const fable4 = anthropicModel("claude-fable-4");
 const fable5 = anthropicModel("claude-fable-5");
 const opus47 = anthropicModel("claude-opus-4.7");
 const opus48 = anthropicModel("claude-opus-4.8");
-const opusCapped = buildModel({
-	id: "claude-opus-4.9",
-	name: "Claude Opus 4.9",
-	api: "anthropic-messages",
-	provider: "anthropic",
-	baseUrl: "https://api.anthropic.com",
-	reasoning: true,
-	thinking: { mode: "budget", efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.Max] },
-	input: ["text"],
-	cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1 },
-	contextWindow: 272_000,
-	maxContextWindow: 1_050_000,
-	maxTokens: 8192,
-});
 const openaiSol = buildModel({
 	id: "gpt-5.6-sol",
 	name: "GPT 5.6 Sol",
@@ -104,20 +93,33 @@ describe("resolveDuoConfig", () => {
 		expect(resolved?.executor.id).toBe("claude-opus-4.8");
 	});
 
-	test("duo models take their full window so a routing switch does not land in an overflowing context", () => {
-		const extended = resolveDuoConfig(
-			settings({ "duo.executorModel": "anthropic/claude-opus-4.9" }),
-			[fable5, opusCapped],
-			registry,
-		);
-		expect(extended?.executor.contextWindow).toBe(1_050_000);
+	test("duo recovers the full window of a premium-tier-capped model, for both Astra SKUs", () => {
+		for (const [provider, cappedWindow, fullWindow] of [
+			["openai", 272_000, 1_050_000],
+			["openai-codex", 372_000, 922_000],
+		] as const) {
+			const catalogAstra = getBundledModel(provider, "gpt-6-astra");
+			if (!catalogAstra) throw new Error(`Expected a bundled ${provider} gpt-6-astra`);
+			// Exactly what ModelRegistry leaves on the model with extendedContext off.
+			const astra = applyModelOverride(catalogAstra, { contextWindow: cappedWindow });
+			expect(astra.contextWindow).toBe(cappedWindow);
+			const anyAuth = { hasConfiguredAuth: () => true } as unknown as ModelRegistry;
 
-		const standard = resolveDuoConfig(
-			settings({ "duo.executorModel": "anthropic/claude-opus-4.9", "duo.extendedContext": false }),
-			[fable5, opusCapped],
-			registry,
-		);
-		expect(standard?.executor.contextWindow).toBe(272_000);
+			const extended = resolveDuoConfig(
+				settings({ "duo.executorModel": `${provider}/gpt-6-astra` }),
+				[fable5, astra],
+				anyAuth,
+			);
+			expect(`${extended?.executor.provider}/${extended?.executor.id}`).toBe(`${provider}/gpt-6-astra`);
+			expect(extended?.executor.contextWindow).toBe(fullWindow);
+
+			const standard = resolveDuoConfig(
+				settings({ "duo.executorModel": `${provider}/gpt-6-astra`, "duo.extendedContext": false }),
+				[fable5, astra],
+				anyAuth,
+			);
+			expect(standard?.executor.contextWindow).toBe(cappedWindow);
+		}
 	});
 
 	test(":thinking suffix produces that explicit level", () => {
@@ -130,6 +132,34 @@ describe("resolveDuoConfig", () => {
 		expect(resolved?.planner.id).toBe("claude-fable-5");
 		expect(resolved?.plannerThinking).toBe(ThinkingLevel.High);
 		expect(resolved?.executorThinking).toBe(ThinkingLevel.Max);
+	});
+
+	test("the recovered window is what the compaction gate reads at 400K tokens", () => {
+		const catalogAstra = getBundledModel("openai", "gpt-6-astra");
+		if (!catalogAstra) throw new Error("Expected a bundled openai gpt-6-astra");
+		const astra = applyModelOverride(catalogAstra, { contextWindow: 272_000 });
+		const anyAuth = { hasConfiguredAuth: () => true } as unknown as ModelRegistry;
+		const compaction = Settings.isolated().getGroup("compaction");
+		const contextTokens = 400_000;
+
+		const capped = resolveDuoConfig(
+			settings({ "duo.executorModel": "openai/gpt-6-astra", "duo.extendedContext": false }),
+			[fable5, astra],
+			anyAuth,
+		)?.executor.contextWindow;
+		const extended = resolveDuoConfig(
+			settings({ "duo.executorModel": "openai/gpt-6-astra" }),
+			[fable5, astra],
+			anyAuth,
+		)?.executor.contextWindow;
+		if (capped === undefined || capped === null || extended === undefined || extended === null) {
+			throw new Error("duo executor did not resolve");
+		}
+
+		// A switch onto the capped model lands over the threshold and compacts on
+		// arrival; the recovered window is what makes the switch survivable.
+		expect(shouldCompact(contextTokens, capped, compaction)).toBe(true);
+		expect(shouldCompact(contextTokens, extended, compaction)).toBe(false);
 	});
 
 	test("auto-detect picks the higher-version fable over a lower one", () => {
