@@ -1921,8 +1921,9 @@ function withDuoContextWindow(model: Model<Api>, settings: Settings): Model<Api>
 	// The registry's premium-tier cap rewrites `contextWindow` to the threshold,
 	// and the rewritten value is what a spec rebuild returns, so the catalog row
 	// is the only place the full window survives (openai/gpt-6-astra: 1.05M
-	// behind a 272K threshold). Recover it only for a model sitting exactly on
-	// its threshold, so an explicit user `contextWindow` override still wins.
+	// behind a 272K threshold). The model carries no provenance for its current
+	// window, so an explicit user `contextWindow` BELOW the model's capacity is
+	// raised here too — `duo.extendedContext: false` is the way to keep it.
 	const threshold = model.cost.longContext?.inputThreshold;
 	const catalogWindow =
 		threshold !== undefined && model.contextWindow === threshold
