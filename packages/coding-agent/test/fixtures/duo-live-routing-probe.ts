@@ -16,6 +16,7 @@ let sawPriorToolStep = false;
 let advertisedTools: string[] = [];
 let usageLimit = false;
 let usageLimitFired = false;
+const attempts: string[] = [];
 const choice = (value: string) => ({ type: "choice", choice: value, confidence: 0.95, probabilities: { [value]: 1 } });
 const server = Bun.serve({
 	hostname: "127.0.0.1",
@@ -30,6 +31,9 @@ const server = Bun.serve({
 				tools?: { name: string }[];
 			};
 			const primary = body.tools?.some(tool => tool.name === "bash" || tool.name === "_bash");
+			// Every primary attempt is recorded before the 429 branch, so a retry
+			// that lands on the spent model again is visible instead of invisible.
+			if (primary) attempts.push(body.model);
 			// One account-level 429 with a multi-hour retry-after, exactly as the
 			// provider answers a spent 5h window: no retry budget can wait it out,
 			// so recovery has to be the duo fallback chain.
@@ -201,6 +205,7 @@ try {
 		reject = failure;
 		usageLimit = mode === "usage-limit";
 		usageLimitFired = false;
+		attempts.length = 0;
 		turn = 0;
 		sawPriorToolStep = false;
 		calls.length = 0;
@@ -259,12 +264,17 @@ try {
 		}
 		if (mode === "usage-limit") {
 			if (!usageLimitFired) throw new Error("The probe never returned the account 429");
+			const blocked = attempts.indexOf("claude-fable-5-1");
+			if (blocked === -1) throw new Error("The spent rung was never attempted");
+			// The 429 rung is the top one: recovery is only possible because the duo
+			// chain now continues down the ladder. Assert on every ATTEMPT, so a
+			// retry that lands back on the spent model fails this check.
+			if (attempts[blocked + 1] !== "gpt-6-astra")
+				throw new Error(`Usage limit did not fall to the next rung: ${JSON.stringify(attempts)}`);
+			if (attempts.slice(blocked + 1).includes("claude-fable-5-1"))
+				throw new Error(`The spent rung was retried before its reset: ${JSON.stringify(attempts)}`);
 			if (calls.some(call => call.model === "claude-fable-5-1"))
 				throw new Error("A usage-limited model still answered a request");
-			// The 429 rung is the top one: recovery is only possible because the
-			// duo chain now continues down the ladder.
-			if (!calls.some(call => call.model === "gpt-6-astra"))
-				throw new Error(`Usage limit did not fall back to the next rung: ${JSON.stringify(calls)}`);
 		} else if (mode === "live") {
 			if (!sawPriorToolStep) throw new Error("Live routing omitted the preceding tool-loop step");
 			// Extreme + risk, but those turns were exploration: the executor takes the stream.
