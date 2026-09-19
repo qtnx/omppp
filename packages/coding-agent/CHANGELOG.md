@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.10.2] - 2026-09-19
+
 ### Added
 
 - `/usage` now ends its overview with a session cache block: one stacked bar splitting the prompt into cache hits, cache writes, and uncached input, plus the provider-priced cost of each bucket and an estimate of what the hits saved.
@@ -14,17 +16,6 @@
 
 - Duo now adjusts models and reasoning effort during a running task using recent conversation history; short follow-ups retain context, and the executor no longer replaces the brainstorming model.
 - Everything sent to the TypeSafe signals endpoint (transcript slices, plans, prompts, context digests) is now scrubbed first: the session's known secrets are replaced by their placeholders and credential-shaped tokens by `[REDACTED]`.
-
-## [1.10.1] - 2026-09-18
-
-### Changed
-
-- The default duo executor thinking level is now `high` (was `max`), in `duo.executorThinking` and the `duo.phaseModels` defaults that inherit it.
-- The advisor review gate now asks TypeSafe whether the advisor is actually needed on each turn — including turns that just yielded — so chit-chat, short answers, and routine progress no longer wake the advisor; only consults and unclassified turns still reach it unconditionally.
-
-### Fixed
-
-- Turn classification now sends the live duo work phase (`duo_phase`) with each turn, so the classifier judges a turn against the phase the session is actually in; it was accepted by the client but never populated.
 
 ## [18.2.3] - 2026-09-17
 
@@ -1710,6 +1701,17 @@
 - `/retry` and `/handoff` now work over ACP, so editor clients (Zed) list them and can run them instead of sending the text to the model.
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
+
+## [1.10.1] - 2026-09-18
+
+### Changed
+
+- The default duo executor thinking level is now `high` (was `max`), in `duo.executorThinking` and the `duo.phaseModels` defaults that inherit it.
+- The advisor review gate now asks TypeSafe whether the advisor is actually needed on each turn — including turns that just yielded — so chit-chat, short answers, and routine progress no longer wake the advisor; only consults and unclassified turns still reach it unconditionally.
+
+### Fixed
+
+- Turn classification now sends the live duo work phase (`duo_phase`) with each turn, so the classifier judges a turn against the phase the session is actually in; it was accepted by the client but never populated.
 
 ## [1.10.0] - 2026-09-18
 

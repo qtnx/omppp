@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.10.2] - 2026-09-19
+
 ### Added
 
 - Consumed tool output is now shed mid-turn while the prompt cache is still warm: a large tool result the model has read exactly once (the slice the previous request introduced) is replaced by its recall placeholder when Jev judges the upcoming work no longer needs it and the rewrite pays back on the next request. Set `OMP_CONTEXT_GC_HOT_TRIM=0` to disable.
