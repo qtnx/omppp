@@ -112,7 +112,8 @@ const server = Bun.serve({
 		}
 		const difficulty = turn <= 8 ? "extreme" : turn <= 10 ? "easy" : "hard";
 		// Turn 13: still hard, but the remaining step is mechanical — effort drops on the same model at once.
-		const thinking = difficulty === "extreme" ? "xhigh" : difficulty === "easy" ? "medium" : turn === 13 ? "medium" : "high";
+		const thinking =
+			difficulty === "extreme" ? "xhigh" : difficulty === "easy" ? "medium" : turn === 13 ? "medium" : "high";
 		return Response.json({
 			model: "jev-local-fixture",
 			answers: {
