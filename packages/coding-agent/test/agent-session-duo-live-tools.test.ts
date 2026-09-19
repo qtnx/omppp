@@ -273,6 +273,22 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		expect(session.getActiveToolNames()).toContain("read");
 	});
 
+	it("restores the registry context window when duo is switched off", async () => {
+		const session = createHarness({ activeToolNames: ["read"] });
+		await session.setDuoEnabled(true);
+		const current = session.model;
+		if (!current) throw new Error("Expected a session model");
+		const standardWindow = current.contextWindow;
+		await session.setModelTemporary({ ...current, contextWindow: 1_050_000 });
+		expect(session.model?.contextWindow).toBe(1_050_000);
+
+		await session.setDuoEnabled(false);
+
+		// The window duo granted is duo's: an ordinary session must not keep
+		// billing long-context rates after `/duo off`.
+		expect(session.model?.contextWindow).toBe(standardWindow);
+	});
+
 	it("/duo on|off are session-scoped: the persisted duo.mode survives the toggle", async () => {
 		const session = createHarness({ activeToolNames: ["read"], initialModelId: "claude-sonnet-4-5" });
 

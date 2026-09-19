@@ -6,7 +6,12 @@
 
 - Duo now adjusts reasoning effort on the current model from a single confident Jev judgment, taking effect on the next request even mid-turn — so finishing steps such as running known tests, committing, or opening a PR/MR after a hard implementation run at medium effort. Switching to a different model still waits for two agreeing judgments.
 - Duo routing now skips a model whose account has no quota headroom left (5-hour or weekly usage window spent, live usage-limit block) instead of routing onto it and failing with a multi-hour `retry-after`, and the top rung's fallback chain now continues down the ladder so a usage-limited planner model has somewhere to fall.
-- Duo-routed models keep their full context window (`duo.extendedContext`, on by default): switching to GPT-6 Astra mid-task gets its 1.05M window instead of the 272K standard-pricing cap, so the switch no longer forces an immediate compaction. Requests above the standard threshold bill at the provider's long-context rate.
+- Duo-routed models keep their full context window (`duo.extendedContext`, on by default): switching to GPT-6 Astra mid-task gets its 1.05M window instead of the 272K standard-pricing cap, so the switch no longer forces an immediate compaction. Requests above the standard threshold bill at the provider's long-context rate, and leaving duo puts the registry's standard window back on the stream.
+
+### Fixed
+
+- Duo no longer keeps a planner-grade model on the main stream for exploration: reading, grepping, and globbing code with no edit landing routes to the executor rung whatever the task's difficulty or risk, so a risky or extreme task stops paying Fable/Astra prices to read the repository.
+- `duo_handoff`, `duo_escalate`, and `duo_change_phase` are now registered in every session instead of only when a duo controller happened to be live at tool-registry build time, which left an activated duo session with no handoff tool.
 
 ## [1.10.2] - 2026-09-19
 
@@ -20,9 +25,7 @@
 
 ### Fixed
 
-- Duo no longer keeps a planner-grade model on the main stream for exploration: reading, grepping, and globbing code with no edit landing routes to the executor rung whatever the task's difficulty or risk, so a risky or extreme task stops paying Fable/Astra prices to read the repository.
 - Duo now adjusts models and reasoning effort during a running task using recent conversation history; short follow-ups retain context, and the executor no longer replaces the brainstorming model.
-- `duo_handoff`, `duo_escalate`, and `duo_change_phase` are now registered in every session instead of only when a duo controller happened to be live at tool-registry build time, which left an activated duo session with no handoff tool.
 - Everything sent to the TypeSafe signals endpoint (transcript slices, plans, prompts, context digests) is now scrubbed first: the session's known secrets are replaced by their placeholders and credential-shaped tokens by `[REDACTED]`.
 
 ## [18.2.3] - 2026-09-17

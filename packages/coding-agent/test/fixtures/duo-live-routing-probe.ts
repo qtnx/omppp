@@ -14,6 +14,8 @@ let turn = 0;
 let reject = false;
 let sawPriorToolStep = false;
 let advertisedTools: string[] = [];
+let usageLimit = false;
+let usageLimitFired = false;
 const choice = (value: string) => ({ type: "choice", choice: value, confidence: 0.95, probabilities: { [value]: 1 } });
 const server = Bun.serve({
 	hostname: "127.0.0.1",
@@ -28,6 +30,19 @@ const server = Bun.serve({
 				tools?: { name: string }[];
 			};
 			const primary = body.tools?.some(tool => tool.name === "bash" || tool.name === "_bash");
+			// One account-level 429 with a multi-hour retry-after, exactly as the
+			// provider answers a spent 5h window: no retry budget can wait it out,
+			// so recovery has to be the duo fallback chain.
+			if (primary && usageLimit && body.model === "claude-fable-5-1") {
+				usageLimitFired = true;
+				return new Response(
+					JSON.stringify({
+						type: "error",
+						error: { type: "rate_limit_error", message: "This request would exceed your account's rate limit." },
+					}),
+					{ status: 429, headers: { "Content-Type": "application/json", "retry-after-ms": "11005000" } },
+				);
+			}
 			if (primary) {
 				calls.push({ model: body.model, thinking: body.output_config?.effort ?? body.thinking });
 				advertisedTools = body.tools?.map(tool => tool.name.replace(/^_/, "")) ?? [];
@@ -181,8 +196,11 @@ try {
 			mnemopi: { autoRecall: false, autoRetain: false, noEmbeddings: true, llmMode: "none" },
 		}),
 	);
-	for (const failure of [false, true]) {
+	for (const mode of ["live", "endpoint-503", "usage-limit"] as const) {
+		const failure = mode === "endpoint-503";
 		reject = failure;
+		usageLimit = mode === "usage-limit";
+		usageLimitFired = false;
 		turn = 0;
 		sawPriorToolStep = false;
 		calls.length = 0;
@@ -225,10 +243,10 @@ try {
 		clearTimeout(timer);
 		const events = Bun.JSONL.parse(stdout) as { type: string; isError?: boolean }[];
 		const toolResults = events.filter(event => event.type === "tool_execution_end");
-		if (toolResults.length !== 13 || toolResults.some(event => event.isError))
+		if (mode !== "usage-limit" && (toolResults.length !== 13 || toolResults.some(event => event.isError)))
 			throw new Error(`Expected thirteen successful real tool calls: ${JSON.stringify(toolResults)}`);
-		console.log(JSON.stringify({ case: failure ? "endpoint-503" : "live-routing", turns: turn, calls }));
-		if (exit !== 0 || (!failure && !calls.some(call => call.model === "claude-fable-5-1"))) {
+		console.log(JSON.stringify({ case: mode, turns: turn, calls }));
+		if (exit !== 0 || (mode === "live" && !calls.some(call => call.model === "claude-fable-5-1"))) {
 			const logDir = path.join(root, ".omp", "logs");
 			const logs = await fs.readdir(logDir);
 			const log = logs.find(name => name.endsWith(`.${child.pid}.log`));
@@ -239,7 +257,15 @@ try {
 		for (const name of ["duo_handoff", "duo_escalate", "duo_change_phase"]) {
 			if (!advertisedTools.includes(name)) throw new Error(`Live session did not advertise ${name}`);
 		}
-		if (!failure) {
+		if (mode === "usage-limit") {
+			if (!usageLimitFired) throw new Error("The probe never returned the account 429");
+			if (calls.some(call => call.model === "claude-fable-5-1"))
+				throw new Error("A usage-limited model still answered a request");
+			// The 429 rung is the top one: recovery is only possible because the
+			// duo chain now continues down the ladder.
+			if (!calls.some(call => call.model === "gpt-6-astra"))
+				throw new Error(`Usage limit did not fall back to the next rung: ${JSON.stringify(calls)}`);
+		} else if (mode === "live") {
 			if (!sawPriorToolStep) throw new Error("Live routing omitted the preceding tool-loop step");
 			// Extreme + risk, but those turns were exploration: the executor takes the stream.
 			if (calls[6]?.model !== "deepseek-v4.1-flash")
@@ -256,7 +282,7 @@ try {
 			throw new Error("Unavailable classifier changed model");
 	}
 	console.log(
-		"installed duo routing probe: pass (recent history + live adaptation + immediate effort + unavailable endpoint)",
+		"installed duo routing probe: pass (recent history + live adaptation + immediate effort + account 429 fallback + unavailable endpoint)",
 	);
 } finally {
 	await server.stop(true);

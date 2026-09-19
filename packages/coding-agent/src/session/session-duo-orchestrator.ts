@@ -434,6 +434,13 @@ export class SessionDuoOrchestrator {
 						return true;
 					}
 				},
+				restoreStandardContextWindow: async () => {
+					const current = this.#host.currentModel();
+					if (!current) return;
+					const standard = this.#host.modelRegistry.find(current.provider, current.id);
+					if (!standard || standard.contextWindow === current.contextWindow) return;
+					await this.#host.setModelTemporary(standard, this.#host.configuredThinkingLevel());
+				},
 				installFallbackChain: (selector, chain) => {
 					const settings = this.#host.settings;
 					settings.override("retry.fallbackChains", {

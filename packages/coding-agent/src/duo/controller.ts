@@ -87,6 +87,12 @@ export interface DuoControllerHost {
 	 * budget can absorb.
 	 */
 	hasUsageHeadroom?(model: Model): boolean;
+	/**
+	 * Put the registry's standard model back on the stream when duo releases it,
+	 * so the extended window duo granted (`duo.extendedContext`) never outlives
+	 * duo itself and bills long-context rates in an ordinary session.
+	 */
+	restoreStandardContextWindow?(): Promise<void> | void;
 	/** Phase-switch policy thresholds (`duo.phaseSwitch.minConfidence`, `signals.stuckThreshold`). */
 	phasePolicy?(): DuoPhasePolicy;
 }
@@ -846,7 +852,6 @@ export class DuoController {
 		this.#pendingSwitch = undefined;
 		this.#host.setPlanModeEnabled(false);
 		this.#host.stopDuoAdvisor();
-		this.#advisorPaused = false;
 		this.#executorThinkingOverride = undefined;
 		this.#phaseModelSelector = undefined;
 		this.#phaseModelSwitch = undefined;
@@ -860,6 +865,8 @@ export class DuoController {
 			this.#host.setThinkingLevel(restoredThinking);
 		}
 		await this.#host.setOrchestratorEnabled(false);
+		// The extended window duo granted must not outlive duo.
+		await this.#host.restoreStandardContextWindow?.();
 		this.#refreshSnapshotMetadata(snapshot.preDuoThinking);
 		this.#persistSnapshot();
 	}

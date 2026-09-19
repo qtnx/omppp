@@ -1720,6 +1720,49 @@ describe("DuoController difficulty routing", () => {
 		expect(host.switches).toEqual([{ model: mid, thinkingLevel: ThinkingLevel.XHigh }]);
 	});
 
+	test("discovery inside the preplanning hold keeps the brainstorm floor", async () => {
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		const controller = new DuoController(host, {
+			...routingConfig,
+			phaseModels: { preplanning: [{ selector: "anthropic/claude-sonnet-4.5", model: mid }] },
+		});
+		await controller.reevaluate();
+		host.switches = [];
+		const exploring = turnSignals({
+			phase: "planning",
+			phaseConfidence: 0.99,
+			openEndedDiscovery: 0.9,
+			routing: { difficulty: "hard", difficultyConfidence: 0.9, risk: 0, thinking: "high" },
+		});
+		controller.notifyTurnSignals(exploring);
+		controller.notifyTurnSignals(exploring);
+
+		// The opening brainstorm phase owns its model for a bounded dwell, so
+		// scouting during it is not demoted to the executor.
+		expect(host.switches.map(call => call.model)).not.toContain(cheap);
+		expect(controller.status.workPhase).toBe("preplanning");
+	});
+
+	test("leaving duo puts the standard context window back on the stream", async () => {
+		const extended = { ...mid, contextWindow: 1_050_000 } as Model;
+		const host = fakeHost({ model: otherModel, planModeOn: false });
+		let restored = 0;
+		host.restoreStandardContextWindow = async () => {
+			restored += 1;
+			host.model = mid;
+		};
+		const controller = new DuoController(host, routingConfig);
+		await controller.reevaluate();
+		host.model = extended;
+
+		await controller.deactivate();
+
+		// The 1.05M window duo granted is duo's, not the session's: an ordinary
+		// session must not keep billing long-context rates after `/duo off`.
+		expect(restored).toBe(1);
+		expect(host.model?.contextWindow).toBe(mid.contextWindow);
+	});
+
 	test("reassesses model and effort during a running request, then applies them at a turn boundary", async () => {
 		const { host, controller } = await executingController();
 		await controller.routeUserPrompt({ difficulty: "easy", difficultyConfidence: 0.8, risk: 0 });
