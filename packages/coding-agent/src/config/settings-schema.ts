@@ -805,6 +805,34 @@ export const SETTINGS_SCHEMA = {
 				'JSON object mapping a work phase (preplanning, planning, implementing, verifying, debugging, blocked, reporting) to a model selector or an ordered list of selectors, e.g. {"debugging":["anthropic/claude-opus-5:high","anthropic/claude-fable-5-1:high"],"reporting":"tnx/openrouter/deepseek/deepseek-v4.1-flash:low"}. The first available selector is used; later entries become rate-limit fallbacks. Phases without an entry keep the executor model (the planner keeps planning and takeovers as before). A configured preplanning phase opens each fresh duo session on its model — the model moves on with the duo_change_phase tool. Requires TypeSafe signals (signals.enabled plus a reachable signals.baseUrl or key).',
 		},
 	},
+	"duo.routing.models": {
+		type: "array",
+		default: [
+			"tnx/openrouter/deepseek/deepseek-v4.1-flash",
+			"anthropic/claude-opus-5",
+			"openai-codex/gpt-6-astra",
+			"anthropic/claude-fable-5-1",
+		],
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Routing Ladder",
+			description:
+				"Model selectors ordered from least to most capable. On every user prompt, TypeSafe judges the request's difficulty (easy, moderate, hard, extreme; a risk-domain request moves one rung up) and duo puts the matching rung on the main stream for that request, skipping rungs whose provider is in a usage-limit or auth cooldown; the rungs above it become its rate-limit fallbacks. A selector may carry its own :thinking suffix; otherwise duo.routing.thinking picks the level. Empty disables routing and leaves duo.phaseModels in charge.",
+			ordered: true,
+		},
+	},
+	"duo.routing.thinking": {
+		type: "record",
+		default: { easy: "medium", moderate: "high", hard: "high", extreme: "xhigh" } as Record<string, string>,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Routing Thinking",
+			description:
+				'Thinking level per judged difficulty for the routed model, e.g. {"easy":"medium","moderate":"high","hard":"high","extreme":"xhigh"}. A tier without an entry inherits the executor thinking level.',
+		},
+	},
 	"duo.phaseSwitch.minConfidence": {
 		type: "number",
 		default: 0.7,

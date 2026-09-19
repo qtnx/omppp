@@ -35,6 +35,12 @@ export interface TurnSignals {
 	doneWithoutEvidence: number;
 	/** Probability the turn holds two or more independent work slices. */
 	parallelSlices: number;
+	/**
+	 * Probability the slice is open-ended discovery in unfamiliar code (many
+	 * reads/searches across modules with no edit target yet) rather than a
+	 * targeted lookup. Omitted when the classifier did not answer it.
+	 */
+	openEndedDiscovery?: number;
 	model: string;
 	inputTokens: number;
 }
@@ -65,6 +71,25 @@ export interface LearningSignals {
 export interface TopicSignals {
 	/** Probability the request starts work the prior context is not needed for. */
 	topicSwitch: number;
+}
+
+/** How hard a new user request is judged before any work starts, easiest first. */
+export type PromptDifficulty = "easy" | "moderate" | "hard" | "extreme";
+
+/** Ascending difficulty; the index doubles as the rung on the routing model ladder. */
+export const PROMPT_DIFFICULTIES: readonly PromptDifficulty[] = ["easy", "moderate", "hard", "extreme"];
+
+export function isPromptDifficulty(value: unknown): value is PromptDifficulty {
+	return typeof value === "string" && (PROMPT_DIFFICULTIES as readonly string[]).includes(value);
+}
+
+/** Judgments over a new user request, used to route it to the right model tier. */
+export interface PromptSignals {
+	difficulty: PromptDifficulty;
+	/** Choice confidence 0..1 for `difficulty`. */
+	difficultyConfidence: number;
+	/** Probability the request touches a risk domain (auth, money, data migration, deploy, secrets). */
+	risk: number;
 }
 
 /** One prompt record offered to the context-trim judgment. */

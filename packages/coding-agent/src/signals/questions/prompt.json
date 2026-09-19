@@ -1,0 +1,20 @@
+{
+	"difficulty": {
+		"type": "choice",
+		"instructions": "The state holds a new request a user just sent to a coding agent (`request`), optionally with a short digest of what the session was doing before (`prior_context`). How much work and judgment does completing this request take? Judge the request itself, not how long the session has been running. The answer picks which model tier and how much reasoning effort the request gets.",
+		"criteria": {
+			"easy": "A question answerable from context, a one-line or single-file mechanical change, a rename, a typo, running one command, a status check, or a small follow-up to work already done in the session",
+			"moderate": "A contained feature or fix inside a few known files, a focused investigation, or a change whose shape is clear but needs reading and testing",
+			"hard": "A multi-module feature, a refactor across many callers, a debugging hunt with no known cause, an unfamiliar area needing exploration, or a change that needs a plan before code",
+			"extreme": "An architectural or system-wide design decision, a migration or rewrite touching many subsystems, a subtle concurrency or correctness problem, or work where a wrong call is expensive and the reasoning itself is the hard part"
+		}
+	},
+	"risk_domain": {
+		"type": "noul",
+		"instructions": "Does the request touch a risk domain where a mistake is expensive or hard to reverse: authentication, permissions, payments or balances, personal data, database schema or data migration, concurrency primitives, deployment or infrastructure, secrets, or deleting/rewriting shared history?",
+		"criteria": {
+			"true": "The request names or clearly implies one of those domains (login, tokens, billing, ledger, migration, prod deploy, git history rewrite, credentials)",
+			"false": "Ordinary code, docs, tests, UI, tooling, or questions with no such domain involved"
+		}
+	}
+}

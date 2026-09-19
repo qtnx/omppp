@@ -43,5 +43,13 @@
 			"true": "Two or more separable work packages with distinct files or components and no runtime dependency between them",
 			"false": "One coherent slice, sequential steps that depend on each other, or work too small to split"
 		}
+	},
+	"open_ended_discovery": {
+		"type": "noul",
+		"instructions": "Is the agent in this slice doing open-ended discovery of code it does not yet know, or a targeted lookup? Open-ended discovery means reading, searching, or globbing across several files or modules to build a picture of how something works, with no specific file or symbol chosen for editing yet. A targeted lookup opens a file or symbol the agent already named, checks one fact, or re-reads a file it is about to edit.",
+		"criteria": {
+			"true": "Several reads, greps, or globs across different files or modules in a row, exploring structure, callers, or data flow, with no edit yet and no concrete file:line anchor for the change named",
+			"false": "A single or targeted read of a known file or symbol, a re-read before an edit, running or checking commands, or the agent already named where the change goes"
+		}
 	}
 }

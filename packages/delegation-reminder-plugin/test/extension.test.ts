@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type {
+	AgentStartEvent,
 	ExtensionAPI,
 	ToolCallEvent,
 	ToolResultEvent,
@@ -19,6 +20,7 @@ type ToolResultHandler = (event: ToolResultEvent) => ToolResultEventResult | und
 type ToolCallHandler = (event: ToolCallEvent) => void;
 type TurnStartHandler = () => void;
 type TurnEndHandler = (event: TurnEndEvent) => void;
+type AgentStartHandler = (event: AgentStartEvent) => void;
 
 interface AppendedEntry {
 	customType: string;
@@ -86,6 +88,10 @@ function getHandler<T>(fakePi: FakePi, event: string): T {
 
 function startTurn(fakePi: FakePi): void {
 	getHandler<TurnStartHandler>(fakePi, "turn_start")();
+}
+
+function startAgent(fakePi: FakePi): void {
+	getHandler<AgentStartHandler>(fakePi, "agent_start")({ type: "agent_start" });
 }
 
 function callTool(fakePi: FakePi, toolName: string): void {
@@ -161,7 +167,7 @@ function runHandsOn(fakePi: FakePi, count: number, toolName = "edit"): ToolResul
 }
 
 /** Publish a TypeSafe turn classification on the session bus, as AgentSession does. */
-function emitTurnSignals(fakePi: FakePi, parallelSlices: number): void {
+function emitTurnSignals(fakePi: FakePi, parallelSlices: number, openEndedDiscovery?: number): void {
 	fakePi.events.emit(TURN_SIGNALS_CHANNEL, {
 		phase: "implementing",
 		phaseConfidence: 0.9,
@@ -169,6 +175,7 @@ function emitTurnSignals(fakePi: FakePi, parallelSlices: number): void {
 		stuck: 0,
 		doneWithoutEvidence: 0,
 		parallelSlices,
+		openEndedDiscovery,
 		model: "test-model",
 		inputTokens: 1,
 	} satisfies TurnSignals);
@@ -291,6 +298,7 @@ describe("delegationReminderExtension", () => {
 			handsOnCount: 3,
 			taskCount: 1,
 			threshold: 2,
+			kind: "hands-on",
 		});
 	});
 
@@ -399,5 +407,117 @@ describe("delegationReminderExtension", () => {
 		startTurn(fakePi);
 		callTool(fakePi, "edit");
 		expect(resultFor(fakePi, "edit")?.content).toBeDefined();
+	});
+
+	it("nudges once per run when hand-scouting crosses the discovery threshold across turns", () => {
+		const fakePi = createFakePi();
+		delegationReminderExtension(fakePi as unknown as ExtensionAPI);
+		startAgent(fakePi);
+
+		// Turn 1: four reads, still below the default discovery threshold of 8.
+		startTurn(fakePi);
+		for (let i = 0; i < 4; i++) {
+			callTool(fakePi, "read");
+			expect(resultFor(fakePi, "read")).toBeUndefined();
+		}
+		endTurn(fakePi);
+
+		// Turn 2: per-turn counters reset, the run-scoped discovery count does not.
+		startTurn(fakePi);
+		for (let i = 0; i < 3; i++) {
+			callTool(fakePi, "grep");
+			expect(resultFor(fakePi, "grep")).toBeUndefined();
+		}
+		callTool(fakePi, "glob");
+		const crossed = resultFor(fakePi, "glob", [{ type: "text", text: "matches" }]);
+		const blocks = crossed?.content ?? [];
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0]).toEqual({ type: "text", text: "matches" });
+		expect((blocks[1] as TextContent).text).toContain("8 read/grep/glob calls this run");
+		expect((blocks[1] as TextContent).text).toContain("`scout`/`explore` subagents");
+
+		// Advisory fires once per run.
+		callTool(fakePi, "read");
+		expect(resultFor(fakePi, "read")).toBeUndefined();
+
+		expect(fakePi.appendedEntries).toHaveLength(1);
+		expect(fakePi.appendedEntries[0].customType).toBe(DELEGATION_REMINDER_CUSTOM_TYPE);
+		expect(fakePi.appendedEntries[0].data).toMatchObject({
+			kind: "discovery",
+			discoveryCount: 8,
+			threshold: 8,
+		});
+	});
+
+	it("gates the discovery nudge on the open-ended-discovery classification", () => {
+		const targeted = createFakePi();
+		createDelegationReminderExtension({ discoveryThreshold: 2 })(targeted as unknown as ExtensionAPI);
+		emitTurnSignals(targeted, 0.9, 0.2);
+		startAgent(targeted);
+		startTurn(targeted);
+		for (let i = 0; i < 3; i++) {
+			callTool(targeted, "read");
+			expect(resultFor(targeted, "read")).toBeUndefined();
+		}
+		expect(targeted.appendedEntries).toEqual([]);
+
+		// At the minimum the slice counts as open-ended discovery → nudge.
+		const openEnded = createFakePi();
+		createDelegationReminderExtension({ discoveryThreshold: 2 })(openEnded as unknown as ExtensionAPI);
+		emitTurnSignals(openEnded, 0.9, 0.6);
+		startAgent(openEnded);
+		startTurn(openEnded);
+		callTool(openEnded, "read");
+		expect(resultFor(openEnded, "read")).toBeUndefined();
+		callTool(openEnded, "read");
+		expect(resultFor(openEnded, "read")?.content).toBeDefined();
+	});
+
+	it("skips the discovery nudge after a task dispatch or once editing started", () => {
+		const delegated = createFakePi();
+		createDelegationReminderExtension({ discoveryThreshold: 2 })(delegated as unknown as ExtensionAPI);
+		startAgent(delegated);
+		startTurn(delegated);
+		callTool(delegated, "task");
+		resultFor(delegated, "task");
+		for (let i = 0; i < 4; i++) {
+			callTool(delegated, "read");
+			expect(resultFor(delegated, "read")).toBeUndefined();
+		}
+		expect(delegated.appendedEntries).toEqual([]);
+
+		// Reads after the first hands-on call are re-reads before an edit, not scouting.
+		const editing = createFakePi();
+		createDelegationReminderExtension({ threshold: 99, discoveryThreshold: 2 })(editing as unknown as ExtensionAPI);
+		startAgent(editing);
+		startTurn(editing);
+		callTool(editing, "edit");
+		expect(resultFor(editing, "edit")).toBeUndefined();
+		for (let i = 0; i < 4; i++) {
+			callTool(editing, "read");
+			expect(resultFor(editing, "read")).toBeUndefined();
+		}
+		expect(editing.appendedEntries).toEqual([]);
+	});
+
+	it("resets the discovery count on agent_start", () => {
+		const fakePi = createFakePi();
+		createDelegationReminderExtension({ discoveryThreshold: 3 })(fakePi as unknown as ExtensionAPI);
+		startAgent(fakePi);
+		startTurn(fakePi);
+		for (let i = 0; i < 2; i++) {
+			callTool(fakePi, "read");
+			expect(resultFor(fakePi, "read")).toBeUndefined();
+		}
+
+		// New run: the two earlier reads no longer count toward the threshold.
+		startAgent(fakePi);
+		startTurn(fakePi);
+		for (let i = 0; i < 2; i++) {
+			callTool(fakePi, "read");
+			expect(resultFor(fakePi, "read")).toBeUndefined();
+		}
+		callTool(fakePi, "codegraph_explore");
+		expect(resultFor(fakePi, "codegraph_explore")?.content).toBeDefined();
 	});
 });

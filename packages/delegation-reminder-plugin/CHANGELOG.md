@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a run-scoped discovery reminder: after 8 `read`/`grep`/`glob`/`codegraph_explore` calls in a run with no edit and no `task` dispatch, the tool result carries a one-time notice to fan out `scout`/`explore` subagents instead of hand-scouting. Tunable via `discoveryThreshold`, suppressed when TypeSafe classifies the slice as targeted lookups.
+
 ## [1.6.6] - 2026-07-25
 
 ### Changed
