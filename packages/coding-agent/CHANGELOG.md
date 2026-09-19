@@ -6,11 +6,13 @@
 
 - `/usage` now ends its overview with a session cache block: one stacked bar splitting the prompt into cache hits, cache writes, and uncached input, plus the provider-priced cost of each bucket and an estimate of what the hits saved.
 - Context trim at a cold-cache model switch: when a session changes model (duo phase switch, manual switch) the provider prompt cache is cold for the new model anyway, so before the first request Jev judges every large prompt record against the upcoming work and the stale ones are shed — priced against the previous model's still-live prefix, so a flip-back inside its cache TTL is never paid for twice. Falls back to the kind-based cold-cache heuristic when Jev is unavailable.
-- Duo difficulty routing: every user prompt is judged by TypeSafe (easy / moderate / hard / extreme, plus whether it touches a risk domain) and duo puts the matching rung of `duo.routing.models` — an intelligence-ordered ladder, default deepseek-v4.1-flash → opus-5 → gpt-6-astra → fable-5-1 — on the main stream with the tier's thinking level from `duo.routing.thinking` (medium / high / high / xhigh). A risk-domain request moves one rung up; rungs in a usage-limit or auth cooldown are skipped; the free rungs above become the request's rate-limit fallbacks. The routed model holds for the whole request, so phase models no longer churn it. `/duo status` shows the routed tier.
+- Duo difficulty routing selects among deepseek-v4.1-flash, opus-5, gpt-6-astra, and fable-5-1, skips unavailable models, and shows the selected tier in `/duo status`.
+- A live Jev routing evaluation reports difficulty, reasoning, and model-selection accuracy on labeled conversation cases, including short follow-ups and quota fallbacks.
 - The scouting nudge: when the main agent has made 8+ read/grep/glob calls in one run with no edit and no `scout`/`explore` dispatched, and TypeSafe judges the slice as open-ended discovery, a notice tells it to fan the discovery out to subagents instead of paying for it in its own context.
 
 ### Fixed
 
+- Duo now adjusts models and reasoning effort during a running task using recent conversation history; short follow-ups retain context, and the executor no longer replaces the brainstorming model.
 - Everything sent to the TypeSafe signals endpoint (transcript slices, plans, prompts, context digests) is now scrubbed first: the session's known secrets are replaced by their placeholders and credential-shaped tokens by `[REDACTED]`.
 
 ## [1.10.1] - 2026-09-18

@@ -2581,7 +2581,7 @@ export class SessionMaintenance {
 		const idleSeconds = this.#idleSecondsSinceLastActivity();
 		if (idleSeconds === undefined || idleSeconds < compactionSettings.topicSwitchIdleSeconds) return false;
 		if (this.#estimateStoredContextTokens() < compactionSettings.topicSwitchMinContextTokens) return false;
-		const digest = this.#buildTopicDigest();
+		const digest = this.buildTopicDigest();
 		if (!digest) return false;
 
 		const judged = await signals.classifyTopicSwitch(digest, trimmedRequest);
@@ -2616,7 +2616,7 @@ export class SessionMaintenance {
 	 * classifier: session title, the latest compaction summary, and the last few
 	 * user requests — never the full transcript.
 	 */
-	#buildTopicDigest(): string | undefined {
+	buildTopicDigest(): string | undefined {
 		const parts: string[] = [];
 		const title = this.#host.sessionManager.getSessionName();
 		if (title) parts.push(`Title: ${title}`);

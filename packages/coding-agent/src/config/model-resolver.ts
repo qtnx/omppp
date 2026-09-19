@@ -1862,8 +1862,8 @@ export interface DuoPhaseModelCandidate {
 }
 
 export interface DuoRoutingConfig {
-	/** Resolved `duo.routing.models`, ascending capability; a rung's own `thinkingLevel` beats the per-tier level. */
-	ladder: DuoPhaseModelCandidate[];
+	/** Ascending capability; unresolved rungs retain their positions so tiers do not shift. */
+	ladder: (DuoPhaseModelCandidate | undefined)[];
 	/** Thinking level per judged difficulty; a missing tier inherits the executor level. */
 	thinking: Partial<Record<PromptDifficulty, ConfiguredThinkingLevel>>;
 }
@@ -2007,8 +2007,16 @@ function resolveDuoRouting(
 	availableModels: Model<Api>[],
 	modelRegistry: CanonicalModelRegistry,
 ): DuoRoutingConfig | undefined {
-	const ladder = resolveDuoCandidates(settings.get("duo.routing.models"), availableModels, settings, modelRegistry);
-	if (ladder.length === 0) return undefined;
+	const ladder = settings.get("duo.routing.models").map(pattern => {
+		const resolved = resolveExplicitDuoModel(pattern, availableModels, settings, modelRegistry);
+		if (!resolved) return undefined;
+		return {
+			selector: `${resolved.model.provider}/${resolved.model.id}`,
+			model: resolved.model,
+			...(resolved.thinkingLevel !== undefined ? { thinkingLevel: resolved.thinkingLevel } : {}),
+		};
+	});
+	if (!ladder.some(candidate => candidate !== undefined)) return undefined;
 	const thinking: Partial<Record<PromptDifficulty, ConfiguredThinkingLevel>> = {};
 	for (const [key, value] of Object.entries(settings.get("duo.routing.thinking"))) {
 		if (!isPromptDifficulty(key)) {

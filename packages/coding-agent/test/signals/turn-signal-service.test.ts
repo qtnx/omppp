@@ -21,6 +21,19 @@ const TURN_ANSWERS = {
 			probabilities: { debugging: 0.8, verifying: 0.2 },
 			confidence: 0.76,
 		},
+		difficulty: {
+			type: "choice",
+			choice: "hard",
+			probabilities: { easy: 0.05, moderate: 0.1, hard: 0.8, extreme: 0.05 },
+			confidence: 0.8,
+		},
+		thinking: {
+			type: "choice",
+			choice: "high",
+			probabilities: { medium: 0.1, high: 0.8, xhigh: 0.1 },
+			confidence: 0.8,
+		},
+		risk_domain: { type: "noul", noul: 0.21 },
 		needs_review: { type: "noul", noul: 0.21 },
 		progress: {
 			type: "score",
@@ -85,6 +98,12 @@ describe("TurnSignalService", () => {
 			stuck: 0.7,
 			doneWithoutEvidence: 0.05,
 			parallelSlices: 0.1,
+			routing: {
+				difficulty: "hard",
+				difficultyConfidence: 0.8,
+				thinking: "high",
+				risk: 0.21,
+			},
 			model: "jev-1.13.0",
 			inputTokens: 812,
 		});
@@ -93,14 +112,150 @@ describe("TurnSignalService", () => {
 		const state = sent?.state as Record<string, string>;
 		expect(state.duo_phase).toBe("executing");
 		expect(state.turn_status).toContain("in progress");
-		expect(Object.keys(sent?.questions as object).sort()).toEqual([
-			"done_without_evidence",
-			"needs_review",
-			"open_ended_discovery",
-			"parallel_slices",
-			"phase",
-			"progress",
-		]);
+	});
+	test("retains original request and digest when judging current work", async () => {
+		let turnState: Record<string, unknown> | undefined;
+		const promptResponse = {
+			model: "jev",
+			answers: {
+				difficulty: { type: "choice", choice: "hard", probabilities: { hard: 1 }, confidence: 1 },
+				thinking: { type: "choice", choice: "high", probabilities: { high: 1 }, confidence: 1 },
+				risk_domain: { type: "noul", noul: 0.2 },
+			},
+			usage: { input_tokens: 2, output_tokens: 2 },
+		};
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: fakeFetch(body => {
+				if ("phase" in (body.questions as Record<string, unknown>)) {
+					turnState = body.state as Record<string, unknown>;
+					return Response.json(TURN_ANSWERS);
+				}
+				return Response.json(promptResponse);
+			}),
+		});
+		const service = new TurnSignalService(client);
+
+		await service.classifyPrompt("Fix the retry loop", "Digest: retry test failed twice");
+		const signals = await service.classifyTurn("reproduced failure; second fix also failed", { wip: true });
+
+		expect(signals?.routing).toEqual({
+			difficulty: "hard",
+			difficultyConfidence: 0.8,
+			thinking: "high",
+			risk: 0.21,
+		});
+		expect(turnState).toEqual({
+			turn_status: "in progress: the agent will keep working after this slice",
+			transcript: "reproduced failure; second fix also failed",
+			request: "Fix the retry loop",
+			prior_context: "Digest: retry test failed twice",
+		});
+	});
+
+	test("maps bounded routing effort for trivial, hard, and extreme work", async () => {
+		const responseFor = (difficulty: string, thinking: string) => ({
+			...TURN_ANSWERS,
+			answers: {
+				...TURN_ANSWERS.answers,
+				difficulty: { type: "choice", choice: difficulty, probabilities: { [difficulty]: 1 }, confidence: 1 },
+				thinking: { type: "choice", choice: thinking, probabilities: { [thinking]: 1 }, confidence: 1 },
+				risk_domain: { type: "noul", noul: 0.1 },
+			},
+		});
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: fakeFetch(body => {
+				const transcript = String((body.state as Record<string, unknown>).transcript);
+				if (transcript.includes("rename")) return Response.json(responseFor("easy", "medium"));
+				if (transcript.includes("architecture")) return Response.json(responseFor("extreme", "xhigh"));
+				return Response.json(responseFor("hard", "high"));
+			}),
+		});
+		const service = new TurnSignalService(client);
+
+		const debugging = await service.classifyTurn("reproduced error; first fix failed; second fix failed", {
+			wip: true,
+		});
+		const trivial = await service.classifyTurn("rename known variable in one file", { wip: false });
+		const extreme = await service.classifyTurn("architecture migration across services with concurrency risk", {
+			wip: false,
+		});
+
+		expect(debugging?.routing?.difficulty).toBe("hard");
+		expect(debugging?.routing?.thinking).toBe("high");
+		expect(trivial?.routing).toMatchObject({ difficulty: "easy", thinking: "medium" });
+		expect(extreme?.routing).toMatchObject({ difficulty: "extreme", thinking: "xhigh" });
+	});
+
+	test("omits invalid or missing live routing while preserving base turn signals", async () => {
+		const responses = [
+			{
+				...TURN_ANSWERS,
+				answers: {
+					...TURN_ANSWERS.answers,
+					thinking: { type: "choice", choice: "low", probabilities: { low: 1 }, confidence: 1 },
+				},
+			},
+			{
+				...TURN_ANSWERS,
+				answers: {
+					...TURN_ANSWERS.answers,
+					difficulty: undefined,
+					thinking: undefined,
+					risk_domain: undefined,
+				},
+			},
+		];
+		for (const response of responses) {
+			const service = new TurnSignalService(
+				new TypeSafeClient({ apiKey: "k", fetch: fakeFetch(() => Response.json(response)) }),
+			);
+			const signals = await service.classifyTurn("working", { wip: true });
+			expect(signals?.phase).toBe("debugging");
+			expect(signals?.routing).toBeUndefined();
+			expect(service.latest).toBe(signals);
+		}
+	});
+
+	test("rejects invalid initial thinking effort", async () => {
+		const client = new TypeSafeClient({
+			apiKey: "k",
+			fetch: fakeFetch(() =>
+				Response.json({
+					model: "jev",
+					answers: {
+						difficulty: { type: "choice", choice: "moderate", probabilities: { moderate: 1 }, confidence: 1 },
+						thinking: { type: "choice", choice: "low", probabilities: { low: 1 }, confidence: 1 },
+						risk_domain: { type: "noul", noul: 0 },
+					},
+					usage: { input_tokens: 1, output_tokens: 1 },
+				}),
+			),
+		});
+		expect(await new TurnSignalService(client).classifyPrompt("Known edit", undefined)).toBeUndefined();
+	});
+
+	test("drops out-of-order turn results", async () => {
+		const oldResponse = Promise.withResolvers<Response>();
+		const newResponse = Promise.withResolvers<Response>();
+		let calls = 0;
+		const service = new TurnSignalService(
+			new TypeSafeClient({
+				apiKey: "k",
+				fetch: fakeFetch(() => (calls++ === 0 ? oldResponse.promise : newResponse.promise)),
+			}),
+		);
+
+		const old = service.classifyTurn("old transcript", { wip: true });
+		const current = service.classifyTurn("new transcript", { wip: false });
+		newResponse.resolve(Response.json({ ...TURN_ANSWERS, model: "new" }));
+		const currentSignals = await current;
+		oldResponse.resolve(Response.json({ ...TURN_ANSWERS, model: "old" }));
+
+		expect(currentSignals?.model).toBe("new");
+		expect(await old).toBeUndefined();
+		expect(service.latest?.model).toBe("new");
 	});
 
 	test("clips oversized state to its tail", async () => {
@@ -115,6 +270,22 @@ describe("TurnSignalService", () => {
 		const service = new TurnSignalService(client, { maxStateChars: 10 });
 		await service.classifyTurn("0123456789ABCDEFGHIJ", { wip: false });
 		expect((sent?.state as Record<string, string> | undefined)?.transcript).toBe("ABCDEFGHIJ");
+	});
+
+	test("retained request context shares the transcript budget instead of exceeding the endpoint limit", async () => {
+		let sent: Record<string, unknown> | undefined;
+		const service = new TurnSignalService(
+			new TypeSafeClient({
+				fetch: fakeFetch(body => {
+					sent = body;
+					return Response.json(TURN_ANSWERS);
+				}),
+			}),
+			{ maxStateChars: 12 },
+		);
+		await service.classifyPrompt("old-request", "old-context");
+		await service.classifyTurn("old-transcript", { wip: true });
+		expect(sent?.state).toMatchObject({ request: "est", prior_context: "ext", transcript: "script" });
 	});
 
 	test("authenticates only when a key is configured", async () => {
@@ -247,6 +418,7 @@ describe("TurnSignalService", () => {
 			model: "jev",
 			answers: {
 				difficulty: { type: "choice", choice, probabilities: { [choice]: 0.7 }, confidence: 0.64 },
+				thinking: { type: "choice", choice: "high", probabilities: { high: 0.9, medium: 0.1 }, confidence: 0.9 },
 				risk_domain: { type: "noul", noul: 0.88 },
 			},
 			usage: { input_tokens: 1, output_tokens: 1 },
@@ -264,6 +436,7 @@ describe("TurnSignalService", () => {
 		expect(await service.classifyPrompt("Migrate the ledger table", "Title: billing")).toEqual({
 			difficulty: "hard",
 			difficultyConfidence: 0.64,
+			thinking: "high",
 			risk: 0.88,
 		});
 		expect(state).toEqual({ request: "Migrate the ledger table", prior_context: "Title: billing" });

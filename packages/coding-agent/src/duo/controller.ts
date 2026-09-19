@@ -160,8 +160,11 @@ export class DuoController {
 	#phaseModelSwitch: { model: Model; thinkingLevel: ConfiguredThinkingLevel } | undefined;
 	/** Turns spent in the sticky preplanning phase; the classifier may take over after the bounded dwell. */
 	#preplanningTurns = 0;
-	/** Difficulty tier routed for the current request; while set, the routed model outranks phase models. */
+	/** Latest accepted routing decision; transcript judgments may replace it during the run. */
 	#routedTier: PromptDifficulty | undefined;
+	#routingSignals: PromptSignals | undefined;
+	#routingKey: string | undefined;
+	#routingStreak = 0;
 
 	constructor(host: DuoControllerHost, config: DuoResolvedConfig, restored?: DuoStateSnapshot) {
 		this.#host = host;
@@ -314,12 +317,13 @@ export class DuoController {
 	/** TypeSafe classification of the turn that just ended (see plan: phase models, stuck). */
 	notifyTurnSignals(signals: TurnSignals): void {
 		const policy = this.#host.phasePolicy?.() ?? DEFAULT_PHASE_POLICY;
-		// Preplanning is the duo session's opening phase and the model owns its exit
-		// (`duo_change_phase`), so the classifier must not re-route the phase model out
-		// from under it. The bounded dwell releases a session that never calls the tool.
+		if (!isDuoPhaseLive(this.#machine.phase)) return;
+		// Hold the opening phase until the model exits or the bounded dwell ends.
+		// Live difficulty/effort can still adapt, with the reasoning-model floor.
 		if (this.#machine.workPhase === "preplanning") {
 			this.#preplanningTurns++;
 			if (this.#preplanningTurns <= PREPLANNING_MAX_TURNS) {
+				this.#routeTurnSignals(signals, "preplanning", policy.minConfidence);
 				this.#persistSnapshot();
 				return;
 			}
@@ -331,57 +335,94 @@ export class DuoController {
 			this.#machine.setWorkPhase(signals.phase);
 			this.#persistSnapshot();
 		}
-		if (this.#machine.phase !== "executing") {
+		if (this.#machine.phase !== "executing" && this.#machine.phase !== "degraded") {
+			if (this.#machine.phase === "planning") {
+				this.#routeTurnSignals(signals, "planning", policy.minConfidence);
+			}
 			this.#watchPlannerTakeoverDrift(signals, policy.minConfidence);
 			return;
 		}
+		this.#routeTurnSignals(signals, this.#machine.workPhase ?? signals.phase, policy.minConfidence);
 		this.#switchPhaseModel(signals, policy.minConfidence);
 		this.#triggerStuckTakeover();
 	}
 
-	/**
-	 * Route a new user request onto the ladder rung its judged difficulty earns.
-	 * A risk-domain request moves one rung up. Rungs in a usage-limit or auth
-	 * cooldown are skipped upward (then downward when nothing above is free);
-	 * the free rungs above the chosen one become its rate-limit fallbacks. The
-	 * routed model holds the executor stream for the whole request: phase-model
-	 * switches from the classifier are suspended until the next prompt.
-	 */
+	/** Route the new request without treating a short follow-up as evidence that its task became easy. */
 	async routeUserPrompt(signals: PromptSignals): Promise<DuoRoutingDecision | undefined> {
+		this.#routingKey = undefined;
+		this.#routingStreak = 0;
+		this.#routingSignals = signals;
+		return this.#routeWork(signals, this.#machine.workPhase ?? "preplanning", "request");
+	}
+
+	/** Two agreeing transcript judgments gate changes, including effort-only adjustments. */
+	#routeTurnSignals(signals: TurnSignals, phase: WorkPhase, minConfidence: number): void {
+		const judged = signals.routing;
+		if (!judged || judged.difficultyConfidence < minConfidence || signals.phaseConfidence < minConfidence) {
+			this.#routingKey = undefined;
+			this.#routingStreak = 0;
+			return;
+		}
+		const key = `${phase}:${judged.difficulty}:${judged.thinking}:${judged.risk >= ROUTING_RISK_MIN}`;
+		this.#routingStreak = this.#routingKey === key ? this.#routingStreak + 1 : 1;
+		this.#routingKey = key;
+		if (this.#routingStreak < 2) return;
+		this.#routingSignals = judged;
+		void this.#routeWork(judged, phase, "transcript");
+	}
+
+	async #routeWork(
+		signals: PromptSignals,
+		phase: WorkPhase,
+		source: "request" | "transcript" | "phase",
+	): Promise<DuoRoutingDecision | undefined> {
 		const routing = this.#config.routing;
-		if (!routing || !isDuoPhaseLive(this.#machine.phase) || !this.#isExecutingLike()) return undefined;
+		if (!routing || !isDuoPhaseLive(this.#machine.phase) || this.#machine.phase === "takeover") return undefined;
 		const risk = signals.risk >= ROUTING_RISK_MIN;
 		const tierIndex = Math.min(
 			PROMPT_DIFFICULTIES.indexOf(signals.difficulty) + (risk ? 1 : 0),
 			PROMPT_DIFFICULTIES.length - 1,
 		);
 		const tier = PROMPT_DIFFICULTIES[tierIndex];
-		const free = routing.ladder.map(candidate => this.#host.isSelectorSuppressed?.(candidate.selector) !== true);
-		const rung = Math.min(tierIndex, routing.ladder.length - 1);
+		// The first rung is the executor, never the brainstorm/planning model.
+		const floor = phase === "implementing" ? 0 : 1;
+		const rung = Math.max(floor, Math.min(tierIndex, routing.ladder.length - 1));
+		const free = routing.ladder.map(
+			(candidate, index) =>
+				index >= floor && candidate !== undefined && !this.#host.isSelectorSuppressed?.(candidate.selector),
+		);
 		let chosenIndex = free.findIndex((ok, index) => ok && index >= rung);
 		if (chosenIndex === -1) chosenIndex = free.lastIndexOf(true, rung);
-		if (chosenIndex === -1) return undefined;
 		const chosen = routing.ladder[chosenIndex];
-		const thinkingLevel = chosen.thinkingLevel ?? routing.thinking[tier] ?? this.#executorThinking();
-		const chain = routing.ladder
-			.filter((candidate, index) => index > chosenIndex && free[index] && candidate.selector !== chosen.selector)
-			.map(candidate => candidate.selector);
-		if (chain.length > 0) this.#host.installFallbackChain?.(chosen.selector, chain);
+		if (!chosen) return undefined;
+		const thinkingLevel =
+			chosen.thinkingLevel ??
+			parseConfiguredThinkingLevel(signals.thinking) ??
+			routing.thinking[tier] ??
+			this.#executorThinking();
+		const decision = { tier, risk, selector: chosen.selector, thinkingLevel };
+		if (
+			this.#phaseModelSelector === chosen.selector &&
+			this.#phaseModelSwitch?.thinkingLevel === thinkingLevel &&
+			(this.#pendingSwitch !== undefined || modelsAreEqual(this.#host.currentModel(), chosen.model))
+		) {
+			this.#routedTier = tier;
+			return decision;
+		}
+		const chain: string[] = [];
+		for (let index = chosenIndex + 1; index < routing.ladder.length; index++) {
+			const candidate = routing.ladder[index];
+			if (candidate && free[index] && candidate.selector !== chosen.selector) chain.push(candidate.selector);
+		}
+		// An empty replacement also clears a chain installed before quota availability changed.
+		this.#host.installFallbackChain?.(chosen.selector, chain);
 		this.#routedTier = tier;
 		this.#phaseModelSelector = chosen.selector;
 		this.#phaseModelSwitch = { model: chosen.model, thinkingLevel };
-		const current = this.#host.currentModel();
-		const alreadyOn =
-			current !== undefined &&
-			modelsAreEqual(current, chosen.model) &&
-			this.#host.configuredThinkingLevel() === thinkingLevel;
-		if (!alreadyOn && !(await this.#applySwitch(chosen.model, thinkingLevel))) return undefined;
+		if (!(await this.#applySwitch(chosen.model, thinkingLevel))) return undefined;
 		this.#persistSnapshot();
-		this.#host.emitNotice(
-			"info",
-			`Duo routing: ${tier} request${risk ? " (risk domain)" : ""} → ${chosen.selector}:${thinkingLevel}`,
-		);
-		return { tier, risk, selector: chosen.selector, thinkingLevel };
+		this.#host.emitNotice("info", `Duo routing: ${phase}, ${tier} (${source}) → ${chosen.selector}:${thinkingLevel}`);
+		return decision;
 	}
 
 	async notifyTurnEnd(): Promise<void> {
@@ -428,6 +469,9 @@ export class DuoController {
 			}
 			return;
 		}
+		// CLI/session setup may re-apply the model already selected for this phase.
+		// That is not a foreign manual selection and must not disable live routing.
+		if (this.#phaseModelSwitch && modelsAreEqual(model, this.#phaseModelSwitch.model)) return;
 		this.#pendingSwitch = undefined;
 		const configuredThinking = this.#host.configuredThinkingLevel();
 		if (this.#isExecutingLike()) {
@@ -732,6 +776,9 @@ export class DuoController {
 		this.#executorThinkingOverride = undefined;
 		this.#phaseModelSelector = undefined;
 		this.#phaseModelSwitch = undefined;
+		this.#routingSignals = undefined;
+		this.#routingKey = undefined;
+		this.#routingStreak = 0;
 		this.#routedTier = undefined;
 		this.#plannerDwellTurns = 0;
 		const restoredThinking = parseConfiguredThinkingLevel(snapshot.preDuoThinking);
@@ -790,6 +837,9 @@ export class DuoController {
 				}
 				return { model: this.#config.executor, thinkingLevel: this.#executorThinking() };
 			case "planning":
+				return this.#routedTier !== undefined && this.#phaseModelSwitch
+					? this.#phaseModelSwitch
+					: { model: this.#config.planner, thinkingLevel: this.#config.plannerThinking };
 			case "takeover":
 				return { model: this.#config.planner, thinkingLevel: this.#config.plannerThinking };
 			default:
@@ -807,8 +857,8 @@ export class DuoController {
 
 	/** Phase-model selection: hysteresis, suppressed candidates skipped, and restore to the resolved executor. */
 	#switchPhaseModel(signals: TurnSignals, minConfidence: number): void {
-		// Difficulty routing already picked the model for this request; the phase
-		// map would only churn it. The next user prompt re-routes.
+		// The live routing judgment owns model/effort when available. A missing
+		// answer preserves the last decision, rather than reviving a static phase map.
 		if (this.#routedTier !== undefined) return;
 		const candidates = this.#config.phaseModels[signals.phase];
 		if (candidates && candidates.length > 0) {
@@ -846,15 +896,12 @@ export class DuoController {
 			this.#phaseStreak = 1;
 		}
 		const suffix = reason?.trim() ? ` — ${reason.trim()}` : "";
-		if (this.#routedTier !== undefined) {
-			// The routed model owns the request; the phase label still moves so
-			// the tool surface, plan mode, and the classifier context follow it.
+		if (this.#routingSignals && this.#config.routing) {
+			this.#routingKey = undefined;
+			this.#routingStreak = 0;
+			const routed = await this.#routeWork(this.#routingSignals, phase, "phase");
 			this.#persistSnapshot();
-			this.#host.emitNotice(
-				"info",
-				`Duo phase → ${phase}: the routed ${this.#phaseModelSelector} keeps the main stream${suffix}.`,
-			);
-			return "ok";
+			return routed ? "ok" : "switch-failed";
 		}
 		if (!chosen) {
 			// Unlisted phase: the resolved executor is authoritative.

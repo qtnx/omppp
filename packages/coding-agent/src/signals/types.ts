@@ -41,6 +41,8 @@ export interface TurnSignals {
 	 * targeted lookup. Omitted when the classifier did not answer it.
 	 */
 	openEndedDiscovery?: number;
+	/** Routing judgment over the current work and original user request. */
+	routing?: PromptSignals;
 	model: string;
 	inputTokens: number;
 }
@@ -88,6 +90,8 @@ export interface PromptSignals {
 	difficulty: PromptDifficulty;
 	/** Choice confidence 0..1 for `difficulty`. */
 	difficultyConfidence: number;
+	/** Reasoning effort selected for the request. */
+	thinking?: "medium" | "high" | "xhigh";
 	/** Probability the request touches a risk domain (auth, money, data migration, deploy, secrets). */
 	risk: number;
 }

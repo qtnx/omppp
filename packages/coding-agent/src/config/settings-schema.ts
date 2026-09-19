@@ -818,7 +818,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Routing Ladder",
 			description:
-				"Model selectors ordered from least to most capable. On every user prompt, TypeSafe judges the request's difficulty (easy, moderate, hard, extreme; a risk-domain request moves one rung up) and duo puts the matching rung on the main stream for that request, skipping rungs whose provider is in a usage-limit or auth cooldown; the rungs above it become its rate-limit fallbacks. A selector may carry its own :thinking suffix; otherwise duo.routing.thinking picks the level. Empty disables routing and leaves duo.phaseModels in charge.",
+				"Order models from least to most capable. Jev adapts the model and thinking level as work progresses, skipping unavailable models. The first model is for implementation only; brainstorming and planning use higher models. Leave empty to use Duo Phase Models instead.",
 			ordered: true,
 		},
 	},
@@ -830,7 +830,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Routing Thinking",
 			description:
-				'Thinking level per judged difficulty for the routed model, e.g. {"easy":"medium","moderate":"high","hard":"high","extreme":"xhigh"}. A tier without an entry inherits the executor thinking level.',
+				'Default thinking levels when no Jev effort choice is available, e.g. {"easy":"medium","moderate":"high","hard":"high","extreme":"xhigh"}. A :thinking suffix on a model overrides Jev.',
 		},
 	},
 	"duo.phaseSwitch.minConfidence": {

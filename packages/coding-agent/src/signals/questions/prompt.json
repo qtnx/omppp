@@ -1,12 +1,21 @@
 {
 	"difficulty": {
 		"type": "choice",
-		"instructions": "The state holds a new request a user just sent to a coding agent (`request`), optionally with a short digest of what the session was doing before (`prior_context`). How much work and judgment does completing this request take? Judge the request itself, not how long the session has been running. The answer picks which model tier and how much reasoning effort the request gets.",
+		"instructions": "Judge the difficulty of the work that must happen next. When `transcript` is present, judge that current work slice, using `request` and optional `prior_context` to retain the original goal and constraints. Escalate when new evidence exposes uncertainty or failed attempts; allow a lower difficulty when design is settled and only a known mechanical step remains. Without a transcript, judge completing the user request. Do not use message length as difficulty, treat a short follow-up as a new trivial task, or make every why/explain request hard: a factual explanation from known context can be easy or moderate.",
 		"criteria": {
-			"easy": "A question answerable from context, a one-line or single-file mechanical change, a rename, a typo, running one command, a status check, or a small follow-up to work already done in the session",
-			"moderate": "A contained feature or fix inside a few known files, a focused investigation, or a change whose shape is clear but needs reading and testing",
-			"hard": "A multi-module feature, a refactor across many callers, a debugging hunt with no known cause, an unfamiliar area needing exploration, or a change that needs a plan before code",
-			"extreme": "An architectural or system-wide design decision, a migration or rewrite touching many subsystems, a subtle concurrency or correctness problem, or work where a wrong call is expensive and the reasoning itself is the hard part"
+			"easy": "A factual answer from known context, typo, rename in one known place, one named command, status check, or tiny edit with no investigation or design decision",
+			"moderate": "A contained fix or change in a known area whose cause and shape are clear, or a focused lookup/test needing limited code reading and no broad design choice",
+			"hard": "Meaningful judgment is needed: debugging with competing hypotheses or escalating attempts, unfamiliar code exploration, a change spanning several files or callers, a review, plan, comparison, or explanation that requires understanding existing behavior",
+			"extreme": "System-wide or architectural design, migration, security or concurrency correctness, expensive-to-reverse work, an open-ended product decision, or debugging whose cause remains unclear after repeated attempts"
+		}
+	},
+	"thinking": {
+		"type": "choice",
+		"instructions": "Choose reasoning effort for the work that must happen next. When `transcript` is present, use its current uncertainty and progress while retaining the goal and constraints from `request` and `prior_context`; otherwise judge the request. Keep known mechanical execution at medium even after a difficult design is settled; use high for bounded investigation or multi-file judgment, and xhigh for unresolved extreme work or subtle high-cost failures. Never infer effort from message length alone.",
+		"criteria": {
+			"medium": "Direct answer, known one-file edit, mechanical change, or contained fix with clear cause and no meaningful design uncertainty",
+			"high": "Hard work needing code exploration, debugging, testing, review, or judgment across several files; the correct choice matters but remains bounded",
+			"xhigh": "Extreme architectural, migration, security, concurrency, data-integrity, or open-ended work, or unresolved debugging where a wrong decision is costly"
 		}
 	},
 	"risk_domain": {

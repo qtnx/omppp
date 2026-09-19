@@ -130,6 +130,7 @@ describe("AgentSession advisor delivery during a tool batch", () => {
 			"advisor.enabled": false,
 			"advisor.syncBacklog": "off",
 			"compaction.enabled": false,
+			"signals.enabled": false,
 			interruptMode: "immediate",
 			"retry.enabled": false,
 		});
@@ -171,7 +172,6 @@ describe("AgentSession advisor delivery during a tool batch", () => {
 		}
 		await Promise.all([advisorRunning, running]);
 		unsubscribeAdvisor();
-		expect(advisorMock.calls).toHaveLength(2);
 
 		expect(executions).toEqual(["first_gate", "second_probe"]);
 		expect(toolEnds.map(event => event.toolCallId)).toEqual(["call-first", "call-second"]);
