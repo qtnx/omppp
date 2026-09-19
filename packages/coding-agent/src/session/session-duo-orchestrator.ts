@@ -48,8 +48,6 @@ export interface SessionDuoOrchestratorHost {
 	requestAgentContinue(): void;
 	getActiveToolNames(): string[];
 	setActiveToolsByName(names: string[]): Promise<void>;
-	/** Reconcile `duo_handoff`/`duo_escalate` presence with the live duo phase. */
-	syncDuoToolSurface?(): Promise<void>;
 	refreshSystemPrompt(): Promise<void>;
 	emitModeChanged(mode: "orchestrator" | "none"): Promise<void>;
 	persistModeChange(enabled: boolean): void;
@@ -425,9 +423,24 @@ export class SessionDuoOrchestrator {
 				setPlanModeEnabled: enabled => this.#setDuoPlanModeEnabled(enabled),
 				planModeActive: () => this.#host.getPlanModeState()?.enabled === true,
 				requestAgentContinue: () => this.#host.requestAgentContinue(),
-				syncToolSurface: () => this.#host.syncDuoToolSurface?.(),
 				duoMode: () => this.#host.settings.get("duo.mode"),
 				isSelectorSuppressed: selector => this.#host.modelRegistry.isSelectorSuppressed(selector),
+				hasUsageHeadroom: model => {
+					try {
+						return this.#host.modelRegistry.authStorage.getUsageHeadroom(model).hasRoom;
+					} catch {
+						// Headroom is advisory: an unreadable usage snapshot must not
+						// strand routing on the lowest rung.
+						return true;
+					}
+				},
+				restoreStandardContextWindow: async () => {
+					const current = this.#host.currentModel();
+					if (!current) return;
+					const standard = this.#host.modelRegistry.find(current.provider, current.id);
+					if (!standard || standard.contextWindow === current.contextWindow) return;
+					await this.#host.setModelTemporary(standard, this.#host.configuredThinkingLevel());
+				},
 				installFallbackChain: (selector, chain) => {
 					const settings = this.#host.settings;
 					settings.override("retry.fallbackChains", {

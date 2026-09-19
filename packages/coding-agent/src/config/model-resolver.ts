@@ -19,6 +19,8 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resolveBareVariantSelector, resolveVariantSelector } from "@oh-my-pi/pi-catalog/compat/collapse";
+import { resolveMaxContextWindow } from "@oh-my-pi/pi-catalog/compat/context-window";
+import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { collapseVariantId, stripThinkingVariantSuffix } from "@oh-my-pi/pi-catalog/compat/taxonomy";
 import { modelMatchesHost } from "@oh-my-pi/pi-catalog/hosts";
 import {
@@ -54,6 +56,7 @@ import {
 	MODEL_ROLE_IDS,
 	type ModelRole,
 } from "./model-roles";
+import { applyModelOverride } from "./model-patch";
 import type { Settings } from "./settings";
 
 function isKnownProvider(provider: string): provider is KnownProvider {
@@ -1905,6 +1908,21 @@ function compareAnthropicVersion(a: string | undefined, b: string | undefined): 
 	return compareRevision(aRevision, bRevision);
 }
 
+/**
+ * Duo-routed models keep their full window. The registry caps a model with a
+ * premium long-context tier at the standard-pricing threshold (GPT-6 Astra:
+ * 272K of 1.05M; the Codex SKU: 372K of 872K), so a duo switch onto that model
+ * would land in an already-overflowing context and force an immediate
+ * compaction. `duo.extendedContext` keeps the switch cheap in context instead
+ * of cheap in price; long-context pricing applies above the threshold.
+ */
+function withDuoContextWindow(model: Model<Api>, settings: Settings): Model<Api> {
+	if (!settings.get("duo.extendedContext") || model.contextWindow === null) return model;
+	const standard = buildModel(toModelSpec(model)).contextWindow ?? model.contextWindow;
+	const window = Math.max(standard, resolveMaxContextWindow(model) ?? 0);
+	return window > model.contextWindow ? applyModelOverride(model, { contextWindow: window }) : model;
+}
+
 function resolveExplicitDuoModel(
 	pattern: string,
 	availableModels: Model<Api>[],
@@ -1914,7 +1932,9 @@ function resolveExplicitDuoModel(
 	const resolved = parseModelPattern(pattern, availableModels, getModelMatchPreferences(settings), {
 		modelRegistry,
 	});
-	if (resolved.model) return { model: resolved.model, thinkingLevel: resolved.thinkingLevel };
+	if (resolved.model) {
+		return { model: withDuoContextWindow(resolved.model, settings), thinkingLevel: resolved.thinkingLevel };
+	}
 
 	// A discovered provider model (e.g. a gateway's own /v1/models list) is not in
 	// the session snapshot; the registry lookup the main model selector uses still
@@ -1925,7 +1945,7 @@ function resolveExplicitDuoModel(
 	const { base, level } = splitThinkingSuffix(pattern, -1, MAX_THINKING_SUFFIX_OPTIONS);
 	for (let i = base.lastIndexOf("/"); i > 0; i = base.lastIndexOf("/", i - 1)) {
 		const model = modelRegistry.find?.(base.slice(0, i), base.slice(i + 1));
-		if (model) return { model, thinkingLevel: level };
+		if (model) return { model: withDuoContextWindow(model, settings), thinkingLevel: level };
 	}
 	return undefined;
 }
@@ -2049,7 +2069,7 @@ function resolveDuoSide(
 		logger.debug("duo model pattern unavailable; auto-detecting", { pattern: normalized });
 	}
 	const model = resolveNewestAnthropicDuoModel(availableModels, matchesKind);
-	return model ? { model } : undefined;
+	return model ? { model: withDuoContextWindow(model, settings) } : undefined;
 }
 
 export function resolveDuoConfig(

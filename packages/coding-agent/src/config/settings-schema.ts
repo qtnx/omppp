@@ -830,7 +830,18 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Routing Thinking",
 			description:
-				'Default thinking levels when no Jev effort choice is available, e.g. {"easy":"medium","moderate":"high","hard":"high","extreme":"xhigh"}. A :thinking suffix on a model overrides Jev.',
+				'Default thinking levels when no Jev effort choice is available, e.g. {"easy":"medium","moderate":"high","hard":"high","extreme":"xhigh"}. A :thinking suffix on a model overrides Jev. Effort on the current model follows one confident judgment and applies to the next request; a model change waits for two agreeing judgments.',
+		},
+	},
+	"duo.extendedContext": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			group: "Duo",
+			label: "Duo Extended Context",
+			description:
+				"Give every duo-routed model its full context window instead of the standard-pricing cap, so switching model mid-task does not immediately force a compaction (GPT-6 Astra: 1.05M instead of 272K; its Codex SKU: 872K instead of 372K). Requests above the standard threshold bill at the provider's long-context rate.",
 		},
 	},
 	"duo.phaseSwitch.minConfidence": {

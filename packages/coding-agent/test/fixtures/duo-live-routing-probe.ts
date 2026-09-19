@@ -13,6 +13,9 @@ const calls: { model: string; thinking: unknown }[] = [];
 let turn = 0;
 let reject = false;
 let sawPriorToolStep = false;
+let advertisedTools: string[] = [];
+let usageLimit = false;
+let usageLimitFired = false;
 const choice = (value: string) => ({ type: "choice", choice: value, confidence: 0.95, probabilities: { [value]: 1 } });
 const server = Bun.serve({
 	hostname: "127.0.0.1",
@@ -27,8 +30,24 @@ const server = Bun.serve({
 				tools?: { name: string }[];
 			};
 			const primary = body.tools?.some(tool => tool.name === "bash" || tool.name === "_bash");
-			if (primary) calls.push({ model: body.model, thinking: body.output_config?.effort ?? body.thinking });
-			const tool = primary && calls.length <= 8;
+			// One account-level 429 with a multi-hour retry-after, exactly as the
+			// provider answers a spent 5h window: no retry budget can wait it out,
+			// so recovery has to be the duo fallback chain.
+			if (primary && usageLimit && body.model === "claude-fable-5-1") {
+				usageLimitFired = true;
+				return new Response(
+					JSON.stringify({
+						type: "error",
+						error: { type: "rate_limit_error", message: "This request would exceed your account's rate limit." },
+					}),
+					{ status: 429, headers: { "Content-Type": "application/json", "retry-after-ms": "11005000" } },
+				);
+			}
+			if (primary) {
+				calls.push({ model: body.model, thinking: body.output_config?.effort ?? body.thinking });
+				advertisedTools = body.tools?.map(tool => tool.name.replace(/^_/, "")) ?? [];
+			}
+			const tool = primary && calls.length <= 13;
 			const readTool = body.tools?.find(tool => tool.name === "read" || tool.name === "_read")?.name;
 			const content = tool
 				? { type: "tool_use", id: `step_${calls.length}`, name: readTool, input: {} }
@@ -106,7 +125,10 @@ const server = Bun.serve({
 				input.state.transcript?.includes("fixture.txt:1") === true &&
 				input.state.transcript.includes("fixture.txt:2");
 		}
-		const difficulty = turn <= 4 ? "extreme" : turn <= 6 ? "easy" : "hard";
+		const difficulty = turn <= 8 ? "extreme" : turn <= 10 ? "easy" : "hard";
+		// Turn 13: still hard, but the remaining step is mechanical — effort drops on the same model at once.
+		const thinking =
+			difficulty === "extreme" ? "xhigh" : difficulty === "easy" ? "medium" : turn === 13 ? "medium" : "high";
 		return Response.json({
 			model: "jev-local-fixture",
 			answers: {
@@ -115,9 +137,12 @@ const server = Bun.serve({
 				progress: { type: "score", score: 0, legend: { 0: "progress", 1: "stuck" } },
 				done_without_evidence: { type: "noul", noul: 0 },
 				parallel_slices: { type: "noul", noul: 0 },
+				// Turns 5-6 are still pure exploration on an extreme, risky task: the
+				// executor must take the stream instead of a planner-grade model.
+				open_ended_discovery: { type: "noul", noul: turn <= 6 ? 0.9 : 0 },
 				difficulty: choice(difficulty),
 				risk_domain: { type: "noul", noul: 0 },
-				thinking: choice(difficulty === "extreme" ? "xhigh" : difficulty === "easy" ? "medium" : "high"),
+				thinking: choice(thinking),
 			},
 		});
 	},
@@ -126,7 +151,7 @@ try {
 	const baseUrl = `http://127.0.0.1:${server.port}`;
 	await Bun.write(
 		path.join(root, "fixture.txt"),
-		Array.from({ length: 9 }, (_, i) => `Routing step ${i + 1}.\n`).join(""),
+		Array.from({ length: 14 }, (_, i) => `Routing step ${i + 1}.\n`).join(""),
 	);
 	await Bun.write(
 		path.join(agentDir, "models.yml"),
@@ -171,8 +196,11 @@ try {
 			mnemopi: { autoRecall: false, autoRetain: false, noEmbeddings: true, llmMode: "none" },
 		}),
 	);
-	for (const failure of [false, true]) {
+	for (const mode of ["live", "endpoint-503", "usage-limit"] as const) {
+		const failure = mode === "endpoint-503";
 		reject = failure;
+		usageLimit = mode === "usage-limit";
+		usageLimitFired = false;
 		turn = 0;
 		sawPriorToolStep = false;
 		calls.length = 0;
@@ -215,10 +243,10 @@ try {
 		clearTimeout(timer);
 		const events = Bun.JSONL.parse(stdout) as { type: string; isError?: boolean }[];
 		const toolResults = events.filter(event => event.type === "tool_execution_end");
-		if (toolResults.length !== 8 || toolResults.some(event => event.isError))
-			throw new Error(`Expected eight successful real tool calls: ${JSON.stringify(toolResults)}`);
-		console.log(JSON.stringify({ case: failure ? "endpoint-503" : "live-routing", turns: turn, calls }));
-		if (exit !== 0 || (!failure && !calls.some(call => call.model === "claude-fable-5-1"))) {
+		if (mode !== "usage-limit" && (toolResults.length !== 13 || toolResults.some(event => event.isError)))
+			throw new Error(`Expected thirteen successful real tool calls: ${JSON.stringify(toolResults)}`);
+		console.log(JSON.stringify({ case: mode, turns: turn, calls }));
+		if (exit !== 0 || (mode === "live" && !calls.some(call => call.model === "claude-fable-5-1"))) {
 			const logDir = path.join(root, ".omp", "logs");
 			const logs = await fs.readdir(logDir);
 			const log = logs.find(name => name.endsWith(`.${child.pid}.log`));
@@ -226,18 +254,36 @@ try {
 			throw new Error(`CLI exit ${exit}: ${stderr}\n${stdout}\n${details.slice(-12000)}`);
 		}
 		if (calls[0]?.model !== "claude-opus-5") throw new Error("Brainstorm was demoted to the executor");
-		if (!failure) {
+		for (const name of ["duo_handoff", "duo_escalate", "duo_change_phase"]) {
+			if (!advertisedTools.includes(name)) throw new Error(`Live session did not advertise ${name}`);
+		}
+		if (mode === "usage-limit") {
+			if (!usageLimitFired) throw new Error("The probe never returned the account 429");
+			if (calls.some(call => call.model === "claude-fable-5-1"))
+				throw new Error("A usage-limited model still answered a request");
+			// The 429 rung is the top one: recovery is only possible because the
+			// duo chain now continues down the ladder.
+			if (!calls.some(call => call.model === "gpt-6-astra"))
+				throw new Error(`Usage limit did not fall back to the next rung: ${JSON.stringify(calls)}`);
+		} else if (mode === "live") {
 			if (!sawPriorToolStep) throw new Error("Live routing omitted the preceding tool-loop step");
+			// Extreme + risk, but those turns were exploration: the executor takes the stream.
+			if (calls[6]?.model !== "deepseek-v4.1-flash")
+				throw new Error(`Exploration kept a planner-grade model: ${JSON.stringify(calls[6])}`);
 			if (!calls.some(call => call.model === "claude-fable-5-1" && call.thinking === "xhigh"))
 				throw new Error("No live escalation");
 			if (!calls.some(call => call.model === "deepseek-v4.1-flash" && call.thinking === "medium"))
 				throw new Error("No executor handback");
-			if (!calls.some(call => call.model === "gpt-6-astra" && call.thinking === "high"))
-				throw new Error("No later adaptation");
+			const astra = calls.findIndex(call => call.model === "gpt-6-astra" && call.thinking === "high");
+			if (astra === -1) throw new Error("No later adaptation");
+			if (calls[astra + 1]?.model !== "gpt-6-astra" || calls[astra + 1]?.thinking !== "medium")
+				throw new Error(`Effort did not drop on the next request: ${JSON.stringify(calls[astra + 1])}`);
 		} else if (calls.some(call => call.model !== "claude-opus-5"))
 			throw new Error("Unavailable classifier changed model");
 	}
-	console.log("installed duo routing probe: pass (recent history + live adaptation + unavailable endpoint)");
+	console.log(
+		"installed duo routing probe: pass (recent history + live adaptation + immediate effort + account 429 fallback + unavailable endpoint)",
+	);
 } finally {
 	await server.stop(true);
 	await fs.rm(root, { recursive: true, force: true });

@@ -249,12 +249,14 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		expect(userSession.sessionManager.buildSessionContext().mode).toBe("orchestrator");
 	});
 
-	it("exposes duo tools only while duo is on: absent when off, added on activation, removed on deactivation", async () => {
+	it("keeps duo tools available across a /duo off toggle and pins them while duo is live", async () => {
 		const session = createHarness({ activeToolNames: ["read"] });
 		session.settings.override("duo.mode", "off");
-		expect(session.getActiveToolNames()).not.toContain("duo_handoff");
-		expect(session.getActiveToolNames()).not.toContain("duo_escalate");
-		expect(session.getActiveToolNames()).not.toContain("duo_change_phase");
+		// The tool exists regardless of duo state, so a call reports the missing
+		// controller instead of the tool being unreachable.
+		expect(session.getToolByName("duo_handoff")).toBeDefined();
+		expect(session.getAllToolNames()).toContain("duo_escalate");
+		expect(session.getAllToolNames()).toContain("duo_change_phase");
 
 		session.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md" });
 		session.settings.clearOverride("duo.mode");
@@ -267,10 +269,24 @@ describe("AgentSession live duo/advisor tool availability", () => {
 
 		await session.setDuoEnabled(false);
 		expect(session.getDuoStatus()?.phase).toBe("inactive");
-		expect(session.getActiveToolNames()).not.toContain("duo_handoff");
-		expect(session.getActiveToolNames()).not.toContain("duo_escalate");
-		expect(session.getActiveToolNames()).not.toContain("duo_change_phase");
+		expect(session.getToolByName("duo_handoff")).toBeDefined();
 		expect(session.getActiveToolNames()).toContain("read");
+	});
+
+	it("restores the registry context window when duo is switched off", async () => {
+		const session = createHarness({ activeToolNames: ["read"] });
+		await session.setDuoEnabled(true);
+		const current = session.model;
+		if (!current) throw new Error("Expected a session model");
+		const standardWindow = current.contextWindow;
+		await session.setModelTemporary({ ...current, contextWindow: 1_050_000 });
+		expect(session.model?.contextWindow).toBe(1_050_000);
+
+		await session.setDuoEnabled(false);
+
+		// The window duo granted is duo's: an ordinary session must not keep
+		// billing long-context rates after `/duo off`.
+		expect(session.model?.contextWindow).toBe(standardWindow);
 	});
 
 	it("/duo on|off are session-scoped: the persisted duo.mode survives the toggle", async () => {

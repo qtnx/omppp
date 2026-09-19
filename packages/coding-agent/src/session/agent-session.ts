@@ -241,7 +241,6 @@ import type { EffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import {
 	DUO_TOOL_NAMES,
 	type ImageAttachmentEntry,
-	isDuoToolName,
 	type ToolCompactionRequest,
 	type ToolShakeRequest,
 	type ToolWaitingCompactionCheck,
@@ -1881,7 +1880,6 @@ export class AgentSession {
 			setDeviceOnlyWrite: config.setDeviceOnlyWrite,
 			setPendingFullWriteDescription: config.setPendingFullWriteDescription,
 			ensureGoalRegistered: config.ensureGoalRegistered,
-			ensureDuoToolsRegistered: config.ensureDuoToolsRegistered,
 			rebuildSystemPrompt: config.rebuildSystemPrompt,
 			getPinnedRuntimeToolNames: () => this.#liveDuoToolNames(),
 			getLocalCalendarDate: config.getLocalCalendarDate,
@@ -2223,7 +2221,6 @@ export class AgentSession {
 			},
 			getActiveToolNames: () => this.getActiveToolNames(),
 			setActiveToolsByName: names => this.#tools.setActiveToolsByNamePreservingMCPSelection(names),
-			syncDuoToolSurface: () => this.#syncDuoToolSurface(),
 			refreshSystemPrompt: () => this.refreshBaseSystemPrompt(),
 			emitModeChanged: mode => this.#emitSessionEvent({ type: "mode_changed", mode }),
 			persistModeChange: enabled => {
@@ -6121,8 +6118,6 @@ export class AgentSession {
 	#liveDuoToolNames(): string[] {
 		const names: string[] = [];
 		if (isDuoPhaseLive(this.#duoOrchestrator?.status?.phase)) {
-			// Registration may lag activation; SessionTools registers missing
-			// duo tools on demand before resolving the pinned selection.
 			names.push(...DUO_TOOL_NAMES);
 		}
 		if (
@@ -6133,19 +6128,6 @@ export class AgentSession {
 			names.push("consult");
 		}
 		return names;
-	}
-
-	/**
-	 * Duo tools exist on the surface only while a controller is live: add them
-	 * on activation (registering on demand) and drop them on deactivation so a
-	 * duo-off session never advertises a handoff that returns "no controller".
-	 */
-	async #syncDuoToolSurface(): Promise<void> {
-		const live = isDuoPhaseLive(this.#duoOrchestrator?.status?.phase);
-		const active = this.#tools.getActiveToolNames().filter(name => !isDuoToolName(name));
-		const hasDuo = this.#tools.getActiveToolNames().some(name => isDuoToolName(name));
-		if (live === hasDuo) return;
-		await this.#tools.setActiveToolsByNamePreservingMCPSelection(live ? [...active, ...DUO_TOOL_NAMES] : active);
 	}
 
 	/** Names of tools currently exposed at the top level. */
