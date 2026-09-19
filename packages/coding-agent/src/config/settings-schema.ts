@@ -841,7 +841,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Duo",
 			label: "Duo Extended Context",
 			description:
-				"Give every duo-routed model its full context window instead of the standard-pricing cap, so switching model mid-task does not immediately force a compaction (GPT-6 Astra: 1.05M instead of 272K; its Codex SKU: 872K instead of 372K). Requests above the standard threshold bill at the provider's long-context rate.",
+				"Give every duo-routed model its full context window instead of the standard-pricing cap, so switching model mid-task does not immediately force a compaction (GPT-6 Astra: 1.05M instead of 272K; its Codex SKU: 922K instead of 372K). Requests above the standard threshold bill at the provider's long-context rate, and a smaller explicit `contextWindow` override for a duo model is raised too — turn this off to keep it. Leaving duo restores the registry window.",
 		},
 	},
 	"duo.phaseSwitch.minConfidence": {
