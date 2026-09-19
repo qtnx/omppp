@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.10.3] - 2026-09-19
+
 ### Changed
 
 - Duo now adjusts reasoning effort on the current model from a single confident Jev judgment, taking effect on the next request even mid-turn — so finishing steps such as running known tests, committing, or opening a PR/MR after a hard implementation run at medium effort. Switching to a different model still waits for two agreeing judgments.
@@ -12,21 +14,6 @@
 
 - Duo no longer keeps a planner-grade model on the main stream for exploration: reading, grepping, and globbing code with no edit landing routes to the executor rung whatever the task's difficulty or risk, so a risky or extreme task stops paying Fable/Astra prices to read the repository.
 - `duo_handoff`, `duo_escalate`, and `duo_change_phase` are now registered in every session instead of only when a duo controller happened to be live at tool-registry build time, which left an activated duo session with no handoff tool.
-
-## [1.10.2] - 2026-09-19
-
-### Added
-
-- `/usage` now ends its overview with a session cache block: one stacked bar splitting the prompt into cache hits, cache writes, and uncached input, plus the provider-priced cost of each bucket and an estimate of what the hits saved.
-- Context trim at a cold-cache model switch: when a session changes model (duo phase switch, manual switch) the provider prompt cache is cold for the new model anyway, so before the first request Jev judges every large prompt record against the upcoming work and the stale ones are shed — priced against the previous model's still-live prefix, so a flip-back inside its cache TTL is never paid for twice. Falls back to the kind-based cold-cache heuristic when Jev is unavailable.
-- Duo difficulty routing selects among deepseek-v4.1-flash, opus-5, gpt-6-astra, and fable-5-1, skips unavailable models, and shows the selected tier in `/duo status`.
-- A live Jev routing evaluation reports difficulty, reasoning, and model-selection accuracy on labeled conversation cases, including short follow-ups and quota fallbacks.
-- The scouting nudge: when the main agent has made 8+ read/grep/glob calls in one run with no edit and no `scout`/`explore` dispatched, and TypeSafe judges the slice as open-ended discovery, a notice tells it to fan the discovery out to subagents instead of paying for it in its own context.
-
-### Fixed
-
-- Duo now adjusts models and reasoning effort during a running task using recent conversation history; short follow-ups retain context, and the executor no longer replaces the brainstorming model.
-- Everything sent to the TypeSafe signals endpoint (transcript slices, plans, prompts, context digests) is now scrubbed first: the session's known secrets are replaced by their placeholders and credential-shaped tokens by `[REDACTED]`.
 
 ## [18.2.3] - 2026-09-17
 
@@ -1712,6 +1699,21 @@
 - `/retry` and `/handoff` now work over ACP, so editor clients (Zed) list them and can run them instead of sending the text to the model.
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
+
+## [1.10.2] - 2026-09-19
+
+### Added
+
+- `/usage` now ends its overview with a session cache block: one stacked bar splitting the prompt into cache hits, cache writes, and uncached input, plus the provider-priced cost of each bucket and an estimate of what the hits saved.
+- Context trim at a cold-cache model switch: when a session changes model (duo phase switch, manual switch) the provider prompt cache is cold for the new model anyway, so before the first request Jev judges every large prompt record against the upcoming work and the stale ones are shed — priced against the previous model's still-live prefix, so a flip-back inside its cache TTL is never paid for twice. Falls back to the kind-based cold-cache heuristic when Jev is unavailable.
+- Duo difficulty routing selects among deepseek-v4.1-flash, opus-5, gpt-6-astra, and fable-5-1, skips unavailable models, and shows the selected tier in `/duo status`.
+- A live Jev routing evaluation reports difficulty, reasoning, and model-selection accuracy on labeled conversation cases, including short follow-ups and quota fallbacks.
+- The scouting nudge: when the main agent has made 8+ read/grep/glob calls in one run with no edit and no `scout`/`explore` dispatched, and TypeSafe judges the slice as open-ended discovery, a notice tells it to fan the discovery out to subagents instead of paying for it in its own context.
+
+### Fixed
+
+- Duo now adjusts models and reasoning effort during a running task using recent conversation history; short follow-ups retain context, and the executor no longer replaces the brainstorming model.
+- Everything sent to the TypeSafe signals endpoint (transcript slices, plans, prompts, context digests) is now scrubbed first: the session's known secrets are replaced by their placeholders and credential-shaped tokens by `[REDACTED]`.
 
 ## [1.10.1] - 2026-09-18
 
