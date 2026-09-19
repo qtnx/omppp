@@ -15,15 +15,20 @@ function makeSession(phase: DuoPhase | undefined): ToolSession {
 	} as ToolSession;
 }
 
-describe("duo tool gating", () => {
-	it("creates the duo tools only while a duo controller is live", async () => {
-		for (const phase of [undefined, "inactive", "suspended"] as const) {
-			const names = (await createTools(makeSession(phase))).map(tool => tool.name);
-			expect(names).not.toContain("duo_handoff");
-			expect(names).not.toContain("duo_escalate");
-			expect(names).not.toContain("duo_change_phase");
-		}
-		for (const phase of ["planning", "executing", "takeover", "degraded"] as const) {
+describe("duo tool registration", () => {
+	// A session must be able to call `duo_handoff` the moment duo activates. The
+	// registry is built before the controller exists, so phase-gated registration
+	// left an activated session with no handoff tool.
+	it("registers the duo tools for every duo phase, including no controller yet", async () => {
+		for (const phase of [
+			undefined,
+			"inactive",
+			"suspended",
+			"planning",
+			"executing",
+			"takeover",
+			"degraded",
+		] as const) {
 			const names = (await createTools(makeSession(phase))).map(tool => tool.name);
 			expect(names).toContain("duo_handoff");
 			expect(names).toContain("duo_escalate");
@@ -31,7 +36,17 @@ describe("duo tool gating", () => {
 		}
 	});
 
-	it("honors an explicit tool list that names the duo tools even when duo is off", async () => {
+	it("keeps duo tools out of a restricted surface unless the caller names them", async () => {
+		const restricted = { ...makeSession("executing"), restrictToolNames: true } as ToolSession;
+		const without = (await createTools(restricted, ["read"])).map(tool => tool.name);
+		expect(without).not.toContain("duo_handoff");
+		const named = (await createTools(restricted, ["read", "duo_handoff"])).map(tool => tool.name);
+		expect(named).toContain("duo_handoff");
+		expect(named).not.toContain("duo_escalate");
+		expect(named).not.toContain("duo_change_phase");
+	});
+
+	it("honors an explicit tool list that names the duo tools", async () => {
 		const names = (await createTools(makeSession(undefined), ["read", "duo_handoff"])).map(tool => tool.name);
 		expect(names).toContain("duo_handoff");
 		expect(names).not.toContain("duo_escalate");

@@ -11,7 +11,7 @@ import type { EvalPreludeDefinition } from "../eval/preludes";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import type { DuoExecutionScope, DuoHandoffResult, DuoPhaseChangeResult, DuoStatus } from "../duo";
-import { DuoChangePhaseTool, DuoEscalateTool, DuoHandoffTool, isDuoPhaseLive } from "../duo";
+import { DuoChangePhaseTool, DuoEscalateTool, DuoHandoffTool } from "../duo";
 import { EditTool } from "../edit";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolPathWithSource } from "../extensibility/custom-tools";
@@ -995,14 +995,15 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
 		}
 		if (isCodexGoalHiddenToolName(name)) return goalEnabled;
-		// Duo tools are advertised only while a duo controller is live. Listing
-		// them unconditionally made models route a locked plan through
-		// `duo_handoff` in sessions with duo off, where the call only returns
-		// "no duo controller is active". Late activation registers them via
-		// `ensureDuoToolsRegistered`.
+		// Duo tools ship with every normal session. Registering them by phase did
+		// not work: the registry is built before the duo controller activates, and
+		// the surface sync could only enable names the registry already held, so
+		// an activated session advertised no `duo_handoff`. A call without a live
+		// controller reports that clearly. Restricted callers (subagents, explicit
+		// whitelists) opt in by naming the tools.
 		if (isDuoToolName(name)) {
 			if (requestedTools?.includes(name)) return true;
-			return !restrictToolNames && isDuoPhaseLive(session.getDuoStatus?.()?.phase);
+			return !restrictToolNames;
 		}
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "codegraph_init" || name === "codegraph_index" || name === "codegraph_explore")

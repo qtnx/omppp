@@ -11,9 +11,9 @@
 	},
 	"thinking": {
 		"type": "choice",
-		"instructions": "Choose reasoning effort for the work that must happen next. When `transcript` is present, use its current uncertainty and progress while retaining the goal and constraints from `request` and `prior_context`; otherwise judge the request. Keep known mechanical execution at medium even after a difficult design is settled; use high for bounded investigation or multi-file judgment, and xhigh for unresolved extreme work or subtle high-cost failures. Never infer effort from message length alone.",
+		"instructions": "Choose reasoning effort for the work that must happen next, not for the task as a whole. When `transcript` is present, use its current uncertainty and progress while retaining the goal and constraints from `request` and `prior_context`; otherwise judge the request. Once implementation is settled, the remaining steps — running known tests, committing, opening a PR/MR, writing a summary, reporting results — are medium even inside a hard task; use high for bounded investigation or multi-file judgment, and xhigh for unresolved extreme work or subtle high-cost failures. Never infer effort from message length alone.",
 		"criteria": {
-			"medium": "Direct answer, known one-file edit, mechanical change, or contained fix with clear cause and no meaningful design uncertainty",
+			"medium": "Direct answer, known one-file edit, mechanical change, contained fix with clear cause, or finishing steps after the change is settled: running named tests, committing, opening a PR/MR, reporting",
 			"high": "Hard work needing code exploration, debugging, testing, review, or judgment across several files; the correct choice matters but remains bounded",
 			"xhigh": "Extreme architectural, migration, security, concurrency, data-integrity, or open-ended work, or unresolved debugging where a wrong decision is costly"
 		}
