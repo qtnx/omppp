@@ -30,7 +30,7 @@ import {
 	parseRevision,
 } from "@oh-my-pi/pi-catalog/identity";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
-import { type GeneratedProvider, getBundledModels, modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
+import { type GeneratedProvider, getBundledModel, getBundledModels, modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { DEFAULT_MODEL_PER_PROVIDER } from "@oh-my-pi/pi-catalog/provider-models";
 import { fuzzyMatch } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -1918,8 +1918,18 @@ function compareAnthropicVersion(a: string | undefined, b: string | undefined): 
  */
 function withDuoContextWindow(model: Model<Api>, settings: Settings): Model<Api> {
 	if (!settings.get("duo.extendedContext") || model.contextWindow === null) return model;
-	const standard = buildModel(toModelSpec(model)).contextWindow ?? model.contextWindow;
-	const window = Math.max(standard, resolveMaxContextWindow(model) ?? 0);
+	// The registry's premium-tier cap rewrites `contextWindow` to the threshold,
+	// and the rewritten value is what a spec rebuild returns, so the catalog row
+	// is the only place the full window survives (openai/gpt-6-astra: 1.05M
+	// behind a 272K threshold). The model carries no provenance for its current
+	// window, so an explicit user `contextWindow` BELOW the model's capacity is
+	// raised here too — `duo.extendedContext: false` is the way to keep it.
+	const threshold = model.cost.longContext?.inputThreshold;
+	const catalogWindow =
+		threshold !== undefined && model.contextWindow === threshold
+			? getBundledModel(model.provider as GeneratedProvider, model.id)?.contextWindow
+			: undefined;
+	const window = Math.max(model.contextWindow, catalogWindow ?? 0, resolveMaxContextWindow(model) ?? 0);
 	return window > model.contextWindow ? applyModelOverride(model, { contextWindow: window }) : model;
 }
 
