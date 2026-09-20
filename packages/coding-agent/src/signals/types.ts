@@ -124,6 +124,34 @@ export interface ContextTrimSignals {
 	handoffSufficient: number;
 }
 
+export interface StopAssessment {
+	kind: "complete" | "partial" | "question" | "blocked" | "waiting" | "uncertain";
+	confidence: number;
+	goalSatisfied: number;
+	blockerExternal: number;
+	needsUserDecision: number;
+	model: string;
+}
+
+export interface StopAssessmentInput {
+	objective: string;
+	latestRequest: string;
+	priorRequests: string[];
+	candidate: string;
+	evidence: Array<{
+		callId: string;
+		tool: string;
+		target?: string;
+		isError: boolean;
+		exitCode?: number;
+		status?: string;
+	}>;
+	openTodos: string[];
+	goal?: { objective: string; status: string };
+	mode: { plan: boolean; duo?: string };
+	omitted: boolean;
+}
+
 /** TypeSafe System One question shapes (subset used here). */
 export type NoulQuestion = {
 	type: "noul";

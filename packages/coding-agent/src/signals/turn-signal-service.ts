@@ -1,5 +1,10 @@
 import { $env, logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { validateChoice } from "../jev/systemone";
+import stopKindPrompt from "../prompts/jev/stop-kind.md" with { type: "text" };
+import stopCompletePrompt from "../prompts/jev/stop-complete.md" with { type: "text" };
+import stopBlockerPrompt from "../prompts/jev/stop-blocker.md" with { type: "text" };
+import stopDecisionPrompt from "../prompts/jev/stop-decision.md" with { type: "text" };
 import contextTrimQuestions from "./questions/context-trim.json";
 import handoffQuestions from "./questions/handoff.json";
 import learningQuestions from "./questions/learning.json";
@@ -17,6 +22,8 @@ import {
 	type LearningSignals,
 	type PromptSignals,
 	type Question,
+	type StopAssessment,
+	type StopAssessmentInput,
 	type TopicSignals,
 	type TurnSignals,
 } from "./types";
@@ -150,6 +157,97 @@ export class TurnSignalService {
 			this.#unavailable = true;
 			logger.debug("turn signals disabled for this session", { failures: this.#failures });
 		}
+	}
+
+	/** Malformed or unavailable judgments never become an approval. */
+	async judgeStop(input: StopAssessmentInput, signal?: AbortSignal): Promise<StopAssessment | undefined> {
+		if (this.#unavailable || signal?.aborted) return undefined;
+		let omitted = input.omitted;
+		const clip = (text: string, limit: number): string => {
+			if (text.length <= limit) return text;
+			omitted = true;
+			return text.slice(0, limit);
+		};
+		const state = {
+			objective: clip(input.objective, 4000),
+			latestRequest: clip(input.latestRequest, 4000),
+			priorRequests: clip(input.priorRequests.slice(-4).join("\n\n"), 4000),
+			candidate: clip(input.candidate, 6000),
+			evidence: input.evidence.slice(-16).map(item => ({
+				callId: clip(item.callId, 80),
+				tool: clip(item.tool, 80),
+				target: item.target === undefined ? undefined : clip(item.target, 160),
+				isError: item.isError,
+				exitCode: item.exitCode,
+				status: item.status === undefined ? undefined : clip(item.status, 40),
+			})),
+			openTodos: input.openTodos.slice(0, 16).map(item => clip(item, 120)),
+			omittedTodos: Math.max(0, input.openTodos.length - 16),
+			goal: input.goal ? { objective: clip(input.goal.objective, 1000), status: input.goal.status } : undefined,
+			mode: input.mode,
+			omitted:
+				omitted || input.openTodos.length > 16 || input.evidence.length > 16 || input.priorRequests.length > 4,
+		};
+		// The controller must audit against full context, not trust a judgment over
+		// omitted constraints. JSON escaping can also exceed the total state bound.
+		if (state.omitted || JSON.stringify(state).length > 24000) return undefined;
+		const response = await this.#client.systemOne(
+			state,
+			{
+				stop_kind: {
+					type: "choice",
+					instructions: stopKindPrompt,
+					criteria: {
+						complete: null,
+						partial: null,
+						question: null,
+						blocked: null,
+						waiting: null,
+						uncertain: null,
+					},
+				},
+				goal_satisfied: { type: "noul", instructions: stopCompletePrompt },
+				blocker_external: { type: "noul", instructions: stopBlockerPrompt },
+				needs_user_decision: { type: "noul", instructions: stopDecisionPrompt },
+			},
+			signal,
+		);
+		const kind = response?.answers.stop_kind;
+		const satisfied = noul(response?.answers.goal_satisfied);
+		const external = noul(response?.answers.blocker_external);
+		const decision = noul(response?.answers.needs_user_decision);
+		const probability = (value: number | undefined): value is number =>
+			value !== undefined && Number.isFinite(value) && value >= 0 && value <= 1;
+		if (!response) {
+			if (!signal?.aborted) this.#record(false);
+			return undefined;
+		}
+		if (
+			kind?.type !== "choice" ||
+			!["complete", "partial", "question", "blocked", "waiting", "uncertain"].includes(kind.choice) ||
+			!probability(kind.confidence) ||
+			!probability(satisfied) ||
+			!probability(external) ||
+			!probability(decision)
+		) {
+			this.#record(false);
+			return undefined;
+		}
+		try {
+			validateChoice(kind, ["complete", "partial", "question", "blocked", "waiting", "uncertain"]);
+		} catch {
+			this.#record(false);
+			return undefined;
+		}
+		this.#record(true);
+		return {
+			kind: kind.choice as StopAssessment["kind"],
+			confidence: kind.confidence,
+			goalSatisfied: satisfied,
+			blockerExternal: external,
+			needsUserDecision: decision,
+			model: response.model,
+		};
 	}
 
 	classifyTurn(
@@ -361,6 +459,7 @@ export function createTurnSignalService(
 ): TurnSignalService | undefined {
 	if (!settings.get("signals.enabled")) return undefined;
 	const apiKey = resolveTypeSafeApiKey(settings);
+	if ($env.TYPESAFE_SYSTEMONE_URL !== undefined && !$env.TYPESAFE_SYSTEMONE_URL.trim()) return undefined;
 	const baseUrl = ($env.TYPESAFE_SYSTEMONE_URL?.trim() || settings.get("signals.baseUrl") || "").trim();
 	if (!apiKey && !baseUrl) return undefined;
 	const client = new TypeSafeClient({

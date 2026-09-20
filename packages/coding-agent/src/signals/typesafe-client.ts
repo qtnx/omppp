@@ -1,4 +1,4 @@
-import { logger } from "@oh-my-pi/pi-utils";
+import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import { redactMemorySecrets, redactNested } from "../memory-backend/redact";
 import type { Question, SystemOneResponse } from "./types";
 
@@ -67,7 +67,7 @@ export class TypeSafeClient {
 				return undefined;
 			}
 			const body = (await response.json()) as Partial<SystemOneResponse>;
-			if (typeof body.model !== "string" || body.answers === undefined || typeof body.answers !== "object") {
+			if (typeof body.model !== "string" || !isRecord(body.answers)) {
 				logger.debug("typesafe systemone malformed body");
 				return undefined;
 			}

@@ -72,10 +72,31 @@ import { repairTaskParams } from "./repair-args";
 import { resolveMaxRuntimeMs } from "./runtime-cap";
 import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
 
+import { assessBriefs, routeAgent, type BriefAssessment } from "./jev-brief";
+import { assessResultEvidence } from "./jev-evidence";
 function renderSubagentUserPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, {
 		assignment: assignment.trim(),
 	});
+}
+function appendBriefGaps(
+	result: AgentToolResult<TaskToolDetails>,
+	assessments: BriefAssessment[],
+): AgentToolResult<TaskToolDetails> {
+	if (assessments.length === 0) return result;
+	const gaps = assessments
+		.map(assessment => `brief gaps: ${assessment.name}: missing ${assessment.gaps.join(", ")}`)
+		.join("\n");
+	let appended = false;
+	const content = result.content.map(part => {
+		if (!appended && part.type === "text" && typeof part.text === "string") {
+			appended = true;
+			return { ...part, text: `${part.text}\n\n${gaps}` };
+		}
+		return part;
+	});
+	if (!appended) content.push({ type: "text", text: gaps });
+	return { ...result, content };
 }
 
 function isReviewGateBlockedResult(result: SingleResult): boolean {
@@ -979,7 +1000,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// Schema defaults fill `agent` for model calls, but internal callers
 		// and stale transcripts can bypass arktype. `spawnParamsFor` resolves each
 		// item's agent type against the session's actual default agent.
-		const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
+		const spawnPolicy = resolveSpawnPolicy(this.session.getSessionSpawns());
+		const defaultAgent = spawnPolicy.defaultAgent;
 
 		const spawnItems = resolveSpawnItems(params);
 		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);
@@ -995,7 +1017,29 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				);
 			}
 		}
-		const normalizedSpawnParams = spawnItems.map(item => spawnParamsFor(params, item, defaultAgent));
+		const jevAssist = this.session.settings.get("task.jevAssist");
+		const disabledAgents = (this.session.settings.get("task.disabledAgents") as string[] | undefined) ?? [];
+		const routingAgents = this.#discoveredAgents
+			.filter(agent => !disabledAgents.includes(agent.name))
+			.map(agent => ({ name: agent.name, description: agent.description }));
+		const normalizedSpawnParams = await Promise.all(
+			spawnItems.map(async item => {
+				const spawn = spawnParamsFor(params, item, defaultAgent);
+				// Jev only picks an agent when the caller left the choice open at
+				// both levels. An explicit item or batch-level agent is a decision,
+				// not a routing hint.
+				if (jevAssist && spawnPolicy.allowedAgents === null && !item.agent?.trim() && !params.agent?.trim()) {
+					const routed = await routeAgent({
+						assignment: (item.task ?? item.assignment ?? "").trim(),
+						context: params.context?.trim() ?? "",
+						agents: routingAgents,
+						signal,
+					});
+					if (routed) spawn.agent = routed;
+				}
+				return spawn;
+			}),
+		);
 		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);
 		// Resolve every item before choosing an execution path. No executor or
 		// job manager may observe a batch unless every effective policy is valid.
@@ -1085,17 +1129,31 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							this.session.getSessionSpawns?.() ?? "*",
 						),
 					});
-			const result = await this.#executeSyncFanout(
-				toolCallId,
-				params,
-				spawnItems.map((item, index) => ({ item, index })),
-				defaultAgent,
-				signal,
-				onUpdate,
+			const briefAssessmentPromise = jevAssist
+				? assessBriefs({
+						assignments: spawnItems.map((item, index) => ({
+							name: item.name?.trim() || `#${index + 1}`,
+							task: (item.task ?? item.assignment ?? "").trim(),
+							context: params.context?.trim() ?? "",
+						})),
+						signal,
+						timeoutMs: 8_000,
+					})
+				: Promise.resolve([]);
+			const assessed = appendBriefGaps(
+				await this.#executeSyncFanout(
+					toolCallId,
+					params,
+					spawnItems.map((item, index) => ({ item, index })),
+					defaultAgent,
+					signal,
+					onUpdate,
+				),
+				await briefAssessmentPromise,
 			);
-			if (!advisory) return result;
+			if (!advisory) return assessed;
 			let appended = false;
-			const content = result.content.map(part => {
+			const content = assessed.content.map(part => {
 				if (!appended && part.type === "text" && typeof part.text === "string") {
 					appended = true;
 					return { ...part, text: `${part.text}\n\n${advisory}` };
@@ -1103,7 +1161,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				return part;
 			});
 			if (!appended) content.push({ type: "text", text: advisory });
-			return { ...result, content };
+			return { ...assessed, content };
 		}
 
 		// Coordination only makes sense for spawns that keep running after this
@@ -1198,6 +1256,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				},
 			});
 		}
+		const briefAssessmentPromise = jevAssist
+			? assessBriefs({
+					assignments: spawns.map(spawn => ({
+						name: spawn.agentId,
+						task: spawn.progress.assignment ?? "",
+						context: params.context?.trim() ?? "",
+					})),
+					signal,
+					timeoutMs: 8_000,
+				})
+			: Promise.resolve([]);
+		const withBriefGaps = async (
+			result: AgentToolResult<TaskToolDetails>,
+		): Promise<AgentToolResult<TaskToolDetails>> => appendBriefGaps(result, await briefAssessmentPromise);
 		const asyncSpawns = spawns.filter(spawn => !spawn.blocking);
 		const syncSpawns = spawns.filter(spawn => spawn.blocking);
 		const agentLabel = [...new Set(asyncSpawns.map(spawn => spawn.progress.agent))].join(", ");
@@ -1274,7 +1346,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 
 		if (started.length === 0 && syncSpawns.length === 0) {
-			return {
+			return withBriefGaps({
 				content: [
 					{
 						type: "text",
@@ -1282,7 +1354,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					},
 				],
 				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
-			};
+			});
 		}
 
 		const scheduleFailureSummary =
@@ -1307,30 +1379,33 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					content: [{ type: "text", text: `Spawned agent \`${agentId}\`...` }],
 					details: buildAsyncDetails(),
 				});
-				return withAdvisory({
-					content: [
-						{
-							type: "text",
-							text: `Spawned agent \`${agentId}\` (job \`${jobId}\`). Its result auto-delivers; a settled \`job list\`/\`job poll\` snapshot consumes it. ${coordinationHint}`,
-						},
-					],
-					details: buildAsyncDetails(),
-				});
+				return withBriefGaps(
+					withAdvisory({
+						content: [
+							{
+								type: "text",
+								text: `Spawned agent \`${agentId}\` (job \`${jobId}\`). Its result auto-delivers; a settled \`job list\`/\`job poll\` snapshot consumes it. ${coordinationHint}`,
+							},
+						],
+						details: buildAsyncDetails(),
+					}),
+				);
 			}
 			const startedListing = started.map(({ agentId, jobId }) => `- \`${agentId}\` (job \`${jobId}\`)`).join("\n");
 			onUpdate?.({
 				content: [{ type: "text", text: `Spawned ${started.length} agents...` }],
-				details: buildAsyncDetails(),
 			});
-			return withAdvisory({
-				content: [
-					{
-						type: "text",
-						text: `Spawned ${started.length} background agents using ${agentLabel}.${scheduleFailureSummary} Each result auto-delivers; a settled \`job list\`/\`job poll\` snapshot consumes it.\n${startedListing}\n${coordinationHint}`,
-					},
-				],
-				details: buildAsyncDetails(),
-			});
+			return withBriefGaps(
+				withAdvisory({
+					content: [
+						{
+							type: "text",
+							text: `Spawned ${started.length} background agents using ${agentLabel}.${scheduleFailureSummary} Each result auto-delivers; a settled \`job list\`/\`job poll\` snapshot consumes it.\n${startedListing}\n${coordinationHint}`,
+						},
+					],
+					details: buildAsyncDetails(),
+				}),
+			);
 		}
 
 		// Mixed call: the async jobs above already run detached; the blocking
@@ -1395,10 +1470,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const text = [merged.contentParts.join("\n\n"), spawnedSummary]
 			.filter(section => section.trim().length > 0)
 			.join("\n\n");
-		return withAdvisory({
-			content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
-			details: buildAsyncDetails(),
-		});
+		return withBriefGaps(
+			withAdvisory({
+				content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
+				details: buildAsyncDetails(),
+			}),
+		);
 	}
 
 	/**
@@ -1862,11 +1939,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				},
 			});
 			this.#updateRateLimitBlockFromResult(execution.result);
-			return this.#buildResultPayload(
+			return await this.#buildResultPayload(
 				execution.result,
 				execution.policy.discovery.projectAgentsDir,
 				Date.now() - startTime,
 				execution.mergeSummary,
+				assignment,
+				signal,
 			);
 		} catch (error) {
 			const message = error instanceof StructuredSubagentError ? error.message : String(error);
@@ -1905,12 +1984,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	}
 
 	/** Build the tool result (summary text + details) for a settled run. */
-	#buildResultPayload(
+	async #buildResultPayload(
 		result: SingleResult,
 		projectAgentsDir: string | null,
 		totalDurationMs: number,
 		mergeSummary: string,
-	): AgentToolResult<TaskToolDetails> {
+		assignment: string,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<TaskToolDetails>> {
 		const reviewBlocked = isReviewGateBlockedResult(result);
 		const status = result.aborted
 			? "cancelled"
@@ -1941,6 +2022,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// the parent so it can resume via irc instead of redoing the work.
 		const refStatus = AgentRegistry.global().get(result.id)?.status;
 		const resumable = result.aborted && (refStatus === "idle" || refStatus === "parked");
+		const evidenceAssessment =
+			result.exitCode === 0 && !result.aborted && this.session.settings.get("task.jevAssist")
+				? await assessResultEvidence({ assignment, output: result.output, signal })
+				: undefined;
 		const summary = prompt.render(taskSummaryTemplate, {
 			agentName: result.agent,
 			id: result.id,
@@ -1962,6 +2047,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						}
 					: undefined,
 			mergeSummary,
+			evidence: evidenceAssessment?.evidence === "weak" ? "weak" : undefined,
 		});
 
 		return {

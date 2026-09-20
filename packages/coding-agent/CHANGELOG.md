@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `jev_scout` to locate source with bounded follow-up searches, including methods inside large classes. By default it shares declaration names and locations rather than source bodies; broader source sharing remains an explicit setting.
+- Subagents (`scout`, `explore`, `plan`, `reviewer`, `qa`, `tester`, `security-reviewer`, `librarian`, UI specialists) can now use `jev_scout`; read-only agents stay read-only.
+- TypeSafe assist for delegation (`task.jevAssist`, on by default): picks the subagent when none is named, flags briefs missing anchors/checks/scope, hands each subagent the relevant slice of the parent conversation inline, labels subagent questions (fact, decision, user-only, status), marks results whose report lacks command evidence, and drops reviewer findings without a concrete failure scenario.
+- Added an autonomous completion check (`autonomy.stopGate`) that sends premature questions and partial reports back for continued work while preserving user holds, approvals, cancellation, budgets, and plan-only requests.
+
+### Changed
+
+- New requests now check for a topic change immediately, without a minimum idle time or context size; unrelated context is compacted before the request starts.
+
+### Fixed
+
+- Uncertain review judgments no longer delete existing findings or change their priorities.
+- Subagents receive ordered, deduplicated context and a full-snapshot fallback when required material cannot fit safely in an excerpt.
+- An agent named at batch level on a `task` call is no longer overridden by automatic routing; Jev picks an agent only when neither the item nor the batch named one.
+- Open tasks continue to block premature completion when signals are disabled or an inconclusive check has already been audited.
+
 ## [18.2.3] - 2026-09-17
 
 ### Breaking Changes

@@ -238,6 +238,7 @@ describe("AgentSession advisor done-review gate", () => {
 			agent,
 			sessionManager,
 			settings: Settings.isolated({
+				"autonomy.stopGate": false,
 				"advisor.enabled": false,
 				"compaction.enabled": false,
 				"todo.enabled": false,

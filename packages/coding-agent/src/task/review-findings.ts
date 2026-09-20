@@ -2,8 +2,10 @@ import * as path from "node:path";
 import { type ReviewFindingRecordItem, recordReviewFindings } from "@oh-my-pi/omp-stats/review-findings";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { logger } from "@oh-my-pi/pi-utils";
+import { jevAvailable, postSystemOne } from "../jev/systemone";
 import type { ReportFindingDetails } from "../tools/review";
 import type { SingleResult } from "./types";
+import { filterReviewFindings } from "./jev-findings";
 
 const REVIEW_FINDING_AGENTS: Record<string, true> = { reviewer: true, "code-reviewer": true };
 const REVIEW_FINDING_PRIORITIES: Record<string, ReviewFindingRecordItem["priority"]> = {
@@ -18,6 +20,33 @@ export interface PersistTaskReviewFindingsOptions {
 	cwd: string;
 	sessionFile: string | null;
 	results: SingleResult[];
+	jevAssist?: boolean;
+}
+
+export interface CollectFilteredReviewFindingRecordItemsOptions {
+	jevAssist?: boolean;
+	post?: typeof postSystemOne;
+	signal?: AbortSignal;
+}
+
+export async function collectFilteredReviewFindingRecordItems(
+	result: ReviewFindingSourceResult,
+	options: CollectFilteredReviewFindingRecordItemsOptions = {},
+): Promise<ReviewFindingRecordItem[]> {
+	const findings = collectReviewFindingRecordItems(result);
+	if (findings.length === 0 || options.jevAssist === false || !jevAvailable()) return findings;
+	const filtered = await filterReviewFindings({
+		findings,
+		post: options.post,
+		signal: options.signal,
+	});
+	if (filtered.dropped > 0) logger.debug("Dropped low-value review findings", { dropped: filtered.dropped });
+	return filtered.kept;
+}
+
+export interface ReviewFindingSourceResult {
+	output?: string;
+	extractedToolData?: Record<string, unknown[]>;
 }
 
 export function isReviewFindingAgent(agentName: string): boolean {
@@ -27,13 +56,16 @@ export function isReviewFindingAgent(agentName: string): boolean {
 export async function persistTaskReviewFindings(options: PersistTaskReviewFindingsOptions): Promise<void> {
 	if (!isReviewFindingAgent(options.agentName)) return;
 
-	const findingsByResult = options.results.map(result => ({
-		result,
-		findings: collectReviewFindingRecordItems(result),
-	}));
-	if (!findingsByResult.some(entry => entry.findings.length > 0)) return;
-
 	try {
+		const findingsByResult: Array<{ result: SingleResult; findings: ReviewFindingRecordItem[] }> = [];
+		for (const result of options.results) {
+			findingsByResult.push({
+				result,
+				findings: await collectFilteredReviewFindingRecordItems(result, { jevAssist: options.jevAssist }),
+			});
+		}
+		if (!findingsByResult.some(entry => entry.findings.length > 0)) return;
+
 		const repoRoot = vcs.repo(options.cwd)?.root() ?? options.cwd;
 		const repoName = path.basename(repoRoot) || path.basename(options.cwd) || repoRoot;
 		const nowSec = Math.floor(Date.now() / 1000);
@@ -63,11 +95,6 @@ export async function persistTaskReviewFindings(options: PersistTaskReviewFindin
 			error: err instanceof Error ? err.message : String(err),
 		});
 	}
-}
-
-export interface ReviewFindingSourceResult {
-	output?: string;
-	extractedToolData?: Record<string, unknown[]>;
 }
 
 export function collectReviewFindingRecordItems(result: ReviewFindingSourceResult): ReviewFindingRecordItem[] {

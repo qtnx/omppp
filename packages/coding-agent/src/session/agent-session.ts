@@ -413,6 +413,7 @@ import {
 	SessionAdvisors,
 	type SessionAdvisorsHost,
 } from "./session-advisors";
+import { SessionCompletion } from "./session-completion";
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
 import {
 	getRestorableSessionModels,
@@ -764,6 +765,7 @@ export class AgentSession {
 	readonly #duoOrchestrator: SessionDuoOrchestrator;
 	/** TypeSafe turn classifier; undefined when signals are disabled or no key is configured. */
 	readonly #turnSignals: TurnSignalService | undefined;
+	readonly #completion: SessionCompletion;
 	/** Resolves once the resume-time advisor spend backfill settles (issue #9553). */
 	#advisorCostRestore: Promise<void> = Promise.resolve();
 	#goalTurnCounter = 0;
@@ -1862,6 +1864,7 @@ export class AgentSession {
 			notifyCommandMetadataChanged: () => this.#notifyCommandMetadataChanged(),
 			localProtocolOptions: () => this.#localProtocolOptions(),
 			secretVault: this.#secretVault,
+			redactOutboundText: text => sessionToolsHostSelf.#obfuscator?.obfuscate(text) ?? text,
 			get learningTurnContext() {
 				return sessionToolsHostSelf.#learningTurnContext;
 			},
@@ -2131,9 +2134,44 @@ export class AgentSession {
 			[advisorSkillsAndRulesPrompt, config.advisorContextPrompt]
 				.filter((value): value is string => typeof value === "string" && value.length > 0)
 				.join("\n\n") || undefined;
-		const obfuscator = this.#obfuscator;
 		this.#turnSignals = createTurnSignalService(this.settings, {
-			redact: obfuscator ? text => obfuscator.obfuscate(text) : undefined,
+			redact: text => this.#obfuscator?.obfuscate(text) ?? text,
+		});
+		this.#completion = new SessionCompletion({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			settings: this.settings,
+			signals: () => this.#turnSignals,
+			generation: () => this.#promptGeneration,
+			signal: () => this.#postPromptTasksAbortController.signal,
+			canContinue: () => {
+				const budget = this.sessionManager.getTurnBudget();
+				const goal = this.#goalModeState?.goal;
+				return (
+					this.#agentKind === "main" &&
+					!this.#isDisposed &&
+					!this.#abortInProgress &&
+					this.#activeAgentPromptGeneration === this.#promptGeneration &&
+					!this.#yieldTerminationPending &&
+					!this.isCompacting &&
+					!this.isGeneratingHandoff &&
+					!this.agent.hasQueuedMessages() &&
+					this.queuedMessageCount === 0 &&
+					!this.#hasPendingAsyncWake() &&
+					!this.#pendingNextTurnMessages.length &&
+					!(budget.hard && budget.total !== null && budget.spent >= budget.total) &&
+					(!goal || !["paused", "blocked", "usage-limited", "budget-limited"].includes(goal.status))
+				);
+			},
+			openTodos: () =>
+				this.#todo.phases.flatMap(phase =>
+					phase.tasks
+						.filter(task => task.status === "pending" || task.status === "in_progress")
+						.map(task => task.content),
+				),
+			goal: () => this.#goalModeState,
+			mode: () => ({ plan: this.#planModeState?.enabled === true, duo: this.getDuoStatus()?.phase }),
+			schedule: options => this.#scheduleAgentContinue({ ...options, source: "completion-gate" }),
 		});
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: resolveAdvisorEnabled(this.settings, this.model),
@@ -3102,15 +3140,10 @@ export class AgentSession {
 				await extensionEmit;
 			}
 			await previousGate;
-			// Hold the wire-level agent_end until in-flight prompts unwind. Subscribers
-			// (rpc-mode, ACP, Cursor) treat agent_end as the "session is idle" signal;
-			// emitting while #promptInFlightCount > 0 lets a client fire its next
-			// `prompt` into a session that still reports isStreaming === true. Flush
-			// happens in #endInFlight / #resetInFlight. A later agent_end (e.g. from
-			// an auto-compaction turn that starts before the original prompt unwinds)
-			// supersedes the pending one, which is what subscribers want — they only
-			// care about the final settle.
-			if (event.type === "agent_end" && this.#promptInFlightCount > 0) {
+			// Only terminal ends signal idle and must wait for prompts to unwind.
+			// Suspended ends are observable progress: deferring them in the single
+			// pending slot lets the later terminal end overwrite isTerminal:false.
+			if (event.type === "agent_end" && event.isTerminal !== false && this.#promptInFlightCount > 0) {
 				this.#pendingAgentEndEmit = event;
 				return;
 			}
@@ -3483,6 +3516,7 @@ export class AgentSession {
 			}
 			return;
 		}
+		this.#completion.observe(message);
 		const alreadyPersisted = this.#prePersistedPromptMessages.delete(message);
 		if (message.role === "hookMessage" || message.role === "custom") {
 			// One-run instructions must not return from persisted history: prewalk
@@ -4360,6 +4394,10 @@ export class AgentSession {
 				);
 				return;
 			}
+			if (this.#hasPendingAsyncWake() || queuedMessageDrainScheduled) {
+				await emitAgentEndNotification({ willContinue: true });
+				return;
+			}
 			// A capped empty stop still has stopReason "stop"; built-in reminders
 			// must not restart it after recovery has declared the turn terminal.
 			if (msg.stopReason !== "error" && emptyOutputRecovery !== "terminal") {
@@ -4379,6 +4417,12 @@ export class AgentSession {
 				}
 				const todoContinuationScheduled = await this.#todo.checkCompletion(msg);
 				if (todoContinuationScheduled) {
+					await emitAgentEndNotification({ willContinue: true });
+					return;
+				}
+				const completionTask = this.#completion.check(msg);
+				this.#trackPostPromptTask(completionTask);
+				if (await completionTask) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}

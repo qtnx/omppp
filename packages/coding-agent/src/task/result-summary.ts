@@ -40,7 +40,7 @@ function previewHead(output: string): string {
 /** Render the `<task-result>` envelope for a settled run. */
 export function formatTaskResultSummary(
 	result: SingleResult,
-	options: { totalDurationMs: number; mergeSummary?: string },
+	options: { totalDurationMs: number; mergeSummary?: string; evidence?: "weak" | "strong" },
 ): string {
 	const status = result.aborted
 		? "cancelled"
@@ -75,5 +75,6 @@ export function formatTaskResultSummary(
 				}
 			: undefined,
 		mergeSummary: options.mergeSummary ?? "",
+		evidence: options.evidence === "weak" ? "weak" : undefined,
 	});
 }

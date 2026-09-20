@@ -65,6 +65,7 @@ describe("AgentSession session_stop willContinue", () => {
 		});
 
 		const settings = Settings.isolated({
+			"autonomy.stopGate": false,
 			"compaction.enabled": false,
 			"retry.enabled": false,
 		});

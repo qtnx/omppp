@@ -10,10 +10,11 @@ export type ParentContextSnapshot = {
 export async function writeParentContextSnapshot(
 	session: Pick<ToolSession, "getCompactContext">,
 	artifactsDir: string,
+	compactContext?: string,
 ): Promise<ParentContextSnapshot | undefined> {
-	const compactContext = session.getCompactContext?.();
-	if (!compactContext) return undefined;
+	const snapshotText = compactContext === undefined ? session.getCompactContext?.() : compactContext;
+	if (!snapshotText) return undefined;
 	const contextFilePath = path.join(artifactsDir, `context-${Snowflake.next()}.md`);
-	await Bun.write(contextFilePath, compactContext);
+	await Bun.write(contextFilePath, snapshotText);
 	return { path: contextFilePath };
 }

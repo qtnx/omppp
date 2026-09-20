@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createTurnSignalService, TurnSignalService, TypeSafeClient } from "@oh-my-pi/pi-coding-agent/signals/index";
+import type { StopAssessmentInput } from "../../src/signals/types";
 
 function fakeFetch(handler: (body: Record<string, unknown>) => Response | Promise<Response>): typeof fetch {
 	return (async (_url: string | URL | Request, init?: RequestInit) => {
@@ -558,5 +559,125 @@ describe("TurnSignalService context trim", () => {
 
 		expect(await service.classifyContextTrim({ ...TRIM_INPUT, candidates: [] })).toBeUndefined();
 		expect(calls).toBe(0);
+	});
+});
+
+describe("stop assessment wire contract", () => {
+	test("treats null and array answers as unavailable instead of throwing", async () => {
+		for (const answers of [null, []]) {
+			const service = new TurnSignalService(
+				new TypeSafeClient({ fetch: fakeFetch(() => Response.json({ model: "jev", answers })) }),
+			);
+			expect(
+				await service.judgeStop({
+					objective: "Explain",
+					latestRequest: "Explain",
+					priorRequests: [],
+					candidate: "Answer",
+					evidence: [],
+					openTodos: [],
+					mode: { plan: false },
+					omitted: false,
+				}),
+			).toBeUndefined();
+		}
+	});
+	const input: StopAssessmentInput = {
+		objective: "Finish CANARY",
+		latestRequest: "Fix CANARY",
+		priorRequests: ["Keep CANARY private"],
+		candidate: "Partial CANARY",
+		evidence: [{ callId: "1", tool: "write", target: "CANARY", isError: false }],
+		openTodos: ["Verify CANARY"],
+		mode: { plan: false },
+		omitted: false,
+	};
+	test("does not approve a stop after prior requests were clipped", async () => {
+		const service = new TurnSignalService(
+			new TypeSafeClient({
+				fetch: fakeFetch(() =>
+					Response.json({
+						model: "jev",
+						answers: {
+							stop_kind: {
+								type: "choice",
+								choice: "complete",
+								confidence: 1,
+								probabilities: { complete: 1, partial: 0, question: 0, blocked: 0, waiting: 0, uncertain: 0 },
+							},
+							goal_satisfied: { type: "noul", noul: 1 },
+							blocker_external: { type: "noul", noul: 0 },
+							needs_user_decision: { type: "noul", noul: 0 },
+						},
+					}),
+				),
+			}),
+		);
+		expect(await service.judgeStop({ ...input, priorRequests: ["x".repeat(4001)], omitted: false })).toBeUndefined();
+	});
+	const answers = {
+		stop_kind: {
+			type: "choice",
+			choice: "partial",
+			confidence: 0.95,
+			probabilities: { complete: 0, partial: 1, question: 0, blocked: 0, waiting: 0, uncertain: 0 },
+		},
+		goal_satisfied: { type: "noul", noul: 0 },
+		blocker_external: { type: "noul", noul: 0 },
+		needs_user_decision: { type: "noul", noul: 0 },
+	};
+	test("scrubs exact outgoing payload and batches all four judgments without altering turn signals", async () => {
+		let currentSecret = "unused";
+		const client = new TypeSafeClient({
+			redact: text => text.replaceAll(currentSecret, "[hidden]"),
+			fetch: fakeFetch(body => {
+				expect(JSON.stringify(body)).not.toContain("CANARY");
+				expect(Object.keys(body.questions as object).sort()).toEqual([
+					"blocker_external",
+					"goal_satisfied",
+					"needs_user_decision",
+					"stop_kind",
+				]);
+				return Response.json({ model: "jev", answers });
+			}),
+		});
+		currentSecret = "CANARY";
+		const service = new TurnSignalService(client);
+		expect(await service.judgeStop(input)).toEqual({
+			kind: "partial",
+			confidence: 0.95,
+			goalSatisfied: 0,
+			blockerExternal: 0,
+			needsUserDecision: 0,
+			model: "jev",
+		});
+		expect(service.latest).toBeUndefined();
+	});
+	test("rejects inconsistent choices and out-of-range probabilities, then opens its circuit", async () => {
+		let calls = 0;
+		const service = new TurnSignalService(
+			new TypeSafeClient({
+				fetch: fakeFetch(() => {
+					calls++;
+					return Response.json({
+						model: "jev",
+						answers: { ...answers, goal_satisfied: { type: "noul", noul: 2 } },
+					});
+				}),
+			}),
+		);
+		for (let i = 0; i < 4; i++) expect(await service.judgeStop(input)).toBeUndefined();
+		expect(calls).toBe(3);
+		const invalidChoice = new TurnSignalService(
+			new TypeSafeClient({
+				fetch: fakeFetch(() =>
+					Response.json({
+						model: "jev",
+						answers: { ...answers, stop_kind: { ...answers.stop_kind, choice: "complete" } },
+					}),
+				),
+			}),
+		);
+		expect(await invalidChoice.judgeStop(input)).toBeUndefined();
 	});
 });
