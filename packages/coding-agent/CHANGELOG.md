@@ -11,11 +11,12 @@
 
 ### Changed
 
-- New requests now check for a topic change immediately, without a minimum idle time or context size; unrelated context is compacted before the request starts.
+- A new request after a 5-minute idle gap is checked for a topic change, and unrelated earlier context is compacted before the request starts (previously a 30-minute gap and a 30K-token floor).
 
 ### Fixed
 
 - Uncertain review judgments no longer delete existing findings or change their priorities.
+- An unreachable signals endpoint is skipped for a minute after a failed attempt instead of delaying each request that consults it.
 - Subagents receive ordered, deduplicated context and a full-snapshot fallback when required material cannot fit safely in an excerpt.
 - An agent named at batch level on a `task` call is no longer overridden by automatic routing; Jev picks an agent only when neither the item nor the batch named one.
 - Open tasks continue to block a premature stop when a completion check is inconclusive or its audit allowance is already spent; an unavailable check leaves the turn unchanged.

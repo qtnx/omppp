@@ -103,7 +103,7 @@ export async function routeAgent(input: RouteAgentInput): Promise<string | undef
 	if (!jevAvailable() || input.agents.length === 0) return undefined;
 	try {
 		const response = await (input.post ?? postSystemOne)(buildRouteRequest(input), {
-			timeoutMs: 8_000,
+			timeoutMs: 2_000,
 			signal: input.signal,
 		});
 		const answer = validateChoice(

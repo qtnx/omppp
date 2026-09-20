@@ -3526,14 +3526,15 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.topicSwitchIdleSeconds": {
 		type: "number",
-		default: 0,
+		default: 300,
 		ui: {
 			tab: "context",
 			group: "Compaction",
 			label: "Topic-Switch Idle Threshold",
 			description: "Minimum idle time before a new request is checked for a topic switch",
 			options: [
-				{ value: "0", label: "Every new request" },
+				{ value: "60", label: "1 minute" },
+				{ value: "300", label: "5 minutes" },
 				{ value: "600", label: "10 minutes" },
 				{ value: "1800", label: "30 minutes" },
 				{ value: "3600", label: "1 hour" },
@@ -3545,14 +3546,14 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.topicSwitchMinContextTokens": {
 		type: "number",
-		default: 0,
+		default: 4000,
 		ui: {
 			tab: "context",
 			group: "Compaction",
 			label: "Topic-Switch Minimum Context",
 			description: "Skip the topic-switch check when the context is smaller than this",
 			options: [
-				{ value: "0", label: "Any context size" },
+				{ value: "4000", label: "4K tokens" },
 				{ value: "15000", label: "15K tokens" },
 				{ value: "30000", label: "30K tokens" },
 				{ value: "50000", label: "50K tokens" },
