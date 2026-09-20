@@ -52,6 +52,7 @@ describe("bundled task agents", () => {
 			"grep",
 			"glob",
 			"codegraph_explore",
+			"jev_scout",
 			"bash",
 			"web_search",
 			"irc",
@@ -193,7 +194,7 @@ describe("bundled task agents", () => {
 		const qa = getBundledAgent("qa");
 
 		expect(qa).toBeDefined();
-		expect(qa?.tools).toEqual(["read", "grep", "glob", "bash", "lsp", "irc", "yield"]);
+		expect(qa?.tools).toEqual(["read", "grep", "glob", "bash", "lsp", "jev_scout", "irc", "yield"]);
 		expect(qa?.tools).not.toContain("edit");
 		expect(qa?.tools).not.toContain("write");
 		expect(qa?.spawns).toEqual(["browser_qa"]);

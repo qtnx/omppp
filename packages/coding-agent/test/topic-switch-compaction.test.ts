@@ -135,7 +135,7 @@ describe("topic-switch compaction on a new user prompt", () => {
 		vi.restoreAllMocks();
 	});
 
-	test("compacts the stale context before the prompt reaches the model", async () => {
+	test("checks an idle new request and compacts unrelated context before dispatch", async () => {
 		const tempDir = TempDir.createSync("@pi-topic-switch-");
 		cleanup.push(async () => {
 			try {
@@ -175,11 +175,11 @@ describe("topic-switch compaction on a new user prompt", () => {
 		if (!turnSignals) throw new Error("Expected signals to be configured");
 		const classify = vi.spyOn(turnSignals, "classifyTopicSwitch").mockResolvedValue({ topicSwitch: 0.95 });
 
-		const threeHoursAgo = Date.now() - 3 * HOUR_MS;
+		const previousTurn = Date.now() - 3 * HOUR_MS;
 		const seedUser: AgentMessage = {
 			role: "user",
 			content: [{ type: "text", text: "refactor the tokenizer" }],
-			timestamp: threeHoursAgo,
+			timestamp: previousTurn,
 		};
 		const seedAssistant: AssistantMessage = {
 			role: "assistant",
@@ -196,7 +196,7 @@ describe("topic-switch compaction on a new user prompt", () => {
 				totalTokens: 1_100,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
-			timestamp: threeHoursAgo + 1,
+			timestamp: previousTurn + 1,
 		};
 		sessionManager.appendMessage(seedUser);
 		sessionManager.appendMessage(seedAssistant);

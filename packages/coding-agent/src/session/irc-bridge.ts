@@ -8,6 +8,7 @@ import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type:
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { CustomMessage } from "./messages";
+import { triageChildQuestion } from "../task/jev-triage";
 import type { SessionManager } from "./session-manager";
 
 export type IrcWakeFailureHandler = (message: IrcMessage) => void | Promise<void>;
@@ -196,6 +197,15 @@ export class IrcBridge {
 		// back to the sender (task executor `relayWakeTurnOutput`); the main
 		// agent and mid-turn asides have no such relay.
 		const relayOnStop = !streaming && !planModeIdle && msg.to !== MAIN_AGENT_ID && msg.wakeRelay !== true;
+		const childToMain = msg.to === MAIN_AGENT_ID && AgentRegistry.global().get(msg.from)?.parentId === msg.to;
+		let triage: string | undefined;
+		if (childToMain && this.#host.settings.get("task.jevAssist")) {
+			try {
+				triage = (await triageChildQuestion({ message: msg.body }))?.kind;
+			} catch (error) {
+				logger.debug("Jev child-question triage failed", { error: String(error) });
+			}
+		}
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
@@ -206,6 +216,8 @@ export class IrcBridge {
 				autoReplied: autoReply,
 				interrupting: streaming,
 				relayOnStop,
+				triage,
+				triageStatus: triage === "status",
 			}),
 			display: true,
 			details: {
@@ -224,7 +236,12 @@ export class IrcBridge {
 			if (recipientParentId === msg.from) {
 				this.#host.agent.steer({
 					role: "user",
-					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: msg.body }),
+					content: prompt.render(parentIrcSteerTemplate, {
+						from: msg.from,
+						message: msg.body,
+						triage,
+						triageStatus: triage === "status",
+					}),
 					attribution: "agent",
 					timestamp: msg.ts,
 					steering: true,

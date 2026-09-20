@@ -91,6 +91,7 @@ async function createHarness(
 	const mock = createMockModel({ responses });
 	const modelRegistry = sharedModelRegistry;
 	const settings = Settings.isolated({
+		"autonomy.stopGate": false,
 		"compaction.enabled": false,
 		"retry.enabled": options?.retryEnabled ?? false,
 		"retry.baseDelayMs": 5,
@@ -252,7 +253,7 @@ describe("AgentSession yield empty-stop suppression", () => {
 		const observerEvents: string[] = [];
 		const observerSettled = Promise.withResolvers<void>();
 		session.subscribe(event => {
-			if (event.type === "agent_end") observerEvents.push(`agent_end:${mock.calls.length}`);
+			if (event.type === "agent_end") observerEvents.push(`agent_end:${mock.calls.length}:${event.isTerminal}`);
 		});
 		session.setIrcWakeTurnObserver(() => {
 			observerEvents.push("started");
@@ -276,6 +277,6 @@ describe("AgentSession yield empty-stop suppression", () => {
 		expect(mock.calls).toHaveLength(3);
 		expect(reminderMessages(session.agent.state.messages)).toHaveLength(1);
 		expect(assistantText(session.agent.state.messages)).toContain("recovered after IRC retry");
-		expect(observerEvents).toEqual(["started", "agent_end:3", "finished:3"]);
+		expect(observerEvents).toEqual(["started", "agent_end:2:false", "agent_end:3:true", "finished:3"]);
 	});
 });

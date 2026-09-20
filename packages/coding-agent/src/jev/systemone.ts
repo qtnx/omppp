@@ -94,6 +94,20 @@ export class JevError extends Error {
 /** HTTP statuses that warrant a bounded retry for a System One conversation. */
 const RETRY_STATUSES: Record<number, true> = { 429: true, 503: true, 529: true };
 
+/**
+ * Unreachable-endpoint breaker. A configured but unreachable Jev would otherwise
+ * charge every caller a full connection timeout, turning an advisory signal into
+ * latency on the critical path. One failed attempt parks the endpoint; the next
+ * caller after the cooldown pays the probe.
+ */
+const JEV_COOLDOWN_MS = 60_000;
+let jevColdUntil = 0;
+
+/** Test seam: forget a recorded outage. */
+export function resetJevBreaker(): void {
+	jevColdUntil = 0;
+}
+
 export interface JevPostOptions {
 	apiKey?: string;
 	signal?: AbortSignal;
@@ -114,6 +128,10 @@ export async function postSystemOne(body: JevRequest, opts: JevPostOptions = {})
 	const headers: Record<string, string> = { "content-type": "application/json" };
 	const apiKey = opts.apiKey ?? jevApiKey();
 	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+	// Only the real transport participates: an injected fetch is the caller's own stub.
+	const breaker = opts.fetchImpl === undefined;
+	if (breaker && Date.now() < jevColdUntil)
+		throw new JevError("Jev endpoint is cold after a recent failure", "unavailable");
 	for (let attempt = 0; attempt < 3; attempt++) {
 		if (opts.signal?.aborted) throw new JevError(`Jev request aborted (${String(opts.signal.reason)})`, "aborted");
 		let response: Response;
@@ -128,6 +146,7 @@ export async function postSystemOne(body: JevRequest, opts: JevPostOptions = {})
 			});
 		} catch (error) {
 			if (opts.signal?.aborted) throw new JevError(`Jev request aborted (${String(opts.signal.reason)})`, "aborted");
+			if (breaker) jevColdUntil = Date.now() + JEV_COOLDOWN_MS;
 			throw new JevError(
 				`Jev connection failed (${error instanceof Error ? error.message : String(error)})`,
 				"connection",
@@ -140,6 +159,7 @@ export async function postSystemOne(body: JevRequest, opts: JevPostOptions = {})
 		if (!response.ok) {
 			throw new JevError(`Jev returned HTTP ${response.status}`, "http");
 		}
+		if (breaker) jevColdUntil = 0;
 		return (await response.json()) as JevResponse;
 	}
 	throw new JevError("Jev unavailable", "unavailable");

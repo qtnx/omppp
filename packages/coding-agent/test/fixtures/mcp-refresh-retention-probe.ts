@@ -60,6 +60,7 @@ const host: SessionToolsHost = {
 	notifyCommandMetadataChanged: () => {},
 	localProtocolOptions: () => ({}),
 	secretVault: undefined,
+	redactOutboundText: undefined,
 };
 const sessionTools = new SessionTools(host, {
 	baseSystemPrompt: [],

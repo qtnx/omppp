@@ -2642,6 +2642,27 @@ export interface SnapcompactRenderOptions {
  */
 export declare function snapcompactSupportedChars(font: string, chars: string): string
 
+export interface SourceDeclaration {
+  name: string
+  kind: string
+  startLine: number
+  endLine: number
+}
+
+export declare function sourceDeclarations(options: SourceDeclarationsOptions): SourceDeclarationsResult
+
+export interface SourceDeclarationsOptions {
+  code: string
+  lang?: string
+  path?: string
+}
+
+export interface SourceDeclarationsResult {
+  language?: string
+  parsed: boolean
+  declarations: Array<SourceDeclaration>
+}
+
 /** A misspelled span measured in JavaScript/UTF-16 code units. */
 export interface SpellingRange {
   /** Inclusive UTF-16 start offset. */

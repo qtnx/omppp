@@ -131,6 +131,7 @@ const MINIMAL_EXTENSION_RUNTIME_TOOL_NAMES = new Set([
 	"grep",
 	"glob",
 	"codegraph_explore",
+	"jev_scout",
 	"find",
 	"search",
 	"lsp",

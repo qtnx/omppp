@@ -21,6 +21,7 @@ import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { loadOverallPlanReference } from "../plan-mode/plan-handoff";
 import planModeSubagentPrompt from "../prompts/system/plan-mode-subagent.md" with { type: "text" };
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
+import incompleteContextPrompt from "../prompts/task/jev/context-incomplete.md" with { type: "text" };
 import isolationRecoveryHintTemplate from "../prompts/tools/isolation-recovery-hint.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { TaskEffort } from "../thinking";
@@ -28,6 +29,8 @@ import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../tools/hub";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
+import { jevAvailable } from "../jev/systemone";
+import { selectRelevantContext } from "./jev-context";
 import { type ParentContextSnapshot, writeParentContextSnapshot } from "./context-snapshot";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess } from "./executor";
@@ -541,6 +544,7 @@ function buildExecutorOptions(
 	lease: ArtifactLease,
 	id: string,
 	contextSnapshot?: ParentContextSnapshot,
+	parentContextExcerpt?: string,
 ): ExecutorOptions {
 	const { session } = request;
 	const { skills, autoloadSkills } = resolveAutoloadSkills(session, policy.effectiveAgent);
@@ -554,6 +558,11 @@ function buildExecutorOptions(
 	// Repository context remains authoritative; the parent snapshot is passed separately
 	// so user/assistant history is never wrapped as `<repo-rules>`.
 	const baseContextFiles = session.contextFiles;
+	const batchContext = request.context?.trim();
+	const parentContext =
+		parentContextExcerpt && contextSnapshot?.path
+			? `<parent-context-excerpt>\nReference data from parent snapshot; full snapshot: ${contextSnapshot.path}\n${parentContextExcerpt}\n</parent-context-excerpt>`
+			: undefined;
 	return {
 		cwd: session.cwd,
 		additionalDirectories: session.additionalDirectories,
@@ -562,7 +571,7 @@ function buildExecutorOptions(
 		agent: policy.effectiveAgent,
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),
-		context: request.context?.trim() || undefined,
+		context: [batchContext, parentContext].filter(Boolean).join("\n\n") || undefined,
 		planReference: undefined,
 		// Task `name` is the spawn handle (id allocation). Eval `label` is a
 		// real UI description. Copy it only for eval so generateTaskLabel can run.
@@ -776,8 +785,26 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			...request.identity,
 			label: request.identity?.label ?? (request.invocationKind === "eval" ? "EvalAgent" : undefined),
 		});
-		const contextSnapshot = await writeParentContextSnapshot(request.session, lease.artifactsDir);
-		const baseOptions = buildExecutorOptions(request, policy, lease, id, contextSnapshot);
+		const compactContext = request.session.getCompactContext?.();
+		const contextSnapshot = await writeParentContextSnapshot(
+			request.session,
+			lease.artifactsDir,
+			compactContext ?? "",
+		);
+		let parentContextExcerpt: string | undefined;
+		if (compactContext && request.session.settings.get("task.jevAssist") && jevAvailable() && contextSnapshot) {
+			const selection = await selectRelevantContext({
+				assignment: request.assignment,
+				context: request.context,
+				snapshot: compactContext,
+				signal: request.signal,
+				redact: text => request.session.redactOutboundText?.(text) ?? text,
+			});
+			parentContextExcerpt = selection.requiresFullSnapshot
+				? prompt.render(incompleteContextPrompt, { path: contextSnapshot.path, omitted: selection.omitted })
+				: selection.sections.join("\n\n") || undefined;
+		}
+		const baseOptions = buildExecutorOptions(request, policy, lease, id, contextSnapshot, parentContextExcerpt);
 		baseOptions.onCleanupDeferred = completion => {
 			deferredCleanup = completion;
 		};

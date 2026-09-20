@@ -71,6 +71,59 @@ impl From<pi_ast::summary::SummaryResult> for SummaryResult {
 		}
 	}
 }
+#[napi(object)]
+pub struct SourceDeclaration {
+	pub name:       String,
+	pub kind:       String,
+	pub start_line: u32,
+	pub end_line:   u32,
+}
+
+#[napi(object)]
+pub struct SourceDeclarationsOptions {
+	pub code: String,
+	pub lang: Option<String>,
+	pub path: Option<String>,
+}
+
+#[napi(object)]
+pub struct SourceDeclarationsResult {
+	pub language:     Option<String>,
+	pub parsed:       bool,
+	pub declarations: Vec<SourceDeclaration>,
+}
+
+impl From<pi_ast::summary::SourceDeclaration> for SourceDeclaration {
+	fn from(value: pi_ast::summary::SourceDeclaration) -> Self {
+		Self {
+			name:       value.name,
+			kind:       value.kind,
+			start_line: value.start_line,
+			end_line:   value.end_line,
+		}
+	}
+}
+
+impl From<pi_ast::summary::SourceDeclarationsResult> for SourceDeclarationsResult {
+	fn from(value: pi_ast::summary::SourceDeclarationsResult) -> Self {
+		Self {
+			language:     value.language,
+			parsed:       value.parsed,
+			declarations: value.declarations.into_iter().map(Into::into).collect(),
+		}
+	}
+}
+
+#[napi]
+pub fn source_declarations(options: SourceDeclarationsOptions) -> Result<SourceDeclarationsResult> {
+	pi_ast::summary::source_declarations(pi_ast::summary::SourceDeclarationsOptions {
+		code: options.code,
+		lang: options.lang,
+		path: options.path,
+	})
+	.map(Into::into)
+	.map_err(|error| Error::from_reason(error.to_string()))
+}
 
 #[napi]
 pub fn summarize_code(options: SummaryOptions) -> Result<SummaryResult> {

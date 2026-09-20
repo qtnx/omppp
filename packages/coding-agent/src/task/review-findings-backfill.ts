@@ -4,7 +4,7 @@ import { type ReviewFindingRecordItem, recordReviewFindings } from "@oh-my-pi/om
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getAgentDbPath, getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
 import {
-	collectReviewFindingRecordItems,
+	collectFilteredReviewFindingRecordItems,
 	isReviewFindingAgent,
 	type ReviewFindingSourceResult,
 } from "./review-findings";
@@ -15,6 +15,7 @@ export interface BackfillReviewFindingsOptions {
 	repoRoot?: string;
 	dryRun?: boolean;
 	limitFiles?: number;
+	jevAssist?: boolean;
 }
 
 export interface BackfillReviewFindingsResult {
@@ -96,7 +97,7 @@ export async function backfillReviewFindings(
 		remainingFiles -= 1;
 		result.sessionFilesScanned += 1;
 		try {
-			for await (const batch of collectTaskFindingBatches(sessionFile, repoRootFilter)) {
+			for await (const batch of collectTaskFindingBatches(sessionFile, repoRootFilter, options.jevAssist)) {
 				result.taskResultsScanned += 1;
 				if (!isReviewFindingAgent(batch.agent)) continue;
 				result.reviewerResults += 1;
@@ -136,6 +137,7 @@ export async function backfillReviewFindings(
 async function* collectTaskFindingBatches(
 	sessionFile: string,
 	repoRootFilter: string | null,
+	jevAssist: boolean | undefined,
 ): AsyncGenerator<TaskFindingBatch> {
 	let cwd = path.dirname(sessionFile);
 	let repoRoot: string | null = null;
@@ -161,7 +163,7 @@ async function* collectTaskFindingBatches(
 			if (!agent) continue;
 			const findings =
 				isReviewFindingAgent(agent) && (!repoRootFilter || path.resolve(repoRoot) === repoRootFilter)
-					? collectReviewFindingRecordItems(taskResult)
+					? await collectFilteredReviewFindingRecordItems(taskResult, { jevAssist })
 					: [];
 			yield {
 				repoRoot,

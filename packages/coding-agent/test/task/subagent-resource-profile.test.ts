@@ -249,6 +249,7 @@ describe("subagent resource profile", () => {
 			"grep",
 			"glob",
 			"codegraph_explore",
+			"jev_scout",
 			"bash",
 			"web_search",
 			"irc",

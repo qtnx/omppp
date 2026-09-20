@@ -1,0 +1,4 @@
+Choose one listed agent for the assignment's actual work, using descriptions plus these tie-breakers.
+
+For read-only repository research: choose scout for a named symbol, targeted location/caller lookup, or one bounded area; choose explore for unfamiliar cross-module architecture or broad multi-package data flow. Choose librarian for external dependency/API source research. These distinctions break overlapping scout/explore descriptions; do not divide confidence between them when the assignment's breadth is explicit.
+For changes: choose quick_task for enumerated mechanical edits; task for one contained implementation concern. Prefer a matching domain implementer for substantial specialized work. Choose reviewer, plan, or independent QA only when that work is explicitly requested. Use only listed agents. An explicit caller choice is handled outside this classifier and must never be overridden.

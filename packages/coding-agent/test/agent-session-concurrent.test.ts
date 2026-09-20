@@ -130,7 +130,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated(settingsOverrides);
+		const settings = Settings.isolated({ "autonomy.stopGate": false, ...settingsOverrides });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -164,7 +164,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			streamFn: () => new AssistantMessageEventStream(),
 		});
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth-abort-busy-retry.db"));
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models-abort-busy-retry.yml"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
@@ -426,7 +426,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -505,7 +505,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			}),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 
@@ -618,7 +618,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated(),
+			settings: Settings.isolated({ "autonomy.stopGate": false }),
 			modelRegistry: sharedModelRegistry,
 		});
 
@@ -663,7 +663,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			}),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 
@@ -703,7 +703,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			emitSessionStop,
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 		vi.spyOn(session.goalRuntime, "onAgentEnd").mockImplementation(() => {
@@ -755,7 +755,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			"slow-session-stop",
 		);
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		const extensionRunner = new ExtensionRunner(
 			[extension],
@@ -829,7 +829,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated(),
+			settings: Settings.isolated({ "autonomy.stopGate": false }),
 			modelRegistry: sharedModelRegistry,
 			extensionRunner,
 		});
@@ -869,7 +869,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 
@@ -904,7 +904,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			}),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 
@@ -937,7 +937,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			}),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 
@@ -966,7 +966,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			emitSessionStop: vi.fn().mockResolvedValue(undefined),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 
@@ -995,7 +995,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			emitSessionStop: vi.fn().mockResolvedValue(undefined),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 
@@ -1031,7 +1031,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			}),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 		session.setClientBridge({
@@ -1143,7 +1143,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			emitSessionStop: vi.fn().mockResolvedValue(undefined),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -1177,7 +1177,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -1209,7 +1209,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -1252,7 +1252,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			hasHandlers: vi.fn().mockReturnValue(false),
 		} as unknown as ExtensionRunner;
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, extensionRunner });
 
@@ -1284,7 +1284,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -1346,7 +1346,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		const ownerId = "acp-session-a";
 		const deliveryGate = Promise.withResolvers<void>();
@@ -1423,7 +1423,7 @@ describe("AgentSession concurrent prompt guard", () => {
 	it("scopes ACP async job snapshots and drains to the owning session id", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const modelRegistry = sharedModelRegistry;
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const deliveryGate = Promise.withResolvers<void>();
 		const deliveryGateB = Promise.withResolvers<void>();
 		const delivered: string[] = [];
@@ -1619,7 +1619,7 @@ describe("AgentSession TTSR resume gate", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -1676,6 +1676,7 @@ describe("AgentSession TTSR resume gate", () => {
 
 		const sessionManager = SessionManager.inMemory();
 		const settings = Settings.isolated({
+			"autonomy.stopGate": false,
 			"compaction.enabled": false,
 			"retry.enabled": false,
 			"todo.enabled": false,
@@ -1878,7 +1879,7 @@ describe("AgentSession TTSR resume gate", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, ttsrManager });
 
@@ -2007,7 +2008,7 @@ describe("AgentSession TTSR resume gate", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, ttsrManager });
 
@@ -2117,7 +2118,7 @@ describe("AgentSession TTSR resume gate", () => {
 		} as unknown as ExtensionRunner;
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, ttsrManager, extensionRunner });
 
@@ -2219,7 +2220,7 @@ describe("AgentSession TTSR resume gate", () => {
 		} as unknown as ExtensionRunner;
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, ttsrManager, extensionRunner });
 
@@ -2276,7 +2277,7 @@ describe("AgentSession TTSR resume gate", () => {
 			},
 		});
 
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry, ttsrManager });
 
@@ -2348,7 +2349,7 @@ describe("AgentSession TTSR resume gate", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -2454,7 +2455,7 @@ describe("AgentSession TTSR resume gate", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -2559,7 +2560,7 @@ describe("AgentSession TTSR resume gate", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -2698,7 +2699,7 @@ describe("AgentSession TTSR resume gate", () => {
 			session = new AgentSession({
 				agent,
 				sessionManager,
-				settings: Settings.isolated(),
+				settings: Settings.isolated({ "autonomy.stopGate": false }),
 				modelRegistry: sharedModelRegistry,
 				ttsrManager,
 			});
@@ -2810,7 +2811,7 @@ describe("AgentSession TTSR resume gate", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager,
-			settings: Settings.isolated(),
+			settings: Settings.isolated({ "autonomy.stopGate": false }),
 			modelRegistry: sharedModelRegistry,
 			ttsrManager,
 		});
@@ -2928,7 +2929,7 @@ describe("AgentSession TTSR resume gate", () => {
 		});
 
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated();
+		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const modelRegistry = sharedModelRegistry;
 		session = new AgentSession({
 			agent,
@@ -2973,7 +2974,7 @@ describe("AgentSession TTSR resume gate", () => {
 			}),
 		);
 		const modelRegistry = new ModelRegistry(authStorage, modelsConfigPath, {
-			settings: Settings.isolated({ extendedContext: true }),
+			settings: Settings.isolated({ "autonomy.stopGate": false, extendedContext: true }),
 		});
 
 		const smallModel = modelRegistry.find("openai-codex", "gpt-5.5");
@@ -3056,7 +3057,11 @@ describe("AgentSession TTSR resume gate", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false, "contextPromotion.enabled": true }),
+			settings: Settings.isolated({
+				"autonomy.stopGate": false,
+				"compaction.enabled": false,
+				"contextPromotion.enabled": true,
+			}),
 			modelRegistry,
 			extensionRunner,
 		});

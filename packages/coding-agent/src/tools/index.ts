@@ -81,6 +81,7 @@ import { GrepTool } from "./grep";
 import { HubTool, isIrcEnabled } from "./hub";
 import { IrcTool } from "./irc";
 import { JobTool } from "./job";
+import { JevScoutTool } from "./jev-scout";
 import { LaunchTool } from "./launch";
 import { LearnTool } from "./learn";
 import { LoopTool } from "./loop";
@@ -152,6 +153,7 @@ export { createIrcMessageCard, HubTool, hubErrorResult, hubToolRenderer } from "
 export * from "./image-gen";
 export * from "./irc";
 export * from "./job";
+export * from "./jev-scout";
 export * from "./launch";
 export * from "./learn";
 export * from "./loop";
@@ -273,6 +275,14 @@ export interface ToolSession {
 	additionalDirectories?: string[];
 	/** Managed secret vault; injected as env into bash and listed (masked) by the secrets tool. */
 	secretVault?: SecretVaultLike;
+	/**
+	 * Scrub every secret the session knows (secrets.yml, secret-shaped env,
+	 * vault entries, vault key material, built-in credential patterns) out of
+	 * text a tool sends to a third-party service on its own — the provider
+	 * context is obfuscated by the SDK, a tool's own outbound call is not.
+	 * Undefined when secrets are disabled or nothing is configured.
+	 */
+	redactOutboundText?: (text: string) => string;
 	/** Whether UI is available */
 	hasUI: boolean;
 	/** Whether `ask` can reach a human. Defaults to `hasUI`. */
@@ -785,6 +795,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	codegraph_init: s => new CodeGraphInitTool(s),
 	codegraph_index: s => new CodeGraphIndexTool(s),
 	codegraph_explore: s => new CodeGraphExploreTool(s),
+	jev_scout: s => new JevScoutTool(s),
 	kanban: KanbanTool.createIf,
 	browser_use: s => new NativeBrowserComputerTool(s),
 	browser_jev: s => new BrowserJevTool(s),
@@ -1037,6 +1048,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		// no local key is required — only an explicitly emptied endpoint takes the
 		// tool away.
 		if (name === "browser_jev") return session.settings.get("browser.enabled") === true && jevEndpoint() !== "";
+		if (name === "jev_scout") return jevEndpoint() !== "";
 		if (name === "checkpoint" || name === "rewind")
 			return (
 				session.settings.get("checkpoint.enabled") &&

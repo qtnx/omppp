@@ -664,6 +664,10 @@ export const SETTINGS_SCHEMA = {
 			condition: "advisorEnabled",
 		},
 	},
+	"autonomy.stopGate": {
+		type: "boolean",
+		default: true,
+	},
 	"advisor.doneGate": {
 		type: "boolean",
 		default: true,
@@ -907,6 +911,34 @@ export const SETTINGS_SCHEMA = {
 			group: "Signals",
 			label: "TypeSafe Timeout (ms)",
 			description: "Per-request timeout. A timed-out classification is treated as unavailable (fail-open).",
+		},
+	},
+	"signals.scoutSourceDetail": {
+		type: "string",
+		default: "headers",
+		ui: {
+			tab: "model",
+			group: "Signals",
+			label: "Scout Source Detail",
+			description:
+				"Choose how much source code Scout may share. Names and paths are shared in every mode; recognized secrets are hidden.",
+			options: [
+				{
+					value: "headers",
+					label: "Names only",
+					description: "Share declaration names and locations, without source bodies or literal values",
+				},
+				{
+					value: "outline",
+					label: "Outline",
+					description: "Declarations plus unfolded bodies; a short file may go out whole",
+				},
+				{
+					value: "bodies",
+					label: "Bodies on retry",
+					description: "Outline first; a rejected ranking is retried with full bodies of files up to 400 lines",
+				},
+			],
 		},
 	},
 	"signals.advisorGate.enabled": {
@@ -3478,9 +3510,8 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	// Topic-switch compaction: after a long idle gap, jev (TypeSafe System One)
-	// judges whether the next user request still relates to the prior
-	// conversation; compact before sending it when it does not.
+	// Topic-switch compaction checks the next user request while the agent is idle
+	// and compacts unrelated prior context before dispatching it.
 	"compaction.topicSwitchEnabled": {
 		type: "boolean",
 		default: true,
@@ -3489,19 +3520,21 @@ export const SETTINGS_SCHEMA = {
 			group: "Compaction",
 			label: "Topic-Switch Compaction",
 			description:
-				"After a long idle gap, ask jev (TypeSafe signals) whether the new request is unrelated to the prior context and compact before sending it. Needs signals enabled; unavailable signals leave the turn untouched",
+				"Compact unrelated earlier context before starting a new request. If the topic cannot be determined, keep the context unchanged",
 		},
 	},
 
 	"compaction.topicSwitchIdleSeconds": {
 		type: "number",
-		default: 1800,
+		default: 300,
 		ui: {
 			tab: "context",
 			group: "Compaction",
 			label: "Topic-Switch Idle Threshold",
 			description: "Minimum idle time before a new request is checked for a topic switch",
 			options: [
+				{ value: "60", label: "1 minute" },
+				{ value: "300", label: "5 minutes" },
 				{ value: "600", label: "10 minutes" },
 				{ value: "1800", label: "30 minutes" },
 				{ value: "3600", label: "1 hour" },
@@ -3513,13 +3546,14 @@ export const SETTINGS_SCHEMA = {
 
 	"compaction.topicSwitchMinContextTokens": {
 		type: "number",
-		default: 30000,
+		default: 4000,
 		ui: {
 			tab: "context",
 			group: "Compaction",
 			label: "Topic-Switch Minimum Context",
 			description: "Skip the topic-switch check when the context is smaller than this",
 			options: [
+				{ value: "4000", label: "4K tokens" },
 				{ value: "15000", label: "15K tokens" },
 				{ value: "30000", label: "30K tokens" },
 				{ value: "50000", label: "50K tokens" },
@@ -6741,6 +6775,17 @@ export const SETTINGS_SCHEMA = {
 			label: "Generic Task Prewalk",
 			description:
 				"Arm prewalk for the bundled generic `task` subagent: it starts on its resolved model, plans and begins the implementation, then hands off to the 'smol' role at its first edit/write. Per-agent overrides (task.agentPrewalk, configured from the /agents hub) and user agent `prewalk` frontmatter apply regardless of this toggle.",
+		},
+	},
+	"task.jevAssist": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			group: "Subagents",
+			label: "TypeSafe Assist",
+			description:
+				"Let TypeSafe check delegation before and after each subagent run: pick the agent when none is named, flag briefs missing anchors or checks, hand the subagent the parent context it needs, classify subagent questions, and mark results and review findings that lack evidence. Needs a Jev endpoint.",
 		},
 	},
 

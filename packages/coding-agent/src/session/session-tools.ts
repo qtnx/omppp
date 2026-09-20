@@ -110,6 +110,8 @@ export interface SessionToolsHost {
 	notifyCommandMetadataChanged(): void;
 	localProtocolOptions(): LocalProtocolOptions;
 	secretVault: SecretVaultLike | undefined;
+	/** Session secret scrub for text a tool sends outside the provider context. */
+	redactOutboundText: ((text: string) => string) | undefined;
 	/** Session-scoped `/vision` override; undefined means "follow the persisted setting". */
 	/** Publishes the current Codex Code Mode tool exposure snapshot for turn metadata; undefined clears it. */
 	setCodeModeNamespacesInfo?(info: unknown): void;
@@ -443,7 +445,10 @@ export class SessionTools {
 		this.#autoApprove = options.autoApprove === true;
 		this.#toolRegistry = options.toolRegistry ?? new Map();
 		this.#toolSession = options.toolSession;
-		if (this.#toolSession) this.#toolSession.secretVault = host.secretVault;
+		if (this.#toolSession) {
+			this.#toolSession.secretVault = host.secretVault;
+			this.#toolSession.redactOutboundText = host.redactOutboundText;
+		}
 		this.#createVibeTools = options.createVibeTools;
 		this.#createThinkTool = options.createThinkTool;
 		this.#builtInToolNames = new Set(options.builtInToolNames ?? []);

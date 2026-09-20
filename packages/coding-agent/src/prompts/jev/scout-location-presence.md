@@ -1,0 +1,3 @@
+The state contains `query` and files with numbered declaration entries. Entries may contain only a kind and name, with implementation bodies intentionally omitted.
+
+Does a listed declaration plausibly perform the requested action, based on its name, kind, and file path? Sharing a topic alone is insufficient: formatting or rendering is not modifying, selecting a strategy is not executing it, and scheduling is not executing. Missing bodies are not evidence of absence. For a multi-stage question, one implementing declaration for a requested stage is enough. Answer no for unrelated declarations or mere callers, imports, and comments. Judge only this page, not the whole repository.

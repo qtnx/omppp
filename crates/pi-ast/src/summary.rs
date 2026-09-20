@@ -61,6 +61,209 @@ pub struct SummaryResult {
 	/// Kept/elided segments in source order.
 	pub segments:    Vec<SummarySegment>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceDeclaration {
+	pub name:       String,
+	pub kind:       String,
+	pub start_line: u32,
+	pub end_line:   u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceDeclarationsOptions {
+	pub code: String,
+	pub lang: Option<String>,
+	pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceDeclarationsResult {
+	pub language:     Option<String>,
+	pub parsed:       bool,
+	pub declarations: Vec<SourceDeclaration>,
+}
+
+const MAX_DECLARATION_NAME_BYTES: usize = 256;
+
+const DECLARATION_NAME_KINDS: &[&str] =
+	&["identifier", "property_identifier", "private_property_identifier", "type_identifier"];
+
+pub fn source_declarations(options: SourceDeclarationsOptions) -> Result<SourceDeclarationsResult> {
+	let source = options.code;
+	let Some(language) = resolve_language(options.lang.as_deref(), options.path.as_deref()) else {
+		return Ok(unparsed_declarations());
+	};
+	let Ok(Some(tree)) = parse_cached(&source, language) else {
+		return Ok(unparsed_declarations());
+	};
+	let root = tree.root_node();
+	if root.has_error() {
+		return Ok(unparsed_declarations());
+	}
+
+	Ok(SourceDeclarationsResult {
+		language:     Some(language.canonical_name().to_string()),
+		parsed:       true,
+		declarations: collect_declarations(root, &source, language),
+	})
+}
+
+const fn unparsed_declarations() -> SourceDeclarationsResult {
+	SourceDeclarationsResult { language: None, parsed: false, declarations: Vec::new() }
+}
+
+fn collect_declarations(
+	root: Node<'_>,
+	source: &str,
+	language: SupportLang,
+) -> Vec<SourceDeclaration> {
+	let mut pending = vec![root];
+	let mut declarations = Vec::new();
+
+	while let Some(node) = pending.pop() {
+		if let Some(declaration) = declaration_for(node, source, language) {
+			declarations.push(declaration);
+		}
+
+		let mut cursor = node.walk();
+		if cursor.goto_last_child() {
+			loop {
+				pending.push(cursor.node());
+				if !cursor.goto_previous_sibling() {
+					break;
+				}
+			}
+		}
+	}
+
+	declarations
+}
+
+fn declaration_for(
+	node: Node<'_>,
+	source: &str,
+	language: SupportLang,
+) -> Option<SourceDeclaration> {
+	let (kind, name_node) = declaration_kind(node, language)?;
+	if !valid_declaration_name(name_node, source, language) {
+		return None;
+	}
+	let name = name_node.utf8_text(source.as_bytes()).ok()?;
+	Some(SourceDeclaration {
+		name:       name.to_string(),
+		kind:       kind.to_string(),
+		start_line: node_start_line(node),
+		end_line:   node_content_end_line(node),
+	})
+}
+
+fn declaration_kind(node: Node<'_>, language: SupportLang) -> Option<(&'static str, Node<'_>)> {
+	let kind = node.kind();
+	match language {
+		SupportLang::TypeScript | SupportLang::Tsx | SupportLang::JavaScript => {
+			let declaration = match kind {
+				"function_declaration" | "generator_function_declaration" => {
+					("function", node.child_by_field_name("name")?)
+				},
+				"method_definition" => ("method", node.child_by_field_name("name")?),
+				"class_declaration" | "abstract_class_declaration" => {
+					("class", node.child_by_field_name("name")?)
+				},
+				"interface_declaration" => ("interface", node.child_by_field_name("name")?),
+				"type_alias_declaration" => ("type", node.child_by_field_name("name")?),
+				"enum_declaration" => ("enum", node.child_by_field_name("name")?),
+				"variable_declarator" => {
+					let name = node.child_by_field_name("name")?;
+					let kind = node
+						.child_by_field_name("value")
+						.filter(|value| matches!(value.kind(), "arrow_function" | "function"))
+						.map_or("variable", |_| "function");
+					(kind, name)
+				},
+				_ => return None,
+			};
+			Some(declaration)
+		},
+		SupportLang::Go => match kind {
+			"function_declaration" => Some(("function", node.child_by_field_name("name")?)),
+			"method_declaration" => Some(("method", node.child_by_field_name("name")?)),
+			"type_spec" => Some(("type", node.child_by_field_name("name")?)),
+			_ => None,
+		},
+		SupportLang::Python => match kind {
+			"function_definition" | "async_function_definition" => {
+				Some(("function", node.child_by_field_name("name")?))
+			},
+			"class_definition" => Some(("class", node.child_by_field_name("name")?)),
+			_ => None,
+		},
+		SupportLang::Rust => match kind {
+			"function_item" => {
+				let kind = if rust_method_context(node) {
+					"method"
+				} else {
+					"function"
+				};
+				Some((kind, node.child_by_field_name("name")?))
+			},
+			"struct_item" => Some(("struct", node.child_by_field_name("name")?)),
+			"enum_item" => Some(("enum", node.child_by_field_name("name")?)),
+			"trait_item" => Some(("trait", node.child_by_field_name("name")?)),
+			"type_item" => Some(("type", node.child_by_field_name("name")?)),
+			"mod_item" => Some(("module", node.child_by_field_name("name")?)),
+			"const_item" | "static_item" => Some(("variable", node.child_by_field_name("name")?)),
+			_ => None,
+		},
+		_ => generic_declaration_kind(node),
+	}
+}
+
+fn generic_declaration_kind(node: Node<'_>) -> Option<(&'static str, Node<'_>)> {
+	match node.kind() {
+		"function_definition" | "function_declaration" | "function_item" => {
+			Some(("function", node.child_by_field_name("name")?))
+		},
+		"method_definition" | "method_declaration" => {
+			Some(("method", node.child_by_field_name("name")?))
+		},
+		"class_definition" | "class_declaration" => {
+			Some(("class", node.child_by_field_name("name")?))
+		},
+		"struct_item" => Some(("struct", node.child_by_field_name("name")?)),
+		"enum_item" | "enum_declaration" => Some(("enum", node.child_by_field_name("name")?)),
+		"trait_item" => Some(("trait", node.child_by_field_name("name")?)),
+		"type_item" | "type_alias_declaration" | "type_spec" => {
+			Some(("type", node.child_by_field_name("name")?))
+		},
+		"interface_declaration" => Some(("interface", node.child_by_field_name("name")?)),
+		_ => None,
+	}
+}
+
+fn rust_method_context(node: Node<'_>) -> bool {
+	let mut parent = node.parent();
+	while let Some(ancestor) = parent {
+		match ancestor.kind() {
+			"impl_item" | "trait_item" => return true,
+			"function_item" => return false,
+			_ => parent = ancestor.parent(),
+		}
+	}
+	false
+}
+
+fn valid_declaration_name(node: Node<'_>, source: &str, language: SupportLang) -> bool {
+	let kind = node.kind();
+	let allowed = DECLARATION_NAME_KINDS.contains(&kind)
+		|| (language == SupportLang::Go && kind == "field_identifier");
+	if !allowed {
+		return false;
+	}
+	let Ok(name) = node.utf8_text(source.as_bytes()) else {
+		return false;
+	};
+	!name.is_empty() && name.len() <= MAX_DECLARATION_NAME_BYTES
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LineSpan {
@@ -711,6 +914,7 @@ fn is_elidable_kind(language: SupportLang, kind: &str) -> bool {
 		SupportLang::Html => matches!(kind, "element" | "script_element" | "style_element"),
 		SupportLang::Css => matches!(kind, "block" | "keyframe_block_list"),
 		SupportLang::Json => matches!(kind, "object" | "array"),
+
 		SupportLang::Xml => kind == "element",
 		SupportLang::Markdown => matches!(kind, "fenced_code_block" | "pipe_table" | "list"),
 		SupportLang::Graphql => matches!(
@@ -907,6 +1111,103 @@ mod tests {
 			.iter()
 			.map(|segment| segment.kind.as_str())
 			.collect()
+	}
+	fn declarations(code: &str, path: &str) -> SourceDeclarationsResult {
+		source_declarations(SourceDeclarationsOptions {
+			code: code.to_string(),
+			lang: None,
+			path: Some(path.to_string()),
+		})
+		.expect("declarations succeed")
+	}
+
+	fn declaration_names(result: &SourceDeclarationsResult) -> Vec<&str> {
+		result
+			.declarations
+			.iter()
+			.map(|declaration| declaration.name.as_str())
+			.collect()
+	}
+
+	#[test]
+	fn source_declarations_cover_five_languages() {
+		let typescript = declarations(
+			"class Box {\n\t#hidden() { return \"SECRET\"; }\n\ttail() { return \"SECRET\"; \
+			 }\n}\ntype Shape = \"SECRET\";\nconst arrow = () => \"SECRET\";\n",
+			"fixture.ts",
+		);
+		assert!(typescript.parsed);
+		assert_eq!(typescript.language.as_deref(), Some("typescript"));
+		assert_eq!(declaration_names(&typescript), vec!["Box", "#hidden", "tail", "Shape", "arrow"]);
+		assert_eq!(
+			(typescript.declarations[0].start_line, typescript.declarations[0].end_line),
+			(1, 4)
+		);
+		assert_eq!(
+			(typescript.declarations[1].start_line, typescript.declarations[1].end_line),
+			(2, 2)
+		);
+		assert_eq!(
+			(typescript.declarations[2].start_line, typescript.declarations[2].end_line),
+			(3, 3)
+		);
+
+		let javascript =
+			declarations("class Widget { method() {} }\nfunction free() {}\n", "fixture.js");
+		assert!(javascript.parsed);
+		assert_eq!(declaration_names(&javascript), vec!["Widget", "method", "free"]);
+
+		let go = declarations(
+			"type Server struct{}\nfunc Free() {}\nfunc (s *Server) Serve() {}\n",
+			"fixture.go",
+		);
+		assert!(go.parsed);
+		assert_eq!(declaration_names(&go), vec!["Server", "Free", "Serve"]);
+
+		let python =
+			declarations("class Greeter:\n\tdef greet(self):\n\t\treturn \"SECRET\"\n", "fixture.py");
+		assert!(python.parsed);
+		assert_eq!(declaration_names(&python), vec!["Greeter", "greet"]);
+
+		let rust = declarations(
+			"struct Greeter;\nimpl Greeter {\n\tfn greet(&self) {}\n}\nfn free() {}\n",
+			"fixture.rs",
+		);
+		assert!(rust.parsed);
+		assert_eq!(declaration_names(&rust), vec!["Greeter", "greet", "free"]);
+		assert_eq!(rust.declarations[1].kind, "method");
+	}
+
+	#[test]
+	fn source_declarations_never_echo_body_or_computed_names() {
+		let result = declarations(
+			"function reveal(){return \"SECRET_CANARY\";}\nconst [destructured] = value;\nconst \
+			 computed = object[\"SECRET_CANARY\"];\ntype Visible = \"SECRET_CANARY\";\ninterface \
+			 Shape { property: \"SECRET_CANARY\"; }\n",
+			"fixture.ts",
+		);
+		assert!(result.parsed);
+		assert_eq!(declaration_names(&result), vec!["reveal", "computed", "Visible", "Shape"]);
+		assert_eq!((result.declarations[0].start_line, result.declarations[0].end_line), (1, 1));
+		assert!(
+			result
+				.declarations
+				.iter()
+				.all(|declaration| !declaration.name.contains("SECRET_CANARY"))
+		);
+	}
+
+	#[test]
+	fn source_declarations_reject_malformed_or_unsupported_source() {
+		let malformed = declarations("function broken( {\n", "fixture.ts");
+		assert!(!malformed.parsed);
+		assert!(malformed.language.is_none());
+		assert!(malformed.declarations.is_empty());
+
+		let unsupported = declarations("plain text\n", "fixture.txt");
+		assert!(!unsupported.parsed);
+		assert!(unsupported.language.is_none());
+		assert!(unsupported.declarations.is_empty());
 	}
 
 	#[test]

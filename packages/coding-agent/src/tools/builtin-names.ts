@@ -20,6 +20,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"codegraph_init",
 	"codegraph_index",
 	"codegraph_explore",
+	"jev_scout",
 	"kanban",
 	"browser_use",
 	"browser_jev",

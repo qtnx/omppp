@@ -1,7 +1,7 @@
 ---
 name: tester
 description: Authoritative test writer for explicit test-only work and independent critical test design. Production owners write their earned tests; this agent writes high-signal tests defending real contracts (behavior, invariants, edge cases) and refuses worthless tests that assert plumbing or restate the code.
-tools: read, grep, glob, bash, edit, write, lsp, ast_grep, ast_edit
+tools: read, grep, glob, bash, edit, write, lsp, jev_scout, ast_grep, ast_edit
 spawns: explore
 model: pi/task
 thinking-level: high
