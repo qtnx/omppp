@@ -108,7 +108,7 @@ pub fn source_declarations(options: SourceDeclarationsOptions) -> Result<SourceD
 	})
 }
 
-fn unparsed_declarations() -> SourceDeclarationsResult {
+const fn unparsed_declarations() -> SourceDeclarationsResult {
 	SourceDeclarationsResult { language: None, parsed: false, declarations: Vec::new() }
 }
 

@@ -166,23 +166,22 @@ export class SessionCompletion {
 				request.text.length > 4000,
 		};
 		const service = host.signals();
-		// Disabling classification does not disable the local obligation guard.
-		// With no open work, an explicit opt-out must not add an audit turn.
-		if (!service && !open.length) return false;
+		// Without classification this gate is inert: the existing todo, plan, QA and
+		// empty-stop machinery keeps owning the turn, and no extra model turn is spent.
+		if (!service) return false;
 		const key = `${this.#sessionId}:${generation}:${revision}:${Bun.hash(candidate)}:${progress}`;
-		if (service && this.#assessment?.key !== key) {
-			this.#assessment = { key, promise: service.judgeStop(input, signal) };
-		}
+		if (this.#assessment?.key !== key) this.#assessment = { key, promise: service.judgeStop(input, signal) };
 		const started = Date.now();
-		const assessment = service ? await this.#assessment?.promise : undefined;
+		const assessment = await this.#assessment.promise;
+		if (!assessment) return false;
 		if (!current()) return false;
 		// Local obligations may change while the request is in flight; a stale answer cannot close them.
 		const currentGoal = host.goal()?.goal;
 		const currentOpen = [...host.openTodos(), ...(currentGoal?.status === "active" ? [currentGoal.objective] : [])];
-		const trusted = assessment && assessment.confidence >= 0.8 && !input.omitted;
+		const trusted = assessment.confidence >= 0.8 && !input.omitted;
 		let audit = false;
 		let resume = false;
-		if (assessment && assessment.needsUserDecision >= 0.8) return false;
+		if (assessment.needsUserDecision >= 0.8) return false;
 		if (trusted && assessment.kind === "complete" && assessment.goalSatisfied >= 0.8 && !currentOpen.length) {
 			this.#complete = true;
 			return false;
@@ -193,12 +192,14 @@ export class SessionCompletion {
 				(["partial", "question"].includes(assessment.kind) && assessment.goalSatisfied <= 0.2) ||
 				assessment.kind === "blocked";
 		}
+		// An audit costs a model turn, so it is spent only on an answer we received but
+		// cannot trust.
 		if (!resume && !this.#audited) {
 			audit = true;
 			resume = true;
 		}
 		// Known open work is never erased by a complete verdict or an exhausted audit allowance.
-		if (!resume && currentOpen.length) resume = true;
+		if (!resume && currentOpen.length && assessment.blockerExternal <= 0.2) resume = true;
 		if (!resume) return false;
 		if (audit) this.#audited = true;
 		const reminder: Message = {

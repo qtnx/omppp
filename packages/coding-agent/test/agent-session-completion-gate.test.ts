@@ -139,23 +139,16 @@ async function rig(
 }
 
 describe("main-stream completion gate", () => {
-	it("finishes open local work even when signals are disabled", async () => {
-		const r = await rig(
-			[stop("Done."), write("verified", "w"), stop("Delivered.")],
-			() => response("complete", 1),
-			true,
-			undefined,
-			false,
-		);
+	it("is inert when signals are disabled: no continuation and no outbound request", async () => {
+		const r = await rig([stop("Should I write the file?")], () => response("question", 0), true, undefined, false);
 		r.session.setTodoPhases([
 			{ name: "Delivery", tasks: [{ content: "Write and verify result.txt", status: "pending" }] },
 		]);
-		r.onRecord(() => r.session.setTodoPhases([]));
 		await r.session.prompt("Deliver result.txt.");
 		await r.session.waitForIdle();
-		expect(await Bun.file(r.file).text()).toBe("verified");
 		expect(r.sent).toEqual([]);
-		expect(r.ends).toEqual([true, undefined]);
+		expect(r.mock.calls).toHaveLength(1);
+		expect(await Bun.file(r.file).exists()).toBe(false);
 	});
 
 	it("keeps open work actionable after an audit and an uncertain external-blocker verdict", async () => {
@@ -248,14 +241,13 @@ describe("main-stream completion gate", () => {
 		expect(await Bun.file(r.file).exists()).toBe(false);
 		expect(r.mock.calls.length).toBe(1);
 	});
-	it("audits unavailable classification once without claiming classifier approval", async () => {
-		const r = await rig([stop("Answer."), stop("Audited answer.")], () =>
-			Response.json({ model: "test-jev", answers: {} }),
-		);
+	it("treats unavailable classification as inert rather than approval or continuation", async () => {
+		const r = await rig([stop("Answer.")], () => Response.json({ model: "test-jev", answers: {} }));
 		await r.session.prompt("Explain the fixture.");
 		await r.session.waitForIdle();
-		expect(r.mock.calls.length).toBe(2);
-		expect(r.sent.length).toBe(2);
+		expect(r.mock.calls.length).toBe(1);
+		expect(r.sent.length).toBe(1);
+		expect(await Bun.file(r.file).exists()).toBe(false);
 	});
 	it("discards an assessment that resolves after user cancellation", async () => {
 		const pending = Promise.withResolvers<Response>();

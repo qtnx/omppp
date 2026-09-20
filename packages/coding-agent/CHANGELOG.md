@@ -18,7 +18,7 @@
 - Uncertain review judgments no longer delete existing findings or change their priorities.
 - Subagents receive ordered, deduplicated context and a full-snapshot fallback when required material cannot fit safely in an excerpt.
 - An agent named at batch level on a `task` call is no longer overridden by automatic routing; Jev picks an agent only when neither the item nor the batch named one.
-- Open tasks continue to block premature completion when signals are disabled or an inconclusive check has already been audited.
+- Open tasks continue to block a premature stop when a completion check is inconclusive or its audit allowance is already spent; an unavailable check leaves the turn unchanged.
 
 ## [18.2.3] - 2026-09-17
 
