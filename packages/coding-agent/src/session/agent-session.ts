@@ -4394,10 +4394,6 @@ export class AgentSession {
 				);
 				return;
 			}
-			if (this.#hasPendingAsyncWake() || queuedMessageDrainScheduled) {
-				await emitAgentEndNotification({ willContinue: true });
-				return;
-			}
 			// A capped empty stop still has stopReason "stop"; built-in reminders
 			// must not restart it after recovery has declared the turn terminal.
 			if (msg.stopReason !== "error" && emptyOutputRecovery !== "terminal") {

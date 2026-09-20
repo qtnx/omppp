@@ -40,7 +40,8 @@ export class SessionCompletion {
 	#generation: number;
 	#objective = "";
 	#requests: Array<{ key: string; text: string }> = [];
-	#audited = false;
+	/** Audited stop keys. Keyed, not a flag: re-observing history must not refund an audit. */
+	#audited = new Set<string>();
 	#complete = false;
 	#progress = "";
 	#noProgress = 0;
@@ -61,7 +62,7 @@ export class SessionCompletion {
 			this.#objective = "";
 			this.#requests = [];
 			this.#complete = false;
-			this.#audited = false;
+			this.#audited.clear();
 			this.#assessment = undefined;
 			this.#progress = "";
 			this.#noProgress = 0;
@@ -73,7 +74,7 @@ export class SessionCompletion {
 		if (!this.#objective || this.#complete) this.#objective = text;
 		this.#requests.push({ key, text });
 		if (this.#requests.length > 5) this.#requests.shift();
-		this.#audited = false;
+		// A new request bumps #revision, so its stop keys are new and unaudited.
 		this.#complete = false;
 		this.#revision++;
 		this.#assessment = undefined;
@@ -173,35 +174,41 @@ export class SessionCompletion {
 		if (this.#assessment?.key !== key) this.#assessment = { key, promise: service.judgeStop(input, signal) };
 		const started = Date.now();
 		const assessment = await this.#assessment.promise;
-		if (!assessment) return false;
+		// A missing answer is an outage: leave the turn exactly as it was, and spend no
+		// model turn. Locally clipped context is different — we know the judgment could
+		// not see the whole request, so the single audit still applies.
+		if (!assessment && !input.omitted) return false;
 		if (!current()) return false;
 		// Local obligations may change while the request is in flight; a stale answer cannot close them.
 		const currentGoal = host.goal()?.goal;
 		const currentOpen = [...host.openTodos(), ...(currentGoal?.status === "active" ? [currentGoal.objective] : [])];
-		const trusted = assessment.confidence >= 0.8 && !input.omitted;
 		let audit = false;
 		let resume = false;
-		if (assessment.needsUserDecision >= 0.8) return false;
-		if (trusted && assessment.kind === "complete" && assessment.goalSatisfied >= 0.8 && !currentOpen.length) {
-			this.#complete = true;
-			return false;
+		if (assessment) {
+			const trusted = assessment.confidence >= 0.8 && !input.omitted;
+			if (assessment.needsUserDecision >= 0.8) return false;
+			if (trusted && assessment.kind === "complete" && assessment.goalSatisfied >= 0.8 && !currentOpen.length) {
+				this.#complete = true;
+				return false;
+			}
+			if (trusted && assessment.blockerExternal <= 0.2 && assessment.needsUserDecision <= 0.2) {
+				resume =
+					currentOpen.length > 0 ||
+					(["partial", "question"].includes(assessment.kind) && assessment.goalSatisfied <= 0.2) ||
+					assessment.kind === "blocked";
+			}
 		}
-		if (trusted && assessment.blockerExternal <= 0.2 && assessment.needsUserDecision <= 0.2) {
-			resume =
-				currentOpen.length > 0 ||
-				(["partial", "question"].includes(assessment.kind) && assessment.goalSatisfied <= 0.2) ||
-				assessment.kind === "blocked";
-		}
-		// An audit costs a model turn, so it is spent only on an answer we received but
-		// cannot trust.
-		if (!resume && !this.#audited) {
+		// An audit costs a model turn, so one request gets at most one: it is spent on an
+		// answer that arrived but cannot be trusted, or on context we clipped ourselves.
+		const auditKey = `${this.#sessionId}:${generation}:${revision}`;
+		if (!resume && !this.#audited.has(auditKey)) {
 			audit = true;
 			resume = true;
 		}
 		// Known open work is never erased by a complete verdict or an exhausted audit allowance.
-		if (!resume && currentOpen.length && assessment.blockerExternal <= 0.2) resume = true;
+		if (!resume && currentOpen.length) resume = true;
 		if (!resume) return false;
-		if (audit) this.#audited = true;
+		if (audit) this.#audited.add(auditKey);
 		const reminder: Message = {
 			role: "developer",
 			attribution: "agent",
