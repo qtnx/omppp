@@ -174,32 +174,30 @@ export class SessionCompletion {
 		if (this.#assessment?.key !== key) this.#assessment = { key, promise: service.judgeStop(input, signal) };
 		const started = Date.now();
 		const assessment = await this.#assessment.promise;
-		// A missing answer is an outage: leave the turn exactly as it was, and spend no
-		// model turn. Locally clipped context is different — we know the judgment could
-		// not see the whole request, so the single audit still applies.
-		if (!assessment && !input.omitted) return false;
+		// No judgment — outage, malformed answer, or context clipped before sending —
+		// leaves the turn exactly as it was. It never becomes approval, and it never
+		// spends a model turn on an audit the classifier did not ask for.
+		if (!assessment) return false;
 		if (!current()) return false;
 		// Local obligations may change while the request is in flight; a stale answer cannot close them.
 		const currentGoal = host.goal()?.goal;
 		const currentOpen = [...host.openTodos(), ...(currentGoal?.status === "active" ? [currentGoal.objective] : [])];
 		let audit = false;
 		let resume = false;
-		if (assessment) {
-			const trusted = assessment.confidence >= 0.8 && !input.omitted;
-			if (assessment.needsUserDecision >= 0.8) return false;
-			if (trusted && assessment.kind === "complete" && assessment.goalSatisfied >= 0.8 && !currentOpen.length) {
-				this.#complete = true;
-				return false;
-			}
-			if (trusted && assessment.blockerExternal <= 0.2 && assessment.needsUserDecision <= 0.2) {
-				resume =
-					currentOpen.length > 0 ||
-					(["partial", "question"].includes(assessment.kind) && assessment.goalSatisfied <= 0.2) ||
-					assessment.kind === "blocked";
-			}
+		const trusted = assessment.confidence >= 0.8 && !input.omitted;
+		if (assessment.needsUserDecision >= 0.8) return false;
+		if (trusted && assessment.kind === "complete" && assessment.goalSatisfied >= 0.8 && !currentOpen.length) {
+			this.#complete = true;
+			return false;
+		}
+		if (trusted && assessment.blockerExternal <= 0.2 && assessment.needsUserDecision <= 0.2) {
+			resume =
+				currentOpen.length > 0 ||
+				(["partial", "question"].includes(assessment.kind) && assessment.goalSatisfied <= 0.2) ||
+				assessment.kind === "blocked";
 		}
 		// An audit costs a model turn, so one request gets at most one: it is spent on an
-		// answer that arrived but cannot be trusted, or on context we clipped ourselves.
+		// answer that arrived but cannot be trusted.
 		const auditKey = `${this.#sessionId}:${generation}:${revision}`;
 		if (!resume && !this.#audited.has(auditKey)) {
 			audit = true;

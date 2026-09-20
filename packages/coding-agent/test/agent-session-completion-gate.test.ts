@@ -287,18 +287,14 @@ describe("main-stream completion gate", () => {
 		expect(r.mock.calls).toHaveLength(2);
 	});
 
-	it("self-audits rather than approving clipped prior-request context", async () => {
-		const r = await rig(
-			[stop("Final answer."), stop("Audited final answer.")],
-			() => response("complete", 1),
-			true,
-			"x".repeat(4001),
-		);
+	it("never approves or continues on context clipped before sending", async () => {
+		const r = await rig([stop("Final answer.")], () => response("complete", 1), true, "x".repeat(4001));
 		await r.session.prompt("Report the result only.");
 		await r.session.waitForIdle();
-		expect(r.mock.calls).toHaveLength(2);
-		expect(reminders(r.manager)).toHaveLength(1);
+		// The oversized prior request is never transmitted, so no verdict exists to act on.
 		expect(r.sent).toEqual([]);
+		expect(r.mock.calls).toHaveLength(1);
+		expect(reminders(r.manager)).toEqual([]);
 		expect(await Bun.file(r.file).exists()).toBe(false);
 	});
 

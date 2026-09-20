@@ -1711,7 +1711,17 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		});
 
 		try {
-			const expectedToolNames = ["read", "grep", "glob", "codegraph_explore", "bash", "web_search", "irc", "yield"];
+			const expectedToolNames = [
+				"read",
+				"grep",
+				"glob",
+				"codegraph_explore",
+				"jev_scout",
+				"bash",
+				"web_search",
+				"irc",
+				"yield",
+			];
 			const contextGcToolNames = [
 				"context_debug",
 				"context_global_stats",
