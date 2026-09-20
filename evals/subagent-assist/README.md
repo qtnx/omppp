@@ -2,6 +2,16 @@
 
 The production corrections are implemented. The main-stream completion backstop and the concrete confidence/context/agent-precedence regressions pass the focused package checks. This does **not** establish perfect classifier accuracy or a general speed improvement.
 
+## Main integration verification
+
+Integrated onto fork version 1.10.4 without changing the original worktree. The combined acceptance command passed **256 tests, 0 failures, 873 assertions across 19 files**. Independent QA passed **51 tests, 0 failures, 165 assertions across five files**. Package checks passed with 97 existing warnings. The native addon and standalone binary were rebuilt; `--version` reported `ompx/1.10.4` and `--smoke-test` reported `smoke-test: ok`.
+
+Two additional real-session regressions first failed with missing output files, then passed after preserving open obligations when signals are disabled and when an inconclusive external-blocker judgment follows the one allowed audit. Immediate topic-switch checking now defaults to zero idle delay and zero context floor; its integration test verifies compaction precedes dispatch.
+
+The live external-blocker scenario passed without writing a file. The success scenario initially failed twice because the model wrote a trailing newline; the diagnostic retry recorded `verified-completion\n`. The prompt was clarified to require exactly 19 UTF-8 bytes and no trailing newline, without weakening the exact-byte assertion. The failed-case-only rerun (`runtime.ts --success-only`) passed with `verified-completion`, exit 0, two model replies, and cleanup complete. This is a clarified-prompt result, not a retroactive pass for the original prompt or proof of universal completion accuracy. The runner now reports bounded, redacted observed artifact contents on mismatches; `--external-only` and `--success-only` isolate failed-case reruns.
+
+The A/B trace parser tests also run without a built binary: binary hashing occurs only when executing the A/B runner, not when importing its parser.
+
 ## Reproduce
 
 From the repository root:
@@ -33,7 +43,7 @@ Outbound state contains bounded user requests/candidate text, open-item descript
 
 Subagent context selection now considers chronological relationships, deduplicates identical normalized sections at their latest position, and resolves required/supporting/superseded/irrelevant decisions. Required sections are never truncated into misleading fragments. Incomplete coverage explicitly requires reading the full available snapshot; shared assignment/context are never filtered. Explicit item and batch agent choices both beat automatic routing. Uncertain drop judgments retain original findings and priorities.
 
-## Verified package and installed entrypoints
+## Pre-integration package and installed entrypoints
 
 The locked package command was run from `packages/coding-agent`:
 

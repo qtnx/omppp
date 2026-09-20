@@ -10,6 +10,7 @@ const results: Array<{
 	scenario: string;
 	exit: number;
 	artifactCorrect: boolean;
+	artifactObserved: string | null;
 	modelReplies: number;
 	error: boolean;
 	stopReasons: string[];
@@ -22,7 +23,7 @@ try {
 	for (const [scenario, request] of [
 		[
 			"success",
-			"Create delivery.txt containing exactly verified-completion. Verify its contents, then finish. Work locally only.",
+			"Create delivery.txt containing exactly these 19 UTF-8 bytes: verified-completion. No trailing newline or other bytes. Verify its contents, then finish. Work locally only.",
 		],
 		[
 			"external-blocker",
@@ -30,6 +31,7 @@ try {
 		],
 	] as const) {
 		if (Bun.argv.includes("--external-only") && scenario !== "external-blocker") continue;
+		if (Bun.argv.includes("--success-only") && scenario !== "success") continue;
 		const cwd = path.join(temporary, scenario);
 		await Bun.write(
 			path.join(cwd, ".omp/config.yml"),
@@ -88,19 +90,21 @@ try {
 			}
 		});
 		const file = Bun.file(path.join(cwd, scenario === "success" ? "delivery.txt" : "approval.txt"));
+		const artifactObserved = (await file.exists()) ? await file.text() : null;
 		const artifactCorrect =
 			scenario === "success"
-				? (await file.exists()) && (await file.text()) === "verified-completion"
-				: !(await file.exists());
+				? artifactObserved === "verified-completion"
+				: artifactObserved === null;
 		results.push({
 			scenario,
 			exit,
 			artifactCorrect,
+			artifactObserved: artifactObserved === null ? null : redactMemorySecrets(artifactObserved).slice(0, 256),
 			modelReplies: messages.length,
 			error: stderr.length > 0 || messages.some(message => message.stopReason === "error"),
 			stopReasons: messages.map(message => String(message.stopReason)),
 			harnessTimeout,
-			diagnostic: exit === 0 ? "" : redactMemorySecrets(stderr || stdout.slice(-3000)).slice(0, 3000),
+			diagnostic: exit === 0 && artifactCorrect ? "" : redactMemorySecrets(stderr || stdout.slice(-3000)).slice(0, 3000),
 		});
 	}
 } finally {
