@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.10.5] - 2026-09-21
+
 ### Added
 
 - Added `jev_scout` to locate source with bounded follow-up searches, including methods inside large classes. By default it shares declaration names and locations rather than source bodies; broader source sharing remains an explicit setting.
