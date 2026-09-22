@@ -8,6 +8,8 @@
 - Auto thinking takes its effort from Jev's prompt judgment (shared with duo routing), re-aims it mid-run from those 15s samples, and falls back to the tiny/smol classifier only when Jev is unavailable.
 - Subagents without an explicit effort or `:level` suffix run on `auto` thinking; bundled agents that pinned `medium`/`high`/`xhigh` now pin `auto`.
 - The status-line work-phase chip only shows while duo is live.
+- System prompt now routes behavior-to-location lookups to `jev_scout` (with an explicit tie-break against `codegraph_explore`), makes `browser_jev` the first tool for the main agent's own web UI verification, and adds a parallel fan-out playbook with concrete spawn triggers and an isolated-scope recipe for subagent waves.
+
 
 ## [1.11.1] - 2026-09-22
 
