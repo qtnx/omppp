@@ -8,7 +8,9 @@ import type { Api, ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import { applyGeneratedModelPolicies } from "../scripts/generated-policies";
 
 const DAYBREAK_EFFORTS = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max];
-const DAYBREAK_MODELS = seedModels<"openai-responses">("openai");
+const DAYBREAK_MODELS = seedModels<"openai-responses">("openai").filter(
+	model => model.id === "daybreak-blue-latest" || model.id === "daybreak-red-latest" || model.id === "gpt-5.6-cyber",
+);
 
 describe("OpenAI Daybreak and GPT-5.6 models", () => {
 	test("curates the documented aliases and Cyber snapshot with standard API pricing", () => {

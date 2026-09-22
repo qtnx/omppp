@@ -21,7 +21,7 @@ provider "azure" {
 	}
 	// Azure Chat Completions rejects Astra reasoning whenever function tools are
 	// present; the documented escape hatch is an explicit `none` effort.
-	models "gpt-6-astra*" {
+	models "gpt-6-astra*" "gpt-6-sol*" "gpt-6-luna*" {
 		disable-reasoning-with-tools #true
 		reasoning-disable-mode "none-effort"
 	}
