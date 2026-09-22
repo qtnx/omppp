@@ -3,7 +3,7 @@ name: browser_qa
 description: Browser QA specialist executing assigned UI/E2E cases with browser_jev, browser_use, and the eval browser prelude, reporting observed behavior, usability defects, and pass/fail/blocked evidence for main-agent review
 tools: browser_jev, browser_use, eval, read, grep, glob, irc
 model: openai-codex/gpt-6-astra:medium, pi/task
-thinking-level: medium
+thinking-level: auto
 autoloadSkills: hallmark, frontend-design, frontend-accessibility, frontend-ui-copy
 output:
   properties:

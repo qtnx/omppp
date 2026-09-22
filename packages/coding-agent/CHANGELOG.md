@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Jev turn classification no longer runs on every tool step: with a live advisor it still judges each step, otherwise a live duo or `auto`-thinking session samples running tool work at most once per 15s, and duo-off sessions without `auto` send none.
+- Auto thinking takes its effort from Jev's prompt judgment (shared with duo routing), re-aims it mid-run from those 15s samples, and falls back to the tiny/smol classifier only when Jev is unavailable.
+- Subagents without an explicit effort or `:level` suffix run on `auto` thinking; bundled agents that pinned `medium`/`high`/`xhigh` now pin `auto`.
+- The status-line work-phase chip only shows while duo is live.
 
 ## [1.11.1] - 2026-09-22
 

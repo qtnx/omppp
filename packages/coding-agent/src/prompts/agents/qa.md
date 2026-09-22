@@ -4,7 +4,7 @@ description: Adversarial senior QA engineer that independently re-verifies compl
 tools: read, grep, glob, bash, lsp, jev_scout, irc
 spawns: browser_qa
 model: anthropic/claude-fable-5:low, openai-codex/gpt-5.5:high, pi/task
-thinking-level: high
+thinking-level: auto
 output:
   properties:
     verdict:

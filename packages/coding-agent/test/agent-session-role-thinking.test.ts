@@ -10,6 +10,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { TurnSignalService } from "@oh-my-pi/pi-coding-agent/signals/index";
 import {
 	AUTO_THINKING,
 	clampAutoThinkingEffort,
@@ -62,6 +63,7 @@ describe("AgentSession role model thinking behavior", () => {
 		initialThinkingLevel: Effort;
 		modelRoles: Record<string, string>;
 		runtimeApiKeys?: Record<string, string>;
+		signals?: boolean;
 	}) {
 		const model = getAnthropicModelOrThrow(options.initialModelId);
 		const agent = new Agent({
@@ -79,7 +81,8 @@ describe("AgentSession role model thinking behavior", () => {
 			authStorage.setRuntimeApiKey(provider, runtimeApiKeys[provider]);
 		}
 
-		sessionSettings = Settings.isolated();
+		// Hermetic: auto thinking falls back to the tiny/smol classifier without Jev.
+		sessionSettings = Settings.isolated({ "signals.enabled": options.signals ?? false });
 		for (const [role, modelRoleValue] of Object.entries(options.modelRoles)) {
 			sessionSettings.setModelRole(role, modelRoleValue);
 		}
@@ -409,6 +412,51 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(session.thinkingLevel).toBe(Effort.Medium);
 		expect(session.autoResolvedThinkingLevel()).toBe(Effort.Medium);
 		expect(session.agent.state.thinkingLevel).toBe(Effort.Medium);
+	});
+
+	it("takes the auto effort from Jev's prompt judgment instead of the tiny classifier", async () => {
+		const model = getAnthropicModelOrThrow("claude-sonnet-4-5");
+		await createSession({
+			initialModelId: model.id,
+			initialThinkingLevel: Effort.High,
+			modelRoles: { default: `${model.provider}/${model.id}` },
+			signals: true,
+		});
+		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+		const jevSpy = vi.spyOn(TurnSignalService.prototype, "classifyPrompt").mockResolvedValue({
+			difficulty: "hard",
+			difficultyConfidence: 0.9,
+			thinking: "xhigh",
+			risk: 0,
+		});
+		const classifierSpy = vi.spyOn(autoThinkingClassifier, "classifyDifficulty").mockResolvedValue(Effort.Low);
+
+		session.setThinkingLevel(AUTO_THINKING);
+		await session.prompt("Redesign the retry state machine");
+
+		expect(jevSpy).toHaveBeenCalledTimes(1);
+		expect(classifierSpy).not.toHaveBeenCalled();
+		expect(session.configuredThinkingLevel()).toBe(AUTO_THINKING);
+		expect(session.thinkingLevel).toBe(Effort.XHigh);
+	});
+
+	it("falls back to the tiny classifier when Jev has no judgment", async () => {
+		const model = getAnthropicModelOrThrow("claude-sonnet-4-5");
+		await createSession({
+			initialModelId: model.id,
+			initialThinkingLevel: Effort.High,
+			modelRoles: { default: `${model.provider}/${model.id}` },
+			signals: true,
+		});
+		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+		vi.spyOn(TurnSignalService.prototype, "classifyPrompt").mockResolvedValue(undefined);
+		const classifierSpy = vi.spyOn(autoThinkingClassifier, "classifyDifficulty").mockResolvedValue(Effort.Low);
+
+		session.setThinkingLevel(AUTO_THINKING);
+		await session.prompt("Rename one local variable");
+
+		expect(classifierSpy).toHaveBeenCalledTimes(1);
+		expect(session.thinkingLevel).toBe(Effort.Low);
 	});
 
 	it("does not record late classifier usage in a replacement session after abort", async () => {

@@ -218,6 +218,7 @@ import {
 import { type SecretEntry, SecretObfuscator } from "../secrets/obfuscator";
 import {
 	createTurnSignalService,
+	type PromptSignals,
 	TURN_SIGNALS_CHANNEL,
 	type TurnSignalService,
 	type WorkPhase,
@@ -496,6 +497,8 @@ import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 const PLAN_MODE_REMINDER_MAX = 3;
 const POST_PROMPT_DRAIN_TIMEOUT_MS = 5_000;
 const AGENT_START_POLICY_MAX_ATTEMPTS = 3;
+/** Jev difficulty confidence a mid-run turn judgment needs before it re-aims `auto` thinking. */
+const AUTO_THINKING_JUDGMENT_MIN_CONFIDENCE = 0.7;
 
 /** A failed preparation, not a provider failure: the ordinary input can still be restored. */
 class AgentStartPolicyChangedError extends Error {
@@ -765,6 +768,8 @@ export class AgentSession {
 	readonly #duoOrchestrator: SessionDuoOrchestrator;
 	/** TypeSafe turn classifier; undefined when signals are disabled or no key is configured. */
 	readonly #turnSignals: TurnSignalService | undefined;
+	/** Latest Jev prompt judgment, shared by duo routing and auto-thinking for the same request text. */
+	#promptSignalsMemo: { request: string; result: Promise<PromptSignals | undefined> } | undefined;
 	readonly #completion: SessionCompletion;
 	/** Resolves once the resume-time advisor spend backfill settles (issue #9553). */
 	#advisorCostRestore: Promise<void> = Promise.resolve();
@@ -1592,6 +1597,8 @@ export class AgentSession {
 			clearActiveRetryFallback: () => this.#recovery.clearActiveRetryFallback(),
 			clearInheritedProviderPromptCacheKey: () => this.#clearInheritedProviderPromptCacheKey(),
 			magicKeywordEnabled: keyword => this.#magicKeywordEnabled(keyword),
+			classifyPromptThinking: (request, signal) =>
+				this.#classifyPromptOnce(request, signal).then(signals => signals?.thinking),
 			emit: event => this.#emit(event),
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			waitForSessionMessagePersistence: message => this.#waitForSessionMessagePersistence(message),
@@ -2117,6 +2124,7 @@ export class AgentSession {
 			sessionId: () => this.sessionId,
 			currentModel: () => this.model,
 			duoStatus: () => this.#duoOrchestrator?.status,
+			isAutoThinking: () => this.isAutoThinking,
 			requestDuoTakeover: (purpose, reason, directive) =>
 				this.#duoOrchestrator?.requestTakeover(purpose, reason, directive) ?? "rejected",
 			requestDuoPlanTakeover: reason => this.#duoOrchestrator?.requestPlanTakeover(reason) ?? Promise.resolve(false),
@@ -2195,6 +2203,11 @@ export class AgentSession {
 			turnSignals: this.#turnSignals,
 			onTurnSignals: signals => {
 				this.#duoOrchestrator.onTurnSignals(signals);
+				// Mid-run `auto` effort: one confident judgment re-aims the next request.
+				const routing = signals.routing;
+				if (routing?.thinking && routing.difficultyConfidence >= AUTO_THINKING_JUDGMENT_MIN_CONFIDENCE) {
+					this.#models.applyAutoThinkingJudgment(routing.thinking);
+				}
 				// Publish to the session bus so extensions that gate on the
 				// classification (delegation-reminder plugin) can read values this
 				// session already paid for. No bus, no subscriber: a no-op.
@@ -2272,16 +2285,7 @@ export class AgentSession {
 				}
 			},
 			goalModeEnabled: () => this.#goalModeState?.enabled === true,
-			classifyPrompt: (request, signal) =>
-				this.#turnSignals
-					? this.#turnSignals.classifyPrompt(
-							request,
-							[this.#maintenance.buildTopicDigest(), formatRoutingHistory(this.agent.state.messages)]
-								.filter(Boolean)
-								.join("\n\n"),
-							signal,
-						)
-					: Promise.resolve(undefined),
+			classifyPrompt: (request, signal) => this.#classifyPromptOnce(request, signal),
 		};
 		this.#duoOrchestrator = new SessionDuoOrchestrator(duoHost, restoredDuoSnapshot);
 		this.#tools.setSystemPromptOverlay(baseSystemPrompt => {
@@ -6700,6 +6704,30 @@ export class AgentSession {
 		options?: { persistModeChange?: boolean; restorePreviousTools?: boolean; reuseRestoreSnapshot?: boolean },
 	): Promise<void> {
 		return this.#duoOrchestrator.setOrchestratorModeState(state, options);
+	}
+	/**
+	 * One Jev judgment per user request: duo's pre-turn routing and auto-thinking
+	 * both read it, so the second consumer reuses the first call's result.
+	 */
+	#classifyPromptOnce(request: string, signal: AbortSignal): Promise<PromptSignals | undefined> {
+		const turnSignals = this.#turnSignals;
+		if (!turnSignals) return Promise.resolve(undefined);
+		const memo = this.#promptSignalsMemo;
+		if (memo?.request === request) return memo.result;
+		const result = turnSignals
+			.classifyPrompt(
+				request,
+				[this.#maintenance.buildTopicDigest(), formatRoutingHistory(this.agent.state.messages)]
+					.filter(Boolean)
+					.join("\n\n"),
+				signal,
+			)
+			.catch(error => {
+				logger.debug("prompt signal classification failed", { err: String(error) });
+				return undefined;
+			});
+		this.#promptSignalsMemo = { request, result };
+		return result;
 	}
 
 	getDuoStatus(): DuoStatus | undefined {

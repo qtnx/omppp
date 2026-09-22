@@ -52,9 +52,9 @@ const DIFFICULTY_SYSTEM_PROMPTS: Partial<Record<"max" | "xhigh", string>> = {};
  * default keeps `auto` one tier below the top, so only an explicit
  * `ultrathink` reaches {@link Effort.Max}.
  */
-function autoEffortCeiling(deps: ClassifyDifficultyDeps): Effort {
-	if (deps.settings.get("providers.autoThinkingMaxEffort") !== Effort.Max) return Effort.XHigh;
-	return getSupportedEfforts(deps.model).includes(Effort.Max) ? Effort.Max : Effort.XHigh;
+export function autoThinkingCeiling(settings: Settings, model: Model): Effort {
+	if (settings.get("providers.autoThinkingMaxEffort") !== Effort.Max) return Effort.XHigh;
+	return getSupportedEfforts(model).includes(Effort.Max) ? Effort.Max : Effort.XHigh;
 }
 
 function difficultySystemPromptFor(ceiling: Effort): string {
@@ -123,7 +123,7 @@ export async function classifyDifficulty(
 	// The 3-bucket local classifier cannot select `max`, so its ceiling stays at
 	// XHigh whatever the setting says — otherwise a sparse ladder would snap its
 	// `hard` bucket up to a tier it never chose.
-	const ceiling = online ? autoEffortCeiling(deps) : Effort.XHigh;
+	const ceiling = online ? autoThinkingCeiling(deps.settings, deps.model) : Effort.XHigh;
 	const effort = online ? await classifyOnline(input, deps, ceiling) : await classifyLocal(input, backend, deps);
 	// The ceiling goes into the clamp itself: capping the request alone is not
 	// enough, because a sparse ladder snaps an excluded request back up.

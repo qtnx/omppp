@@ -20,6 +20,7 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
@@ -505,6 +506,28 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(result.exitCode).toBe(0);
 		const forwarded = spy.mock.calls[0]?.[0];
 		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.Low);
+	});
+
+	it("runs a subagent without a thinking default, effort, or suffix on auto thinking", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, model: ["@task"] },
+			id: "subagent-thinking-auto",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		// No level anywhere: Jev/auto-thinking chooses the effort per task instead
+		// of the model pattern's inherited default.
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(AUTO_THINKING);
 	});
 	it("persists an explicit role from a caller model override", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");

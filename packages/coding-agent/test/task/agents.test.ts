@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { Effort } from "@oh-my-pi/pi-ai";
 import { parseAgentFields } from "../../src/discovery/helpers";
 import { clearBundledAgentsCache, getBundledAgent, loadBundledAgents } from "../../src/task/agents";
+import { AUTO_THINKING } from "../../src/thinking";
 
 afterEach(() => {
 	clearBundledAgentsCache();
@@ -46,7 +46,7 @@ describe("bundled task agents", () => {
 		const explore = getBundledAgent("explore");
 
 		expect(explore?.resourceProfile).toBe("minimal");
-		expect(explore?.thinkingLevel).toBe(Effort.Medium);
+		expect(explore?.thinkingLevel).toBe(AUTO_THINKING);
 		expect(explore?.tools).toEqual([
 			"read",
 			"grep",
@@ -155,7 +155,7 @@ describe("bundled task agents", () => {
 		expect(browserQa?.tools).not.toContain("edit");
 		expect(browserQa?.tools).not.toContain("write");
 		expect(browserQa?.model).toEqual(["openai-codex/gpt-6-astra:medium", "pi/task"]);
-		expect(browserQa?.thinkingLevel).toBe(Effort.Medium);
+		expect(browserQa?.thinkingLevel).toBe(AUTO_THINKING);
 		// Screenshots are judged against the design guideline, not only functional expectations.
 		expect(browserQa?.autoloadSkills).toEqual(["hallmark", ...FRONTEND_SKILLS]);
 		expect(browserQa?.output).toEqual({
@@ -199,7 +199,7 @@ describe("bundled task agents", () => {
 		expect(qa?.tools).not.toContain("write");
 		expect(qa?.spawns).toEqual(["browser_qa"]);
 		expect(qa?.model).toEqual(["anthropic/claude-fable-5:low", "openai-codex/gpt-5.5:high", "pi/task"]);
-		expect(qa?.thinkingLevel).toBe(Effort.High);
+		expect(qa?.thinkingLevel).toBe(AUTO_THINKING);
 		expect(qa?.blocking).toBeFalsy();
 		expect(qa?.output).toEqual({
 			properties: {

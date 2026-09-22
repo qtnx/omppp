@@ -4,7 +4,7 @@ description: "Code review specialist for quality/security analysis"
 tools: read, grep, glob, bash, lsp, jev_scout, web_search, ast_grep, report_finding, irc
 spawns: explore
 model: pi/slow
-thinking-level: high
+thinking-level: auto
 output:
   properties:
     overall_correctness:

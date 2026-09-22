@@ -11,30 +11,29 @@ import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { buildOutputValidator } from "@oh-my-pi/pi-coding-agent/tools/output-schema-validator";
 import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 
-// The fork pins plan/reviewer reasoning instead of upstream's role-inheritance
-// contract (#4761): frontmatter locks `thinking-level: high` and plan's
-// Fable-first route list. The executor picks `agent.thinkingLevel ??
-// resolvedThinkingLevel` (task/executor.ts), so these pins deliberately mask a
-// user's modelRoles effort suffix — a dropped pin (e.g. a clean auto-merge
-// deleting `thinking-level: high` from reviewer.md) silently hands reasoning
-// control back to role suffixes, which is exactly what these tests trip on.
+// The fork pins bundled subagent reasoning instead of upstream's role-inheritance
+// contract (#4761): frontmatter locks `thinking-level: auto` so Jev/auto-thinking
+// picks the effort per task, plus plan's Fable-first route list. The executor
+// picks `agent.thinkingLevel ?? auto` (task/executor.ts), so these pins
+// deliberately mask a user's modelRoles effort suffix — a dropped pin silently
+// hands reasoning control back to role suffixes, which is what these tests trip on.
 describe("bundled agent parsing", () => {
-	it("pins reviewer to the locked slow route with high thinking", () => {
+	it("pins reviewer to the locked slow route with auto thinking", () => {
 		const reviewer = getBundledAgent("reviewer");
 
 		expect(reviewer).toBeDefined();
 		expect(reviewer?.source).toBe("bundled");
 		expect(reviewer?.model).toEqual(["pi/slow"]);
-		expect(reviewer?.thinkingLevel).toBe(Effort.High);
+		expect(reviewer?.thinkingLevel).toBe(AUTO_THINKING);
 	});
 
-	it("pins plan to the locked Fable-first route list with high thinking", () => {
+	it("pins plan to the locked Fable-first route list with auto thinking", () => {
 		const plan = getBundledAgent("plan");
 
 		expect(plan).toBeDefined();
 		expect(plan?.source).toBe("bundled");
 		expect(plan?.model).toEqual(["anthropic/claude-fable-5:low", "openai-codex/gpt-5.5:high", "pi/plan", "pi/slow"]);
-		expect(plan?.thinkingLevel).toBe(Effort.High);
+		expect(plan?.thinkingLevel).toBe(AUTO_THINKING);
 	});
 	it("defaults the task agent to the auto thinking selector", () => {
 		const task = getBundledAgent("task");
@@ -99,7 +98,7 @@ describe("bundled agent parsing", () => {
 		] as const;
 		for (const { name, level } of expectations) {
 			const agent = getBundledAgent(name);
-			expect(agent?.thinkingLevel).toBe(Effort.High);
+			expect(agent?.thinkingLevel).toBe(AUTO_THINKING);
 			const patterns = resolveAgentModelPatterns({ agentModel: agent?.model, settings });
 			const resolved = resolveModelOverride(patterns, registry, settings);
 			expect(resolved.model?.provider).toBe("openai-codex");

@@ -19,6 +19,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { adjustHsv, formatNumber, getProjectDir, hexToRgb, rgbToHex } from "@oh-my-pi/pi-utils";
+import { isDuoPhaseLive } from "../../../duo/state";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
@@ -2214,7 +2215,11 @@ export class StatusLineComponent implements Component {
 		const gitPr = includePr ? this.#lookupPr(activeRepoCache) : null;
 		const compactionSpeculation = this.session.compactionSpeculation ?? "idle";
 		const turnSignals = this.session.turnSignals;
-		const signals = turnSignals?.connected ? turnSignals.latest : undefined;
+		// The work phase is a duo concept: without a live duo it routes nothing, so it is not shown.
+		const signals =
+			turnSignals?.connected && isDuoPhaseLive(this.session.getDuoStatus?.()?.phase)
+				? turnSignals.latest
+				: undefined;
 		this.#syncSpeculationBlink(compactionSpeculation);
 		const sessionAccentEnabled = this.#resolveSettings().sessionAccent !== false;
 		const turnElapsedMs = this.getTurnElapsedMs();

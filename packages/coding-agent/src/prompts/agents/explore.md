@@ -4,7 +4,7 @@ description: Fast read-only codebase scout returning compressed context for hand
 tools: read, grep, glob, codegraph_explore, jev_scout, bash, web_search, irc
 resource-profile: minimal
 model: pi/smol
-thinking-level: medium
+thinking-level: auto
 read-summarize: false
 output:
   properties:
