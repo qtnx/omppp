@@ -12,7 +12,7 @@ import { isFireworksFastModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id"
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
-import { classifyDifficulty } from "../auto-thinking/classifier";
+import { autoThinkingCeiling, classifyDifficulty } from "../auto-thinking/classifier";
 import type { ModelRegistry } from "../config/model-registry";
 import {
 	filterAvailableModelsByEnabledPatterns,
@@ -82,11 +82,15 @@ export interface ModelControlsHost {
 	clearActiveRetryFallback(): void;
 	clearInheritedProviderPromptCacheKey(): void;
 	magicKeywordEnabled(keyword: "orchestrate" | "ultrathink" | "workflow"): boolean;
+	/** Jev's reasoning-effort judgment for a user request; `undefined` when signals are off or unavailable. */
+	classifyPromptThinking?(request: string, signal: AbortSignal): Promise<"medium" | "high" | "xhigh" | undefined>;
 	emit(event: AgentSessionEvent): void;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	waitForSessionMessagePersistence(message: AgentMessage): Promise<void>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 }
+
+const JEV_THINKING_EFFORT = { medium: Effort.Medium, high: Effort.High, xhigh: Effort.XHigh } as const;
 
 /** Owns model selection, thinking effort, role cycling, and service tiers. */
 export class ModelControls {
@@ -773,21 +777,30 @@ export class ModelControls {
 				parentId: this.#host.sessionManager.getLeafId(),
 			};
 			try {
-				resolved = await classifyDifficulty(promptText, {
-					settings: this.#host.settings,
-					registry: this.#host.modelRegistry,
-					model,
-					sessionId: this.#host.sessionId(),
-					signal: controller.signal,
-					metadataResolver: provider => this.#host.agent.metadataForProvider(provider),
-					onUsage: usage => {
-						const entryId = this.#host.sessionManager.appendModelUsage(
-							{ purpose: "auto-thinking", ...usage },
-							usageOwner,
-						);
-						if (entryId) usageOwner.parentId = entryId;
-					},
-				});
+				// Jev judges effort with the same call duo routing already makes for
+				// this request; the tiny/smol classifier only runs when Jev is unavailable.
+				const jevThinking = await this.#host.classifyPromptThinking?.(promptText, controller.signal);
+				resolved = jevThinking
+					? clampAutoThinkingEffort(
+							model,
+							JEV_THINKING_EFFORT[jevThinking],
+							autoThinkingCeiling(this.#host.settings, model),
+						)
+					: await classifyDifficulty(promptText, {
+							settings: this.#host.settings,
+							registry: this.#host.modelRegistry,
+							model,
+							sessionId: this.#host.sessionId(),
+							signal: controller.signal,
+							metadataResolver: provider => this.#host.agent.metadataForProvider(provider),
+							onUsage: usage => {
+								const entryId = this.#host.sessionManager.appendModelUsage(
+									{ purpose: "auto-thinking", ...usage },
+									usageOwner,
+								);
+								if (entryId) usageOwner.parentId = entryId;
+							},
+						});
 			} catch (error) {
 				logger.debug("auto-thinking: classification failed; using fallback level", {
 					error: error instanceof Error ? error.message : String(error),
@@ -800,11 +813,28 @@ export class ModelControls {
 		// Drop the result if the turn was aborted/superseded while classifying.
 		if (this.#host.promptGeneration() !== generation || !this.#autoThinking) return;
 
-		const effort = clampThinkingLevelToCeiling(
+		this.#commitAutoResolvedLevel(model, resolved ?? this.#autoResolvedLevel ?? resolveProvisionalAutoLevel(model));
+	}
+
+	/**
+	 * Re-aims `auto` mid-run from a Jev turn judgment (sampled while tools run),
+	 * so a long test/debug stretch can raise or lower effort before the next
+	 * model request. No-op unless the session is on `auto`.
+	 */
+	applyAutoThinkingJudgment(thinking: "medium" | "high" | "xhigh"): void {
+		const model = this.#model;
+		if (!this.#autoThinking || !model?.reasoning || getSupportedEfforts(model).length === 0) return;
+		const effort = clampAutoThinkingEffort(
 			model,
-			resolved ?? this.#autoResolvedLevel ?? resolveProvisionalAutoLevel(model),
-			this.#thinkingLevelCeiling,
+			JEV_THINKING_EFFORT[thinking],
+			autoThinkingCeiling(this.#host.settings, model),
 		);
+		if (effort === this.#autoResolvedLevel) return;
+		this.#commitAutoResolvedLevel(model, effort);
+	}
+
+	#commitAutoResolvedLevel(model: Model, level: Effort | undefined): void {
+		const effort = clampThinkingLevelToCeiling(model, level, this.#thinkingLevelCeiling);
 		if (effort === undefined) return;
 		const shouldPersistResolution = this.#thinkingLevel !== effort;
 		this.#autoResolvedLevel = effort;

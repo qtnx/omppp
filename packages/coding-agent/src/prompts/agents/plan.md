@@ -4,7 +4,7 @@ description: Software architect for complex multi-file architectural decisions. 
 tools: read, grep, glob, bash, lsp, jev_scout, web_search, ast_grep, irc
 spawns: explore
 model: anthropic/claude-fable-5:low, openai-codex/gpt-5.5:high, pi/plan, pi/slow
-thinking-level: high
+thinking-level: auto
 ---
 
 Before planning, required planning references MUST resolve; read and follow `skill://brainstorming` and `skill://writing-plans` when available. Produce or revise the smallest executable plan that satisfies the requested outcome.

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -109,8 +109,16 @@ function primaryMessages(suffix: string): AgentMessage[] {
 	];
 }
 
-function sessionHost(settings: Settings): SessionAdvisorsHost {
-	return { settings, duoStatus: () => undefined } as unknown as SessionAdvisorsHost;
+function sessionHost(
+	settings: Settings,
+	options: { duoPhase?: "executing"; autoThinking?: boolean } = {},
+): SessionAdvisorsHost {
+	return {
+		settings,
+		duoStatus: () =>
+			options.duoPhase ? { phase: options.duoPhase, takeoverCount: 0, advisorPaused: false } : undefined,
+		isAutoThinking: () => options.autoThinking === true,
+	} as unknown as SessionAdvisorsHost;
 }
 
 const resolvedSignals: TurnSignals = {
@@ -124,19 +132,26 @@ const resolvedSignals: TurnSignals = {
 	inputTokens: 1,
 };
 
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
 describe("primary turn signal lifecycle", () => {
 	it("classifies recent conversation plus latest tools once, waits without advisors, and forwards routing", async () => {
 		const { service, calls } = serviceWithFetch(() => Response.json(turnResponse()));
 		const delivered: TurnSignals[] = [];
 		let methodResolved = true;
-		const advisors = new SessionAdvisors(sessionHost(Settings.isolated({ "advisor.syncBacklog": "off" })), {
-			enabled: false,
-			turnSignals: service,
-			onTurnSignals: signals => {
-				expect(methodResolved).toBe(false);
-				delivered.push(signals);
+		const advisors = new SessionAdvisors(
+			sessionHost(Settings.isolated({ "advisor.syncBacklog": "off" }), { duoPhase: "executing" }),
+			{
+				enabled: false,
+				turnSignals: service,
+				onTurnSignals: signals => {
+					expect(methodResolved).toBe(false);
+					delivered.push(signals);
+				},
 			},
-		});
+		);
 
 		methodResolved = false;
 		await advisors.onPrimaryTurnEnd(primaryMessages("first"), false);
@@ -153,11 +168,62 @@ describe("primary turn signal lifecycle", () => {
 			risk: 0,
 		});
 
+		// Running tool steps without advisors are sampled by time, not per step:
+		// the first starts the clock, later ones spend a request once 15s passed.
+		let now = 1_000_000;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		await advisors.onPrimaryTurnEnd(primaryMessages("continuing 1"), true);
+		now += 5_000;
+		await advisors.onPrimaryTurnEnd(primaryMessages("continuing 2"), true);
+		expect(calls).toHaveLength(1);
+		now += 10_000;
 		methodResolved = false;
-		await advisors.onPrimaryTurnEnd(primaryMessages("second"), true);
+		await advisors.onPrimaryTurnEnd(primaryMessages("continuing 3"), true);
 		methodResolved = true;
 		expect(calls).toHaveLength(2);
 		expect(delivered).toHaveLength(2);
+		now += 1_000;
+		await advisors.onPrimaryTurnEnd(primaryMessages("continuing 4"), true);
+		expect(calls).toHaveLength(2);
+	});
+
+	it("samples running steps for auto thinking without duo, but not terminal boundaries", async () => {
+		const { service, calls } = serviceWithFetch(() => Response.json(turnResponse()));
+		const delivered: TurnSignals[] = [];
+		const advisors = new SessionAdvisors(
+			sessionHost(Settings.isolated({ "advisor.syncBacklog": "off" }), { autoThinking: true }),
+			{ enabled: false, turnSignals: service, onTurnSignals: signals => delivered.push(signals) },
+		);
+		let now = 2_000_000;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		await advisors.onPrimaryTurnEnd(primaryMessages("running 1"), true);
+		now += 20_000;
+		await advisors.onPrimaryTurnEnd(primaryMessages("running 2"), true);
+		expect(calls).toHaveLength(1);
+		expect(delivered[0]?.routing?.thinking).toBe("high");
+
+		// The next prompt re-judges effort itself, so the terminal boundary is free
+		// and restarts the clock for the next run.
+		await advisors.onPrimaryTurnEnd(primaryMessages("terminal"), false);
+		now += 60_000;
+		await advisors.onPrimaryTurnEnd(primaryMessages("next run 1"), true);
+		expect(calls).toHaveLength(1);
+	});
+
+	it("spends no request when neither a live duo nor an advisor consumes the classification", async () => {
+		const { service, calls } = serviceWithFetch(() => Response.json(turnResponse()));
+		const delivered: TurnSignals[] = [];
+		const advisors = new SessionAdvisors(sessionHost(Settings.isolated({ "advisor.syncBacklog": "off" })), {
+			enabled: false,
+			turnSignals: service,
+			onTurnSignals: signals => delivered.push(signals),
+		});
+
+		await advisors.onPrimaryTurnEnd(primaryMessages("terminal"), false);
+		await advisors.onPrimaryTurnEnd(primaryMessages("continuing"), true);
+		expect(calls).toHaveLength(0);
+		expect(delivered).toHaveLength(0);
 	});
 
 	it("retains short follow-ups with preceding user decisions, assistant findings, and tool failures", async () => {
@@ -193,11 +259,14 @@ describe("primary turn signal lifecycle", () => {
 	it("fails open on endpoint errors without invoking the callback", async () => {
 		const { service, calls } = serviceWithFetch(() => new Response("boom", { status: 503 }));
 		const delivered: TurnSignals[] = [];
-		const advisors = new SessionAdvisors(sessionHost(Settings.isolated({ "advisor.syncBacklog": "off" })), {
-			enabled: false,
-			turnSignals: service,
-			onTurnSignals: signals => delivered.push(signals),
-		});
+		const advisors = new SessionAdvisors(
+			sessionHost(Settings.isolated({ "advisor.syncBacklog": "off" }), { duoPhase: "executing" }),
+			{
+				enabled: false,
+				turnSignals: service,
+				onTurnSignals: signals => delivered.push(signals),
+			},
+		);
 
 		await expect(advisors.onPrimaryTurnEnd(primaryMessages("error"), false)).resolves.toBeUndefined();
 		expect(calls).toHaveLength(1);

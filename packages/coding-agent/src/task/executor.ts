@@ -61,7 +61,13 @@ import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
-import { type ConfiguredThinkingLevel, prewalkWouldBeNoop, resolveTaskEffortLevel, type TaskEffort } from "../thinking";
+import {
+	AUTO_THINKING,
+	type ConfiguredThinkingLevel,
+	prewalkWouldBeNoop,
+	resolveTaskEffortLevel,
+	type TaskEffort,
+} from "../thinking";
 import type { ContextFileEntry, ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
 import { isIrcEnabled } from "../tools/hub";
@@ -4035,9 +4041,10 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 			// Precedence: explicit `:level` from user config > caller `effort` >
 			// explicit `:level` suffix on the resolved model pattern >
-			// agent-definition default (e.g. task's `auto`) > pattern-derived level.
+			// agent-definition default > `auto` (Jev/auto-thinking picks the effort
+			// per task instead of inheriting a pattern-derived level).
 			const effectiveThinkingLevel =
-				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
+				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? AUTO_THINKING));
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
 			const sessionManagerPromise = sessionFile

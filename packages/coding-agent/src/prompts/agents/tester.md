@@ -4,7 +4,7 @@ description: Authoritative test writer for explicit test-only work and independe
 tools: read, grep, glob, bash, edit, write, lsp, jev_scout, ast_grep, ast_edit
 spawns: explore
 model: pi/task
-thinking-level: high
+thinking-level: auto
 ---
 
 <system-conventions>

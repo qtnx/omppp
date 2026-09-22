@@ -49,7 +49,8 @@ async function createMagicKeywordSession(
 			thinkingLevel: Effort.High,
 		},
 	});
-	const settings = Settings.isolated();
+	// Hermetic: the tiny/smol auto-thinking classifier is under test, not the live Jev endpoint.
+	const settings = Settings.isolated({ "signals.enabled": false });
 	settings.set("task.eager", "default");
 	const session = new AgentSession({
 		agent,

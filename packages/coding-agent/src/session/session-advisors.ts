@@ -94,6 +94,7 @@ import { bridgeToolMap } from "../cursor-bridge-tools";
 import {
 	type DuoStateSnapshot,
 	type DuoStatus,
+	isDuoPhaseLive,
 	RequestTakeoverTool,
 	renderDuoAdvisorInstructions,
 	SetExecutorEffortTool,
@@ -140,6 +141,12 @@ import type { YieldQueue } from "./yield-queue";
 const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
 /** Classifier `doneWithoutEvidence` at or above which the done gate rejects without a consult. */
 const DONE_WITHOUT_EVIDENCE_REJECT_SCORE = 0.85;
+/**
+ * Without advisors, running tool steps are sampled for Jev at most this often
+ * (duo routing, mid-run `auto` effort). Jev is cheap; one judgment per ~15s of
+ * tool work keeps effort current during long test/debug stretches.
+ */
+const SIGNAL_SAMPLE_INTERVAL_MS = 15_000;
 
 /**
  * Buffer added to a sibling credential's unblock deadline before the advisor
@@ -475,6 +482,8 @@ export interface SessionAdvisorsHost {
 	}): CodexCompactionContext;
 	sessionId(): string;
 	duoStatus(): DuoStatus | undefined;
+	/** True while the session's configured thinking is `auto`, so mid-run judgments may re-aim effort. */
+	isAutoThinking?(): boolean;
 	requestDuoTakeover(purpose: TakeoverPurpose, reason: string, directive: string): TakeoverDecision;
 	requestDuoPlanTakeover(reason: string): Promise<boolean>;
 	setDuoExecutorEffort(level: ThinkingLevel, reason: string): boolean;
@@ -535,6 +544,8 @@ export class SessionAdvisors {
 	/** Keeps terminal non-blocker advice on the visible card route during unwind. */
 	#terminalUnwindActive = false;
 	#advisorPrimaryTurnsCompleted = 0;
+	/** Last time a running tool step was sent to Jev without advisors; reset at each terminal boundary. */
+	#lastSignalSampleAt: number | undefined;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#pendingAdvisorCardEvents = new Set<Promise<void>>();
 	#advisorYieldQueueUnsubscribe: (() => void) | undefined;
@@ -577,7 +588,15 @@ export class SessionAdvisors {
 		this.#initialDuoPhase = undefined;
 	}
 
-	/** Classifies the latest primary step with a bounded window of preceding messages. */
+	/**
+	 * Classifies the latest primary step with a bounded window of preceding
+	 * messages — only when a consumer reads the result. Live advisors gate every
+	 * delta on it (an unclassified delta fails open into a review), so they get
+	 * every step. Otherwise a live duo or an `auto`-thinking session samples
+	 * running tool steps at most once per {@link SIGNAL_SAMPLE_INTERVAL_MS}, so
+	 * effort can be re-aimed mid-run without a request per step; a live duo also
+	 * classifies every terminal boundary. Anything else spends no request.
+	 */
 	#classifyPrimaryTurn(
 		messages: AgentMessage[],
 		willContinue: boolean | undefined,
@@ -585,6 +604,25 @@ export class SessionAdvisors {
 	): Promise<TurnSignals | undefined> | undefined {
 		const turnSignals = this.#turnSignals;
 		if (!turnSignals) return undefined;
+		const hasLiveAdvisor = this.#advisors.some(advisor => !advisor.runtime.disposed);
+		if (!hasLiveAdvisor) {
+			const duoLive = isDuoPhaseLive(this.#host.duoStatus()?.phase);
+			if (!duoLive && this.#host.isAutoThinking?.() !== true) return undefined;
+			if (willContinue === true) {
+				const now = Date.now();
+				// Each run's first running step starts the clock: its prompt was just judged.
+				if (this.#lastSignalSampleAt === undefined) {
+					this.#lastSignalSampleAt = now;
+					return undefined;
+				}
+				if (now - this.#lastSignalSampleAt < SIGNAL_SAMPLE_INTERVAL_MS) return undefined;
+				this.#lastSignalSampleAt = now;
+			} else {
+				this.#lastSignalSampleAt = undefined;
+				// The next user prompt re-judges effort itself; a terminal sample only serves duo.
+				if (!duoLive) return undefined;
+			}
+		}
 		let assistantIndex = -1;
 		for (let index = messages.length - 1; index >= 0; index--) {
 			if (messages[index]?.role === "assistant") {

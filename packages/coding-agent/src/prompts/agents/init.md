@@ -1,7 +1,7 @@
 ---
 name: init
 description: Generate AGENTS.md for current codebase
-thinking-level: medium
+thinking-level: auto
 ---
 
 Use parallel `task` research agents: core src, tests, configs/build, scripts/docs; synthesize findings into one AGENTS.md.
