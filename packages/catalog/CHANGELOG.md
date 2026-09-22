@@ -5,6 +5,8 @@
 ### Added
 
 - Added the RunAnywhere provider (`inference.runanywhere.ai`): OpenAI-compatible discovery of its GLM-5.3 Flash, Qwen3.8 27B, and Gemma 4 deployments with measured reasoning-effort ladders, published tariff pricing including cached-token rates, and the endpoint's non-standard input/output limit fields mapped to context and output limits.
+- Added Claude Opus 5.5 (`claude-opus-5-5`) to the Anthropic catalog at $4/$20 per MTok with $0.20 cache reads and $5 cache writes.
+
 
 ## [18.2.3] - 2026-09-17
 
