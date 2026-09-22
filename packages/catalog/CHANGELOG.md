@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed SuperGrok (xai-oauth) Grok 4.7 missing its thinking-level options and reporting null context limits; it now carries the documented 500K window and low/medium/high/xhigh ladder ([#12697](https://github.com/can1357/oh-my-pi/issues/12697), [#201](https://github.com/qtnx/omppp/pull/201) by [@eggpeat](https://github.com/eggpeat)).
+
 ### Added
 
 - Added the RunAnywhere provider (`inference.runanywhere.ai`): OpenAI-compatible discovery of its GLM-5.3 Flash, Qwen3.8 27B, and Gemma 4 deployments with measured reasoning-effort ladders, published tariff pricing including cached-token rates, and the endpoint's non-standard input/output limit fields mapped to context and output limits.

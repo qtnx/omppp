@@ -359,6 +359,39 @@ describe("xAI Responses reasoning-effort suppression", () => {
 		expect(model.thinking?.efforts).not.toContain(Effort.Max);
 	});
 
+	it("exposes the grok-4.7 low..xhigh ladder on xai-oauth and paid xai", () => {
+		for (const provider of ["xai-oauth", "xai"] as const) {
+			const model = buildModel(grokResponsesSpec("grok-4.7", provider));
+			expect(model.compat.supportsReasoningEffort).toBe(true);
+			expect(model.compat.omitReasoningEffort).toBe(false);
+			expect(model.thinking?.efforts).toEqual([
+				Effort.Minimal,
+				Effort.Low,
+				Effort.Medium,
+				Effort.High,
+				Effort.XHigh,
+			]);
+			expect(model.thinking?.efforts).not.toContain(Effort.Max);
+			// xhigh is native on 4.6+ (docs.x.ai reasoning): only minimal clamps to low.
+			expect(model.compat.reasoningEffortMap).toEqual({ minimal: "low" });
+		}
+	});
+
+	it("prices paid grok-4.7 at the 2x long-context tier", () => {
+		const model = buildModel({
+			...grokResponsesSpec("grok-4.7", "xai"),
+			cost: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+		});
+		expect(model.cost.longContext).toEqual({
+			inputThreshold: 200_000,
+			inputThresholdInclusive: true,
+			input: 4,
+			output: 12,
+			cacheRead: 1,
+			cacheWrite: 0,
+		});
+	});
+
 	it("lets the grok-4.6 allowlist beat a stale cached omitReasoningEffort flag", () => {
 		const model = buildModel({
 			...grokResponsesSpec("grok-4.6"),
