@@ -9,6 +9,10 @@
 - Subagents without an explicit effort or `:level` suffix run on `auto` thinking; bundled agents that pinned `medium`/`high`/`xhigh` now pin `auto`.
 - The status-line work-phase chip only shows while duo is live.
 - System prompt now routes behavior-to-location lookups to `jev_scout` (with an explicit tie-break against `codegraph_explore`), makes `browser_jev` the first tool for the main agent's own web UI verification, and adds a parallel fan-out playbook with concrete spawn triggers and an isolated-scope recipe for subagent waves.
+- Streaming a large tool call no longer slows every frame: the status line tracks tool-argument growth without re-serializing the arguments (1000 frames with a 200 KB argument: ~100 ms → <1 ms).
+- Assistant messages with many thinking/text blocks update in one pass instead of rescanning later blocks for every thinking block.
+- Messages that scroll into terminal history drop their streaming render caches, cutting retained memory for long sessions (~33% less heap for 2000 committed 20 KB blocks).
+- Streamed `message_update` events are no longer queued for extensions when no extension listens for them.
 
 ### Added
 

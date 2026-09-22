@@ -281,19 +281,38 @@ function createBuilder(context: ChalkContext, styles: readonly Style[]): ChalkIn
 			context.level = level;
 		},
 	});
+	// Style chains are hot: a renderer does `theme.code(text)` → `chalk.cyan(...)`
+	// per token, and every property access used to rebuild a whole builder
+	// (one closure plus ~40 property descriptors). Build each child once and
+	// hand back the same instance; builders are stateless (styles are frozen at
+	// creation, `level` lives on the shared context), so a cached child behaves
+	// exactly like a freshly created one.
+	const children = new Map<string, ChalkInstance>();
+	const child = (key: string, style: Style | (() => Style)): ChalkInstance => {
+		const cached = children.get(key);
+		if (cached !== undefined) return cached;
+		const created = createBuilder(context, [...styles, typeof style === "function" ? style() : style]);
+		// Named styles are a fixed set; `hex` keys are open-ended (one per
+		// distinct color), so stop caching past a bound instead of growing for
+		// the life of the process.
+		if (children.size < 512) children.set(key, created);
+		return created;
+	};
 	for (const name in STYLES) {
 		const style = STYLES[name];
-		if (style) Object.defineProperty(builder, name, { get: () => createBuilder(context, [...styles, style]) });
+		if (style) Object.defineProperty(builder, name, { get: () => child(name, style) });
 	}
-	Object.defineProperty(builder, "grey", { get: () => createBuilder(context, [...styles, STYLES.gray!]) });
+	Object.defineProperty(builder, "grey", { get: () => child("grey", STYLES.gray!) });
 	Object.defineProperty(builder, "bgGray", {
-		get: () => createBuilder(context, [...styles, STYLES.bgBlackBright!]),
+		get: () => child("bgGray", STYLES.bgBlackBright!),
 	});
 	Object.defineProperty(builder, "bgGrey", {
-		get: () => createBuilder(context, [...styles, STYLES.bgBlackBright!]),
+		get: () => child("bgGrey", STYLES.bgBlackBright!),
 	});
 	Object.defineProperty(builder, "hex", {
-		value: (color: string) => createBuilder(context, [...styles, hexStyle(color, context.level)]),
+		// hexStyle bakes the current level into the escape, so the cache key
+		// carries it: a later `level` change yields a different chain.
+		value: (color: string) => child(`hex\u0000${context.level}\u0000${color}`, () => hexStyle(color, context.level)),
 	});
 	return builder;
 }

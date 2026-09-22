@@ -1189,23 +1189,58 @@ export class AssistantMessageComponent extends Container {
 			| Array<{ md: Markdown; contentIndex: number; blockType: "text" | "thinking"; lastText: string }>
 			| undefined = shouldCapture ? [] : undefined;
 
-		const hasVisibleContent = message.content.some(
-			c =>
-				(c.type === "text" && canonicalizeMessage(c.text)) ||
-				(c.type === "image" && c.data && c.mimeType) ||
-				(!this.hideThinkingBlock &&
-					c.type === "thinking" &&
-					resolveThinkingDisplay(c, this.proseOnlyThinking).visible),
-		);
+		// Single pass over the blocks: canonicalize each text and resolve each
+		// thinking display exactly once, recording which blocks render. The render
+		// loop below reads these instead of re-resolving the same block and
+		// rescanning the rest of the message per thinking block (was O(blocks²)
+		// plus a slice allocation per block on every streamed update).
+		const blocks = message.content;
+		const blockCount = blocks.length;
+		// `.fill` keeps these packed: a holey array costs more per read than the
+		// scans this pass removes (measured ~6x on short messages).
+		const canonicalTexts = new Array<string | undefined>(blockCount).fill(undefined);
+		const thinkingDisplays = new Array<{ text: string; visible: boolean } | undefined>(blockCount).fill(undefined);
+		const rendered = new Array<boolean>(blockCount).fill(false);
+		let hasVisibleContent = false;
+		for (let i = 0; i < blockCount; i++) {
+			const content = blocks[i]!;
+			if (content.type === "text") {
+				const canonical = canonicalizeMessage(content.text);
+				if (!canonical) continue;
+				canonicalTexts[i] = canonical;
+				rendered[i] = true;
+				hasVisibleContent = true;
+			} else if (content.type === "image") {
+				if (!content.data || !content.mimeType) continue;
+				rendered[i] = true;
+				hasVisibleContent = true;
+			} else if (content.type === "thinking" && !this.hideThinkingBlock) {
+				// Hidden thinking never resolves a display (the render loop skips it
+				// before resolving), so neither does this pass.
+				const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
+				thinkingDisplays[i] = display;
+				if (!display.visible) continue;
+				rendered[i] = true;
+				hasVisibleContent = true;
+			}
+		}
+		// Whether a visible block follows index i, as one backward pass. Only read
+		// on the visible-thinking path, which runs solely when thinking is shown.
+		const visibleAfter = new Array<boolean>(blockCount).fill(false);
+		for (let i = blockCount - 1, seen = false; i >= 0; i--) {
+			visibleAfter[i] = seen;
+			if (rendered[i]) seen = true;
+		}
 
 		// Render content in order
 		let thinkingIndex = 0;
 		let hasRenderedContent = false;
-		for (let i = 0; i < message.content.length; i++) {
-			const content = message.content[i];
-			if (content.type === "text" && canonicalizeMessage(content.text)) {
+		for (let i = 0; i < blockCount; i++) {
+			const content = blocks[i]!;
+			if (content.type === "text") {
+				const trimmed = canonicalTexts[i];
+				if (trimmed === undefined) continue;
 				// Set paddingY=0 to avoid extra spacing before tool executions
-				const trimmed = content.text.trim();
 				const mdOptions = this.#textColorTransform ? { color: this.#textColorTransform } : undefined;
 				const md = new Markdown(trimmed, 1, 0, this.#getProseTheme(), mdOptions, 0);
 				this.#contentContainer.addChild(md);
@@ -1217,19 +1252,12 @@ export class AssistantMessageComponent extends Container {
 					thinkingIndex += 1;
 					continue;
 				}
-				const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
-				if (!display.visible) continue;
+				const display = thinkingDisplays[i];
+				if (!display?.visible) continue;
 				const thinkingText = display.text;
 				// Add spacing only when another visible assistant content block follows.
 				// This avoids a superfluous blank line before separately-rendered tool execution blocks.
-				const hasVisibleContentAfter = message.content
-					.slice(i + 1)
-					.some(
-						c =>
-							(c.type === "text" && canonicalizeMessage(c.text)) ||
-							(c.type === "image" && c.data && c.mimeType) ||
-							(c.type === "thinking" && resolveThinkingDisplay(c, this.proseOnlyThinking).visible),
-					);
+				const hasVisibleContentAfter = visibleAfter[i]!;
 
 				// Thinking traces in thinkingText color, italic
 				const md = new Markdown(thinkingText, 1, 0, getMarkdownTheme(), {

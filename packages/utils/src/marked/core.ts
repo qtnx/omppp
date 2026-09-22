@@ -528,9 +528,19 @@ function trimBareUrl(candidate: string): string {
 	}
 	return out;
 }
+// Text-advance scanners. Both are `g`-flagged so a scan can start at an
+// absolute offset in the source instead of slicing the remaining text, and
+// their hits are monotone in that offset (no lookbehind, no `^`), so a hit at
+// or after a later start is still the leftmost one.
+const URL_START_SCAN_RE = /(?:https?:\/\/|ftp:\/\/|www\.|[A-Za-z0-9._+-]+@)/gi;
+const HARD_BREAK_SCAN_RE = /(?: {2,}|\\)\n/g;
 
 function inlineTokens(src: string, lexer: Lexer, output: Token[] = []): Token[] {
 	let rest = src;
+	// -2 = not scanned yet, -1 = no further hit in `src`; otherwise the absolute
+	// index of the leftmost hit at or after the last scan start.
+	let urlScanAt = -2;
+	let breakScanAt = -2;
 	while (rest !== "") {
 		let custom: Tokens.Generic | undefined;
 		for (const extension of lexer.extensions.inline) {
@@ -673,10 +683,23 @@ function inlineTokens(src: string, lexer: Lexer, output: Token[] = []): Token[] 
 			const at = rest.indexOf(char, 1);
 			if (at !== -1 && at < next) next = at;
 		}
-		const urlAt = /(?:https?:\/\/|ftp:\/\/|www\.|[A-Za-z0-9._+-]+@)/i.exec(rest.slice(1));
-		if (urlAt && urlAt.index + 1 < next) next = urlAt.index + 1;
-		const hardBreak = /(?: {2,}|\\)\n/.exec(rest.slice(1));
-		if (hardBreak && hardBreak.index + 1 < next) next = hardBreak.index + 1;
+		// Same hits as running both regexes on `rest.slice(1)`, without copying
+		// the remaining text (and re-scanning it) on every text advance — that
+		// pair was quadratic in paragraph length and dominated inline lexing.
+		const offset = src.length - rest.length;
+		const scanFrom = offset + 1;
+		if (urlScanAt === -2 || (urlScanAt !== -1 && urlScanAt < scanFrom)) {
+			URL_START_SCAN_RE.lastIndex = scanFrom;
+			const hit = URL_START_SCAN_RE.exec(src);
+			urlScanAt = hit === null ? -1 : hit.index;
+		}
+		if (urlScanAt !== -1 && urlScanAt - offset < next) next = urlScanAt - offset;
+		if (breakScanAt === -2 || (breakScanAt !== -1 && breakScanAt < scanFrom)) {
+			HARD_BREAK_SCAN_RE.lastIndex = scanFrom;
+			const hit = HARD_BREAK_SCAN_RE.exec(src);
+			breakScanAt = hit === null ? -1 : hit.index;
+		}
+		if (breakScanAt !== -1 && breakScanAt - offset < next) next = breakScanAt - offset;
 		for (const extension of lexer.extensions.inline) {
 			const at = extension.start?.call({ lexer }, rest);
 			if (typeof at === "number" && at > 0 && at < next) next = at;

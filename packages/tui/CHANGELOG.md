@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Streaming Markdown renders ~4x faster on long replies: frozen prefix tokens and rows are reused instead of copied every frame, and a growing top-level list re-renders only its new items (56 KB reply: ~1.4 s → ~0.3 s total).
+- Typing in a large editor draft is fast again: wrap measurements for the whole draft stay cached instead of being cleared every 256 lines (2000-line draft: ~56 ms → ~1 ms per keystroke).
+
 ## [18.2.3] - 2026-09-17
 
 ### Added

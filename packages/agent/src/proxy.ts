@@ -20,7 +20,7 @@ import {
 	type StreamingPartialJsonCarrier,
 	setStreamingPartialJson,
 } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { parseStreamingJson, readSseJson } from "@oh-my-pi/pi-utils";
+import { parseStreamingJson, parseStreamingJsonThrottled, readSseJson } from "@oh-my-pi/pi-utils";
 
 // Event stream adapter for proxy SSE events
 export class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -165,12 +165,12 @@ export function streamProxy(model: Model, context: Context, options: ProxyStream
 			}
 
 			let sawTerminalEvent = false;
-			const partialJsonByIndex = new Map<number, string>();
+			const toolArgStateByIndex = new Map<number, ToolArgStreamState>();
 			for await (const event of readSseJson<ProxyAssistantMessageEvent>(
 				response.body as ReadableStream<Uint8Array>,
 				options.signal,
 			)) {
-				const parsedEvent = processProxyEvent(event, partial, partialJsonByIndex);
+				const parsedEvent = processProxyEvent(event, partial, toolArgStateByIndex);
 				if (parsedEvent) {
 					if (parsedEvent.type === "done" || parsedEvent.type === "error") {
 						sawTerminalEvent = true;
@@ -222,6 +222,15 @@ function scrubPartialJson(partial: AssistantMessage): void {
 }
 
 /**
+ * Per-tool-call streaming argument state: the accumulated partial JSON plus the
+ * prefix length already parsed, so mid-stream re-parses can be throttled.
+ */
+interface ToolArgStreamState {
+	json: string;
+	parsedLen: number;
+}
+
+/**
  * Process a proxy event and update the partial message.
  *
  * Streaming `partialJson` for in-progress tool calls is accumulated in a
@@ -234,7 +243,7 @@ function scrubPartialJson(partial: AssistantMessage): void {
 function processProxyEvent(
 	proxyEvent: ProxyAssistantMessageEvent,
 	partial: AssistantMessage,
-	partialJsonByIndex: Map<number, string>,
+	toolArgStateByIndex: Map<number, ToolArgStreamState>,
 ): AssistantMessageEvent | undefined {
 	switch (proxyEvent.type) {
 		case "start":
@@ -334,15 +343,22 @@ function processProxyEvent(
 				arguments: {},
 				[kStreamingPartialJson]: "",
 			} as ToolCall & StreamingPartialJsonCarrier;
-			partialJsonByIndex.set(proxyEvent.contentIndex, "");
+			toolArgStateByIndex.set(proxyEvent.contentIndex, { json: "", parsedLen: 0 });
 			return { type: "toolcall_start", contentIndex: proxyEvent.contentIndex, partial };
 		case "toolcall_delta": {
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
-				const acc = (partialJsonByIndex.get(proxyEvent.contentIndex) ?? "") + proxyEvent.delta;
-				partialJsonByIndex.set(proxyEvent.contentIndex, acc);
-				content.arguments = parseStreamingJson(acc) || {};
-				setStreamingPartialJson(content, acc);
+				const state = toolArgStateByIndex.get(proxyEvent.contentIndex) ?? { json: "", parsedLen: 0 };
+				state.json += proxyEvent.delta;
+				toolArgStateByIndex.set(proxyEvent.contentIndex, state);
+				// Throttled: re-parsing the whole buffer on every delta is O(N^2) in
+				// the argument size. `toolcall_end` performs the authoritative parse.
+				const throttled = parseStreamingJsonThrottled(state.json, state.parsedLen);
+				if (throttled) {
+					content.arguments = throttled.value || {};
+					state.parsedLen = throttled.parsedLen;
+				}
+				setStreamingPartialJson(content, state.json);
 				partial.content[proxyEvent.contentIndex] = { ...content }; // Trigger reactivity
 				return {
 					type: "toolcall_delta",
@@ -357,7 +373,9 @@ function processProxyEvent(
 		case "toolcall_end": {
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
-				partialJsonByIndex.delete(proxyEvent.contentIndex);
+				const state = toolArgStateByIndex.get(proxyEvent.contentIndex);
+				if (state && state.parsedLen < state.json.length) content.arguments = parseStreamingJson(state.json) || {};
+				toolArgStateByIndex.delete(proxyEvent.contentIndex);
 				clearStreamingPartialJson(content);
 				return {
 					type: "toolcall_end",

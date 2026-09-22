@@ -895,6 +895,29 @@ interface RenderedListItemLine extends RenderedLine {
 	nested: boolean;
 }
 
+/** One list item's rendered rows, gated on the item's raw source. */
+interface ListItemRowCacheEntry {
+	raw: string;
+	rows: readonly RenderedLine[];
+}
+
+/**
+ * Rows of the most recently rendered top-level list, per item. A streamed list
+ * arrives as ONE growing block token, so the tail row cache (which keys on the
+ * whole token's raw) can never splice it and every append re-renders every
+ * item — O(items²) over a stream. An item's rows depend only on its own raw
+ * source, its index (ordered numbering), and list-level facts folded into
+ * `key` (signature/theme/width, ordered, start, loose, prefix-fidelity mode),
+ * so an index+raw match reproduces byte-identical rows.
+ */
+interface ListRowCache {
+	key: string;
+	items: ListItemRowCacheEntry[];
+}
+
+/** Distinct lists whose rows stay cached (documents rarely stream more). */
+const LIST_ROW_CACHE_MAX = 4;
+
 function renderedLine(text: string, literalCode?: boolean): RenderedLine {
 	return literalCode ? { text, literalCode: true } : { text };
 }
@@ -1395,7 +1418,12 @@ interface InlineStyleContext {
 	stylePrefix: string;
 }
 
-type ListToken = Token & { items: Array<{ tokens?: Token[] }>; ordered: boolean; start?: number };
+type ListToken = Token & {
+	items: Array<{ tokens?: Token[]; raw?: string }>;
+	ordered: boolean;
+	start?: number;
+	loose?: boolean;
+};
 type TableCellToken = { tokens?: Token[] };
 type TableToken = Token & { header: TableCellToken[]; rows: TableCellToken[][]; raw?: string };
 
@@ -1767,7 +1795,12 @@ export class Markdown implements Component {
 	// whole buffer, turning O(N^2) reveal cost into O(N). Width/theme do not affect
 	// tokenization, so this cache is independent of the render caches above.
 	#streamPrefixText?: string;
+	// Live block-token array: tokens[0..#streamPrefixCount) are the frozen
+	// prefix. The streaming lex truncates this array to that count and appends
+	// the re-lexed tail in place, so neither the freeze nor the append copies
+	// the prefix (an O(prefix) copy per frame is O(n^2) over a stream).
 	#streamPrefixTokens?: Token[];
+	#streamPrefixCount = 0;
 	#streamPrefixLineCache?: StreamPrefixLineCache;
 	// Guard-scan memo (PoC C): the ref-def/CR verdict with the exact text
 	// length it was checked on. Reuse is sound only while setText has been
@@ -1803,6 +1836,10 @@ export class Markdown implements Component {
 	// only the trailing partial line stays unhighlighted.
 	#renderingStablePrefix = false;
 	#streamingHighlightCache?: StreamingHighlightCache;
+	// Per-item rows of recently rendered top-level lists (see ListRowCache): a
+	// streamed list is one growing token, so without this every append
+	// re-renders every earlier item.
+	#listRowCaches: ListRowCache[] = [];
 	#activeRenderSignature?: RenderSignature;
 	#fastTail?: FastTailRecipe; // undefined = disarmed
 	// B+ capture plumbing: #renderContentLines records the last rendered paragraph row.
@@ -1891,6 +1928,7 @@ export class Markdown implements Component {
 			// outlives the content it indexed.
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
+			this.#streamPrefixCount = 0;
 			this.#streamPrefixLineCache = undefined;
 			this.#tailRowCache = undefined;
 			// B+: the captured fast-path rows index the replaced content — drop
@@ -1951,8 +1989,13 @@ export class Markdown implements Component {
 		// avoids re-scanning the grown prefix every frame (O(n²) → O(n) overall).
 		const prefix = this.#streamPrefixText;
 		const prefixTokens = this.#streamPrefixTokens;
+		const prefixCount = this.#streamPrefixCount;
 		const hasPrefix =
-			prefix !== undefined && prefixTokens !== undefined && text.length > prefix.length && text.startsWith(prefix);
+			prefix !== undefined &&
+			prefixTokens !== undefined &&
+			prefixCount > 0 &&
+			text.length > prefix.length &&
+			text.startsWith(prefix);
 		const refDefText = hasPrefix ? text.slice(prefix.length) : text;
 		// Guard-scan memo (PoC C): while setText has been append-only and the
 		// grown delta introduces no "[", "]", ":", "\n" or "\r", the previous
@@ -1994,9 +2037,15 @@ export class Markdown implements Component {
 		this.#lastScanCanStream = canStream;
 		this.#lastScanValid = true;
 		this.#appendOnlySinceLastScan = true;
-		if (canStream && hasPrefix) {
+		if (canStream && hasPrefix && prefixTokens !== undefined) {
 			const tailTokens = lexDocument(refDefText);
-			const tokens = [...prefixTokens, ...tailTokens];
+			// tokens[0..prefixCount) are the frozen prefix and are byte-identical
+			// every frame: reuse that array as the backing store and rewrite only
+			// the tail, instead of allocating a fresh [...prefix, ...tail] copy
+			// per append (O(prefix) per frame, O(n²) over a stream).
+			const tokens = prefixTokens;
+			tokens.length = prefixCount;
+			for (const token of tailTokens) tokens.push(token);
 			this.#freezeStablePrefix(text, tokens, { preserveExisting: true });
 			return tokens;
 		}
@@ -2006,6 +2055,7 @@ export class Markdown implements Component {
 		} else {
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
+			this.#streamPrefixCount = 0;
 			this.#streamPrefixLineCache = undefined;
 			this.#tailRowCache = undefined;
 		}
@@ -2026,7 +2076,7 @@ export class Markdown implements Component {
 		// prefix length so accumulated offsets stay global. The cold full-lex
 		// path (preserveExisting: false) re-derives the whole stream, so it
 		// must keep walking from 0.
-		const skipPrefix = opts.preserveExisting ? (this.#streamPrefixTokens?.length ?? 0) : 0;
+		const skipPrefix = opts.preserveExisting ? this.#streamPrefixCount : 0;
 		const frozen = stableBlockBoundary(
 			text,
 			skipPrefix > 0 ? (this.#streamPrefixText?.length ?? 0) : 0,
@@ -2035,13 +2085,18 @@ export class Markdown implements Component {
 		);
 		if (frozen.count > 0) {
 			this.#streamPrefixText = text.slice(0, frozen.end);
-			this.#streamPrefixTokens = tokens.slice(0, frozen.count);
+			// Hold the live array by reference; the next streaming lex truncates
+			// it to `count` before appending the re-lexed tail, so the frozen
+			// prefix is never copied.
+			this.#streamPrefixTokens = tokens;
+			this.#streamPrefixCount = frozen.count;
 			return;
 		}
 
 		if (!opts.preserveExisting) {
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
+			this.#streamPrefixCount = 0;
 			this.#streamPrefixLineCache = undefined;
 			this.#tailRowCache = undefined;
 		}
@@ -2243,8 +2298,10 @@ export class Markdown implements Component {
 		}
 		const emptyLines = this.#renderEmptyPaddingLines(signature);
 
-		// Combine top padding, content, and bottom padding.
-		const rawResult = [...emptyLines, ...contentLines, ...emptyLines];
+		// Combine top padding, content, and bottom padding. Without padding the
+		// content array already IS the result (it is freshly built every frame),
+		// so skip an O(rows) copy per streamed append.
+		const rawResult = emptyLines.length === 0 ? contentLines : [...emptyLines, ...contentLines, ...emptyLines];
 		const result = rawResult.length > 0 ? rawResult : [""];
 
 		// Update caches and hand the array out by reference. Callers must not
@@ -2326,45 +2383,49 @@ export class Markdown implements Component {
 		contentWidth: number,
 	): string[] {
 		const stableText = this.#streamPrefixText;
-		const stableTokenCount = this.#streamPrefixTokens?.length ?? 0;
+		const stableTokenCount = this.#streamPrefixCount;
 		if (stableText === undefined || stableTokenCount === 0 || !normalizedText.startsWith(stableText)) {
 			return this.#renderStreamingTail(tokens, 0, contentWidth, signature);
 		}
 
-		const contentLines: string[] = [];
+		// Prefix rows are immutable once rendered: keep them in ONE array that
+		// the line cache holds by reference. Copying them into the frame's rows
+		// and again into the cache costs O(prefix) twice per append (O(n²) over
+		// a stream); the single concat below is the only copy that remains, and
+		// it exists because callers need one flat row array.
 		const reusablePrefix = this.#matchingStreamPrefixLineCache(normalizedText, stableText, signature);
-		let renderedUntil = 0;
-		if (reusablePrefix && reusablePrefix.tokenCount <= stableTokenCount) {
-			contentLines.push(...reusablePrefix.lines);
-			renderedUntil = reusablePrefix.tokenCount;
-		}
-
-		if (renderedUntil < stableTokenCount) {
+		let prefixLines: readonly string[];
+		if (reusablePrefix !== undefined && reusablePrefix.tokenCount === stableTokenCount) {
+			prefixLines = reusablePrefix.lines;
+		} else {
+			const rendered: string[] = [];
+			let renderedUntil = 0;
+			if (reusablePrefix !== undefined && reusablePrefix.tokenCount < stableTokenCount) {
+				rendered.push(...reusablePrefix.lines);
+				renderedUntil = reusablePrefix.tokenCount;
+			}
 			// Stable tokens render with full fidelity (syntax highlighting on)
 			// so these cached rows byte-match the finalized render.
 			this.#renderingStablePrefix = true;
 			try {
-				contentLines.push(
+				rendered.push(
 					...this.#renderContentLines(tokens, renderedUntil, stableTokenCount, contentWidth, signature),
 				);
 			} finally {
 				this.#renderingStablePrefix = false;
 			}
-			renderedUntil = stableTokenCount;
+			prefixLines = rendered;
 		}
 
 		this.#streamPrefixLineCache = {
 			...signature,
 			text: stableText,
 			tokenCount: stableTokenCount,
-			lines: contentLines.slice(),
+			lines: prefixLines,
 		};
 
-		if (renderedUntil < tokens.length) {
-			contentLines.push(...this.#renderStreamingTail(tokens, renderedUntil, contentWidth, signature));
-		}
-
-		return contentLines;
+		if (stableTokenCount >= tokens.length) return prefixLines.slice();
+		return prefixLines.concat(this.#renderStreamingTail(tokens, stableTokenCount, contentWidth, signature));
 	}
 
 	#matchingStreamPrefixLineCache(
@@ -3317,8 +3378,39 @@ export class Markdown implements Component {
 			}
 		};
 
+		// Per-item row cache (streamed lists are one growing token). Only
+		// top-level, unstyled lists participate: a nested or blockquote-styled
+		// list depends on its parent's indent/style context, which is not in the
+		// key. Everything an item's rows depend on beyond its own raw source and
+		// index lives in the key: full render signature (theme, width, padding,
+		// terminal caps), ordered/start (bullet text), loose (item token shape)
+		// and the frozen-prefix fidelity flag (code highlighting).
+		const signature = this.#activeRenderSignature;
+		// A document holds several lists, so the cache is a small ring keyed by
+		// the first item's raw (stable while the list grows) plus the render key.
+		const firstRaw = token.items[0]?.raw;
+		const cacheKey =
+			depth === 0 && styleContext === undefined && signature !== undefined && firstRaw !== undefined
+				? `${this.#renderCacheKey("", signature)}\x00${width}\x00${token.ordered ? 1 : 0}\x00${startNumber}\x00${token.loose ? 1 : 0}\x00${this.#renderingStablePrefix ? 1 : 0}\x00${firstRaw}`
+				: undefined;
+		const cachedItems =
+			cacheKey === undefined ? undefined : this.#listRowCaches.find(entry => entry.key === cacheKey)?.items;
+		const nextItems: ListItemRowCacheEntry[] = [];
+		let cacheable = cacheKey !== undefined;
+
 		for (let i = 0; i < token.items.length; i++) {
 			const item = token.items[i];
+			const itemRaw = item.raw;
+			if (cacheable && itemRaw === undefined) cacheable = false;
+			if (cacheable && itemRaw !== undefined) {
+				const cachedItem = cachedItems?.[i];
+				if (cachedItem !== undefined && cachedItem.raw === itemRaw) {
+					for (const row of cachedItem.rows) lines.push(row);
+					nextItems.push(cachedItem);
+					continue;
+				}
+			}
+			const itemRowStart = lines.length;
 			const bullet = token.ordered ? `${startNumber + i}. ` : "- ";
 			const firstPrefix = indent + this.#theme.listBullet(bullet);
 			// Continuation rows align under the item text, so the hang matches the
@@ -3347,6 +3439,16 @@ export class Markdown implements Component {
 				}
 			} else {
 				lines.push(renderedLine(firstPrefix));
+			}
+			if (cacheable && itemRaw !== undefined) nextItems.push({ raw: itemRaw, rows: lines.slice(itemRowStart) });
+		}
+
+		if (cacheKey !== undefined && cacheable) {
+			const existing = this.#listRowCaches.findIndex(entry => entry.key === cacheKey);
+			if (existing >= 0) this.#listRowCaches[existing] = { key: cacheKey, items: nextItems };
+			else {
+				this.#listRowCaches.unshift({ key: cacheKey, items: nextItems });
+				if (this.#listRowCaches.length > LIST_ROW_CACHE_MAX) this.#listRowCaches.length = LIST_ROW_CACHE_MAX;
 			}
 		}
 
