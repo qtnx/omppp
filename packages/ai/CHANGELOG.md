@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude Code OAuth now advertises CLI `2.1.280`, which Anthropic requires for Opus 5.5 (`claude_code_version_too_old`).
+
+
 ## [18.2.3] - 2026-09-17
 
 ### Added
