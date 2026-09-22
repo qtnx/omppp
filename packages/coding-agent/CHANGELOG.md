@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+
+## [1.11.1] - 2026-09-22
+
+### Changed
+
+- Bundled `@oh-my-pi/pi-ai` 1.11.1, including the Claude Code fingerprint 2.1.280 update.
+
 ## [18.2.3] - 2026-09-17
 
 ### Breaking Changes
