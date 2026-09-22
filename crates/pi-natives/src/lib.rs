@@ -269,7 +269,7 @@ fn create_windows_napi_tokio_runtime() -> Option<tokio::runtime::Runtime> {
 /// the version string are mapped to `_` to keep it a valid JS identifier.
 /// MUST stay in sync with `NATIVE_ABI_VERSION` in
 /// `packages/natives/native/version-sentinel.js`.
-#[napi(js_name = "__piNativesV1_11_1")]
+#[napi(js_name = "__piNativesV1_11_2")]
 pub const fn pi_natives_version_sentinel() {}
 
 /// Native module entry point: install crash diagnostics before any tool can

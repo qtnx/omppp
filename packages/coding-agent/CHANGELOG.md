@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.11.2] - 2026-09-22
+
+### Added
+
+- Central agent config (on by default; `remoteConfig.enabled: false` opts out): pull model roles, subagent overrides, fallback chains, advisor/duo settings, and agent definitions from a shared host (default `codemc`), hot-reloaded while running; your local config is the fallback and the last fetched copy keeps applying when the host is down
+- Editing advisor model settings (`advisor.*`, `duo.advisor*`) in `config.yml` while a session runs now rebuilds the advisor without a restart
+
 ### Changed
 
 - Jev turn classification no longer runs on every tool step: with a live advisor it still judges each step, otherwise a live duo or `auto`-thinking session samples running tool work at most once per 15s, and duo-off sessions without `auto` send none.
@@ -9,17 +16,6 @@
 - Subagents without an explicit effort or `:level` suffix run on `auto` thinking; bundled agents that pinned `medium`/`high`/`xhigh` now pin `auto`.
 - The status-line work-phase chip only shows while duo is live.
 - System prompt now routes behavior-to-location lookups to `jev_scout` (with an explicit tie-break against `codegraph_explore`), makes `browser_jev` the first tool for the main agent's own web UI verification, and adds a parallel fan-out playbook with concrete spawn triggers and an isolated-scope recipe for subagent waves.
-
-### Added
-
-- Central agent config (on by default; `remoteConfig.enabled: false` opts out): pull model roles, subagent overrides, fallback chains, advisor/duo settings, and agent definitions from a shared host (default `codemc`), hot-reloaded while running; your local config is the fallback and the last fetched copy keeps applying when the host is down
-- Editing advisor model settings (`advisor.*`, `duo.advisor*`) in `config.yml` while a session runs now rebuilds the advisor without a restart
-
-## [1.11.1] - 2026-09-22
-
-### Changed
-
-- Bundled `@oh-my-pi/pi-ai` 1.11.1, including the Claude Code fingerprint 2.1.280 update.
 
 ## [18.2.3] - 2026-09-17
 
@@ -1706,6 +1702,12 @@
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
 
+## [1.11.1] - 2026-09-22
+
+### Changed
+
+- Bundled `@oh-my-pi/pi-ai` 1.11.1, including the Claude Code fingerprint 2.1.280 update.
+
 ## [1.10.5] - 2026-09-21
 
 ### Added
@@ -1776,21 +1778,4 @@
 
 - Turn classification now sends the live duo work phase (`duo_phase`) with each turn, so the classifier judges a turn against the phase the session is actually in; it was accepted by the client but never populated.
 
-## [1.10.0] - 2026-09-18
-
-### Added
-
-- `duo_change_phase` lets the model move the duo session between work phases itself (`preplanning`, `planning`, `implementing`, `verifying`, `debugging`, `blocked`, `reporting`) with a one-line rationale, putting that phase's configured model on the main stream without waiting for the classifier's confidence/streak gates.
-- New `preplanning` work phase, default `anthropic/claude-opus-5:high`: a fresh duo session opens on it to brainstorm the request and scout the code, then the model moves on to `planning`. The classifier never emits this phase — it holds until `duo_change_phase` (or a four-turn dwell) releases it.
-- Live learning novelty check: before storing a new guideline, Jev judges whether an existing learning already covers the lesson; a confident duplicate reinforces the existing entry instead of writing another one (`learning.novelty.*`).
-
-### Changed
-
-- The default duo/executor DeepSeek model is now `tnx/openrouter/deepseek/deepseek-v4.1-flash` (was `tnx/openrouter/~deepseek/deepseek-v4-flash-latest`), in `duo.executorModel`, the `duo.phaseModels` default map, and the setup default `retry.fallbackChains` key.
-
-### Fixed
-
-- A usage-limit failure now falls through to the configured `retry.fallbackChains` after one sibling-credential wait instead of retrying the capped model until the retry budget runs out. A pool whose "sibling" claim never freed a fresh window previously re-hit the spent quota up to `retry.maxRetries` times before the chain was consulted; the chain's cross-provider candidate is now used, with the exhausted provider excluded.
-- Live learnings are injected per request instead of as a static system-prompt block: Jev (TypeSafe System One) scores each stored learning against the current request and only the relevant ones are added — once per conversation, as a hidden context message — so the provider prompt cache stays byte-stable. Falls back to the stored rank when Jev is unavailable (`learning.relevance.*`).
-
-Older entries are archived in [packages/coding-agent/CHANGELOG.md@2be877ff6a46](https://github.com/can1357/oh-my-pi/blob/2be877ff6a4614e7347edae25edb5f413da8a47d/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@722ac6b97234](https://github.com/can1357/oh-my-pi/blob/722ac6b97234560bf045ad17f6aeaf2c04b4530b/packages/coding-agent/CHANGELOG.md).
