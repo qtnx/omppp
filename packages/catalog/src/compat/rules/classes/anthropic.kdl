@@ -159,6 +159,14 @@ class "anthropic" {
 					cache-write 6.25
 				}
 			}
+			revision "=5.5" {
+				cost-patch {
+					input 4.0
+					output 20.0
+					cache-read 0.2
+					cache-write 5.0
+				}
+			}
 		}
 		// Anthropic's /v1/models omits token limits and pricing for the
 		// Fable/Mythos generation; pin the model-card values.
