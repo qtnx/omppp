@@ -10,6 +10,10 @@
 - The status-line work-phase chip only shows while duo is live.
 - System prompt now routes behavior-to-location lookups to `jev_scout` (with an explicit tie-break against `codegraph_explore`), makes `browser_jev` the first tool for the main agent's own web UI verification, and adds a parallel fan-out playbook with concrete spawn triggers and an isolated-scope recipe for subagent waves.
 
+### Added
+
+- Central agent config (on by default; `remoteConfig.enabled: false` opts out): pull model roles, subagent overrides, fallback chains, advisor/duo settings, and agent definitions from a shared host (default `codemc`), hot-reloaded while running; your local config is the fallback and the last fetched copy keeps applying when the host is down
+- Editing advisor model settings (`advisor.*`, `duo.advisor*`) in `config.yml` while a session runs now rebuilds the advisor without a restart
 
 ## [1.11.1] - 2026-09-22
 

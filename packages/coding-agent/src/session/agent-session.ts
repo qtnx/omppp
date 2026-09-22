@@ -735,6 +735,7 @@ export class AgentSession {
 	#unsubscribeCodeMode?: () => void;
 	#unsubscribeEvalPreludeSettings?: () => void;
 	#unsubscribeIdleCloseSetting?: () => void;
+	#unsubscribeAdvisorSettings?: () => void;
 	/** Last (enable, providerId) tuple resolved by `#syncAppendOnlyContext` — used to skip no-op invalidations. */
 	#lastAppendOnlyResolution?: { enable: boolean; providerId: string | undefined };
 	#timeBudget: TimeBudgetController | undefined;
@@ -2459,6 +2460,11 @@ export class AgentSession {
 					error: String(error),
 				});
 			});
+		});
+		// Advisor model/fallback settings feed the advisor runtime signature; rebuild
+		// when a live edit or central-config pull changes them (no-op when unchanged).
+		this.#unsubscribeAdvisorSettings = this.settings.onEffectiveChange(path => {
+			if (path.startsWith("advisor.") || path.startsWith("duo.advisor")) this.#advisors.onModelRolesChanged();
 		});
 		this.#unsubscribeIdleCloseSetting = this.settings.onEffectiveChange((path, value) => {
 			if (path !== "browser.idleCloseSec") return;
@@ -5658,6 +5664,8 @@ export class AgentSession {
 			this.#unsubscribeEvalPreludeSettings();
 			this.#unsubscribeEvalPreludeSettings = undefined;
 		}
+		this.#unsubscribeAdvisorSettings?.();
+		this.#unsubscribeAdvisorSettings = undefined;
 		if (this.#unsubscribeIdleCloseSetting) {
 			this.#unsubscribeIdleCloseSetting();
 			this.#unsubscribeIdleCloseSetting = undefined;

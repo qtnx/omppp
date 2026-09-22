@@ -69,6 +69,7 @@ import type { CollabHost } from "../collab/host";
 import { formatKeyHint, KeybindingsManager } from "../config/keybindings";
 import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
+import { RemoteConfigSync } from "../config/remote-config";
 import {
 	isSettingsInitialized,
 	onModelRolesChanged,
@@ -141,6 +142,7 @@ import { STTController, type SttState } from "../stt";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { loadAutoDiscoveredSystemPromptOverlay } from "../system-prompt-overrides";
+import { refreshAllAgentDiscovery } from "../task";
 import { discoverAgents } from "../task/discovery";
 import { labelEchoesHandle } from "../task/label";
 import { sandboxOmpxCommand } from "../task/omp-command";
@@ -966,6 +968,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#cleanupUnsubscribe?: () => void;
 	#binaryUpdateDetector: BinaryUpdateDetector | undefined;
 	#binaryUpdateInterval: NodeJS.Timeout | undefined;
+	#remoteConfigSync: RemoteConfigSync | undefined;
 	#promptOverlaySignature: string | undefined;
 	#promptOverlayInterval: NodeJS.Timeout | undefined;
 	#signalTeardown?: SessionTeardown;
@@ -1786,6 +1789,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		);
 		settings.startWatching();
+		this.#remoteConfigSync = new RemoteConfigSync(settings, { onAgentsChanged: refreshAllAgentDiscovery });
+		this.#remoteConfigSync.start();
 		// Resync the welcome banner to the live model: init-time reconciliations
 		// (#reconcileModeFromSession, #enterPlanMode for plan.defaultOnStartup)
 		// can change the model before this subscription exists, so the
@@ -6124,6 +6129,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#binaryUpdateInterval = undefined;
 		}
 		settings.stopWatching();
+		this.#remoteConfigSync?.stop();
+		this.#remoteConfigSync = undefined;
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
 		this.#extensionUiController.disposeComposerShapes();
