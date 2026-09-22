@@ -39,7 +39,7 @@ describe("release workflow triggers", () => {
 		const run = asString(detectStep?.run, "Detect release tag run script");
 
 		expect(run).toContain("refs/tags/v*)");
-		expect(run).toContain("^v[0-9]+\\.[0-9]+\\.[0-9]+$");
+		expect(run).toContain("^v[0-9]+\\.[0-9]+\\.[0-9]+(-canary\\.[0-9]+)?$");
 		expect(run).not.toContain("refs/heads/main");
 		expect(run).not.toContain("git tag --points-at HEAD");
 	});
@@ -51,9 +51,9 @@ describe("release workflow triggers", () => {
 		);
 
 		const nativeLeafNpm = asRecord(jobs["release-native-leaf-npm"], "jobs.release-native-leaf-npm");
-		expect(asArray(nativeLeafNpm.needs, "release-native-leaf-npm needs")).toContain("release_github_verify");
+		expect(asArray(nativeLeafNpm.needs, "release-native-leaf-npm needs")).toContain("release_github");
 		expect(asString(nativeLeafNpm.if, "release-native-leaf-npm if")).toContain(
-			"needs.release_github_verify.result == 'success'",
+			"needs.release_github.result == 'success'",
 		);
 
 		const releaseGithub = asRecord(jobs.release_github, "jobs.release_github");
