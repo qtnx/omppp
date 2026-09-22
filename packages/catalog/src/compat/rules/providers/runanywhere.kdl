@@ -1,0 +1,86 @@
+// Provider-wire compat for "runanywhere" (inference.runanywhere.ai).
+//
+// RunAnywhere fronts hosted vLLM/SGLang deployments behind LiteLLM on a plain
+// OpenAI chat-completions surface: `reasoning_effort` rides the top level,
+// reasoning text comes back as `reasoning_content`, tool calls stream in the
+// standard shape, and parallel tool calls are already the default (a single
+// turn returns two `tool_calls` without any extra request field). No custom
+// transport is required; everything below is deployment policy.
+//
+// Every value here was measured against the live endpoint on 2026-09-22 with a
+// real key, because `/v1/models` carries no capability metadata at all.
+
+provider "runanywhere" {
+	default-model "glm-5.3-flash"
+	env "RUNANYWHERE_API_KEY"
+	dynamic-models-authoritative #true
+	discovery label="RunAnywhere"
+	// `/v1/models` reports no modality, so a same-id row on another host would
+	// otherwise backfill one: Z.AI's `glm-5.3-flash` is vision-capable and this
+	// deployment is not (see the modality note on the seed row below).
+	skip-cross-provider-reference-fills #true
+
+	// Bundled seed so the provider is usable (and `default-model` resolvable)
+	// when generation runs without a RUNANYWHERE_API_KEY. Live `/v1/models` is
+	// authoritative for the id set and the limits; pricing is the published
+	// `/v1/models/catalog` tariff (micro-credits per Mtok, so 100000 = $0.10),
+	// which discovery does not carry. `cache-read` is the real
+	// `cached_input_per_mtok` rate: the endpoint prefix-caches automatically and
+	// reports the hit through `usage.prompt_tokens_details.cached_tokens`, so
+	// cached turns must be accounted at the discounted rate.
+	seed api="openai-completions" base-url="https://inference.runanywhere.ai/v1" bundle="fallback" {
+		model "glm-5.3-flash" name="GLM-5.3 Flash" {
+			reasoning #true
+			// Measured: fed a solid green and a solid magenta PNG, this
+			// deployment answers "White" to both, so the image is not reaching
+			// the model even though the request is accepted. Text only, despite
+			// the vision-capable GLM-5.3-Flash SKU served elsewhere.
+			input "text"
+			cost input=0.10 output=0.35 cache-read=0.02 cache-write=0
+			limits context=1048567
+			thinking-mode "effort"
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+		}
+		model "qwen3.8-27b" name="Qwen3.8 27B" {
+			reasoning #true
+			// Measured: answers "Green" for a solid green PNG.
+			input "text" "image"
+			cost input=0.20 output=2.5 cache-read=0.05 cache-write=0
+			limits context=262137
+			thinking-mode "effort"
+			thinking-efforts "low" "medium" "xhigh"
+		}
+		model "gemma-4" name="Gemma 4" {
+			reasoning #false
+			// Measured: answers "Red"/"Green" for solid-color PNGs.
+			input "text" "image"
+			cost input=0.20 output=0.80 cache-read=0.05 cache-write=0
+			limits context=262144 max-tokens=128000
+		}
+	}
+
+	// `reasoning_effort: "none"` is the documented off switch and the only one
+	// the backend accepts (`off`/`disabled` are rejected with a 400), so the
+	// disable path must send it rather than the lowest ladder tier.
+	reasoning-disable-mode "none-effort"
+	thinking-mode "effort"
+
+	// Per-model ladders are load-bearing: an effort the deployment does not
+	// serve is a hard 400, not a silent downgrade.
+	//
+	// qwen3.8-27b answers `Unexpected reasoning effort high. Supported types are
+	// xhigh (default), medium, and low.` — the Qwen 3.8 chat-template ladder.
+	class "qwen" {
+		revision ">=3.8" {
+			thinking-efforts "low" "medium" "xhigh"
+		}
+	}
+	// glm-5.3-flash accepts the whole ladder here, unlike the wire-exact
+	// low/high/max the GLM-5.3 coding SKUs serve on Z.AI-dialect hosts, and
+	// thinking can be turned off, so the lineage's `thinking-requires-effort`
+	// must not leak onto this deployment.
+	models "glm-5.3-flash" priority=20 {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+		thinking-requires-effort #false
+	}
+}

@@ -1,0 +1,9 @@
+auth "runanywhere" {
+	name "RunAnywhere"
+	login "api-key" {
+		auth-url "https://cloud.runanywhere.ai"
+		instructions "Create or copy your RunAnywhere API key from the console"
+		prompt "Paste your RunAnywhere API key" placeholder="sk-..."
+		validate "models-endpoint" label="RunAnywhere" url="https://inference.runanywhere.ai/v1/models"
+	}
+}

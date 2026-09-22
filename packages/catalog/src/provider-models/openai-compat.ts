@@ -4776,6 +4776,85 @@ export function tnxModelManagerOptions(config?: TnxModelManagerConfig): ModelMan
 }
 
 // ---------------------------------------------------------------------------
+// 18.6 RunAnywhere
+// ---------------------------------------------------------------------------
+
+const RUNANYWHERE_BASE_URL = "https://inference.runanywhere.ai/v1";
+
+export interface RunAnywhereModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+/**
+ * RunAnywhere reports limits under `max_input_tokens` / `max_output_tokens`
+ * rather than the `context_length` / `max_completion_tokens` pair the shared
+ * mapper reads, and carries no capability, pricing, or display metadata at
+ * all. Limits therefore come from the envelope, everything else from the
+ * bundled/seeded reference for the id (pricing is the published tariff, which
+ * discovery never sends), and ids absent from every bundle fall back to the
+ * canonical cross-provider reference for intrinsic capabilities only.
+ */
+function mapRunAnywhereModel(
+	entry: OpenAICompatibleModelRecord,
+	defaults: ModelSpec<"openai-completions">,
+	reference: ModelSpec<"openai-completions"> | undefined,
+): ModelSpec<"openai-completions"> {
+	const canonical =
+		reference ??
+		(resolveModelReference(defaults.id, getBundledModelReferenceIndex()) as
+			| ModelSpec<"openai-completions">
+			| undefined);
+	const contextWindow = toPositiveNumber(entry.max_input_tokens, canonical?.contextWindow ?? defaults.contextWindow);
+	const maxTokens = toPositiveNumber(entry.max_output_tokens, canonical?.maxTokens ?? defaults.maxTokens);
+	if (!canonical) {
+		return { ...defaults, name: toModelName(entry.name, defaults.name), contextWindow, maxTokens };
+	}
+	return {
+		...defaults,
+		name: toModelName(entry.name, canonical.name ?? defaults.name),
+		reasoning: canonical.reasoning,
+		input: canonical.input,
+		// Pricing is per-deployment: only the provider's own seeded row may
+		// supply it, never a same-id row resold by another host.
+		...(reference && { cost: reference.cost }),
+		...(canonical.thinking && { thinking: canonical.thinking }),
+		contextWindow,
+		maxTokens,
+	};
+}
+
+/**
+ * RunAnywhere (inference.runanywhere.ai): OpenAI-compatible chat completions
+ * over hosted vLLM/SGLang behind LiteLLM. Live `/v1/models` is authoritative
+ * for the served id set; the seeded rows in `providers/runanywhere.kdl` cover a
+ * keyless generation.
+ */
+export function runanywhereModelManagerOptions(
+	config?: RunAnywhereModelManagerConfig,
+): ModelManagerOptions<"openai-completions"> {
+	const references = new Map<string, ModelSpec<"openai-completions">>(
+		createBundledReferenceMap<"openai-completions">("runanywhere"),
+	);
+	for (const model of seedModels<"openai-completions">("runanywhere")) {
+		references.set(model.id, { ...references.get(model.id), ...model });
+	}
+	return createOpenAICompatibleModelManagerOptions({
+		api: "openai-completions",
+		providerId: "runanywhere",
+		defaultBaseUrl: RUNANYWHERE_BASE_URL,
+		config,
+		requireApiKey: true,
+		dynamicModelsAuthoritative: true,
+		// `mode` distinguishes the chat deployments from any future embedding or
+		// audio rows on the same catalog.
+		filterModel: entry => typeof entry.mode !== "string" || entry.mode === "chat",
+		mapModel: (entry, defaults) => mapRunAnywhereModel(entry, defaults, references.get(defaults.id)),
+	});
+}
+
+// ---------------------------------------------------------------------------
 // 19. Cloudflare AI Gateway
 // ---------------------------------------------------------------------------
 
