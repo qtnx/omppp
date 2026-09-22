@@ -156,9 +156,11 @@ describe("claude usage-block healing", () => {
 		// Shared walls must judge the scope too, else a spent 5h window heals.
 		expect(ids).toContain("anthropic:5h");
 		expect(ids).toContain("anthropic:7d");
-		// Opus/Sonnet requests never take a scoped block, so nothing to heal.
+		// Opus limits judge the `opus` backoff scope, never the Fable one.
 		expect(ids).not.toContain("anthropic:7d:opus");
-		expect(scopes.some(scope => scope.blockScope === "tier:opus")).toBe(false);
+		expect(scopes.find(scope => scope.blockScope === "opus")?.limits.map(entry => entry.id)).toContain(
+			"anthropic:7d:opus",
+		);
 	});
 
 	it("lifts a stale tier:fable block when the live report has headroom", async () => {
@@ -185,6 +187,33 @@ describe("claude usage-block healing", () => {
 
 		expect(await storage.getApiKey("anthropic", "s-direct-heal", { modelId: "claude-fable-5-1" })).toBe("access-1");
 		expect(clearedScopes).toContain("tier:fable");
+	});
+
+	it("lifts a stale opus-scoped block so selection stops falling back to an exhausted sibling", async () => {
+		// Opus usage limits persist under the `opus` backoff scope. Before, only
+		// tier:* scopes healed, so an account Anthropic restored early stayed
+		// blocked until its weekly reset and every request went to the sibling.
+		const { storage, clearedScopes } = makeHarness(
+			claudeReport([sharedLimit("5h", "5h", 0.1), sharedLimit("7d", "7d", 0.2), tierLimit("opus", 0.1)]),
+			"opus",
+		);
+		storages.push(storage);
+		await storage.reload();
+
+		expect(await storage.getApiKey("anthropic", "s-opus-heal", { modelId: "claude-opus-4-5" })).toBe("access-1");
+		expect(clearedScopes).toContain("opus");
+	});
+
+	it("keeps an opus-scoped block while the Opus weekly row is spent", async () => {
+		const { storage, clearedScopes } = makeHarness(
+			claudeReport([sharedLimit("5h", "5h", 0.1), sharedLimit("7d", "7d", 0.2), tierLimit("opus", 1)]),
+			"opus",
+		);
+		storages.push(storage);
+		await storage.reload();
+
+		expect(await storage.getApiKey("anthropic", "s-opus-spent", { modelId: "claude-opus-4-5" })).toBe("access-2");
+		expect(clearedScopes).not.toContain("opus");
 	});
 
 	it("keeps the block while the shared 5-hour window is spent", async () => {
@@ -216,7 +245,7 @@ describe("claude usage-block healing", () => {
 	});
 
 	it("spends no usage request on a block its scopes cannot heal", async () => {
-		// An unscoped block (Opus/Sonnet usage limit, refresh failure) is outside
+		// An unscoped block (refresh failure, legacy global block) is outside
 		// every scope the strategy vouches for, so probing cannot change it.
 		const { storage, clearedScopes, probeCount } = makeHarness(
 			claudeReport([sharedLimit("5h", "5h", 0.1), sharedLimit("7d", "7d", 0.2), tierLimit("fable", 0)]),

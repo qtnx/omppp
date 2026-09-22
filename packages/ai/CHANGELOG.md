@@ -7,6 +7,9 @@
 ### Fixed
 
 - Claude Code OAuth now advertises CLI `2.1.280`, which Anthropic requires for Opus 5.5 (`claude_code_version_too_old`).
+### Fixed
+
+- Fixed Anthropic multi-account rotation ignoring an account whose usage limit was reset early: Opus, Sonnet, and other non-Fable usage-limit blocks now lift as soon as a live usage report shows headroom, instead of idling the account until its original weekly reset and sending every request to a still-exhausted sibling.
 
 ## [18.2.3] - 2026-09-17
 

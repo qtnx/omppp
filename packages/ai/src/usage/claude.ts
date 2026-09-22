@@ -935,15 +935,18 @@ export const claudeRankingStrategy: CredentialRankingStrategy = {
 		return kind === "fable" || kind === "mythos" ? `tier:${kind}` : undefined;
 	},
 	/**
-	 * A reactive Fable/Mythos block carries the reset the 429 reported, but
-	 * Anthropic can restore the tier earlier (plan change, corrected counter),
-	 * and the block then idles a usable account for days. Judge each tier scope
-	 * against the limits that actually gate a request of that kind — its own
-	 * weekly row plus the shared umbrella windows — so a healthy report lifts
-	 * the block while a spent shared 5-hour wall keeps it.
+	 * A reactive block carries the reset the 429 reported, but Anthropic can
+	 * restore an account earlier (plan change, corrected counter, weekly reset
+	 * grant), and the block then idles a usable account for days — selection
+	 * keeps skipping it and falls back to a still-exhausted sibling. Judge each
+	 * scope against the limits that actually gate a request of that kind — the
+	 * shared umbrella windows plus that scope's own weekly row — so a healthy
+	 * report lifts the block while a spent shared 5-hour wall keeps it.
 	 *
-	 * Only Fable/Mythos appear: {@link blockScope} scopes reactive blocks for
-	 * those tiers alone, so no other scope can exist to heal.
+	 * Scopes mirror what `AuthStorage` writes: {@link blockScope} for
+	 * Fable/Mythos (`tier:*`), else the {@link backoffScope} fallback
+	 * (`opus`, `sonnet`, `default`). Fable/Mythos scopes are offered only when
+	 * their tier row is reported, since those 429s map to tier-local counters.
 	 */
 	healableBlockScopes(report) {
 		const sharedLimits = report.limits.filter(limit => limit.scope.shared === true);
@@ -955,15 +958,17 @@ export const claudeRankingStrategy: CredentialRankingStrategy = {
 			sharedLimits.some(limit => limit.scope.windowId === windowId || limit.window?.id === windowId),
 		);
 		if (!everySharedGateReported) return [];
-		const tiers = new Set<string>();
-		for (const limit of report.limits) {
-			const tier = limit.scope.tier;
-			if (tier === "fable" || tier === "mythos") tiers.add(tier);
+		const tierLimits = (tier: string) => report.limits.filter(limit => limit.scope.tier === tier);
+		const scopes = [
+			{ blockScope: "default", limits: sharedLimits },
+			{ blockScope: "opus", limits: [...sharedLimits, ...tierLimits("opus")] },
+			{ blockScope: "sonnet", limits: [...sharedLimits, ...tierLimits("sonnet")] },
+		];
+		for (const tier of ["fable", "mythos"]) {
+			const limits = tierLimits(tier);
+			if (limits.length > 0) scopes.push({ blockScope: `tier:${tier}`, limits: [...sharedLimits, ...limits] });
 		}
-		return [...tiers].map(tier => ({
-			blockScope: `tier:${tier}`,
-			limits: [...sharedLimits, ...report.limits.filter(limit => limit.scope.tier === tier)],
-		}));
+		return scopes;
 	},
 	windowDefaults: { primaryMs: 5 * 60 * 60 * 1000, secondaryMs: 7 * 24 * 60 * 60 * 1000 },
 	selectGatingLimits(report, modelId) {
