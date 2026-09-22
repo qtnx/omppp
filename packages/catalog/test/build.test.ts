@@ -926,6 +926,12 @@ describe("Responses configuration_update compat", () => {
 		// The class rule is keyed on the exact id, not on the host: a custom proxy
 		// serving gpt-6-astra gets the item, its gpt-6 neighbour never does.
 		expect(buildModel(astraProxySpec()).compat.supportsConfigurationUpdate).toBe(true);
+		expect(buildModel(astraProxySpec({ id: "gpt-6-sol", name: "GPT-6 Sol" })).compat.supportsConfigurationUpdate).toBe(
+			true,
+		);
+		expect(buildModel(astraProxySpec({ id: "gpt-6-luna", name: "GPT-6 Luna" })).compat.supportsConfigurationUpdate).toBe(
+			true,
+		);
 		expect(buildModel(astraProxySpec({ id: "gpt-6", name: "GPT-6" })).compat.supportsConfigurationUpdate).toBe(false);
 	});
 

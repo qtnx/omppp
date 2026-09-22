@@ -30,6 +30,19 @@ provider "openai" {
 			cost input=12.5 output=75 cache-read=1.25 cache-write=15.625
 			limits context=400000 max-tokens=128000
 		}
+		model "gpt-6-sol" name="GPT-6 Sol" {
+			reasoning #true
+			input "text" "image"
+			cost input=2 output=10 cache-read=0.2 cache-write=2.5
+			limits context=1050000 max-tokens=128000
+		}
+		model "gpt-6-luna" name="GPT-6 Luna" {
+			reasoning #true
+			input "text" "image"
+			cost input=0.1 output=0.5 cache-read=0.01 cache-write=0.125
+			limits context=1050000 max-tokens=128000
+		}
+
 	}
 
 	// Replaces the strict-mode provider whitelist entry.
@@ -116,6 +129,25 @@ provider "openai" {
 			cache-write 25.0
 		}
 	}
+	models "gpt-6-sol*" {
+		long-context-cost {
+			input-threshold 272000
+			input 4.0
+			output 15.0
+			cache-read 0.4
+			cache-write 5.0
+		}
+	}
+	models "gpt-6-luna*" {
+		long-context-cost {
+			input-threshold 272000
+			input 0.2
+			output 0.75
+			cache-read 0.02
+			cache-write 0.25
+		}
+	}
+
 	// residue: the bare Daybreak rolling aliases pin the documented 5.6-gen
 	// wire restrictions without carrying the gpt- prefix identity.
 	models "daybreak-blue-latest" "daybreak-red-latest" {

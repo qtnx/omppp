@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added GPT-6 Sol ($2/$10) and GPT-6 Luna ($0.10/$0.50) catalog rows copied from GPT-6 Astra, with cache at 0.1× read and 1.25× write.
+
 ## [18.2.3] - 2026-09-17
 
 ### Added

@@ -21,6 +21,8 @@ export const CODEX_PINNED_CONTEXT_WINDOW_MODEL_IDS: readonly string[] = [
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
 ];
 
 /** Whether a model is a Codex-transport SKU with a fork-pinned context window. */
