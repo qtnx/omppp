@@ -55,6 +55,12 @@ import { replaceFileAtomically } from "../utils/atomic-file";
 import { type EditMode, normalizeEditMode } from "../utils/edit-mode";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import { stringifyYamlConfig } from "./config-file";
+import {
+	filterRemoteSettings,
+	REMOTE_AGENTS_DIRNAME,
+	REMOTE_CONFIG_DIRNAME,
+	REMOTE_CONFIG_FILENAME,
+} from "./remote-config";
 import { validateAgentServiceTierOverrides } from "./service-tier";
 import {
 	type BashInterceptorRule,
@@ -746,6 +752,8 @@ export class Settings {
 	#quarantinedYamlTargets = new Map<string, string>();
 	/** Extra config.yml-style overlays passed by CLI */
 	#configOverlay: RawSettings = {};
+	/** Allowlisted settings mirrored from the central config host; merged above global when enabled. */
+	#remote: RawSettings = {};
 	/** Project settings file that most recently supplied shellPath. */
 	#projectShellPathSource: string | undefined;
 	/** Capability warnings already surfaced for the current project scope; reloads stay quiet. */
@@ -899,6 +907,15 @@ export class Settings {
 		return globalInstance;
 	}
 
+	/**
+	 * Central-config agent mirror of the global instance, or null when central
+	 * config is off or no global settings exist (SDK/test embeddings).
+	 */
+	static remoteAgentsDir(): string | null {
+		if (globalInstance?.getTrusted("remoteConfig.enabled") !== true) return null;
+		return path.join(globalInstance.getAgentDir(), REMOTE_CONFIG_DIRNAME, REMOTE_AGENTS_DIRNAME);
+	}
+
 	// ─────────────────────────────────────────────────────────────────────────
 	// Core API
 	// ─────────────────────────────────────────────────────────────────────────
@@ -1030,13 +1047,7 @@ export class Settings {
 
 	#fireEffectiveSettingChanged(path: SettingPath, value: unknown, prev: unknown): void {
 		if (Object.is(value, prev)) return;
-		for (const listener of Array.from(this.#effectiveChangeListeners)) {
-			try {
-				listener(path, value, prev);
-			} catch (error) {
-				logger.warn("Settings: effective-change listener failed", { path, error: String(error) });
-			}
-		}
+		this.#notifyEffectiveChangeListeners(path, value, prev);
 		if (path === "statusLine.sessionAccent") {
 			statusLineSessionAccentSignal.fire();
 		}
@@ -1045,6 +1056,16 @@ export class Settings {
 		}
 		if (CODE_MODE_SIGNAL_PATHS.includes(path)) {
 			codeModeSignal.fire();
+		}
+	}
+
+	#notifyEffectiveChangeListeners(path: SettingPath, value: unknown, prev: unknown): void {
+		for (const listener of Array.from(this.#effectiveChangeListeners)) {
+			try {
+				listener(path, value, prev);
+			} catch (error) {
+				logger.warn("Settings: effective-change listener failed", { path, error: String(error) });
+			}
 		}
 	}
 
@@ -1135,6 +1156,7 @@ export class Settings {
 		if (!this.#persist) cloned.#projectShellPathSource = this.#projectShellPathSource;
 		cloned.#configFiles = [...this.#configFiles];
 		cloned.#configOverlay = structuredClone(this.#configOverlay);
+		cloned.#remote = structuredClone(this.#remote);
 		cloned.#overlayShellPathSource = this.#overlayShellPathSource;
 		cloned.#overrides = this.#buildOriginalOverrides();
 		cloned.#rebuildMerged();
@@ -1178,6 +1200,7 @@ export class Settings {
 				sessionAccent: this.get("statusLine.sessionAccent"),
 			};
 			const previousCodeModeValues = this.#codeModeSignalSnapshot();
+			const previousResolved = this.#snapshotResolvedSettings();
 			const previousHookValues = new Map<SettingPath, unknown>();
 			for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
 				previousHookValues.set(key, this.get(key));
@@ -1185,15 +1208,17 @@ export class Settings {
 			await this.flush();
 			const mutationGeneration = this.#persistedMutationGeneration;
 
-			const [globalResult, projectResult, overlayResult] = await Promise.allSettled([
+			const [globalResult, projectResult, overlayResult, remoteResult] = await Promise.allSettled([
 				this.#readExistingMainYaml(false),
 				this.#readProjectSettings(false),
 				this.#readConfigOverlays(false),
+				this.#readRemoteLayer(),
 			]);
 			if (mutationGeneration !== this.#persistedMutationGeneration) continue;
 			if (globalResult.status === "rejected") throw globalResult.reason;
 			if (projectResult.status === "rejected") throw projectResult.reason;
 			if (overlayResult.status === "rejected") throw overlayResult.reason;
+			if (remoteResult.status === "rejected") throw remoteResult.reason;
 
 			this.#configPath = globalResult.value.configPath;
 			this.#global = globalResult.value.settings ?? {};
@@ -1202,6 +1227,7 @@ export class Settings {
 			this.#projectShellPathSource = projectResult.value.shellPathSource;
 			this.#configOverlay = overlayResult.value.settings;
 			this.#overlayShellPathSource = overlayResult.value.shellPathSource;
+			this.#remote = remoteResult.value;
 			for (const [path, value] of this.#reloadMutationValues) {
 				setByPath(this.#global, path.split("."), structuredClone(value));
 			}
@@ -1225,6 +1251,13 @@ export class Settings {
 				if (!Bun.deepEquals(next, previous)) {
 					SETTING_HOOKS[key]?.(next, previous);
 				}
+			}
+			// Disk reloads (local edits, central-config pulls) reach the same
+			// listeners as in-process set/override; the two signaled paths fired above.
+			for (const [key, previous] of previousResolved) {
+				if (key === "modelRoles" || key === "statusLine.sessionAccent") continue;
+				const next = this.get(key);
+				if (!settingsValuesEqual(next, previous)) this.#notifyEffectiveChangeListeners(key, next, previous);
 			}
 			return;
 		}
@@ -1754,6 +1787,7 @@ export class Settings {
 
 		this.#project = projectResult.value;
 		this.#configOverlay = await this.#loadConfigOverlays();
+		this.#remote = await this.#readRemoteLayer();
 
 		// Build merged view (global → project → overrides; project wins over global)
 		this.#rebuildMerged();
@@ -1785,6 +1819,7 @@ export class Settings {
 
 		this.#project = projectResult.value;
 		this.#configOverlay = await this.#loadConfigOverlays();
+		this.#remote = await this.#readRemoteLayer();
 		this.#rebuildMerged();
 		return this;
 	}
@@ -2314,6 +2349,22 @@ export class Settings {
 		const result = await this.#readConfigOverlays();
 		this.#overlayShellPathSource = result.shellPathSource;
 		return result.settings;
+	}
+
+	/**
+	 * Read the central-config mirror. Missing or malformed mirrors yield an
+	 * empty layer so a bad fetch can never block startup; the allowlist is
+	 * re-applied because the file is writable outside this process.
+	 */
+	async #readRemoteLayer(): Promise<RawSettings> {
+		const filePath = path.join(this.#agentDir, REMOTE_CONFIG_DIRNAME, REMOTE_CONFIG_FILENAME);
+		try {
+			return this.#migrateRawSettings(filterRemoteSettings(YAML.parse(await Bun.file(filePath).text())));
+		} catch (error) {
+			if (!isEnoent(error))
+				logger.warn("Settings: ignoring unreadable remote config mirror", { filePath, error: String(error) });
+			return {};
+		}
 	}
 
 	/**
@@ -3603,7 +3654,13 @@ export class Settings {
 
 	#rebuildMerged(): void {
 		this.#revision++;
-		this.#merged = this.#deepMerge(this.#deepMerge({}, this.#global), this.#projectSettingsForMerge());
+		// Central config overrides config.yml (setup migrations seed every model
+		// role there, so a lower layer would never win) but stays below project,
+		// explicit overlays, and runtime choices. Only a trusted (global/runtime)
+		// layer can opt in, so a project file cannot enable it.
+		let merged = this.#deepMerge({}, this.#global);
+		if (this.getTrusted("remoteConfig.enabled") === true) merged = this.#deepMerge(merged, this.#remote);
+		this.#merged = this.#deepMerge(merged, this.#projectSettingsForMerge());
 		this.#merged = this.#deepMerge(this.#merged, this.#configOverlay);
 		this.#merged = this.#deepMerge(this.#merged, this.#overrides);
 		this.#resolvedCache.clear();

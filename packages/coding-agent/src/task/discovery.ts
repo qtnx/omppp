@@ -24,6 +24,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { isProviderEnabled, isUserSourceEnabled } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { findAllNearestProjectConfigDirs, getConfigDirs } from "../config";
+import { Settings } from "../config/settings";
 import { pluginUsesClaudeModelDialect } from "../discovery/agent-plugin-format";
 import { listClaudePluginRoots } from "../discovery/helpers";
 import { listOmpExtensionRoots } from "../discovery/omp-extension-roots";
@@ -73,6 +74,7 @@ async function loadAgentsFromDir({ dir, source, ignoreModel }: AgentDirectory): 
 /**
  * Discover agents from filesystem and merge with bundled agents.
  * Precedence (highest wins): project `.omp/agents`, user `.omp/agents`,
+ * central-config mirror (`<agentDir>/remote/agents`, when `remoteConfig.enabled`),
  * OMP extension-package agents from the effective `extensions` setting,
  * installed npm/link plugins, Claude marketplace plugin agents (project scope
  * before user), then bundled.
@@ -106,6 +108,9 @@ export async function discoverAgents(
 	if (project) orderedDirs.push({ dir: project.path, source: "project" });
 	const user = userDirs[0];
 	if (user) orderedDirs.push({ dir: user.path, source: "user" });
+	// Central-config mirror: below local user agents so a machine can still pin its own definition.
+	const remoteAgentsDir = Settings.remoteAgentsDir();
+	if (remoteAgentsDir) orderedDirs.push({ dir: remoteAgentsDir, source: "user" });
 
 	// Extension-package agents use the same effective root set as sibling
 	// skills/hooks/tools, threaded whole so explicit roots and mode survive.

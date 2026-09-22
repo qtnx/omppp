@@ -630,6 +630,8 @@ class TaskJobError extends AsyncJobError {}
  */
 const discoveryMemo = new Map<string, Promise<DiscoveryResult>>();
 const discoverySnapshots = new Map<string, AgentDefinition[]>();
+/** Discovery inputs per memo key, so a global agent-source change can rescan every live scope. */
+const discoveryScopes = new Map<string, [cwd: string, extensionRoots: EffectiveExtensionRoots | undefined]>();
 let discoveryMemoFn: typeof taskDiscovery.discoverAgents | undefined;
 
 /** Stable cache identity for the filesystem root and the full effective extension-root struct. */
@@ -643,8 +645,10 @@ function discoverAgentsForCreate(cwd: string, extensionRoots?: EffectiveExtensio
 		discoveryMemoFn = fn;
 		discoveryMemo.clear();
 		discoverySnapshots.clear();
+		discoveryScopes.clear();
 	}
 	const key = discoveryCacheKey(cwd, extensionRoots);
+	discoveryScopes.set(key, [cwd, extensionRoots]);
 	let pending = discoveryMemo.get(key);
 	if (!pending) {
 		pending = fn(cwd, undefined, extensionRoots);
@@ -673,6 +677,13 @@ export async function refreshAgentDiscovery(cwd: string, extensionRoots?: Effect
 	if (discoveryMemo.get(key) === pending) {
 		discoverySnapshots.set(key, agents);
 	}
+}
+
+/** Rescan every scope discovered in this process, e.g. after the central-config agent mirror changed. */
+export async function refreshAllAgentDiscovery(): Promise<void> {
+	await Promise.all(
+		Array.from(discoveryScopes.values(), ([cwd, extensionRoots]) => refreshAgentDiscovery(cwd, extensionRoots)),
+	);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
