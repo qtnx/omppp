@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { generateRoomKey, importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabGuestLink } from "@oh-my-pi/pi-coding-agent/collab/guest";
 import { COLLAB_PROTO, formatCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
@@ -16,7 +17,7 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { setTerminalImageProtocol, TERMINAL, type TUI } from "@oh-my-pi/pi-tui";
+import { type Component, setTerminalImageProtocol, TERMINAL, type TUI } from "@oh-my-pi/pi-tui";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "../../collab/helpers/in-memory-relay";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
 
@@ -117,6 +118,51 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			expect(firstFrame).toContain("sleep 10");
 			expect(secondFrame).toContain("sleep 10");
 			expect(secondFrame).not.toBe(firstFrame);
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	// A spinner tick must repaint the glyph WITHOUT invalidating the mounted
+	// renderer: renderers cache their derived lines per instance (bash/eval keep
+	// the split/style/truncate pass for the whole stored output), so cascading
+	// invalidate() on every 80ms tick re-derived a multi-megabyte result 12.5
+	// times a second.
+	it("advances the spinner without invalidating the mounted renderer's cache", () => {
+		const requestRender = vi.fn();
+		const requestComponentRender = vi.fn();
+		let invalidateCalls = 0;
+		const tool = {
+			name: "custom_spin",
+			label: "Custom",
+			renderResult(_result: unknown, options: { spinnerFrame?: number }): Component {
+				return {
+					render: (): readonly string[] => [`glyph:${options.spinnerFrame ?? "-"}`],
+					invalidate: (): void => {
+						invalidateCalls++;
+					},
+				};
+			},
+		};
+		const component = new ToolExecutionComponent(
+			"custom_spin",
+			{},
+			{},
+			tool as unknown as AgentTool,
+			{ requestRender, requestComponentRender } as unknown as TUI,
+			process.cwd(),
+		);
+
+		try {
+			component.updateResult({ content: [{ type: "text", text: "partial" }] }, true);
+			component.tickSpinner(0);
+			const firstFrame = stripVTControlCharacters(component.render(80).join("\n"));
+			component.tickSpinner(1);
+			const secondFrame = stripVTControlCharacters(component.render(80).join("\n"));
+
+			expect(firstFrame).toContain("glyph:0");
+			expect(secondFrame).toContain("glyph:1");
+			expect(invalidateCalls).toBe(0);
 		} finally {
 			component.stopAnimation();
 		}
