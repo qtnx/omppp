@@ -384,9 +384,7 @@ async function runStepWithFakeGh(script: string, ghBody: string, env: Record<str
 const nativeArtifactKeys = [
 	"linux-x64-baseline",
 	"linux-x64-modern",
-	"linux-arm64",
 	"linux-musl-x64-baseline",
-	"linux-musl-arm64",
 	"darwin-x64-baseline",
 	"darwin-arm64",
 	"win32-x64-baseline",
