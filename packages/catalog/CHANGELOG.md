@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed SuperGrok (xai-oauth) Grok 4.7 missing its thinking-level options and reporting null context limits; it now carries the documented 500K window and low/medium/high/xhigh ladder ([#12697](https://github.com/can1357/oh-my-pi/issues/12697)).
+- Fixed SuperGrok (xai-oauth) Grok 4.7 missing its thinking-level options and reporting null context limits; it now carries the documented 500K window and low/medium/high/xhigh ladder ([#12697](https://github.com/can1357/oh-my-pi/issues/12697), [#201](https://github.com/qtnx/omppp/pull/201) by [@eggpeat](https://github.com/eggpeat)).
 
 ### Added
 
