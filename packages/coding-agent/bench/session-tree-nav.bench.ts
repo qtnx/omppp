@@ -7,8 +7,8 @@
  * Run: bun packages/coding-agent/bench/session-tree-nav.bench.ts
  */
 
-import type { SessionEntry } from "../src/session/session-manager";
-import { buildSessionContext } from "../src/session/session-manager";
+import { buildSessionContext } from "../src/session/session-context";
+import type { SessionEntry } from "../src/session/session-entries";
 
 // ─── Synthetic session ───────────────────────────────────────────────────────
 

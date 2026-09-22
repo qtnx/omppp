@@ -13,6 +13,7 @@
 - Assistant messages with many thinking/text blocks update in one pass instead of rescanning later blocks for every thinking block.
 - Messages that scroll into terminal history drop their streaming render caches, cutting retained memory for long sessions (~33% less heap for 2000 committed 20 KB blocks).
 - Streamed `message_update` events are no longer queued for extensions when no extension listens for them.
+- The shared LSP daemon encodes each diagnostics message once instead of cloning it twice, and drops cached diagnostics when a document is closed (1000 publishes × 500 diagnostics: ~3.1 s → ~1.1 s).
 
 ### Added
 

@@ -441,7 +441,15 @@ export class LspMuxServer {
 		if (!uri) return;
 		session.openUris.delete(uri);
 		server.documents.delete(uri);
+		if (!this.#uriOpenElsewhere(server, session, uri)) server.diagnostics.delete(uri);
 		await this.#writeServer(server, message);
+	}
+
+	#uriOpenElsewhere(server: ServerInstance, exclude: Session, uri: string): boolean {
+		for (const other of server.sessions) {
+			if (other !== exclude && other.openUris.has(uri)) return true;
+		}
+		return false;
 	}
 
 	#spawnServer(key: string, params: MuxConnectParams): ServerInstance {
@@ -495,8 +503,9 @@ export class LspMuxServer {
 		if (message.method === "textDocument/publishDiagnostics") {
 			const params = parseDiagnostics(message.params);
 			if (!params) return;
-			server.diagnostics.set(params.uri, cloneParams(params));
-			for (const session of server.sessions) if (session.initialized) this.#sendDiagnostics(session, params);
+			server.diagnostics.set(params.uri, params);
+			const data = frame({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params });
+			for (const session of server.sessions) if (session.initialized) this.#writeSession(session, data);
 			return;
 		}
 		if (message.method === "$/progress") {
@@ -506,7 +515,8 @@ export class LspMuxServer {
 				else if (params.value?.kind === "end") server.progress.delete(params.token);
 			}
 		}
-		for (const session of server.sessions) if (session.initialized) this.#sendSession(session, message);
+		const data = frame(message);
+		for (const session of server.sessions) if (session.initialized) this.#writeSession(session, data);
 	}
 
 	#handleServerResponse(server: ServerInstance, message: LspJsonRpcResponse): void {
@@ -604,7 +614,7 @@ export class LspMuxServer {
 		this.#sendSession(session, {
 			jsonrpc: "2.0",
 			method: "textDocument/publishDiagnostics",
-			params: cloneParams(params),
+			params,
 		});
 	}
 
@@ -625,7 +635,11 @@ export class LspMuxServer {
 	}
 
 	#sendSession(session: Session, message: RpcMessage): void {
-		if (!session.closed && !session.socket.destroyed) session.socket.write(frame(message));
+		this.#writeSession(session, frame(message));
+	}
+
+	#writeSession(session: Session, data: string): void {
+		if (!session.closed && !session.socket.destroyed) session.socket.write(data);
 	}
 
 	#writeServer(server: ServerInstance, message: RpcMessage): Promise<void> {
