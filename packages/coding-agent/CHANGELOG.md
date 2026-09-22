@@ -2,27 +2,6 @@
 
 ## [Unreleased]
 
-## [1.10.5] - 2026-09-21
-
-### Added
-
-- Added `jev_scout` to locate source with bounded follow-up searches, including methods inside large classes. By default it shares declaration names and locations rather than source bodies; broader source sharing remains an explicit setting.
-- Subagents (`scout`, `explore`, `plan`, `reviewer`, `qa`, `tester`, `security-reviewer`, `librarian`, UI specialists) can now use `jev_scout`; read-only agents stay read-only.
-- TypeSafe assist for delegation (`task.jevAssist`, on by default): picks the subagent when none is named, flags briefs missing anchors/checks/scope, hands each subagent the relevant slice of the parent conversation inline, labels subagent questions (fact, decision, user-only, status), marks results whose report lacks command evidence, and drops reviewer findings without a concrete failure scenario.
-- Added an autonomous completion check (`autonomy.stopGate`) that sends premature questions and partial reports back for continued work while preserving user holds, approvals, cancellation, budgets, and plan-only requests.
-
-### Changed
-
-- A new request after a 5-minute idle gap is checked for a topic change, and unrelated earlier context is compacted before the request starts (previously a 30-minute gap and a 30K-token floor).
-
-### Fixed
-
-- Uncertain review judgments no longer delete existing findings or change their priorities.
-- An unreachable signals endpoint is skipped for a minute after a failed attempt instead of delaying each request that consults it.
-- Subagents receive ordered, deduplicated context and a full-snapshot fallback when required material cannot fit safely in an excerpt.
-- An agent named at batch level on a `task` call is no longer overridden by automatic routing; Jev picks an agent only when neither the item nor the batch named one.
-- Open tasks continue to block a premature stop when a completion check is inconclusive or its audit allowance is already spent; an unavailable check leaves the turn unchanged.
-
 ## [18.2.3] - 2026-09-17
 
 ### Breaking Changes
@@ -1707,6 +1686,27 @@
 - `/retry` and `/handoff` now work over ACP, so editor clients (Zed) list them and can run them instead of sending the text to the model.
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
+
+## [1.10.5] - 2026-09-21
+
+### Added
+
+- Added `jev_scout` to locate source with bounded follow-up searches, including methods inside large classes. By default it shares declaration names and locations rather than source bodies; broader source sharing remains an explicit setting.
+- Subagents (`scout`, `explore`, `plan`, `reviewer`, `qa`, `tester`, `security-reviewer`, `librarian`, UI specialists) can now use `jev_scout`; read-only agents stay read-only.
+- TypeSafe assist for delegation (`task.jevAssist`, on by default): picks the subagent when none is named, flags briefs missing anchors/checks/scope, hands each subagent the relevant slice of the parent conversation inline, labels subagent questions (fact, decision, user-only, status), marks results whose report lacks command evidence, and drops reviewer findings without a concrete failure scenario.
+- Added an autonomous completion check (`autonomy.stopGate`) that sends premature questions and partial reports back for continued work while preserving user holds, approvals, cancellation, budgets, and plan-only requests.
+
+### Changed
+
+- A new request after a 5-minute idle gap is checked for a topic change, and unrelated earlier context is compacted before the request starts (previously a 30-minute gap and a 30K-token floor).
+
+### Fixed
+
+- Uncertain review judgments no longer delete existing findings or change their priorities.
+- An unreachable signals endpoint is skipped for a minute after a failed attempt instead of delaying each request that consults it.
+- Subagents receive ordered, deduplicated context and a full-snapshot fallback when required material cannot fit safely in an excerpt.
+- An agent named at batch level on a `task` call is no longer overridden by automatic routing; Jev picks an agent only when neither the item nor the batch named one.
+- Open tasks continue to block a premature stop when a completion check is inconclusive or its audit allowance is already spent; an unavailable check leaves the turn unchanged.
 
 ## [1.10.4] - 2026-09-20
 

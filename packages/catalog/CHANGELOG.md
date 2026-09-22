@@ -2,15 +2,16 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Fixed SuperGrok (xai-oauth) Grok 4.7 missing its thinking-level options and reporting null context limits; it now carries the documented 500K window and low/medium/high/xhigh ladder ([#12697](https://github.com/can1357/oh-my-pi/issues/12697), [#201](https://github.com/qtnx/omppp/pull/201) by [@eggpeat](https://github.com/eggpeat)).
+## [1.11.0] - 2026-09-22
 
 ### Added
 
 - Added the RunAnywhere provider (`inference.runanywhere.ai`): OpenAI-compatible discovery of its GLM-5.3 Flash, Qwen3.8 27B, and Gemma 4 deployments with measured reasoning-effort ladders, published tariff pricing including cached-token rates, and the endpoint's non-standard input/output limit fields mapped to context and output limits.
 - Added Claude Opus 5.5 (`claude-opus-5-5`) to the Anthropic catalog at $4/$20 per MTok with $0.20 cache reads and $5 cache writes.
 
+### Fixed
+
+- Fixed SuperGrok (xai-oauth) Grok 4.7 missing its thinking-level options and reporting null context limits; it now carries the documented 500K window and low/medium/high/xhigh ladder ([#12697](https://github.com/can1357/oh-my-pi/issues/12697), [#201](https://github.com/qtnx/omppp/pull/201) by [@eggpeat](https://github.com/eggpeat)).
 
 ## [18.2.3] - 2026-09-17
 
