@@ -57,6 +57,7 @@ export type KnownProvider =
 	| "openrouter"
 	| "qianfan"
 	| "qwen-portal"
+	| "runanywhere"
 	| "sakana"
 	| "siliconflow"
 	| "siliconflow-cn"

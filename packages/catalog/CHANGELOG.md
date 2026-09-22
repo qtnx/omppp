@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the RunAnywhere provider (`inference.runanywhere.ai`): OpenAI-compatible discovery of its GLM-5.3 Flash, Qwen3.8 27B, and Gemma 4 deployments with measured reasoning-effort ladders, published tariff pricing including cached-token rates, and the endpoint's non-standard input/output limit fields mapped to context and output limits.
+
 ## [18.2.3] - 2026-09-17
 
 ### Added
