@@ -9,9 +9,11 @@
  * Example: bun scripts/release.ts minor
  */
 import { $, Glob } from "bun";
+import { versionSentinelFor } from "../packages/natives/native/version-sentinel.js";
 import { compareVersions } from "../packages/utils/src/version.ts";
 import { runChangelogFixer } from "./fix-changelogs";
 import { generateNixBunDeps, resolveNixBunDepsGenerator } from "./gen-nix-bun";
+import { NATIVE_INPUT_PATHS } from "./native-source-hash";
 
 const changelogGlob = new Glob("packages/*/CHANGELOG.md");
 const packageJsonGlob = new Glob("packages/*/package.json");
@@ -37,6 +39,20 @@ export function validateExplicitVersion(version: string): string | null {
 
 function git(args: readonly string[]) {
 	return $`git -c core.fsmonitor=false -c core.untrackedCache=false -c fetch.pruneTags=false ${args}`;
+}
+
+/**
+ * Nearest reachable release tag (`v<major>.<minor>.<patch>`), or `null` when
+ * HEAD has no such tag yet. Used to decide whether the native sources changed
+ * since the previous release — `git describe` only considers tags reachable
+ * from HEAD, so a merged-in upstream tag yields a non-empty diff at worst
+ * (rebuild), never a missed native change.
+ */
+async function previousReleaseTag(): Promise<string | null> {
+	const result = await git(["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"]).quiet().nothrow();
+	if (result.exitCode !== 0) return null;
+	const tag = result.text().trim();
+	return tag.length > 0 ? tag : null;
 }
 
 function githubRepositoryFromOriginUrl(originUrl: string): string {
@@ -361,32 +377,60 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	}
 	console.log();
 
-	// 3b. Rename the pi-natives version sentinel so any `.node` left on disk from
-	// a previous release physically cannot expose the symbol the new `index.js`
-	// expects. The JS loader derives `VERSION_SENTINEL_EXPORT` from `package.json`
-	// at runtime, so the only thing that has to move on the Rust side is the
-	// `js_name = "__piNativesV…"` literal. `gen-enums.ts` regenerates the matching
-	// entries in `packages/natives/native/{index.d.ts,index.js}` on the next napi
-	// build, but bump them here too so the committed surface tracks the version
-	// without waiting for a local rebuild on the release host.
-	console.log(`Bumping pi-natives version sentinel to v${version}…`);
-	const sentinelJsId = version.replace(/[^A-Za-z0-9]/g, "_");
-	const sentinelName = `__piNativesV${sentinelJsId}`;
-	const sentinelFiles = [
-		"crates/pi-natives/src/lib.rs",
-		"packages/natives/native/index.d.ts",
-		"packages/natives/native/index.js",
-	];
-	await $`sd '__piNativesV[A-Za-z0-9_]+' ${sentinelName} ${sentinelFiles}`;
-	const libRs = await Bun.file("crates/pi-natives/src/lib.rs").text();
-	if (!libRs.includes(`js_name = "${sentinelName}"`)) {
-		console.error(
-			`Error: pi-natives version sentinel did not move to ${sentinelName} in crates/pi-natives/src/lib.rs. ` +
-				"The `__piNativesV…` literal may have been removed or renamed; restore it before releasing.",
-		);
-		process.exit(1);
+	// 3b. Native ABI sentinel. The sentinel names the *native ABI version*: the
+	// release version at which the native inputs last changed. It moves only when
+	// `NATIVE_INPUT_PATHS` differ from the previous release tag, so a release that
+	// leaves the native sources alone reuses the `.node` artifacts a main push
+	// already built for the identical sources (CI keys them on
+	// `scripts/native-source-hash.ts`). The comparison is commit-to-commit
+	// (`<prevTag> HEAD`), so the version writes above can never count as native
+	// changes. The JS loader derives the expected export from
+	// `NATIVE_ABI_VERSION` (`packages/natives/native/version-sentinel.js`), so
+	// that constant and the Rust `js_name` literal move together.
+	// `gen-enums.ts` regenerates the matching entries in
+	// `packages/natives/native/{index.d.ts,index.js}` on the next napi build, but
+	// bump them here too so the committed surface tracks the sentinel without
+	// waiting for a local rebuild on the release host.
+	const previousTag = await previousReleaseTag();
+	let nativeInputsChanged = true;
+	if (previousTag) {
+		const nativeDiff = await git(["diff", "--quiet", previousTag, "HEAD", "--", ...NATIVE_INPUT_PATHS])
+			.quiet()
+			.nothrow();
+		nativeInputsChanged = nativeDiff.exitCode !== 0;
 	}
-	console.log(`  sentinel: ${sentinelName}\n`);
+	if (!nativeInputsChanged) {
+		console.log(`Native inputs unchanged since ${previousTag} — keeping the pi-natives ABI sentinel\n`);
+	} else {
+		console.log(`Bumping pi-natives native ABI sentinel to v${version}…`);
+		const sentinelName = versionSentinelFor(version);
+		const sentinelFiles = [
+			"crates/pi-natives/src/lib.rs",
+			"packages/natives/native/index.d.ts",
+			"packages/natives/native/index.js",
+		];
+		const abiVersionSource = "packages/natives/native/version-sentinel.js";
+		const abiVersionDeclaration = `export const NATIVE_ABI_VERSION = "${version}"`;
+		await $`sd '__piNativesV[A-Za-z0-9_]+' ${sentinelName} ${sentinelFiles}`;
+		await $`sd 'export const NATIVE_ABI_VERSION = "[^"]+"' ${abiVersionDeclaration} ${abiVersionSource}`;
+		const libRs = await Bun.file("crates/pi-natives/src/lib.rs").text();
+		if (!libRs.includes(`js_name = "${sentinelName}"`)) {
+			console.error(
+				`Error: pi-natives version sentinel did not move to ${sentinelName} in crates/pi-natives/src/lib.rs. ` +
+					"The `__piNativesV…` literal may have been removed or renamed; restore it before releasing.",
+			);
+			process.exit(1);
+		}
+		const abiVersionJs = await Bun.file(abiVersionSource).text();
+		if (!abiVersionJs.includes(abiVersionDeclaration)) {
+			console.error(
+				`Error: NATIVE_ABI_VERSION did not move to ${version} in ${abiVersionSource}. ` +
+					"The declaration may have been removed or renamed; restore it before releasing.",
+			);
+			process.exit(1);
+		}
+		console.log(`  sentinel: ${sentinelName}\n`);
+	}
 
 	// 4. Regenerate lockfiles and generated configs
 	console.log("Regenerating lockfiles...");

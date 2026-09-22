@@ -143,11 +143,11 @@ jobs:
                 echo "channel=$channel"
               } >> "$GITHUB_OUTPUT"
 
-   # Compute a stable hash of every input that affects the native cdylib output,
-   # then look for a trusted completed push run that already uploaded the full
-   # matching artifact set. A failed or cancelled workflow may still have
-   # completed native jobs, so candidates are filtered by event and ancestry
-   # rather than overall workflow conclusion.
+   # Compute a stable hash of every input that affects the native cdylib output
+   # (scripts/native-source-hash.ts normalizes release version bumps away), then
+   # resolve each matching artifact from a trusted push run. A failed or
+   # cancelled workflow may still have completed native jobs, so candidates are
+   # filtered by event and ancestry rather than overall workflow conclusion.
    native_artifact_lookup:
       name: Look up cached native artifacts
       runs-on: ubuntu-22.04
@@ -167,103 +167,137 @@ jobs:
          win32-x64-baseline-run-id: ${{ steps.find.outputs.win32-x64-baseline-run-id }}
       steps:
          - uses: actions/checkout@v4
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+           with:
+              bun-version: "1.4"
          - name: Compute native source hash
            id: compute
            shell: bash
            run: |
-              source_hash=$(find crates bazel \
-                      Cargo.toml Cargo.lock rust-toolchain.toml \
-                      BUILD.bazel MODULE.bazel MODULE.bazel.lock \
-                      .bazelrc .bazelignore .bazelversion \
-                      packages/natives/scripts packages/natives/package.json \
-                      .github/actions/bazel-cache .github/actions/build-native \
-                      scripts/bazel-natives.ts scripts/ci-build-native.ts scripts/host-detect.ts \
-                      -type f -print0 \
-                    | sort -z \
-                    | xargs -0 sha256sum \
-                    | sha256sum \
-                    | cut -c1-16)
+              source_hash=$(bun scripts/native-source-hash.ts)
               echo "source-hash=$source_hash" >> "$GITHUB_OUTPUT"
               echo "Native source hash: $source_hash"
-         - name: Find prior trusted push build with matching native artifacts
+         # Query the artifacts API by exact name (8 calls) instead of walking
+         # the last 100 runs; this job used to cost ~80s of every run.
+         - name: Find trusted push builds with matching native artifacts
            id: find
            env:
               GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              REPO: ${{ github.repository }}
            shell: bash
            run: |
               set -euo pipefail
               hash="${{ steps.compute.outputs.source-hash }}"
-              required=(
-                "pi-natives-linux-x64-baseline-h${hash}"
-                "pi-natives-linux-x64-modern-h${hash}"
-                "pi-natives-linux-arm64-h${hash}"
-                "pi-natives-linux-musl-x64-baseline-h${hash}"
-                "pi-natives-linux-musl-arm64-h${hash}"
-                "pi-natives-darwin-x64-baseline-h${hash}"
-                "pi-natives-darwin-arm64-h${hash}"
-                "pi-natives-win32-x64-baseline-h${hash}"
-              )
-              declare -A artifact_run_ids=()
-              for artifact in "${required[@]}"; do
-                artifact_run_ids["$artifact"]=""
-              done
-              # Resolve each exact artifact independently. A failed overall CI run
-              # may still contain successful native jobs, and different trusted
-              # runs may carry different members of the same source-hash set.
-              # `cross-platform-run-id` remains a same-run completeness canary
-              # used only to skip redundant native jobs on ordinary main pushes.
-              cross_platform_run_id=""
-
-              # An artifact is trusted only when its completed push run's exact
-              # head SHA is reachable from the current origin/main history.
-              if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-                git fetch --no-tags --unshallow origin \
-                  +refs/heads/main:refs/remotes/origin/main
-              else
-                git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-              fi
-
-              while IFS=$'\t' read -r candidate head_sha; do
-                if [ -z "$candidate" ] || [ -z "$head_sha" ]; then
-                  continue
-                fi
-                if ! git merge-base --is-ancestor "$head_sha" origin/main; then
-                  echo "Skipping untrusted run $candidate: $head_sha is not an origin/main ancestor."
-                  continue
-                fi
-                names=$(gh api "/repos/${{ github.repository }}/actions/runs/$candidate/artifacts?per_page=100" \
-                  --jq '.artifacts[] | select(.expired == false) | .name')
-                all_found=true
-                for artifact in "${required[@]}"; do
-                  if echo "$names" | grep -qFx "$artifact"; then
-                    if [ -z "${artifact_run_ids[$artifact]}" ]; then
-                      artifact_run_ids["$artifact"]="$candidate"
+              keys=(linux-x64-baseline linux-x64-modern linux-arm64 linux-musl-x64-baseline linux-musl-arm64 darwin-x64-baseline darwin-arm64 win32-x64-baseline)
+              declare -A trusted=()
+              # An artifact is trusted only when it came from a CI push run whose
+              # exact head SHA is reachable from main.
+              is_trusted() {
+                local run_id="$1" sha="$2"
+                if [ -z "${trusted[$run_id]+x}" ]; then
+                  trusted[$run_id]=false
+                  local run_meta status
+                  run_meta=$(gh api "repos/$REPO/actions/runs/$run_id" --jq '[.event, .path] | @tsv' || true)
+                  if [ "$run_meta" = $'push\t.github/workflows/ci.yml' ]; then
+                    status=$(gh api "repos/$REPO/compare/$sha...main" --jq .status || true)
+                    if [ "$status" = ahead ] || [ "$status" = identical ]; then
+                      trusted[$run_id]=true
                     fi
-                  else
-                    all_found=false
                   fi
-                done
-                if $all_found && [ -z "$cross_platform_run_id" ]; then
-                  cross_platform_run_id="$candidate"
                 fi
-              done < <(gh run list \
-                --workflow=ci.yml --status=completed --event=push --limit=100 \
-                --json databaseId,headSha --jq '.[] | [.databaseId, .headSha] | @tsv')
-
-              for artifact in "${required[@]}"; do
-                artifact_key="${artifact#pi-natives-}"
-                artifact_key="${artifact_key%-h${hash}}"
-                echo "${artifact_key}-run-id=${artifact_run_ids[$artifact]}" >> "$GITHUB_OUTPUT"
+                [ "${trusted[$run_id]}" = true ]
+              }
+              declare -A run_ids=()
+              declare -A run_hits=()
+              for key in "${keys[@]}"; do
+                run_ids[$key]=""
+                while IFS=$'\t' read -r run_id sha; do
+                  [ -n "$run_id" ] || continue
+                  if is_trusted "$run_id" "$sha"; then
+                    [ -n "${run_ids[$key]}" ] || run_ids[$key]="$run_id"
+                    run_hits[$run_id]=$(( ${run_hits[$run_id]:-0} + 1 ))
+                  fi
+                done < <(gh api "repos/$REPO/actions/artifacts?name=pi-natives-${key}-h${hash}&per_page=100" \
+                  --jq '.artifacts[] | select(.expired == false) | [.workflow_run.id, .workflow_run.head_sha] | @tsv')
+                echo "${key}-run-id=${run_ids[$key]}" >> "$GITHUB_OUTPUT"
+                echo "  pi-natives-${key}-h${hash}: ${run_ids[$key]:-rebuild}"
               done
-              echo "linux-x64-run-id=${artifact_run_ids[pi-natives-linux-x64-baseline-h${hash}]}" >> "$GITHUB_OUTPUT"
+              echo "linux-x64-run-id=${run_ids[linux-x64-baseline]}" >> "$GITHUB_OUTPUT"
+              # Same-run completeness canary: skips redundant native jobs on
+              # ordinary main pushes when one run already holds the full set.
+              cross_platform_run_id=""
+              for run_id in "${!run_hits[@]}"; do
+                if [ "${run_hits[$run_id]}" -eq "${#keys[@]}" ]; then cross_platform_run_id="$run_id"; break; fi
+              done
               echo "cross-platform-run-id=$cross_platform_run_id" >> "$GITHUB_OUTPUT"
-              echo "Native artifact run IDs:"
-              for artifact in "${required[@]}"; do
-                echo "  $artifact: ${artifact_run_ids[$artifact]:-rebuild}"
-              done
-              if [ -n "$cross_platform_run_id" ]; then
-                echo "Reusing the existing cross-platform cache warm run $cross_platform_run_id."
-              fi
+
+   # Fast release path: a release tag is the release-bump commit on top of a
+   # main commit that already ran the full test matrix. When the newest main
+   # CI run with every test job green is an ancestor of the tag and the diff
+   # between them only touches release-bump files, the TS test jobs are
+   # skipped for the tag run instead of re-running ~5 minutes of identical
+   # tests. Any other diff (or no green base) falls back to the full matrix.
+   release_base:
+      name: Verify release base passed main CI
+      runs-on: ubuntu-22.04
+      needs: [release_metadata]
+      if: ${{ needs.release_metadata.outputs.is-release == 'true' }}
+      timeout-minutes: 5
+      outputs:
+         tested: ${{ steps.base.outputs.tested }}
+      steps:
+         - name: Find green main CI base
+           id: base
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              REPO: ${{ github.repository }}
+           shell: bash
+           run: |
+              set -euo pipefail
+              required=(
+                "Lint, type check & web build"
+                "Test TS workspace fast"
+                "Test coding-agent singleton/global-state (TS)"
+                "Test TS native/integration packages"
+                "Test coding-agent UI/TUI (TS)"
+                "Test coding-agent runtime/session (TS)"
+                "Test coding-agent native/unit (TS)"
+                "Test CLI smoke (TS)"
+                "Install method smoke tests"
+              )
+              # Files a release bump rewrites (versions, lockfiles, changelogs,
+              # native sentinel). Anything else needs a fresh test run.
+              allowed='^(package\.json|bun\.lock|Cargo\.toml|Cargo\.lock|CHANGELOG\.md|packages/[^/]+/package\.json|packages/[^/]+/CHANGELOG\.md|crates/pi-natives/src/lib\.rs|packages/natives/native/(index\.js|index\.d\.ts|version-sentinel\.js))$'
+              tested=false
+              while IFS=$'\t' read -r run_id base_sha; do
+                [ -n "$run_id" ] || continue
+                status=$(gh api "repos/$REPO/compare/$base_sha...$GITHUB_SHA" --jq .status || true)
+                if [ "$status" != ahead ] && [ "$status" != identical ]; then continue; fi
+                # Companion bump runs and partial runs skip tests; require every
+                # test job of this run (latest attempt) to have passed.
+                green=$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" \
+                  --jq '[.jobs[] | select(.conclusion == "success") | .name] | join("\n")')
+                missing=0
+                for job in "${required[@]}"; do
+                  grep -qFx "$job" <<<"$green" || missing=1
+                done
+                [ "$missing" = 0 ] || continue
+                # Newest green ancestor decides; older ones only diverge further.
+                # compare caps `files` at 300; a capped list fails the allowlist.
+                changed=$(gh api "repos/$REPO/compare/$base_sha...$GITHUB_SHA" \
+                  --jq 'if (.files | length) >= 300 then "<truncated file list>" else .files[].filename end')
+                echo "Green main CI base: run $run_id at $base_sha"
+                if [ -z "$changed" ] || ! grep -vqE "$allowed" <<<"$changed"; then
+                  tested=true
+                else
+                  echo "Diff since base touches non-release files; running the full test matrix:"
+                  grep -vE "$allowed" <<<"$changed"
+                fi
+                break
+              done < <(gh run list --repo "$REPO" --workflow=ci.yml --branch=main --event=push --status=completed --limit=30 \
+                --json databaseId,headSha --jq '.[] | [.databaseId, .headSha] | @tsv')
+              echo "tested=$tested" >> "$GITHUB_OUTPUT"
+              echo "Release tests already covered by main CI: $tested"
 
    # Fast lint, type check, and browser bundle. Tag releases skip this job:
    # the tagged tree already passed on the main push, and a hung `tsgo` here
@@ -490,7 +524,9 @@ jobs:
             include:
                - { os: macos-15-intel, platform: darwin, arch: x64, variant: baseline }
                - { os: macos-14, platform: darwin, arch: arm64 }
-      runs-on: ${{ matrix.os }}
+      # Reusing a trusted artifact only downloads and re-uploads it; do that on
+      # a Linux runner instead of waiting for a macOS machine.
+      runs-on: ${{ ((matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id != '') || (matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.darwin-arm64-run-id != '')) && 'ubuntu-22.04' || matrix.os }}
       steps:
          - uses: actions/checkout@v4
          - name: Download trusted macOS native artifact
@@ -520,8 +556,8 @@ jobs:
    test_workspace:
       name: Test TS workspace fast
       runs-on: ubuntu-22.04
-      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, release_base, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' && needs.release_base.outputs.tested != 'true' }}
       timeout-minutes: 60
       steps:
          - uses: actions/checkout@v4
@@ -557,8 +593,8 @@ jobs:
    test_coding_agent_singleton:
       name: Test coding-agent singleton/global-state (TS)
       runs-on: ubuntu-22.04
-      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, release_base, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' && needs.release_base.outputs.tested != 'true' }}
       timeout-minutes: 20
       steps:
          - uses: actions/checkout@v4
@@ -589,8 +625,8 @@ jobs:
    test_ts_native:
       name: Test TS native/integration packages
       runs-on: ubuntu-22.04
-      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, release_base, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' && needs.release_base.outputs.tested != 'true' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -622,8 +658,8 @@ jobs:
    test_coding_agent_ui:
       name: Test coding-agent UI/TUI (TS)
       runs-on: ubuntu-22.04
-      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, release_base, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' && needs.release_base.outputs.tested != 'true' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -655,8 +691,8 @@ jobs:
    test_coding_agent_runtime:
       name: Test coding-agent runtime/session (TS)
       runs-on: ubuntu-22.04
-      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, release_base, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' && needs.release_base.outputs.tested != 'true' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -689,8 +725,8 @@ jobs:
    test_coding_agent_native:
       name: Test coding-agent native/unit (TS)
       runs-on: ubuntu-22.04
-      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, release_base, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' && needs.release_base.outputs.tested != 'true' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -723,8 +759,8 @@ jobs:
    test_smoke:
       name: Test CLI smoke (TS)
       runs-on: ubuntu-22.04
-      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, release_base, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' && needs.release_base.outputs.tested != 'true' }}
       timeout-minutes: 25
       steps:
          - uses: actions/checkout@v4
@@ -754,8 +790,8 @@ jobs:
    install_methods:
       name: Install method smoke tests
       runs-on: ubuntu-22.04
-      needs: [release_metadata, native_linux_x64, native_artifact_lookup]
-      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' }}
+      needs: [release_metadata, release_base, native_linux_x64, native_artifact_lookup]
+      if: ${{ needs.release_metadata.outputs.is-companion != 'true' && !cancelled() && needs.native_linux_x64.result != 'failure' && needs.release_base.outputs.tested != 'true' }}
       steps:
          - uses: actions/checkout@v4
          - uses: ./.github/actions/setup-system-deps
@@ -809,17 +845,18 @@ jobs:
          needs.native_cross_platform_kata.result == 'success' &&
          needs.native_cross_platform_win32.result == 'success' &&
          needs.native_cross_platform_macos.result == 'success' &&
-         needs.test_workspace.result == 'success' &&
-         needs.test_coding_agent_singleton.result == 'success' &&
-         needs.test_ts_native.result == 'success' &&
-         needs.test_coding_agent_ui.result == 'success' &&
-         needs.test_coding_agent_runtime.result == 'success' &&
-         needs.test_coding_agent_native.result == 'success' &&
-         needs.test_smoke.result == 'success' &&
+         (needs.release_base.outputs.tested == 'true' || (
+            needs.test_workspace.result == 'success' &&
+            needs.test_coding_agent_singleton.result == 'success' &&
+            needs.test_ts_native.result == 'success' &&
+            needs.test_coding_agent_ui.result == 'success' &&
+            needs.test_coding_agent_runtime.result == 'success' &&
+            needs.test_coding_agent_native.result == 'success' &&
+            needs.test_smoke.result == 'success' &&
+            needs.install_methods.result == 'success')) &&
          (needs.check.result == 'success' || needs.check.result == 'skipped') &&
-         needs.install_methods.result == 'success' &&
          needs.security.result == 'success' }}
-      needs: [release_metadata, check, native_linux_x64, native_linux_x64_modern, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
+      needs: [release_metadata, release_base, check, native_linux_x64, native_linux_x64_modern, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
@@ -834,20 +871,23 @@ jobs:
    release_binary:
       name: "Release binary: ${{ matrix.target_id }}"
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.native_linux_x64.result == 'success' && needs.native_linux_x64_modern.result ==
-         'success' && needs.native_cross_platform_kata.result ==
-         'success' && needs.native_cross_platform_win32.result == 'success' &&
+         needs.native_linux_x64.result == 'success' &&
+         needs.native_linux_x64_modern.result == 'success' &&
+         needs.native_cross_platform_kata.result == 'success' &&
+         needs.native_cross_platform_win32.result == 'success' &&
          needs.native_cross_platform_macos.result == 'success' &&
-         needs.test_workspace.result == 'success' &&
-         needs.test_coding_agent_singleton.result == 'success' &&
-         needs.test_ts_native.result == 'success' &&
-         needs.test_coding_agent_ui.result == 'success' &&
-         needs.test_coding_agent_runtime.result == 'success' &&
-         needs.test_coding_agent_native.result == 'success' &&
-         needs.test_smoke.result == 'success' && (needs.check.result == 'success' || needs.check.result == 'skipped') &&
-         needs.install_methods.result == 'success' &&
+         (needs.release_base.outputs.tested == 'true' || (
+            needs.test_workspace.result == 'success' &&
+            needs.test_coding_agent_singleton.result == 'success' &&
+            needs.test_ts_native.result == 'success' &&
+            needs.test_coding_agent_ui.result == 'success' &&
+            needs.test_coding_agent_runtime.result == 'success' &&
+            needs.test_coding_agent_native.result == 'success' &&
+            needs.test_smoke.result == 'success' &&
+            needs.install_methods.result == 'success')) &&
+         (needs.check.result == 'success' || needs.check.result == 'skipped') &&
          needs.security.result == 'success' }}
-      needs: [release_metadata, check, native_linux_x64, native_linux_x64_modern, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
+      needs: [release_metadata, release_base, check, native_linux_x64, native_linux_x64_modern, native_cross_platform_kata, native_cross_platform_win32, native_cross_platform_macos, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods, security, native_artifact_lookup]
       strategy:
          fail-fast: false
          matrix:
@@ -1055,7 +1095,7 @@ jobs:
            working-directory: packages/coding-agent/binaries
            run: sha256sum ompx-* > SHA256SUMS
          # SHA256SUMS.txt covers every uploaded release asset, while the
-         # in-directory SHA256SUMS remains for the draft verification job.
+         # in-directory SHA256SUMS keeps the per-binary checksum asset.
          - name: Generate release asset checksums
            run: |
               bun run ci:release:checksums SHA256SUMS.txt \
@@ -1080,39 +1120,11 @@ jobs:
               draft: true
 
 
-   release_github_verify:
-      name: Verify published release (macOS)
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.release_github.result == 'success' }}
-      needs: [release_metadata, release_github]
-      runs-on: macos-14
-      permissions:
-         # Draft releases are invisible to a read-only GITHUB_TOKEN, so
-         # `gh release download` on the draft fails with "release not found".
-         # Reading a draft needs push access; the job still only downloads.
-         contents: write
-      steps:
-         - name: Download and verify draft release assets
-           env:
-              GH_TOKEN: ${{ github.token }}
-           run: |
-              gh release download "${{ needs.release_metadata.outputs.release-tag }}" --repo "${{ github.repository }}" --pattern SHA256SUMS --pattern 'ompx-*'
-              shasum -a 256 --check SHA256SUMS
-              chmod +x ompx-darwin-arm64
-         - name: Verify draft macOS arm64 binary
-           run: |
-              codesign -dv ./ompx-darwin-arm64
-              runtime_dir="$(mktemp -d)"
-              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./ompx-darwin-arm64 --version
-              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" ./ompx-darwin-arm64 --smoke-test
-         - name: Verify draft release stays private until npm publish
-           run: echo "Draft GitHub release verified; publication happens after npm publish."
-
    release-native-leaf-npm:
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.release_github_verify.result == 'success' &&
+         needs.release_github.result == 'success' &&
          !inputs.skip_npm }}
-      needs: [release_metadata, release_github_verify, native_artifact_lookup]
+      needs: [release_metadata, release_github, native_artifact_lookup]
       strategy:
          fail-fast: false
          matrix:
@@ -1175,10 +1187,10 @@ jobs:
       name: Publish to npm
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
          needs.release_binary.result == 'success' &&
-         needs.release_github_verify.result == 'success' &&
+         needs.release_github.result == 'success' &&
          needs['release-native-leaf-npm'].result == 'success' &&
          !inputs.skip_npm }}
-      needs: [release_metadata, release_binary, release_github_verify, native_artifact_lookup, release-native-leaf-npm]
+      needs: [release_metadata, release_binary, release_github, native_artifact_lookup, release-native-leaf-npm]
       runs-on: ubuntu-22.04
       # `id-token: write` lets npm mint the GitHub OIDC token it exchanges for a
       # short-lived publish token (trusted publishing + provenance). When a
@@ -1238,9 +1250,9 @@ jobs:
 
    release-github-publish:
       if: ${{ always() && needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.release_github_verify.result == 'success' &&
+         needs.release_github.result == 'success' &&
          needs.release_npm.result == 'success' }}
-      needs: [release_metadata, release_github_verify, release_npm]
+      needs: [release_metadata, release_github, release_npm]
       runs-on: ubuntu-22.04
       permissions:
          contents: write
@@ -1251,16 +1263,16 @@ jobs:
            run: gh release edit "${{ needs.release_metadata.outputs.release-tag }}" --repo "${{ github.repository }}" --draft=false
 
    # Regenerate the Homebrew tap formula (can1357/homebrew-tap) from the freshly
-   # published release assets and push it. Gated on release_github_verify so the
-   # tap only cuts over to a release whose published binary was verified (matches
-   # how release_npm is gated). No-ops when HOMEBREW_TAP_DEPLOY_KEY is unset, so a
+   # published release assets and push it. Gated on release_github so the
+   # tap only cuts over to a release whose binaries were smoke-tested in
+   # release_binary (matches how release_npm is gated). No-ops when HOMEBREW_TAP_DEPLOY_KEY is unset, so a
    # release never blocks on tap access.
    release_brew:
       name: Update Homebrew tap
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
          needs.release_metadata.outputs.channel != 'canary' &&
-         needs.release_github_verify.result == 'success' }}
-      needs: [release_metadata, release_github_verify]
+         needs.release_github.result == 'success' }}
+      needs: [release_metadata, release_github]
       runs-on: ubuntu-22.04
       env:
          HAS_TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY != '' }}

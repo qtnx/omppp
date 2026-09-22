@@ -6,7 +6,7 @@ import * as path from "node:path";
 import * as zlib from "node:zlib";
 import packageJson from "../package.json" with { type: "json" };
 import { embeddedAddon } from "./embedded-addon.js";
-import { containsVersionSentinel, versionSentinelFor } from "./version-sentinel.js";
+import { containsVersionSentinel, NATIVE_ABI_VERSION, versionSentinelFor } from "./version-sentinel.js";
 
 /**
  * Native addon loader for `@oh-my-pi/pi-natives`.
@@ -713,17 +713,17 @@ export function validateLoadedBindings(ctx, bindings, candidate) {
 	if (residentSentinel && diskHasExpectedSentinel) {
 		const residentVersion = residentSentinel.slice("__piNativesV".length).replace(/_/g, ".");
 		throw new Error(
-			`Loaded ${candidate}, which exposes the @oh-my-pi/pi-natives@${residentVersion} version ` +
-				`sentinel \`${residentSentinel}\` but not the @${ctx.packageVersion} sentinel ` +
-				`\`${ctx.versionSentinelExport}\` this loader expects. omp was upgraded to ` +
-				`${ctx.packageVersion} while this session was running; the ${residentVersion} addon is ` +
+			`Loaded ${candidate}, which exposes the @oh-my-pi/pi-natives@${residentVersion} native ABI ` +
+				`sentinel \`${residentSentinel}\` but not the @${NATIVE_ABI_VERSION} sentinel ` +
+				`\`${ctx.versionSentinelExport}\` this loader expects. omp is running a build whose native ` +
+				`sources changed at ${NATIVE_ABI_VERSION}; the ${residentVersion} addon is ` +
 				"still resident in this process. Disk is already consistent — restart omp to pick up " +
-				`${ctx.packageVersion} (reinstalling changes nothing).`,
+				`${NATIVE_ABI_VERSION} (reinstalling changes nothing).`,
 		);
 	}
 	throw new Error(
-		`Loaded ${candidate} but it does not expose the @oh-my-pi/pi-natives@${ctx.packageVersion} ` +
-			`version sentinel \`${ctx.versionSentinelExport}\`. The .node file on disk is from a different ` +
+		`Loaded ${candidate} but it does not expose the @oh-my-pi/pi-natives@${NATIVE_ABI_VERSION} ` +
+			`native ABI sentinel \`${ctx.versionSentinelExport}\`. The .node file on disk is from a different ` +
 			"release than this loader — reinstall to re-sync.",
 	);
 }
@@ -832,13 +832,15 @@ export function initLoaderContext(overrides = {}) {
 	});
 
 	// Version sentinel emitted by the Rust addon under a `js_name` that encodes
-	// the package version (`__piNativesV{major}_{minor}_{patch}`).
-	// `scripts/release.ts` bumps the name in `crates/pi-natives/src/lib.rs` in
-	// lock-step with the version, so a `.node` from a different release
-	// physically cannot expose the symbol this loader is looking for. That
-	// turns the silent `<sym> is not a function` crash from a Windows
+	// the native ABI version (`__piNativesV{major}_{minor}_{patch}`) — the
+	// release version at which the native inputs last changed, not the package
+	// version. `scripts/release.ts` bumps the name in
+	// `crates/pi-natives/src/lib.rs` in lock-step with `NATIVE_ABI_VERSION`
+	// whenever native sources change, so a `.node` built from different native
+	// sources physically cannot expose the symbol this loader is looking for.
+	// That turns the silent `<sym> is not a function` crash from a Windows
 	// locked-file update into an actionable load-time error.
-	const versionSentinelExport = versionSentinelFor(packageVersion);
+	const versionSentinelExport = versionSentinelFor(NATIVE_ABI_VERSION);
 
 	return {
 		platformTag,

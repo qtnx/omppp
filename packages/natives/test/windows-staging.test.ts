@@ -31,6 +31,7 @@ import {
 	resolveLoaderCandidates,
 	shouldStageNodeModulesAddon,
 } from "../native/loader-state.js";
+import { NATIVE_ABI_VERSION, versionSentinelFor } from "../native/version-sentinel.js";
 import packageJson from "../package.json" with { type: "json" };
 
 const winNodeModulesNativeDir = "C:\\Users\\Admin\\node_modules\\@oh-my-pi\\pi-natives\\native";
@@ -222,15 +223,15 @@ describe("windows native addon staging", () => {
 });
 
 describe("pi-natives version sentinel", () => {
-	it("Rust `js_name` matches the package version", async () => {
-		// The JS loader (`packages/natives/native/index.js`) computes its expected
-		// sentinel from `package.json#version`; if the Rust source falls out of
-		// sync we ship a `.node` that the loader will refuse to use. Pinning the
-		// pairing here catches release-script regressions before they reach CI.
+	it("Rust `js_name` matches NATIVE_ABI_VERSION", async () => {
+		// The JS loader computes its expected sentinel from `NATIVE_ABI_VERSION`
+		// (`packages/natives/native/version-sentinel.js`); if the Rust source
+		// falls out of sync we ship a `.node` that the loader refuses to use.
+		// Pinning the pairing here catches release-script regressions before they
+		// reach CI.
 		const libRs = await Bun.file(path.join(import.meta.dir, "../../../crates/pi-natives/src/lib.rs")).text();
 		const sentinelMatch = libRs.match(/js_name = "(__piNativesV[A-Za-z0-9_]+)"/);
 		expect(sentinelMatch, 'Rust sentinel `js_name = "__piNativesV…"` not found in lib.rs').not.toBeNull();
-		const expected = `__piNativesV${packageJson.version.replace(/[^A-Za-z0-9]/g, "_")}`;
-		expect(sentinelMatch?.[1]).toBe(expected);
+		expect(sentinelMatch?.[1]).toBe(versionSentinelFor(NATIVE_ABI_VERSION));
 	});
 });

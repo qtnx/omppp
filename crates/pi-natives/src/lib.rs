@@ -250,21 +250,25 @@ fn create_windows_napi_tokio_runtime() -> Option<tokio::runtime::Runtime> {
 }
 
 /// Version sentinel — exists solely so the JS loader can prove at load time
-/// that the `.node` file on disk is from the same package release as the
+/// that the `.node` file on disk was built from the same native sources as the
 /// `index.js` ESM wrapper invoking it.
 ///
-/// The `js_name` is bumped by `scripts/release.ts` to match the new
-/// `Cargo.toml` / `package.json` version on every release. The JS loader
-/// computes the expected name from `package.json#version` and refuses to use
-/// a `.node` that doesn't expose it, turning the silent
-/// `<sym> is not a function` crash from a locked-file update (the canonical
-/// Windows `bun install -g` failure mode) into a clear load-time error.
+/// The `js_name` encodes the *native ABI version*: the release version at which
+/// the native inputs last changed (`NATIVE_INPUT_PATHS` in
+/// `scripts/native-source-hash.ts`). `scripts/release.ts` bumps it, together
+/// with `NATIVE_ABI_VERSION` in `packages/natives/native/version-sentinel.js`,
+/// only when those inputs differ from the previous release tag — so a release
+/// that leaves the native sources alone keeps the sentinel (and the `.node`
+/// artifacts CI already built) unchanged. The JS loader computes the expected
+/// name from `NATIVE_ABI_VERSION` and refuses to use a `.node` that doesn't
+/// expose it, turning the silent `<sym> is not a function` crash from a
+/// locked-file update (the canonical Windows `bun install -g` failure mode)
+/// into a clear load-time error.
 ///
 /// Bump policy: `__piNativesV{major}_{minor}_{patch}` — non-alphanumerics in
 /// the version string are mapped to `_` to keep it a valid JS identifier.
-/// MUST stay in sync with `VERSION_SENTINEL_EXPORT` in
-/// `packages/natives/native/index.js` (which derives the name from
-/// `package.json#version`).
+/// MUST stay in sync with `NATIVE_ABI_VERSION` in
+/// `packages/natives/native/version-sentinel.js`.
 #[napi(js_name = "__piNativesV1_11_1")]
 pub const fn pi_natives_version_sentinel() {}
 

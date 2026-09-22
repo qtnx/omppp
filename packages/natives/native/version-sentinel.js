@@ -10,12 +10,24 @@
  */
 
 /**
- * Return the version sentinel exported by an addon built for `packageVersion`.
- * @param {string} packageVersion
+ * Native ABI version — the release version at which the native inputs last
+ * changed (`NATIVE_INPUT_PATHS` in `scripts/native-source-hash.ts`).
+ *
+ * `scripts/release.ts` bumps this together with the `js_name` literal in
+ * `crates/pi-natives/src/lib.rs`, and only when the native inputs differ from
+ * the previous release tag. A release that leaves the native sources alone
+ * therefore keeps the sentinel — and the `.node` artifacts CI already built for
+ * the identical sources stay usable. MUST stay in sync with that `js_name`.
+ */
+export const NATIVE_ABI_VERSION = "1.11.1";
+
+/**
+ * Return the version sentinel exported by an addon built for `abiVersion`.
+ * @param {string} abiVersion
  * @returns {string}
  */
-export function versionSentinelFor(packageVersion) {
-	return `__piNativesV${packageVersion.replace(/[^A-Za-z0-9]/g, "_")}`;
+export function versionSentinelFor(abiVersion) {
+	return `__piNativesV${abiVersion.replace(/[^A-Za-z0-9]/g, "_")}`;
 }
 
 /**

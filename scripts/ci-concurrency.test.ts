@@ -246,7 +246,6 @@ const buildNativeActionYaml = await Bun.file(
 	path.resolve(import.meta.dir, "..", ".github", "actions", "build-native", "action.yml"),
 ).text();
 const sourceHashPlaceholder = "$" + "{{ steps.compute.outputs.source-hash }}";
-const repositoryPlaceholder = "$" + "{{ github.repository }}";
 // The block sits at indent 0 immediately under the top-level `concurrency:`
 // key and uses single-line values, so a flat-line extract is unambiguous.
 // Values are double-quoted in YAML (the GitHub expression contains `: ` from
@@ -329,7 +328,7 @@ function completedNeeds(isCompanion: boolean, isRelease: boolean): GhaWorkflowCt
 	};
 }
 
-function nativeArtifactLookupScript(): string {
+function jobStepScript(jobName: string, stepId: string): string {
 	const parsed = YAML.parse(workflowYaml);
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 		throw new Error("ci.yml root is not a mapping");
@@ -338,161 +337,107 @@ function nativeArtifactLookupScript(): string {
 	if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) {
 		throw new Error("ci.yml jobs is not a mapping");
 	}
-	const lookup = (jobs as Record<string, unknown>).native_artifact_lookup;
-	if (!lookup || typeof lookup !== "object" || Array.isArray(lookup)) {
-		throw new Error("native_artifact_lookup is not a mapping");
-	}
-	const steps = (lookup as Record<string, unknown>).steps;
-	if (!Array.isArray(steps)) throw new Error("native_artifact_lookup.steps is not an array");
-	const findStep = steps.find(step => {
-		if (!step || typeof step !== "object" || Array.isArray(step)) return false;
-		return (step as Record<string, unknown>).id === "find";
+	const job = (jobs as Record<string, unknown>)[jobName];
+	if (!job || typeof job !== "object" || Array.isArray(job)) throw new Error(`${jobName} is not a mapping`);
+	const steps = (job as Record<string, unknown>).steps;
+	if (!Array.isArray(steps)) throw new Error(`${jobName}.steps is not an array`);
+	const step = steps.find(candidate => {
+		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+		return (candidate as Record<string, unknown>).id === stepId;
 	});
-	if (!findStep || typeof findStep !== "object" || Array.isArray(findStep)) {
-		throw new Error("could not find native artifact lookup step");
-	}
-	const run = (findStep as Record<string, unknown>).run;
-	if (typeof run !== "string") throw new Error("native artifact lookup run script is not a string");
+	if (!step || typeof step !== "object" || Array.isArray(step)) throw new Error(`${jobName} has no step ${stepId}`);
+	const run = (step as Record<string, unknown>).run;
+	if (typeof run !== "string") throw new Error(`${jobName}.${stepId} run script is not a string`);
 	return run;
 }
 
-async function nativeLookupRunListArgs(): Promise<string> {
-	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omppp-ci-lookup-"));
+/**
+ * Run a workflow step script against a fake `gh`. `ghBody` is a bash snippet
+ * dispatching on "$*" (the full gh argv); it prints the already-`--jq`-filtered
+ * output the real CLI would produce.
+ */
+async function runStepWithFakeGh(script: string, ghBody: string, env: Record<string, string> = {}): Promise<string> {
+	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omppp-ci-step-"));
 	try {
 		const gh = path.join(tempDir, "gh");
-		const argsPath = path.join(tempDir, "gh-run-args");
 		const outputPath = path.join(tempDir, "github-output");
-		await Bun.write(
-			gh,
-			`#!/usr/bin/env bash
-if [ "$1" = "run" ]; then
-\tprintf '%s\\n' "$@" > "$GH_ARGS"
-\techo 123
-\texit 0
-fi
-if [ "$1" = "api" ]; then
-\texit 0
-fi
-exit 1
-`,
-		);
+		await Bun.write(gh, `#!/usr/bin/env bash\nargs="$*"\n${ghBody}\nexit 1\n`);
 		await fs.chmod(gh, 0o755);
-		const script = nativeArtifactLookupScript()
-			.replace(sourceHashPlaceholder, "testhash")
-			.replace(repositoryPlaceholder, "owner/repo")
-			.replaceAll("gh ", '"$GH_BIN" ');
-		const proc = Bun.spawn(["bash", "-c", script], {
+		const proc = Bun.spawn(["bash", "-c", script.replace(sourceHashPlaceholder, "testhash")], {
 			env: {
 				...Bun.env,
-				GH_ARGS: argsPath,
-				GH_BIN: gh,
+				...env,
+				REPO: "owner/repo",
+				GITHUB_SHA: "tagsha",
 				GITHUB_OUTPUT: outputPath,
 				PATH: `${tempDir}:${Bun.env.PATH ?? ""}`,
 			},
 		});
 		const exitCode = await proc.exited;
-		if (exitCode !== 0) throw new Error(`native lookup script exited ${exitCode}`);
-		// Await the capture before `finally` removes tempDir; returning the
-		// pending `Bun.file(...).text()` races cleanup under parallel load.
-		return await Bun.file(argsPath).text();
+		if (exitCode !== 0) throw new Error(`step script exited ${exitCode}`);
+		return await Bun.file(outputPath).text();
 	} finally {
 		await fs.rm(tempDir, { recursive: true, force: true });
 	}
 }
 
-const nativeArtifactNames = [
-	"pi-natives-linux-x64-baseline-htesthash",
-	"pi-natives-linux-x64-modern-htesthash",
-	"pi-natives-linux-arm64-htesthash",
-	"pi-natives-linux-musl-x64-baseline-htesthash",
-	"pi-natives-linux-musl-arm64-htesthash",
-	"pi-natives-darwin-x64-baseline-htesthash",
-	"pi-natives-darwin-arm64-htesthash",
-	"pi-natives-win32-x64-baseline-htesthash",
+const nativeArtifactKeys = [
+	"linux-x64-baseline",
+	"linux-x64-modern",
+	"linux-arm64",
+	"linux-musl-x64-baseline",
+	"linux-musl-arm64",
+	"darwin-x64-baseline",
+	"darwin-arm64",
+	"win32-x64-baseline",
 ];
 
-async function nativeLookupWithCandidates(
-	runList: string,
-	artifacts: Record<string, string>,
-	ancestorShas: readonly string[],
-): Promise<{ args: string; output: string }> {
-	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omppp-ci-lookup-"));
-	try {
-		const gh = path.join(tempDir, "gh");
-		const git = path.join(tempDir, "git");
-		const argsPath = path.join(tempDir, "gh-run-args");
-		const outputPath = path.join(tempDir, "github-output");
-		await Bun.write(
-			gh,
-			`#!/usr/bin/env bash
-if [ "$1" = "run" ]; then
-\tprintf '%s\\n' "$@" > "$GH_ARGS"
-\tprintf '%b' "$GH_RUN_LIST"
-\texit 0
-fi
-if [ "$1" = "api" ]; then
-\trun_id="\${2#*/runs/}"
-\trun_id="\${run_id%%/*}"
-	case "$run_id" in
-${Object.entries(artifacts)
-	.map(
-		([runId, names]) =>
-			`		${runId}) printf '%b' "${names.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$")}" ;;`,
-	)
-	.join("\n")}
-		*) exit 1 ;;
-	esac
-	exit 0
-fi
-exit 1
-`,
-		);
-		await Bun.write(
-			git,
-			`#!/usr/bin/env bash
-if [ "$1" = "rev-parse" ] && [ "$2" = "--is-shallow-repository" ]; then
-	echo false
-	exit 0
-fi
-if [ "$1" = "fetch" ]; then
-	exit 0
-fi
-if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then
-	case "$3" in
-${ancestorShas.map(sha => `		"${sha}") exit 0 ;;`).join("\n")}
-		*) exit 1 ;;
-	esac
-fi
-exit 1
-`,
-		);
-		await fs.chmod(gh, 0o755);
-		await fs.chmod(git, 0o755);
-		const script = nativeArtifactLookupScript()
-			.replace(sourceHashPlaceholder, "testhash")
-			.replace(repositoryPlaceholder, "owner/repo")
-			.replaceAll("gh ", '"$GH_BIN" ')
-			.replaceAll("git ", '"$GIT_BIN" ');
-		const proc = Bun.spawn(["bash", "-c", script], {
-			env: {
-				...Bun.env,
-				GH_ARGS: argsPath,
-				GH_BIN: gh,
-				GH_RUN_LIST: runList,
-				GIT_BIN: git,
-				GITHUB_OUTPUT: outputPath,
-				PATH: `${tempDir}:${Bun.env.PATH ?? ""}`,
-			},
-		});
-		const exitCode = await proc.exited;
-		if (exitCode !== 0) throw new Error(`native lookup script exited ${exitCode}`);
-		return {
-			args: await Bun.file(argsPath).text(),
-			output: await Bun.file(outputPath).text(),
-		};
-	} finally {
-		await fs.rm(tempDir, { recursive: true, force: true });
-	}
+/** Bash that prints `lines` (tabs allowed) the way `gh --jq` would. Lines must not contain `'`. */
+function emit(lines: readonly string[]): string {
+	return `printf '%b' '${lines.map(line => `${line.replaceAll("\t", "\\t")}\\n`).join("")}'; exit 0`;
+}
+
+/** Fake gh for the artifact lookup: artifact name -> "run\tsha" rows (newest first). */
+function lookupGh(
+	artifactRows: (key: string) => string[],
+	pushRuns: readonly string[],
+	mainAncestors: readonly string[],
+): string {
+	const cases = [
+		...nativeArtifactKeys.map(
+			key => `  *"artifacts?name=pi-natives-${key}-htesthash&"*) ${emit(artifactRows(key))} ;;`,
+		),
+		...pushRuns.map(id => `  *"actions/runs/${id} "*) ${emit(["push\t.github/workflows/ci.yml"])} ;;`),
+		`  *"actions/runs/"*) ${emit(["pull_request\t.github/workflows/ci.yml"])} ;;`,
+		...mainAncestors.map(sha => `  *"compare/${sha}...main "*) ${emit(["ahead"])} ;;`),
+		`  *compare/*) ${emit(["diverged"])} ;;`,
+	];
+	return `case "$args" in\n${cases.join("\n")}\nesac`;
+}
+
+const requiredReleaseJobs = [
+	"Lint, type check & web build",
+	"Test TS workspace fast",
+	"Test coding-agent singleton/global-state (TS)",
+	"Test TS native/integration packages",
+	"Test coding-agent UI/TUI (TS)",
+	"Test coding-agent runtime/session (TS)",
+	"Test coding-agent native/unit (TS)",
+	"Test CLI smoke (TS)",
+	"Install method smoke tests",
+];
+
+/** Fake gh for release_base: newest-first main runs, their green jobs, and the diff to the tag. */
+function releaseBaseGh(
+	runs: { id: string; sha: string; green: readonly string[]; files: readonly string[] }[],
+): string {
+	const cases = [
+		`  "run list"*) ${emit(runs.map(run => `${run.id}\t${run.sha}`))} ;;`,
+		...runs.map(run => `  *"runs/${run.id}/jobs"*) ${emit(run.green)} ;;`),
+		...runs.map(run => `  *"compare/${run.sha}...tagsha --jq .status"*) ${emit(["ahead"])} ;;`),
+		...runs.map(run => `  *"compare/${run.sha}...tagsha "*) ${emit(run.files)} ;;`),
+	];
+	return `case "$args" in\n${cases.join("\n")}\nesac`;
 }
 
 describe("ci.yml workflow scheduling", () => {
@@ -624,30 +569,100 @@ describe("ci.yml workflow scheduling", () => {
 		expect(evaluateJobIf("release_binary", { ...invalidTagCtx, needs: completedNeeds(false, false) })).toBe(false);
 	});
 
-	it("searches completed trusted push runs across main and release tags for native reuse", async () => {
-		const args = await nativeLookupRunListArgs();
-		expect(args).toContain("--status=completed");
-		expect(args).toContain("--event=push");
-		expect(args).not.toContain("--branch=main");
+	it("reuses each exact artifact only from a trusted main-ancestor push run", async () => {
+		// 300 is newest but lacks win32; 200 is a PR run; 400 is off-main; 100 holds the full set.
+		const output = await runStepWithFakeGh(
+			jobStepScript("native_artifact_lookup", "find"),
+			lookupGh(
+				key => [
+					"200\tpr-sha",
+					"400\toff-main",
+					...(key === "win32-x64-baseline" ? [] : ["300\ttrusted-newer"]),
+					"100\ttrusted-complete",
+				],
+				["100", "300", "400"],
+				["trusted-complete", "trusted-newer"],
+			),
+		);
+		expect(output).toContain("darwin-x64-baseline-run-id=300\n");
+		expect(output).toContain("win32-x64-baseline-run-id=100\n");
+		expect(output).toContain("linux-x64-run-id=300\n");
+		expect(output).toContain("cross-platform-run-id=100\n");
+		expect(output).not.toMatch(/=(200|400)\n/);
 	});
 
-	it("reuses each exact artifact only from a main-ancestor completed push run", async () => {
-		const allArtifacts = `${nativeArtifactNames.join("\n")}\n`;
-		const result = await nativeLookupWithCandidates(
-			["200\tuntrusted-sha", "300\ttrusted-incomplete", "100\ttrusted-complete", ""].join("\n"),
-			{
-				"100": allArtifacts,
-				"200": allArtifacts,
-				"300": `${nativeArtifactNames.slice(0, -1).join("\n")}\n`,
-			},
-			["trusted-complete", "trusted-incomplete"],
+	it("leaves every artifact to rebuild when no trusted run holds it", async () => {
+		const output = await runStepWithFakeGh(
+			jobStepScript("native_artifact_lookup", "find"),
+			lookupGh(() => ["200\tpr-sha"], [], []),
 		);
-		expect(result.args).toContain("--status=completed");
-		expect(result.args).toContain("--event=push");
-		expect(result.output).toContain("darwin-x64-baseline-run-id=300");
-		expect(result.output).toContain("win32-x64-baseline-run-id=100");
-		expect(result.output).not.toContain("=200");
+		expect(output).toContain("linux-x64-run-id=\n");
+		expect(output).toContain("win32-x64-baseline-run-id=\n");
+		expect(output).toContain("cross-platform-run-id=\n");
 	});
+
+	it("release base skips re-testing only for a bump-only diff on a fully green main run", async () => {
+		const script = jobStepScript("release_base", "base");
+		const bumpFiles = [
+			"package.json",
+			"Cargo.lock",
+			"packages/coding-agent/CHANGELOG.md",
+			"crates/pi-natives/src/lib.rs",
+		];
+		// Companion bump run (newest) skipped tests, so the older fully green run decides.
+		const fastPath = await runStepWithFakeGh(
+			script,
+			releaseBaseGh([
+				{ id: "2", sha: "bump", green: ["Resolve release metadata"], files: [] },
+				{ id: "1", sha: "base", green: requiredReleaseJobs, files: bumpFiles },
+			]),
+		);
+		expect(fastPath).toContain("tested=true");
+
+		const codeChanged = await runStepWithFakeGh(
+			script,
+			releaseBaseGh([
+				{
+					id: "1",
+					sha: "base",
+					green: requiredReleaseJobs,
+					files: [...bumpFiles, "packages/coding-agent/src/cli.ts"],
+				},
+			]),
+		);
+		expect(codeChanged).toContain("tested=false");
+
+		const partialGreen = await runStepWithFakeGh(
+			script,
+			releaseBaseGh([{ id: "1", sha: "base", green: requiredReleaseJobs.slice(1), files: [] }]),
+		);
+		expect(partialGreen).toContain("tested=false");
+	});
+
+	it("release publishes without re-running tests only when release_base vouches for them", () => {
+		const ctx = baseCtx({ ref: "refs/tags/v15.12.6", sha: "abc123", event: {} });
+		const needs = completedNeeds(false, true);
+		for (const job of [
+			"test_workspace",
+			"test_coding_agent_singleton",
+			"test_ts_native",
+			"test_coding_agent_ui",
+			"test_coding_agent_runtime",
+			"test_coding_agent_native",
+			"test_smoke",
+			"install_methods",
+		]) {
+			needs[job] = { result: "skipped" };
+		}
+		needs.release_base = { result: "success", outputs: { tested: "true" } };
+		expect(evaluateJobIf("test_coding_agent_native", { ...ctx, needs })).toBe(false);
+		expect(evaluateJobIf("release_binary", { ...ctx, needs })).toBe(true);
+		expect(evaluateJobIf("release_gate", { ...ctx, needs })).toBe(true);
+
+		needs.release_base = { result: "success", outputs: { tested: "false" } };
+		expect(evaluateJobIf("release_binary", { ...ctx, needs })).toBe(false);
+	});
+
 	it("keeps a conditional build and current-run staging path for every native artifact job", () => {
 		const parsed = YAML.parse(workflowYaml);
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
