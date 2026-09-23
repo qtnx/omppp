@@ -1322,4 +1322,119 @@ describe("AuthStorage OAuth refresh race", () => {
 		).resolves.toBeUndefined();
 		expect(refreshCalls).toBe(1);
 	});
+
+	// The exact transient failure OpenAI returns for a rotated-away Codex refresh
+	// token; AIError classifies it as non-definitive, so the row is only blocked.
+	const DEAD_REFRESH_TOKEN_ERROR =
+		'openai-codex token refresh failed: 401 {"error":{"message":"Could not validate your refresh token. Please try signing in again.","type":"invalid_request_error","param":null,"code":"invalid_refresh_token"}}';
+
+	test("does not re-refresh a credential blocked by a failed refresh while a sibling serves", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		let refreshCalls = 0;
+		oauthUtils.registerOAuthProvider({
+			id: "unit-oauth-blocked-preflight",
+			name: "Unit OAuth Blocked Preflight",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: Date.now() + 60 * 60_000 };
+			},
+			async refreshToken() {
+				refreshCalls += 1;
+				throw new Error(DEAD_REFRESH_TOKEN_ERROR);
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		});
+		await authStorage.set("unit-oauth-blocked-preflight", [
+			{ type: "oauth", access: "stale-access", refresh: "dead-refresh", expires: Date.now() - 60_000 },
+			{ type: "oauth", access: "fresh-access", refresh: "fresh-refresh", expires: Date.now() + 60 * 60_000 },
+		]);
+
+		for (let request = 0; request < 3; request++) {
+			expect(await authStorage.getApiKey("unit-oauth-blocked-preflight", "session-blocked-preflight")).toBe(
+				"fresh-access",
+			);
+		}
+		// One refresh discovered the dead token; the 5-minute block then keeps it off every request path.
+		expect(refreshCalls).toBe(1);
+
+		// Once the block lapses, the next request re-checks the credential exactly once.
+		setSystemTime(new Date(Date.now() + 5 * 60_000 + 1_000));
+		expect(await authStorage.getApiKey("unit-oauth-blocked-preflight", "session-blocked-preflight")).toBe(
+			"fresh-access",
+		);
+		expect(refreshCalls).toBe(2);
+	});
+
+	test("recovers a lone credential blocked by a failed refresh through the blocked fallback", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		let refreshCalls = 0;
+		oauthUtils.registerOAuthProvider({
+			id: "unit-oauth-blocked-lone",
+			name: "Unit OAuth Blocked Lone",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: Date.now() + 60 * 60_000 };
+			},
+			async refreshToken(credentials) {
+				refreshCalls += 1;
+				if (refreshCalls === 1) throw new Error(DEAD_REFRESH_TOKEN_ERROR);
+				return {
+					...credentials,
+					access: "recovered-access",
+					refresh: "recovered-refresh",
+					expires: Date.now() + 60 * 60_000,
+				};
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		});
+		await authStorage.set("unit-oauth-blocked-lone", [
+			{ type: "oauth", access: "stale-access", refresh: "stale-refresh", expires: Date.now() - 60_000 },
+		]);
+
+		expect(await authStorage.getApiKey("unit-oauth-blocked-lone", "session-blocked-lone")).toBeUndefined();
+		// Still blocked, but it is the only credential: the fallback pass refreshes it and serves the new token.
+		expect(await authStorage.getApiKey("unit-oauth-blocked-lone", "session-blocked-lone")).toBe("recovered-access");
+		expect(refreshCalls).toBe(2);
+		// The block outlives the recovery, but the refreshed token is served without another round trip.
+		expect(await authStorage.getApiKey("unit-oauth-blocked-lone", "session-blocked-lone")).toBe("recovered-access");
+		expect(refreshCalls).toBe(2);
+	});
+
+	test("force-refreshes a blocked credential whose token the server rejected", async () => {
+		if (!authStorage) throw new Error("test setup failed");
+		let refreshCalls = 0;
+		oauthUtils.registerOAuthProvider({
+			id: "unit-oauth-blocked-force",
+			name: "Unit OAuth Blocked Force",
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: Date.now() + 60 * 60_000 };
+			},
+			async refreshToken(credentials) {
+				refreshCalls += 1;
+				return { ...credentials, access: "reminted-access", expires: Date.now() + 60 * 60_000 };
+			},
+			getApiKey(credentials) {
+				return credentials.access;
+			},
+		});
+		// Looks fresh locally, but the server answered 401: the auth-retry path blocks it, then forces a re-mint.
+		await authStorage.set("unit-oauth-blocked-force", [
+			{ type: "oauth", access: "rejected-access", refresh: "live-refresh", expires: Date.now() + 60 * 60_000 },
+		]);
+		expect(
+			await authStorage.invalidateCredentialMatching("unit-oauth-blocked-force", "rejected-access", {
+				sessionId: "session-blocked-force",
+			}),
+		).toBe(true);
+
+		expect(
+			await authStorage.getApiKey("unit-oauth-blocked-force", "session-blocked-force", { forceRefresh: true }),
+		).toBe("reminted-access");
+		expect(refreshCalls).toBe(1);
+	});
 });

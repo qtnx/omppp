@@ -95,8 +95,8 @@ function messageIdentity(message: AgentMessage): MessageIdentity | undefined {
 	return entryId ? { kind: "entry", value: entryId } : undefined;
 }
 
-function sameIdentity(left: MessageIdentity, right: MessageIdentity): boolean {
-	return left.kind === right.kind && left.value === right.value;
+function identityKey(identity: MessageIdentity): string {
+	return `${identity.kind}\u0000${identity.value}`;
 }
 
 function hasMatchingNonToolKind(message: AgentMessage, record: ContextRecord): boolean {
@@ -113,17 +113,6 @@ function hasMatchingNonToolKind(message: AgentMessage, record: ContextRecord): b
 		default:
 			return false;
 	}
-}
-
-function messageMatchesAuthority(message: AgentMessage, record: ContextRecord, identity: MessageIdentity): boolean {
-	const current = messageIdentity(message);
-	if (!current || !sameIdentity(current, identity)) return false;
-	if (identity.kind === "tool") return asRecord(message).role === "toolResult";
-	return hasMatchingNonToolKind(message, record);
-}
-
-function payloadMatches(message: AgentMessage, record: ContextRecord): boolean {
-	return Bun.SHA256.hash(payloadForMessage(message).stored, "hex") === record.payloadHash;
 }
 
 function isProjectableSnapshotMessage(message: AgentMessage): boolean {
@@ -161,6 +150,25 @@ export function analyzeActiveContext(
 	const matches = new Map<string, ActiveContextMatch>();
 	const estimates = new Map<string, ActiveContextEstimate>();
 	const claimedMessages = new Set<number>();
+	// One pass over the context buckets message indexes by identity, so a record probes only its own
+	// candidates instead of rescanning every message, and each candidate is hashed at most once.
+	const messagesByIdentity = new Map<string, number[]>();
+	for (let index = 0; index < messages.length; index++) {
+		const identity = messageIdentity(messages[index]);
+		if (!identity) continue;
+		const key = identityKey(identity);
+		const bucket = messagesByIdentity.get(key);
+		if (bucket) bucket.push(index);
+		else messagesByIdentity.set(key, [index]);
+	}
+	const payloadHashes = new Map<number, string>();
+	const payloadHashAt = (index: number): string => {
+		const cached = payloadHashes.get(index);
+		if (cached !== undefined) return cached;
+		const hash = Bun.SHA256.hash(payloadForMessage(messages[index]).stored, "hex");
+		payloadHashes.set(index, hash);
+		return hash;
+	};
 
 	for (const record of records) {
 		const identity = sourceIdentity(record);
@@ -169,24 +177,29 @@ export function analyzeActiveContext(
 			continue;
 		}
 
-		const sameIdentityMessages: number[] = [];
-		const exactMatches: number[] = [];
-		for (let index = 0; index < messages.length; index++) {
-			const message = messages[index];
-			if (!messageMatchesAuthority(message, record, identity)) continue;
-			sameIdentityMessages.push(index);
-			if (payloadMatches(message, record)) exactMatches.push(index);
+		let identityMatched = false;
+		let exactMatched = false;
+		let messageIndex: number | undefined;
+		for (const index of messagesByIdentity.get(identityKey(identity)) ?? []) {
+			// The bucket already guarantees identity equality; only the record-kind authority check
+			// for non-tool identities remains.
+			if (identity.kind !== "tool" && !hasMatchingNonToolKind(messages[index], record)) continue;
+			identityMatched = true;
+			if (payloadHashAt(index) !== record.payloadHash) continue;
+			exactMatched = true;
+			if (claimedMessages.has(index)) continue;
+			messageIndex = index;
+			break;
 		}
 
-		if (sameIdentityMessages.length === 0) {
+		if (!identityMatched) {
 			incrementIssue(issues, "inactive_identity");
 			continue;
 		}
-		if (exactMatches.length === 0) {
+		if (!exactMatched) {
 			incrementIssue(issues, "payload_mismatch");
 			continue;
 		}
-		const messageIndex = exactMatches.find(index => !claimedMessages.has(index));
 		if (messageIndex === undefined) {
 			incrementIssue(issues, "duplicate_claim");
 			continue;

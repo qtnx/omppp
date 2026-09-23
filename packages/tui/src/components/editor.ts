@@ -2280,7 +2280,9 @@ export class Editor implements Component, Focusable {
 		}
 		let entry = this.#wrapCache.get(line);
 		if (entry === undefined) {
-			if (this.#wrapCache.size >= 256) {
+			// Backstop only: #layoutText rebuilds this map from the live lines each
+			// pass, so growth here is the edits made between two passes.
+			if (this.#wrapCache.size > this.#state.lines.length + 256) {
 				this.#wrapCache.clear();
 			}
 			entry = { width: visibleWidth(line), chunks: null };
@@ -2313,11 +2315,17 @@ export class Editor implements Component, Focusable {
 			return layoutLines;
 		}
 
+		// Rebuilt from the live lines each pass: measurements of the whole draft
+		// survive across keystrokes, while lines that were edited away drop out.
+		const retained = new Map<string, WrapEntry>();
+
 		// Process each logical line
 		for (let i = 0; i < this.#state.lines.length; i++) {
 			const line = this.#state.lines[i] || "";
 			const isCurrentLine = i === this.#state.cursorLine;
-			const lineVisibleWidth = this.#lineEntry(line, contentWidth).width;
+			const entry = this.#lineEntry(line, contentWidth);
+			retained.set(line, entry);
+			const lineVisibleWidth = entry.width;
 
 			if (lineVisibleWidth <= contentWidth) {
 				// Line fits in one layout line
@@ -2403,6 +2411,7 @@ export class Editor implements Component, Focusable {
 			}
 		}
 
+		this.#wrapCache = retained;
 		return layoutLines;
 	}
 

@@ -597,6 +597,7 @@ export class TranscriptContainer extends Container {
 						setNativeScrollbackCommittedRows?(rows: number): void;
 					}
 				).setNativeScrollbackCommittedRows?.(Number.MAX_SAFE_INTEGER);
+				this.#releaseCommittedStablePayload(entry);
 			}
 			this.#frontier = offered.end;
 		}
@@ -688,6 +689,24 @@ export class TranscriptContainer extends Container {
 		return rendered;
 	}
 
+	/**
+	 * Drop the stable-publication bookkeeping of a block that just became
+	 * committed. Its rows are permanently in native scrollback: `emitted` is
+	 * reset to 0, mid-stream emission only ever touches the frontier block, and
+	 * every later path (replay, viewport, tail, full render) re-renders the block
+	 * whole from {@link Component.render}. The published snapshots, their
+	 * per-width rendered prefixes here, and the block's own stable render cache
+	 * are therefore dead weight that otherwise retains a second full copy of
+	 * every streamed head for the whole session. A committed block is finalized,
+	 * so it never republishes: the release is permanent and changes no rows.
+	 */
+	#releaseCommittedStablePayload(entry: TranscriptEntry): void {
+		if (entry.mode !== "appendOnly") return;
+		entry.stableRows = EMPTY_STABLE_ROWS;
+		entry.renderedStableByWidth.clear();
+		(entry.component as Component & AppendOnlyTranscriptBlock).resetTranscriptStableRows?.();
+	}
+
 	#renderStablePrefix(entry: TranscriptEntry, count: number, width: number): readonly string[] {
 		if (count === 0) return EMPTY_ROWS;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
@@ -760,6 +779,7 @@ export class TranscriptContainer extends Container {
 			if (this.#renderStablePrefix(entry, entry.emitted, width).length !== rendered.length) return;
 			entry.state = "committed";
 			entry.emitted = 0;
+			this.#releaseCommittedStablePayload(entry);
 			this.#frontier++;
 		}
 	}

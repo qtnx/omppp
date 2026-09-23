@@ -21,7 +21,17 @@ export interface CodeGraphExploreOptions {
 	projectPath?: string;
 	maxFiles?: number;
 	signal?: AbortSignal;
+	/** Longest the query waits for the index to become ready; defaults to {@link QUERY_READINESS_TIMEOUT_MS}. */
+	readinessTimeoutMs?: number;
 }
+
+export interface CodeGraphReadinessOptions {
+	/** Build a missing index. Queries pass `false`: a full build takes minutes on large repositories. */
+	initialize?: boolean;
+}
+
+/** A query answers "use grep/read" rather than hold a turn behind a sync or index build longer than this. */
+const QUERY_READINESS_TIMEOUT_MS = 10_000;
 
 const CODEGRAPH_COMMAND = "codegraph";
 const COMMAND_NOT_FOUND_EXIT_CODE = 127;
@@ -96,12 +106,12 @@ export class CodeGraphManager {
 		});
 	}
 
-	ensureReady(signal?: AbortSignal): Promise<CodeGraphState> {
+	ensureReady(signal?: AbortSignal, options: CodeGraphReadinessOptions = {}): Promise<CodeGraphState> {
 		if (this.#state.status === "ready") return Promise.resolve(this.getState());
 		if (this.#closed) return Promise.resolve(this.#setState("failed", "CodeGraph manager is closed."));
 		if (this.#readiness) return this.#readiness;
 
-		this.#readiness = this.#ensureReady(signal).finally(() => {
+		this.#readiness = this.#ensureReady(signal, options.initialize !== false).finally(() => {
 			this.#readiness = undefined;
 		});
 		return this.#readiness;
@@ -120,7 +130,10 @@ export class CodeGraphManager {
 	}
 
 	async explore(query: string, options: CodeGraphExploreOptions = {}): Promise<CodeGraphCommandResult> {
-		const state = await this.ensureReady(options.signal);
+		const state = await this.#awaitQueryReadiness(
+			options.signal,
+			options.readinessTimeoutMs ?? QUERY_READINESS_TIMEOUT_MS,
+		);
 		if (state.status !== "ready") {
 			throw new Error(state.error ?? "CodeGraph is not ready. Install codegraph and initialize this project first.");
 		}
@@ -139,7 +152,29 @@ export class CodeGraphManager {
 		this.#listeners.clear();
 	}
 
-	async #ensureReady(signal?: AbortSignal): Promise<CodeGraphState> {
+	/**
+	 * A query never builds a missing index (codegraph_init and `codegraph.autoIndex`
+	 * do) and never holds its caller behind a sync or an in-flight build longer
+	 * than `timeoutMs`; that work keeps running and later queries pick it up.
+	 */
+	async #awaitQueryReadiness(signal: AbortSignal | undefined, timeoutMs: number): Promise<CodeGraphState> {
+		const readiness = this.ensureReady(signal, { initialize: false });
+		const { promise: timedOut, resolve } = Promise.withResolvers<undefined>();
+		const timer = setTimeout(resolve, timeoutMs);
+		try {
+			return (
+				(await Promise.race([readiness, timedOut])) ?? {
+					status: "initializing",
+					projectRoot: this.projectRoot,
+					error: `CodeGraph is still indexing ${this.projectRoot}.`,
+				}
+			);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	async #ensureReady(signal: AbortSignal | undefined, initialize: boolean): Promise<CodeGraphState> {
 		const executable = await this.#resolveExecutable();
 		if (!executable) {
 			return this.#setState(
@@ -162,6 +197,9 @@ export class CodeGraphManager {
 			}
 
 			if (status.error) return this.#setState("failed", status.error);
+			if (!initialize) {
+				return this.#setState("idle", `CodeGraph has no index for ${this.projectRoot}.`);
+			}
 			const initialized = await this.init(signal);
 			if (initialized.exitCode === 0) return this.#setState("ready");
 

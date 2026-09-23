@@ -715,7 +715,17 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	#requestAnimationRender(): void {
-		super.invalidate();
+		// A spinner tick advances ONE glyph. `Container.invalidate()` cascades
+		// into the mounted renderer and drops its per-instance line cache, so the
+		// next paint re-derives the whole result — for a 5 MB running bash tail
+		// that is a ~10 ms split/style/truncate pass, 12.5 times a second
+		// (SPINNER_RENDER_INTERVAL_MS). Renderer-backed blocks do not need it:
+		// they read the mutated #renderState at paint time, and Container/Box
+		// re-render every child each frame and detect a changed child by array
+		// reference, so an unchanged subtree is reused and an animating one is
+		// not. The generic fallback does need it — WidthAwareText caches its
+		// formatted card by width alone, so its glyph would freeze.
+		if (!this.#usesContentBox) super.invalidate();
 		const ui = this.#ui as TUI & { requestComponentRender?: (component: Component) => void };
 		if (typeof ui.requestComponentRender === "function") {
 			ui.requestComponentRender(this);

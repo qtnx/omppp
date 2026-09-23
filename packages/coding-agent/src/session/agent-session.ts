@@ -3128,7 +3128,10 @@ export class AgentSession {
 		}
 		if (event.type === "message_update") {
 			this.#emit(event);
-			void this.#queueExtensionEvent(event);
+			// Every delta would otherwise allocate a link on the serialized
+			// extension-event chain, only for #emitExtensionEvent to drop it. Skip
+			// the queue when nothing listens; handled events keep their ordering.
+			if (this.#extensionRunner?.hasHandlers("message_update")) void this.#queueExtensionEvent(event);
 			return;
 		}
 		// Take a FIFO ticket before the extension emit: extension deliveries for
