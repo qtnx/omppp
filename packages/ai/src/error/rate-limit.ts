@@ -327,7 +327,7 @@ export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 // account-cap phrases are intentionally provider-agnostic outcome signals so callers
 // rotate an exhausted sibling instead of treating the response as a bad credential.
 const USAGE_LIMIT_PATTERN =
-	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?(?:exceeded|reached|insufficient)|额度不足|额度耗尽|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)|balance.?exhausted|\bcredit[\W_]*balance[\W_]*is[\W_]*too[\W_]*low[\W_]*to[\W_]*access[\W_]*the[\W_]*anthropic[\W_]*api\b|run out of credits|out of credits|spending[- _]?limit|personal-team-blocked|clinepass limit|free limit reached on model|access_terminated_error/i;
+	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?(?:exceeded|reached|insufficient)|额度不足|额度耗尽|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)|balance.?exhausted|\bcredit[\W_]*balance[\W_]*is[\W_]*too[\W_]*low[\W_]*to[\W_]*access[\W_]*the[\W_]*anthropic[\W_]*api\b|run out of credits|out of credits|out of (?:extra )?usage|spending[- _]?limit|personal-team-blocked|clinepass limit|free limit reached on model|access_terminated_error/i;
 const RETRY_AFTER_MS_HINT_PATTERN = /\bretry-after-ms\s*[:=]\s*(\d+(?:\.\d+)?)/i;
 
 function parseRetryAfterMsValue(value: string | undefined | null): number | undefined {

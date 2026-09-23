@@ -10,7 +10,7 @@ import {
 	resolveMacOSSandboxAllowedPaths,
 } from "../task/omp-command";
 import type { ToolSession } from "./index";
-import { toPathList } from "./path-utils";
+import { toPathList } from "@oh-my-pi/pi-tui/render/render-utils";
 
 const macosSandboxSchema = type({
 	path: type("string")

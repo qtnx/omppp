@@ -9,7 +9,7 @@ import {
 	type LiveServerEvent,
 } from "./protocol";
 import { CodexLiveTransport, type LiveTransportOptions } from "./transport";
-import type { LivePhase } from "./visualizer";
+import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 import { DEFAULT_LIVE_VOICE } from "./voices";
 
 /**

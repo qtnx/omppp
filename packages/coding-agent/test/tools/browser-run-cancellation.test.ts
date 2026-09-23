@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
-import { postmortem } from "@oh-my-pi/pi-utils";
+import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 import { JsRuntime, type RuntimeHooks } from "../../src/eval/js/shared/runtime";
 import {
 	bindRunFacade,
@@ -296,7 +296,8 @@ describe("browser run cancellation", () => {
 
 	it("keeps a real worker alive after floating browser and continuation rejections", async () => {
 		vi.useRealTimers();
-		const workerPath = `/tmp/omp-browser-rejections-${process.pid}.ts`;
+		using workerDir = TempDir.createSync("@omp-browser-rejections-");
+		const workerPath = workerDir.join("worker.ts");
 		await Bun.write(
 			workerPath,
 			`

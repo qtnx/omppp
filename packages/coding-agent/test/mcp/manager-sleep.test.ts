@@ -165,10 +165,10 @@ describe("MCPManager.sleepAll", () => {
 	it("re-resolves OAuth auth config on reconnect without interactive OAuth", async () => {
 		const store = new SqliteAuthCredentialStore(new Database(":memory:"));
 		const authStorage = new AuthStorage(store);
-		await authStorage.reload();
+		await authStorage.credentials.reload();
 		const credentialId = "mcp_oauth_sleep_wake";
 		const tokenUrl = "https://example.com/oauth/token";
-		await authStorage.set(credentialId, {
+		await authStorage.credentials.set(credentialId, {
 			type: "oauth",
 			access: "stale-access",
 			refresh: "stale-refresh",
@@ -205,7 +205,7 @@ describe("MCPManager.sleepAll", () => {
 
 			// Expire the credential again so reconnect's #resolveAuthConfig must
 			// re-enter the refresh seam (fresh tokens from connect would skip it).
-			await authStorage.set(credentialId, {
+			await authStorage.credentials.set(credentialId, {
 				type: "oauth",
 				access: "mid-sleep-stale",
 				refresh: "stale-refresh-2",

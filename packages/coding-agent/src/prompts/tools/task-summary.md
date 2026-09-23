@@ -8,6 +8,9 @@
 {{#if rateLimitNotice}}
 {{rateLimitNotice}}
 {{/if}}
+{{#if error}}
+<error>{{error}}</error>
+{{/if}}
 {{#if truncated}}
 <preview full-output="agent://{{id}}">
 {{preview}}

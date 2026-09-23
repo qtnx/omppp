@@ -22,7 +22,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { replaceFileAtomically } from "../utils/atomic-file";
-import { stringifyYamlConfig } from "./config-file";
+import { stringifyYamlConfig } from "@oh-my-pi/pi-utils/yaml-config";
 import type { Settings } from "./settings";
 
 export const REMOTE_CONFIG_DIRNAME = "remote";

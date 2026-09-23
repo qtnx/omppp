@@ -11,7 +11,11 @@ import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
-import { CLI_THINKING_LEVELS, getConfiguredThinkingLevelMetadata, parseCliThinkingLevel } from "../thinking";
+import {
+	CLI_THINKING_LEVELS,
+	getConfiguredThinkingLevelMetadata,
+	parseCliThinkingLevel,
+} from "@oh-my-pi/pi-tui/thinking";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
@@ -310,7 +314,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		name: "loop",
 		icon: "loop",
 		description:
-			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. A bare number is the iteration count (/loop 10), a unit makes it the interval (/loop 30s); add clean or compact to reset or compact context before each run. Bound it with a count/duration, or gate it with `--until '<cmd>'` / `--while '<cmd>'` — the command's exit status decides whether the next iteration runs. Esc cancels the current iteration; /loop again to disable. Manage agent loops with /loop list or /loop stop <id|all>.",
+			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. A bare number is the iteration count (/loop 10), a unit makes it the interval (/loop 30s); add clean or compact to reset or compact context before each run. Bound it with a count/duration, or gate it with `--until '<cmd>'` / `--while '<cmd>'` — the command's exit status decides whether the next iteration runs. Esc suspends the ongoing loop; /loop again to disable. Manage agent loops with /loop list or /loop stop <id|all>.",
 		inlineHint:
 			"[count|duration] [interval] [--while|--until '<cmd>'] [clean|compact] [prompt] | list | stop <id|all>",
 		allowArgs: true,

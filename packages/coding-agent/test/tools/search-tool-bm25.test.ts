@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
 import {
 	buildDiscoverableToolSearchIndex,
 	type DiscoverableTool,

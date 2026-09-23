@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import { Settings } from "../../config/settings";
 import type { WorkflowRunRecord } from "../../workflow/run-registry";
 import { WorkflowRunRegistry } from "../../workflow/run-registry";
-import { getThemeByName, setThemeInstance } from "../theme/theme";
 import { WorkflowHudComponent } from "./workflow-hud";
 
 beforeAll(async () => {

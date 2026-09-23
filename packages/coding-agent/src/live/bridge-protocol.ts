@@ -1,4 +1,4 @@
-import type { LivePhase } from "./visualizer";
+import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 
 /** Wire protocol version of the SSH live bridge; bumped on any frame-shape change. */
 export const LIVE_BRIDGE_PROTO = 1;

@@ -41,7 +41,7 @@ export function startCredentialWatcher(options: StartCredentialWatcherOptions): 
 	const dbDir = path.dirname(options.dbPath);
 	const dbBaseName = path.basename(options.dbPath);
 	const debounceMs = options.debounceMs ?? 400;
-	const reload = options.reload ?? (() => options.authStorage.reload());
+	const reload = options.reload ?? (() => options.authStorage.credentials.reload());
 	let timer: NodeJS.Timeout | undefined;
 	let stopped = false;
 

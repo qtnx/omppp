@@ -13,7 +13,8 @@ import injectionTemplate from "../prompts/learnings/injection.md" with { type: "
 import writeTemplate from "../prompts/learnings/write.md" with { type: "text" };
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import * as taskExecutor from "../task/executor";
-import type { AgentDefinition, SingleResult } from "../task/types";
+import type { AgentDefinition } from "../task/types";
+import type { SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import { isLowSignalTitleInput } from "../tiny/text";
 import {
 	createLearningAuditRun,

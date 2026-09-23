@@ -117,6 +117,10 @@ export function streamProxy(model: Model, context: Context, options: ProxyStream
 		};
 
 		let response: Response | null = null;
+		// Declared outside try so the disconnect path (catch) can finalize
+		// still-buffered tool-call arguments before emitting the error event.
+		const partialJsonByIndex = new Map<number, string>();
+		const parsedLenByIndex = new Map<number, number>();
 		const abortHandler = () => {
 			const body = response?.body;
 			if (body) {
@@ -165,12 +169,11 @@ export function streamProxy(model: Model, context: Context, options: ProxyStream
 			}
 
 			let sawTerminalEvent = false;
-			const toolArgStateByIndex = new Map<number, ToolArgStreamState>();
 			for await (const event of readSseJson<ProxyAssistantMessageEvent>(
 				response.body as ReadableStream<Uint8Array>,
 				options.signal,
 			)) {
-				const parsedEvent = processProxyEvent(event, partial, toolArgStateByIndex);
+				const parsedEvent = processProxyEvent(event, partial, partialJsonByIndex, parsedLenByIndex);
 				if (parsedEvent) {
 					if (parsedEvent.type === "done" || parsedEvent.type === "error") {
 						sawTerminalEvent = true;
@@ -193,6 +196,10 @@ export function streamProxy(model: Model, context: Context, options: ProxyStream
 			const reason = options.signal?.aborted ? "aborted" : "error";
 			partial.stopReason = reason;
 			partial.errorMessage = errorMessage;
+			// Disconnect/abort path: no terminal event ran, so trailing
+			// throttled deltas never reached content.arguments. Finalize
+			// them here so the persisted/retried transcript is complete.
+			finalizeBufferedArguments(partial, partialJsonByIndex);
 			scrubPartialJson(partial);
 			stream.push({
 				type: "error",
@@ -222,15 +229,6 @@ function scrubPartialJson(partial: AssistantMessage): void {
 }
 
 /**
- * Per-tool-call streaming argument state: the accumulated partial JSON plus the
- * prefix length already parsed, so mid-stream re-parses can be throttled.
- */
-interface ToolArgStreamState {
-	json: string;
-	parsedLen: number;
-}
-
-/**
  * Process a proxy event and update the partial message.
  *
  * Streaming `partialJson` for in-progress tool calls is accumulated in a
@@ -243,7 +241,8 @@ interface ToolArgStreamState {
 function processProxyEvent(
 	proxyEvent: ProxyAssistantMessageEvent,
 	partial: AssistantMessage,
-	toolArgStateByIndex: Map<number, ToolArgStreamState>,
+	partialJsonByIndex: Map<number, string>,
+	parsedLenByIndex: Map<number, number>,
 ): AssistantMessageEvent | undefined {
 	switch (proxyEvent.type) {
 		case "start":
@@ -343,22 +342,24 @@ function processProxyEvent(
 				arguments: {},
 				[kStreamingPartialJson]: "",
 			} as ToolCall & StreamingPartialJsonCarrier;
-			toolArgStateByIndex.set(proxyEvent.contentIndex, { json: "", parsedLen: 0 });
+			partialJsonByIndex.set(proxyEvent.contentIndex, "");
+			parsedLenByIndex.set(proxyEvent.contentIndex, 0);
 			return { type: "toolcall_start", contentIndex: proxyEvent.contentIndex, partial };
 		case "toolcall_delta": {
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
-				const state = toolArgStateByIndex.get(proxyEvent.contentIndex) ?? { json: "", parsedLen: 0 };
-				state.json += proxyEvent.delta;
-				toolArgStateByIndex.set(proxyEvent.contentIndex, state);
-				// Throttled: re-parsing the whole buffer on every delta is O(N^2) in
-				// the argument size. `toolcall_end` performs the authoritative parse.
-				const throttled = parseStreamingJsonThrottled(state.json, state.parsedLen);
-				if (throttled) {
-					content.arguments = throttled.value || {};
-					state.parsedLen = throttled.parsedLen;
+				const acc = (partialJsonByIndex.get(proxyEvent.contentIndex) ?? "") + proxyEvent.delta;
+				partialJsonByIndex.set(proxyEvent.contentIndex, acc);
+				// Geometric throttle (same contract as native providers): the
+				// authoritative parse lands at toolcall_end; mid-stream
+				// previews refresh at most ~3% late on large buffers.
+				const lastLen = parsedLenByIndex.get(proxyEvent.contentIndex) ?? 0;
+				const parsed = parseStreamingJsonThrottled(acc, lastLen);
+				if (parsed !== null) {
+					content.arguments = parsed.value || {};
+					parsedLenByIndex.set(proxyEvent.contentIndex, parsed.parsedLen);
 				}
-				setStreamingPartialJson(content, state.json);
+				setStreamingPartialJson(content, acc);
 				partial.content[proxyEvent.contentIndex] = { ...content }; // Trigger reactivity
 				return {
 					type: "toolcall_delta",
@@ -373,9 +374,13 @@ function processProxyEvent(
 		case "toolcall_end": {
 			const content = partial.content[proxyEvent.contentIndex];
 			if (content?.type === "toolCall") {
-				const state = toolArgStateByIndex.get(proxyEvent.contentIndex);
-				if (state && state.parsedLen < state.json.length) content.arguments = parseStreamingJson(state.json) || {};
-				toolArgStateByIndex.delete(proxyEvent.contentIndex);
+				// Authoritative final parse (mirrors native providers): the
+				// throttle may have skipped trailing deltas, so the last
+				// parsed arguments can lag the accumulated buffer.
+				const acc = partialJsonByIndex.get(proxyEvent.contentIndex);
+				if (acc !== undefined && acc.length > 0) content.arguments = parseStreamingJson(acc) || {};
+				partialJsonByIndex.delete(proxyEvent.contentIndex);
+				parsedLenByIndex.delete(proxyEvent.contentIndex);
 				clearStreamingPartialJson(content);
 				return {
 					type: "toolcall_end",
@@ -391,7 +396,10 @@ function processProxyEvent(
 			partial.stopReason = proxyEvent.reason;
 			partial.usage = proxyEvent.usage;
 			if (proxyEvent.content !== undefined) partial.content = proxyEvent.content;
+			else finalizeBufferedArguments(partial, partialJsonByIndex);
 			scrubPartialJson(partial);
+			partialJsonByIndex.clear();
+			parsedLenByIndex.clear();
 			return { type: "done", reason: proxyEvent.reason, message: partial };
 
 		case "error":
@@ -399,7 +407,26 @@ function processProxyEvent(
 			partial.errorMessage = proxyEvent.errorMessage;
 			partial.usage = proxyEvent.usage;
 			if (proxyEvent.content !== undefined) partial.content = proxyEvent.content;
+			else finalizeBufferedArguments(partial, partialJsonByIndex);
 			scrubPartialJson(partial);
+			partialJsonByIndex.clear();
+			parsedLenByIndex.clear();
 			return { type: "error", reason: proxyEvent.reason, error: partial };
+	}
+}
+
+/**
+ * Authoritatively parse every still-buffered tool-call argument accumulator
+ * into its content block. Terminal `done`/`error` events without a preceding
+ * `toolcall_end` (and with `content` omitted) finalize the partial message as
+ *-is; without this, trailing deltas below the throttle gate never reach
+ * `content.arguments` and the finalized call carries stale arguments.
+ */
+function finalizeBufferedArguments(partial: AssistantMessage, partialJsonByIndex: Map<number, string>): void {
+	if (partialJsonByIndex.size === 0) return;
+	for (const [index, acc] of partialJsonByIndex) {
+		if (acc.length === 0) continue;
+		const content = partial.content[index];
+		if (content?.type === "toolCall") content.arguments = parseStreamingJson(acc) || {};
 	}
 }

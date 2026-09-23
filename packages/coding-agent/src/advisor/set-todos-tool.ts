@@ -2,7 +2,8 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import setTodosDescription from "../prompts/tools/advisor-set-todos.md" with { type: "text" };
 import type { ToolSession } from "../tools";
-import { type TodoPhase, type TodoStatus, USER_TODO_EDIT_CUSTOM_TYPE } from "../tools/todo";
+import { type TodoPhase, type TodoStatus } from "@oh-my-pi/pi-tui/tools/todo";
+import { USER_TODO_EDIT_CUSTOM_TYPE } from "../tools/todo";
 import { ToolError } from "../tools/tool-errors";
 
 const TODO_STATUSES: Record<TodoStatus, true> = {

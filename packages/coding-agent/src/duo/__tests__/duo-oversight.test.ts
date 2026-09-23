@@ -3,7 +3,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { DuoResolvedConfig } from "../../config/model-resolver";
-import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
+import { AUTO_THINKING, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { ToolError } from "../../tools/tool-errors";
 import { DuoController, type DuoControllerHost } from "../controller";
 import { SetExecutorEffortTool } from "../effort-tool";

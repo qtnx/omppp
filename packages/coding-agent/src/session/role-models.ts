@@ -1,17 +1,16 @@
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../config/model-registry";
+import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
 	extractExplicitThinkingSelector,
-	formatModelSelectorValue,
 	getModelMatchPreferences,
-	parseModelString,
 	type ResolvedModelRoleValue,
 	resolveModelRoleValue,
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { isOpenAIRevisionAtLeast } from "../task/prompt-policy";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 /** Formats a role assignment while preserving its explicit thinking selector. */
 export function formatRoleModelValue(

@@ -34,7 +34,7 @@ describe("AgentSession live duo/advisor tool availability", () => {
 	beforeAll(async () => {
 		sharedDir = TempDir.createSync("@pi-duo-live-tools-shared-");
 		authStorage = await AuthStorage.create(path.join(sharedDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 	});
 
 	afterEach(async () => {

@@ -37,12 +37,17 @@ import {
 import { DEFAULT_AUTH_GATEWAY_BIND, startAuthGateway } from "@oh-my-pi/pi-ai/auth-gateway";
 import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { APP_NAME, getAgentDbPath, getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
+import { type ModelKind, modelKind } from "@oh-my-pi/pi-catalog/types";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { setTransports as setLoggerTransports } from "@oh-my-pi/pi-utils/logger";
 import { ModelRegistry } from "../config/model-registry";
 import { ModelsConfigFile } from "../config/models-config";
 import { resolveConfigValue } from "../config/resolve-config-value";
-import { type AuthBrokerClientConfig, resolveAuthBrokerConfig } from "../session/auth-broker-config";
+import {
+	type AuthBrokerClientConfig,
+	loadEffectiveAuthAccountPolicyConfig,
+	resolveAuthBrokerConfig,
+} from "../session/auth-broker-config";
 
 export type AuthGatewayAction = "serve" | "token" | "status" | "check";
 
@@ -173,7 +178,7 @@ function writeServeOutput(text: string): Promise<void> | void {
 
 async function readToken(): Promise<string | null> {
 	try {
-		const raw = await Bun.file(getTokenFilePath()).text();
+		const raw = await fs.readFile(getTokenFilePath(), "utf8");
 		const trimmed = raw.trim();
 		return trimmed.length > 0 ? trimmed : null;
 	} catch (err) {
@@ -268,6 +273,32 @@ const CATALOG_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 const CREDENTIAL_SYNC_INTERVAL_MS = 10 * 1000;
 
 /**
+ * Catalog kinds the gateway has a route for: chat (`/v1/chat/completions`,
+ * `/v1/messages`, `/v1/responses`, `/v1/pi/stream`), judge (`/v1/systemone`),
+ * image (`/v1/images/*`), tts (`/v1/audio/speech`), stt
+ * (`/v1/audio/transcriptions`), embedding (`/v1/embeddings`), rerank
+ * (`/v1/rerank`), video (`/v1/videos/*`). Other kinds (tiny, search) have no
+ * wire and stay off the served catalog so `/v1/models` never advertises them.
+ */
+const GATEWAY_MODEL_KINDS: readonly ModelKind[] = [
+	"chat",
+	"judge",
+	"image",
+	"tts",
+	"stt",
+	"embedding",
+	"rerank",
+	"video",
+];
+
+/** Every registry model of a kind the gateway can route, bundled catalog order within each kind. */
+export function gatewayRoutableModels(registry: ModelRegistry): Model<Api>[] {
+	const models: Model<Api>[] = [];
+	for (const kind of GATEWAY_MODEL_KINDS) models.push(...registry.getAll(kind));
+	return models;
+}
+
+/**
  * Serialize catalog rebuilds so `registry.refresh()` passes never overlap,
  * while guaranteeing a forced rebuild requested mid-flight runs a forced pass
  * afterward. Without the follow-up pass a credential change arriving during a
@@ -307,6 +338,7 @@ async function createBrokerCredentialSource(
 	// Build a broker-backed AuthStorage — same pattern as discoverAuthStorage()
 	// in sdk.ts. The gateway never touches local SQLite.
 	const accountPool = await loadAuthBrokerAccountPool();
+	const { accountPolicies, defaultReservePct } = await loadEffectiveAuthAccountPolicyConfig();
 	const client = createBrokerClient(brokerConfig);
 	const initialSnapshot = await fetchBrokerSnapshot(client);
 	const store = new RemoteAuthCredentialStore({
@@ -320,8 +352,10 @@ async function createBrokerCredentialSource(
 	// gateway only needs to construct the store and pass it in.
 	const storage = new AuthStorage(store, {
 		sourceLabel: `broker ${brokerConfig.url}`,
+		accountPolicies,
+		defaultReservePct,
 	});
-	await storage.reload();
+	await storage.credentials.reload();
 	return {
 		kind: "broker",
 		url: brokerConfig.url,
@@ -336,12 +370,12 @@ async function createLocalCredentialSource(): Promise<AuthGatewayCredentialSourc
 		configValueResolver: resolveConfigValue,
 		sourceLabel: `local ${dbPath}`,
 	});
-	await storage.reload();
+	await storage.credentials.reload();
 	return {
 		kind: "local",
 		dbPath,
 		storage,
-		credentialCount: storage.exportSnapshot().credentials.length,
+		credentialCount: storage.credentials.snapshot().credentials.length,
 	};
 }
 
@@ -450,7 +484,13 @@ async function buildGatewayModelIndex(
 	const storage = source.storage;
 	const registry =
 		source.kind === "broker"
-			? new ModelRegistry(storage, undefined, { ignoreUserConfig: true })
+			? // Gateway mode: a broker-backed gateway serves bundled + broker-discovered
+				// metadata only. `ignoreLocalModelConfig` keeps the host's `models.yml`
+				// out of the picture (provider overrides, config API keys, custom
+				// models/discovery) so a client-side override can never send a broker
+				// bearer to a configured endpoint or shadow broker credentials;
+				// `ignoreUserConfig` also drops disabled-provider settings.
+				new ModelRegistry(storage, undefined, { ignoreUserConfig: true, ignoreLocalModelConfig: true })
 			: new ModelRegistry(storage);
 	if (options.refresh) await registry.refresh(options.refresh);
 	const allModelById = new Map<string, Model<Api>>();
@@ -463,7 +503,16 @@ async function buildGatewayModelIndex(
 	const resolveById = new Map<string, Model<Api>>();
 	const listModels: Model<Api>[] = [];
 	for (const model of models) {
-		if (source.kind === "broker" ? !storage.has(model.provider) : !storage.hasAuth(model.provider)) continue;
+		// Broker rows are the only auth a broker source serves; a local source also
+		// honours config-override (models.yml), env, and runtime keys, so it asks the
+		// key cascade instead of the stored-row set.
+		if (
+			source.kind === "broker"
+				? !storage.credentials.has(model.provider)
+				: storage.keys.source(model.provider) === undefined
+		) {
+			continue;
+		}
 		listModels.push(model);
 		for (const entry of modelIdEntries(model)) {
 			if (!resolveById.has(entry)) resolveById.set(entry, model);
@@ -602,7 +651,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const credentialSync = setInterval(() => {
 		void (async () => {
 			try {
-				if (await storage.pollExternalChanges()) await rebuildCatalog(true);
+				if (await storage.credentials.poll()) await rebuildCatalog(true);
 			} catch (error) {
 				logger.warn("auth-gateway credential sync failed", {
 					error: error instanceof Error ? error.message : String(error),
@@ -799,7 +848,7 @@ const STRICT_PROBE_MAX_CANDIDATES = 4;
 const STRICT_PROBE_PER_ATTEMPT_TIMEOUT_MS = 15_000;
 
 /**
- * Overall per-credential budget passed to {@link AuthStorage.checkCredentials}.
+ * Overall per-credential budget passed to {@link AuthStorage.health.check}.
  * Big enough to walk every candidate at the per-attempt cap with a small
  * margin for refresh/network overhead.
  */
@@ -810,8 +859,8 @@ const RETRYABLE_MODEL_ERROR_RE =
 	/not[_ -]found|invalid[_ -]model|model[_ -]is[_ -]not[_ -]valid|no longer supported|deprecated|404|decommissioned/i;
 
 /**
- * Rank bundled models for a provider in probe order: cheapest first, then by
- * id for determinism. Filters out non-bearer-auth APIs (Vertex/Bedrock),
+ * Rank bundled chat models for a provider in probe order: cheapest first, then
+ * by id for determinism. Filters out non-bearer-auth APIs (Vertex/Bedrock),
  * pi-native transport (would loop through the gateway), and placeholder /
  * router entries with negative/missing cost.
  */
@@ -819,6 +868,9 @@ function pickProbeCandidates(provider: string): Model<Api>[] {
 	const bundled = getBundledModels(provider as GeneratedProvider);
 	if (bundled.length === 0) return [];
 	const candidates = bundled.filter(model => {
+		// Only chat models answer a chat-completion ping; judge/image/tts/stt
+		// rows would fail the probe regardless of credential health.
+		if (modelKind(model) !== "chat") return false;
 		if (model.transport === "pi-native") return false;
 		if (STRICT_PROBE_SKIPPED_APIS.has(model.api)) return false;
 		if (!model.input.includes("text")) return false;
@@ -889,7 +941,7 @@ async function probeOneModel(
 
 /**
  * Build the {@link CompletionProbe} consumed by
- * {@link AuthStorage.checkCredentials} in `--strict` mode. Walks the cheapest
+ * {@link AuthStorage.health.check} in `--strict` mode. Walks the cheapest
  * candidates per provider, retrying on "model not found / invalid model"
  * errors so a stale catalog entry doesn't masquerade as a bad credential.
  * Stops as soon as one model returns a successful response (the credential
@@ -950,16 +1002,13 @@ async function appendResolvedLocalCredentialResults(
 	);
 	const extraResults: CredentialHealthResult[] = [];
 	for (const provider of [...providerNames].sort()) {
-		const origin = storage.getCredentialOrigin(provider);
-		if (
-			origin?.kind !== "runtime" &&
-			origin?.kind !== "config" &&
-			origin?.kind !== "env" &&
-			origin?.kind !== "fallback"
-		) {
+		const origin = storage.keys.source(provider);
+		// Ephemeral cascade legs (`--api-key`, models.yml override, env var) have no
+		// stored row, so the pool-backed usage health probe cannot see them.
+		if (origin?.kind !== "runtime" && origin?.kind !== "config" && origin?.kind !== "env") {
 			continue;
 		}
-		const apiKey = await storage.getApiKey(provider);
+		const apiKey = await storage.keys.get(provider);
 		const result: CredentialHealthResult = {
 			id: SYNTHETIC_LOCAL_CREDENTIAL_ID,
 			provider,
@@ -997,7 +1046,7 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const storage = source.storage;
 	try {
 		const completionProbe = flags.strict ? createStrictCompletionProbe() : undefined;
-		const storedResults = await storage.checkCredentials(
+		const storedResults = await storage.health.check(
 			completionProbe ? { completionProbe, completionTimeoutMs: STRICT_PROBE_OVERALL_TIMEOUT_MS } : undefined,
 		);
 		const results = await appendResolvedLocalCredentialResults(source, storedResults, completionProbe);

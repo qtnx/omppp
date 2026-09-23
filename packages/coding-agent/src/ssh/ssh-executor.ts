@@ -1,6 +1,6 @@
 import { logger, ptree } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
-import { OutputSink } from "../session/streaming-output";
+import { OutputSink } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";
 import { buildRemoteCommand, ensureConnection, ensureHostInfo, type SSHConnectionTarget } from "./connection-manager";
 import { hasSshfs, mountRemote } from "./sshfs-mount";

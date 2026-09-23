@@ -277,7 +277,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(session.getActiveToolNames()).toContain("glob");
 		expect(session.getDiscoverableTools({ source: "builtin" }).map(tool => tool.name)).toContain("grep");
 
-		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+		await authStorage.credentials.set("openai", { type: "api_key", key: "test-openai-key" });
 
 		await session.setModel(createLargeContextModel());
 
@@ -311,7 +311,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(session.getActiveToolNames()).toContain("glob");
 		expect(session.getDiscoverableTools({ source: "builtin" })).toEqual([]);
 
-		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+		await authStorage.credentials.set("openai", { type: "api_key", key: "test-openai-key" });
 
 		await session.setModel(getBundledModel("openai", "gpt-4o-mini"));
 
@@ -343,7 +343,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			customTools: [createMcpCustomTool("mcp__github_create_issue", "github", "create_issue")],
 		});
 
-		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+		await authStorage.credentials.set("openai", { type: "api_key", key: "test-openai-key" });
 		await session.setModel(getBundledModel("openai", "gpt-4o-mini"));
 
 		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
@@ -379,7 +379,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(session.getActiveToolNames()).not.toContain("mcp__switch_tool_0");
 		expect(session.getDiscoverableTools({ source: "mcp" })).toHaveLength(TOOL_DISCOVERY_AUTO_THRESHOLD + 1);
 
-		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+		await authStorage.credentials.set("openai", { type: "api_key", key: "test-openai-key" });
 		await session.setModel(createUnknownContextModel());
 
 		expect(session.getActiveToolNames()).toContain("search_tool_bm25");
@@ -409,7 +409,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(session.getActiveToolNames()).toContain("glob");
 		expect(session.getActiveToolNames()).not.toContain("search_tool_bm25");
 
-		await authStorage.set("openai", { type: "api_key", key: "test-openai-key" });
+		await authStorage.credentials.set("openai", { type: "api_key", key: "test-openai-key" });
 
 		await session.setModel(getBundledModel("openai", "gpt-4o-mini"));
 

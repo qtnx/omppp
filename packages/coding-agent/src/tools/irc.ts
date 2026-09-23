@@ -17,12 +17,12 @@ import { formatAge, formatDuration, prompt } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../irc/bus";
-import type { Theme } from "../modes/theme/theme";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import ircDescription from "../prompts/tools/irc.md" with { type: "text" };
 import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { SessionManager } from "../session/session-manager";
 import { canSpawnAtDepth } from "../task/types";
-import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
+import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "@oh-my-pi/pi-tui/render";
 import type { ToolSession } from ".";
 import {
 	createCachedComponent,
@@ -32,7 +32,7 @@ import {
 	PREVIEW_LIMITS,
 	replaceTabs,
 	type ToolUIColor,
-} from "./render-utils";
+} from "@oh-my-pi/pi-tui/render/render-utils";
 
 const DEFAULT_IRC_TIMEOUT_MS = 120_000;
 // Bound each blocking wait so agents can reassess instead of sleeping forever.

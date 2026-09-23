@@ -60,7 +60,7 @@ describe("CodeGraph startup", () => {
 	beforeAll(async () => {
 		root = fs.mkdtempSync(path.join(os.tmpdir(), "omp-codegraph-startup-"));
 		authStorage = await AuthStorage.create(path.join(root, "auth.db"));
-		authStorage.setRuntimeApiKey("openai", "test-key");
+		authStorage.keys.setRuntime("openai", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 	});
 

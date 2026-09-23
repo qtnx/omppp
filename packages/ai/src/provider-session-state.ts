@@ -3,7 +3,7 @@
  *
  * A host that keeps one provider-session map per logical conversation (the
  * auth-gateway's server-owned store, an in-process omp session) can outlive the
- * credential that filled it: `AuthStorage.markUsageLimitReached` and the
+ * credential that filled it: `AuthStorage.limits.markReached` and the
  * auth-retry resolver both switch a session to a sibling account mid-flight.
  * Most of what a provider learns is a property of the *endpoint*, so rebuilding
  * the whole map on a switch would re-pay every rejected round-trip the map
@@ -38,7 +38,7 @@
  *   very turn that rotated; it stays on its existing session-close path.
  */
 
-import { clearAnthropicFastModeFallback } from "./providers/anthropic";
+import { clearAnthropicFastModeFallback } from "./providers/anthropic-state";
 import { resetOpenAIResponsesAccountScopedState } from "./providers/openai-responses";
 import type { ProviderSessionState } from "./types";
 

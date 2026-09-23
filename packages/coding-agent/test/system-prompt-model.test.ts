@@ -38,7 +38,7 @@ async function expectPromptDateFromStartupTimezone(options: {
 import { renderDateCwdReminder } from ${JSON.stringify(
 			path.resolve(import.meta.dir, "../src/session/date-cwd-reminder.ts"),
 		)};
-import { formatLocalCalendarDate } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/utils/local-date.ts"))};
+import { formatLocalCalendarDate } from ${JSON.stringify(path.resolve(import.meta.dir, "../../tui/src/chrome/local-date.ts"))};
 
 setSystemTime(new Date(process.env.OMP_TEST_NOW!));
 try {
@@ -249,8 +249,8 @@ describe("AgentSession model-change prompt refresh", () => {
 
 	it("rebuilds the prompt with the new model when includeModelInPrompt is enabled", async () => {
 		const [modelA, modelB] = pickTwoModels();
-		authStorage.setRuntimeApiKey(modelA.provider, "key-a");
-		authStorage.setRuntimeApiKey(modelB.provider, "key-b");
+		authStorage.keys.setRuntime(modelA.provider, "key-a");
+		authStorage.keys.setRuntime(modelB.provider, "key-b");
 
 		let rebuildCount = 0;
 		session = newSession(modelA, Settings.isolated({ "compaction.enabled": false }), async () => {
@@ -270,8 +270,8 @@ describe("AgentSession model-change prompt refresh", () => {
 
 	it("does not rebuild a hidden-model prompt when the task policy stays the same", async () => {
 		const [modelA, modelB] = pickTwoModelsWithSameTaskPolicy();
-		authStorage.setRuntimeApiKey(modelA.provider, "key-a");
-		authStorage.setRuntimeApiKey(modelB.provider, "key-b");
+		authStorage.keys.setRuntime(modelA.provider, "key-a");
+		authStorage.keys.setRuntime(modelB.provider, "key-b");
 
 		let rebuildCount = 0;
 		session = newSession(
@@ -294,8 +294,8 @@ describe("AgentSession model-change prompt refresh", () => {
 		const plain = all.find(model => !usesCodexTaskPrompt(model.id) && modelPromptProfile(model.id) === undefined);
 		const gpt6 = all.find(model => !usesCodexTaskPrompt(model.id) && modelPromptProfile(model.id) === "openai-gpt");
 		if (!plain || !gpt6) throw new Error("Expected a default-profile model and a GPT-6 model");
-		authStorage.setRuntimeApiKey(plain.provider, "key-a");
-		authStorage.setRuntimeApiKey(gpt6.provider, "key-b");
+		authStorage.keys.setRuntime(plain.provider, "key-a");
+		authStorage.keys.setRuntime(gpt6.provider, "key-b");
 
 		let rebuildCount = 0;
 		session = newSession(
@@ -314,8 +314,8 @@ describe("AgentSession model-change prompt refresh", () => {
 
 	it("rebuilds a hidden-model prompt when the task policy changes", async () => {
 		const [modelA, modelB] = pickModelsAcrossTaskPolicies();
-		authStorage.setRuntimeApiKey(modelA.provider, "key-a");
-		authStorage.setRuntimeApiKey(modelB.provider, "key-b");
+		authStorage.keys.setRuntime(modelA.provider, "key-a");
+		authStorage.keys.setRuntime(modelB.provider, "key-b");
 
 		let rebuildCount = 0;
 		session = newSession(

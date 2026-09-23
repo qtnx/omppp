@@ -75,7 +75,7 @@ describe("AgentSession QA completion gate", () => {
 	beforeEach(async () => {
 		tempDir = TempDir.createSync("@pi-qa-gate-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
 		asyncJobManager = new AsyncJobManager({ onJobComplete: () => {} });

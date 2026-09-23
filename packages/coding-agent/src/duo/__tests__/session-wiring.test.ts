@@ -12,7 +12,7 @@ import {
 	resolveDuoOrchestratorOwnership,
 	shouldNotifyDuoPlanApproved,
 } from "../../session/agent-session";
-import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
+import { AUTO_THINKING, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { ToolSession } from "../../tools";
 import { DuoController, type DuoControllerHost, type DuoHandoffResult } from "../controller";
 import advisorInstructionsRaw from "../prompts/advisor-instructions.md" with { type: "text" };

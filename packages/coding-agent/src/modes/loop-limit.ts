@@ -1,8 +1,8 @@
 import type { LoopSnapshot } from "../session/loop-manager";
-import { previewLine, TRUNCATE_LENGTHS } from "../tools/render-utils";
+import { previewLine, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
 import { readShellWord } from "../tools/shell-tokenize";
-import type { LoopConditionConfig } from "./loop-condition";
-import { sanitizeStatusText } from "./shared";
+import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
+import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
 
 /** What happens to the session context before each repeated loop turn. */
 export type LoopContextMode = "prompt" | "compact" | "reset";

@@ -407,7 +407,7 @@ describe("session resume — workspace roots", () => {
 				],
 			});
 			const authStorage = await AuthStorage.create(path.join(dir, "auth.db"));
-			authStorage.setRuntimeApiKey("mock", "test-key");
+			authStorage.keys.setRuntime("mock", "test-key");
 			const { session: resumedSession } = await createAgentSession({
 				cwd: be,
 				agentDir: dir,

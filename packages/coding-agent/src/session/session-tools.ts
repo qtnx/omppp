@@ -14,12 +14,13 @@ import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/extensions";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
-import { type LocalProtocolOptions, stripXdUrlPrefix, XD_URL_PREFIX } from "../internal-urls";
+import { type LocalProtocolOptions } from "../internal-urls";
+import { stripXdUrlPrefix, XD_URL_PREFIX } from "@oh-my-pi/pi-tui/tools/xd-url";
 import { KanbanTool } from "../kanban/tool";
 import { deduplicateMCPToolsByName, resolveMCPToolAlias } from "../mcp/tool-bridge";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
 import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
-import { invalidateToolSchemaMetadata } from "../modes/utils/context-usage";
+import { invalidateToolSchemaMetadata } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import advisorSkillOversightPrompt from "../prompts/system/advisor-skill-oversight.md" with { type: "text" };
 import orchestratorModeActivePrompt from "../prompts/system/orchestrator-mode-active.md" with { type: "text" };
@@ -42,7 +43,8 @@ import { ConsultTool } from "../tools/consult";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { isFilesystemSourcePath } from "../tools/path-utils";
 import { supportsExternalThinking } from "../tools/think";
-import { ToolAbortError, ToolError } from "../tools/tool-errors";
+import { ToolAbortError } from "../tools/tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import {
 	isMountableUnderXdev,
 	listXdevTools,
@@ -51,8 +53,8 @@ import {
 	xdevDocsFor,
 	xdevEntries,
 } from "../tools/xdev";
-import { type EditMode, resolveEditMode } from "../utils/edit-mode";
-import { formatLocalCalendarDate } from "../utils/local-date";
+import { type EditMode } from "@oh-my-pi/pi-tui/tools/edit";
+import { resolveEditMode } from "../utils/edit-mode";
 import {
 	extractPermissionLocations,
 	getPermissionIntent,
@@ -143,7 +145,6 @@ interface SessionToolsOptions {
 	) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
 	systemPromptOverlay?: (baseSystemPrompt: string[]) => string[];
 	getPinnedRuntimeToolNames?: () => string[];
-	getLocalCalendarDate?: () => string;
 	getMcpServerInstructions?: () => Map<string, string> | undefined;
 	xdev?: XdevState;
 	setActiveToolNames?: (names: Iterable<string>) => void;
@@ -393,12 +394,19 @@ export class SessionTools {
 	 */
 	#basePromptXdevNames: ReadonlySet<string> = new Set();
 	#toolRegistryMutationScope = new AsyncLocalStorage<boolean>();
+	/**
+	 * Render-scoped candidate hint visibility. Rebuild frames run inside
+	 * `.run(candidate, …)` so tool getters read the candidate during render and
+	 * signature computation; everything outside the frame reads the committed
+	 * {@link #skillHintVisible}. Abandoned frames simply exit their scope — no
+	 * rollback write that could clobber a newer commit.
+	 */
+	#skillHintRenderScope = new AsyncLocalStorage<boolean>();
 	#toolRegistryMutationTail: Promise<void> = Promise.resolve();
 	#promptModelKey: string | undefined;
 	#rebuildSystemPrompt: SessionToolsOptions["rebuildSystemPrompt"];
 	#systemPromptOverlay: SessionToolsOptions["systemPromptOverlay"];
 	#getPinnedRuntimeToolNames: SessionToolsOptions["getPinnedRuntimeToolNames"];
-	#getLocalCalendarDate: () => string;
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
 	/**
 	 * Session-lifetime factory shared by every custom-tool wrapper. Defining it
@@ -432,6 +440,17 @@ export class SessionTools {
 	#skillWarnings: SkillWarning[];
 	#skillsSettings: SkillsSettings | undefined;
 	#skillsReloadable: boolean;
+	/**
+	 * Snapshot of the skill-URI hint visibility taken at the last system-prompt
+	 * rebuild. The provider-visible system prompt is deliberately byte-stable
+	 * across mid-session `/skillful` toggles (a notice rides the next turn
+	 * instead), so the provider-side hint in `BashTool.description` and
+	 * `ReadTool.parameters` must freeze to the same state — reading the live
+	 * setting per request would mutate the provider tool prefix without the
+	 * intended prompt refresh. The setters below carry the snapshot into the
+	 * tools; the refresh lifecycle updates it.
+	 */
+	#skillHintVisible = false;
 	#acpPermissionDecisions = new Map<string, "allow_always" | "reject_always">();
 	#reloadSshTool: SessionToolsOptions["reloadSshTool"];
 	#explicitlyRequestedToolNames: ReadonlySet<string> | undefined;
@@ -482,7 +501,6 @@ export class SessionTools {
 		this.#rebuildSystemPrompt = options.rebuildSystemPrompt;
 		this.#systemPromptOverlay = options.systemPromptOverlay;
 		this.#getPinnedRuntimeToolNames = options.getPinnedRuntimeToolNames;
-		this.#getLocalCalendarDate = options.getLocalCalendarDate ?? formatLocalCalendarDate;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
 		this.#xdev = options.xdev;
 		if (this.#xdev && this.#xdev.tools !== this.#toolRegistry) {
@@ -495,6 +513,7 @@ export class SessionTools {
 		this.#skillWarnings = options.skillWarnings ?? [];
 		this.#skillsSettings = options.skillsSettings;
 		this.#skillsReloadable = options.skillsReloadable ?? true;
+		this.#skillHintVisible = this.#deriveSkillHintVisible();
 		this.#reloadSshTool = options.reloadSshTool;
 		this.#explicitlyRequestedToolNames = options.explicitlyRequestedToolNames;
 		this.#hasExplicitlyRequestedMCPTools =
@@ -606,6 +625,23 @@ export class SessionTools {
 		return this.#skillsSettings;
 	}
 
+	/**
+	 * Skill-URI hint visibility (see {@link #skillHintVisible}). Tools
+	 * read this instead of the live `skillful` setting so the provider tool
+	 * prefix stays byte-stable between system-prompt rebuilds.
+	 *
+	 * Inside a rebuild frame ({@link #skillHintRenderScope}) this returns the
+	 * candidate so the rendered prompt and computed signature see the new
+	 * state; outside, the committed snapshot.
+	 */
+	get skillHintVisible(): boolean {
+		return this.#skillHintRenderScope.getStore() ?? this.#skillHintVisible;
+	}
+
+	/** Derives the candidate visibility from the live setting without publishing it. */
+	#deriveSkillHintVisible(): boolean {
+		return this.#host.settings.get("skillful") === true && (this.#skills?.length ?? 0) > 0;
+	}
 	/** Drops cached per-session ACP `allow_always`/`reject_always` decisions. */
 	clearAcpPermissionDecisions(): void {
 		this.#acpPermissionDecisions.clear();
@@ -1484,10 +1520,13 @@ export class SessionTools {
 			this.#setActiveToolNames?.(nextToolPredicateNames);
 		}
 		let frozenSignature: string | undefined;
+		let candidateSkillHintVisible: boolean | undefined;
 		try {
 			if (restrictDeviceOnlyWrite) this.#setDeviceOnlyWrite?.(true);
 			if (upgradeDeviceOnlyWrite) this.#setPendingFullWriteDescription?.(true);
 			if (this.#rebuildSystemPrompt) {
+				// Local alias: closures below cannot observe the field narrowing.
+				const rebuildSystemPrompt = this.#rebuildSystemPrompt;
 				// The provider receives only `appliedNames`, but prompt capability and
 				// safety gates must see every enabled tool that remains callable via
 				// the Code Mode eval bridge. The rendered tool inventory is restricted
@@ -1505,12 +1544,20 @@ export class SessionTools {
 					const tool = this.#toolRegistry.get(name);
 					return tool ? [tool] : [];
 				});
-				const signature = this.#computeAppliedToolSignature(
-					promptToolNames,
-					promptTools,
-					directToolNames,
-					promptXdevRouteSources,
-					mountedSignatureTools,
+				// Derive the candidate visibility and run both the signature
+				// computation and the awaited render inside its scope: the tool
+				// getters read the candidate, so prompt, signature and provider
+				// schemas describe the same state. Nothing publishes outside this
+				// frame until the commit below.
+				const candidate = this.#deriveSkillHintVisible();
+				const signature = this.#skillHintRenderScope.run(candidate, () =>
+					this.#computeAppliedToolSignature(
+						promptToolNames,
+						promptTools,
+						directToolNames,
+						promptXdevRouteSources,
+						mountedSignatureTools,
+					),
 				);
 				// Mid-conversation, a change confined to the mounted MCP route guidance
 				// (discovery activating an `xd://` MCP device, a server adding a tool)
@@ -1531,25 +1578,29 @@ export class SessionTools {
 					(this.#host.model()?.thinking?.prefixBinding === true || onlyMountedMCPRoutesChanged);
 				if (freezeImplicitPromptRefresh) {
 					frozenSignature = signature;
+					candidateSkillHintVisible = undefined;
 				} else if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
 					const built = await untilAborted(
 						signal,
-						this.#rebuildSystemPrompt(promptToolNames, this.#promptToolRegistryFor(promptToolNames), {
-							directToolNames,
-							xdevTools: promptXdev ? xdevEntries(promptXdev) : [],
-							xdevDocs: promptXdev
-								? xdevDocsAll(
-										promptXdev,
-										this.#host.settings.get("tools.xdevDocs"),
-										this.#host.settings.get("tools.xdevInlineDevices"),
-									)
-								: "",
-							xdevRouteSources: promptXdevRouteSources,
-						}),
+						this.#skillHintRenderScope.run(candidate, () =>
+							rebuildSystemPrompt(promptToolNames, this.#promptToolRegistryFor(promptToolNames), {
+								directToolNames,
+								xdevTools: promptXdev ? xdevEntries(promptXdev) : [],
+								xdevDocs: promptXdev
+									? xdevDocsAll(
+											promptXdev,
+											this.#host.settings.get("tools.xdevDocs"),
+											this.#host.settings.get("tools.xdevInlineDevices"),
+										)
+									: "",
+								xdevRouteSources: promptXdevRouteSources,
+							}),
+						),
 					);
 					rebuiltSystemPrompt = built.systemPrompt;
 					rebuiltSignature = signature;
 					rebuiltXdevCatalogNames = built.xdevCatalogNames;
+					candidateSkillHintVisible = candidate;
 				}
 			}
 			signal?.throwIfAborted();
@@ -1608,6 +1659,9 @@ export class SessionTools {
 				// tracking any later frozen changes that must follow a delivered base.
 				this.#basePromptReflectsRosterDelta = true;
 				this.#pendingToolRosterDeltaAfterBase = undefined;
+				// Publish the exact visibility the prompt rendered with — never
+				// re-derive from live settings, which could diverge mid-flight.
+				this.#skillHintVisible = candidateSkillHintVisible ?? this.#skillHintVisible;
 			} else if (frozenSignature) {
 				this.#notifyToolRosterDelta(previousActiveToolNames, appliedNames);
 				this.#lastAppliedToolSignature = frozenSignature;
@@ -2281,8 +2335,10 @@ export class SessionTools {
 		});
 	}
 
-	async #prepareBaseSystemPrompt(): Promise<SystemPromptPreparation | undefined> {
-		if (this.#host.isDisposed() || !this.#rebuildSystemPrompt) return;
+	async #prepareBaseSystemPrompt(isCurrent?: () => boolean): Promise<SystemPromptPreparation | undefined> {
+		if (this.#host.isDisposed() || !this.#rebuildSystemPrompt || isCurrent?.() === false) return;
+		// Local alias: closures below cannot observe the field narrowing.
+		const rebuildSystemPrompt = this.#rebuildSystemPrompt;
 		const activeToolNames = this.getActiveToolNames();
 		const promptToolNames =
 			this.#codeModeDirectWireSignature === undefined ? activeToolNames : this.getEnabledToolNames();
@@ -2290,32 +2346,58 @@ export class SessionTools {
 		const directToolNames = this.#codeModeDirectWireSignature === undefined ? undefined : activeToolNames;
 		this.#setActiveToolNames?.(this.#toolPredicateNames ?? activeToolNames);
 		const previousBaseSystemPrompt = this.#baseSystemPrompt;
+		// Derive the candidate and run the awaited render inside its scope: the
+		// tool getters read the candidate while the prompt renders, so the built
+		// prompt and the captured signature describe the same state. Nothing is
+		// published to {@link #skillHintVisible} here — an abandoned, stale or
+		// throwing preparation leaves the committed snapshot untouched, and the
+		// scope frame (not a rollback write) guarantees no clobbering of a newer
+		// winner.
 		const promptXdev = this.#xdev;
 		const promptXdevRouteSources = promptXdev ? listXdevTools(promptXdev) : [];
+		const candidate = this.#deriveSkillHintVisible();
+		const built = await this.#skillHintRenderScope.run(candidate, () =>
+			rebuildSystemPrompt(promptToolNames, this.#promptToolRegistryFor(promptToolNames), {
+				directToolNames,
+				xdevTools: promptXdev ? xdevEntries(promptXdev) : [],
+				xdevDocs: promptXdev
+					? xdevDocsAll(
+							promptXdev,
+							this.#host.settings.get("tools.xdevDocs"),
+							this.#host.settings.get("tools.xdevInlineDevices"),
+						)
+					: "",
+				xdevRouteSources: promptXdevRouteSources,
+			}),
+		);
+		const promptTools = promptToolNames
+			.map(name => this.#toolRegistry.get(name))
+			.filter((tool): tool is AgentTool => tool != null);
 		const mountedSignatureTools = [...(promptXdev?.mountedNames ?? [])].flatMap(name => {
 			const tool = this.#toolRegistry.get(name);
 			return tool ? [tool] : [];
 		});
-		const built = await this.#rebuildSystemPrompt(promptToolNames, this.#promptToolRegistryFor(promptToolNames), {
-			directToolNames,
-			xdevTools: promptXdev ? xdevEntries(promptXdev) : [],
-			xdevDocs: promptXdev
-				? xdevDocsAll(
-						promptXdev,
-						this.#host.settings.get("tools.xdevDocs"),
-						this.#host.settings.get("tools.xdevInlineDevices"),
-					)
-				: "",
-			xdevRouteSources: promptXdevRouteSources,
-		});
-		if (this.#host.isDisposed()) return;
+		const signature = this.#skillHintRenderScope.run(candidate, () =>
+			this.#computeAppliedToolSignature(
+				promptToolNames,
+				promptTools,
+				directToolNames,
+				promptXdevRouteSources,
+				mountedSignatureTools,
+			),
+		);
 		return {
 			systemPrompt: built.systemPrompt,
 			commit: () => {
-				if (this.#host.isDisposed()) return false;
-				// A handler may have rebuilt policy while this preparation was awaiting its final commit.
+				// Publish only to a live, current session whose base this
+				// preparation still owns.
+				if (this.#host.isDisposed() || isCurrent?.() === false) return false;
+				// A handler may have rebuilt policy while this preparation was
+				// awaiting its final commit: its own lifecycle published its own
+				// snapshot, so only carry the prompt forward.
 				if (this.#baseSystemPrompt !== previousBaseSystemPrompt) return true;
 				this.#baseSystemPrompt = built.systemPrompt;
+				this.#skillHintVisible = candidate;
 				this.#setBasePromptXdevNames(built.xdevCatalogNames);
 				if (
 					previousBaseSystemPrompt.length !== this.#baseSystemPrompt.length ||
@@ -2331,17 +2413,7 @@ export class SessionTools {
 				this.#basePromptReflectsRosterDelta = true;
 				this.#pendingToolRosterDeltaAfterBase = undefined;
 				this.#promptModelKey = this.#currentPromptModelKey();
-				// Match the committed prompt so an unchanged tool set can skip rebuilding it.
-				const promptTools = promptToolNames
-					.map(name => this.#toolRegistry.get(name))
-					.filter((tool): tool is AgentTool => tool != null);
-				this.#lastAppliedToolSignature = this.#computeAppliedToolSignature(
-					promptToolNames,
-					promptTools,
-					directToolNames,
-					promptXdevRouteSources,
-					mountedSignatureTools,
-				);
+				this.#lastAppliedToolSignature = signature;
 				return true;
 			},
 		};
@@ -2358,7 +2430,12 @@ export class SessionTools {
 	 * delivers its prepared messages after the originals, where the recall would
 	 * read as a second user turn.
 	 */
-	async buildAgentStartContext(promptText: string, options?: { stageMemory?: boolean }): Promise<AgentStartContext> {
+	async buildAgentStartContext(
+		promptText: string,
+		options?: { stageMemory?: boolean },
+		isCurrent?: () => boolean,
+		signal?: AbortSignal,
+	): Promise<AgentStartContext> {
 		const systemPrompt = this.#applySystemPromptOverlay(this.#baseSystemPrompt);
 		if (options?.stageMemory === false) {
 			return await this.#stageLearningContext(promptText, { systemPrompt });
@@ -2367,7 +2444,12 @@ export class SessionTools {
 		if (!backend.beforeAgentStartPrompt) return await this.#stageLearningContext(promptText, { systemPrompt });
 
 		try {
-			const preparation = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText);
+			const preparation = await backend.beforeAgentStartPrompt(
+				this.#host.memoryBackendSession(),
+				promptText,
+				signal,
+			);
+			if (isCurrent && !isCurrent()) return await this.#stageLearningContext(promptText, { systemPrompt });
 			if (!preparation) return await this.#stageLearningContext(promptText, { systemPrompt });
 			const memoryContext = preparation.context;
 			const context: AgentStartContext = {
@@ -2550,24 +2632,11 @@ export class SessionTools {
 				this.#mcpManagerToolNames = previousMcpManagerToolNames;
 			};
 
-			const getCustomToolContext = (): CustomToolContext => ({
-				sessionManager: this.#host.sessionManager,
-				modelRegistry: this.#host.modelRegistry,
-				model: this.#host.model(),
-				isIdle: () => !this.#host.isStreaming(),
-				hasQueuedMessages: () => this.#host.queuedMessageCount() > 0,
-				abort: () => {
-					this.#host.agent.abort();
-				},
-				settings: this.#host.settings,
-				localProtocolOptions: this.#host.localProtocolOptions(),
-			});
-
 			const extensionRunner = this.#host.extensionRunner();
 			const uniqueMcpTools = deduplicateMCPToolsByName(mcpTools);
 			const managerTools = uniqueMcpTools.map(customTool => {
 				const wrapped = wrapToolWithMetaNotice(
-					CustomToolAdapter.wrap(customTool, getCustomToolContext) as AgentTool,
+					CustomToolAdapter.wrap(customTool, this.#getCustomToolContext) as AgentTool,
 				);
 				return (extensionRunner ? new ExtensionToolWrapper(wrapped, extensionRunner) : wrapped) as AgentTool;
 			});

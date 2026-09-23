@@ -3,7 +3,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { $which, getPuppeteerDir, logger, removeWithRetries } from "@oh-my-pi/pi-utils";
 import type * as BrowsersNs from "@oh-my-pi/pi-utils/browsers";
-import type { Browser, CDPSession, JSHandle, Page, default as Puppeteer, Target } from "puppeteer-core";
+import type {
+	Browser,
+	CDPSession,
+	Device,
+	JSHandle,
+	NetworkConditions,
+	Page,
+	default as Puppeteer,
+	Target,
+} from "puppeteer-core";
 import stealthTamperingScript from "../puppeteer/00_stealth_tampering.txt" with { type: "text" };
 import stealthActivityScript from "../puppeteer/01_stealth_activity.txt" with { type: "text" };
 import stealthHairlineScript from "../puppeteer/02_stealth_hairline.txt" with { type: "text" };
@@ -18,7 +27,7 @@ import stealthPluginsScript from "../puppeteer/10_stealth_plugins.txt" with { ty
 import stealthHardwareScript from "../puppeteer/11_stealth_hardware.txt" with { type: "text" };
 import stealthCodecsScript from "../puppeteer/12_stealth_codecs.txt" with { type: "text" };
 import stealthWorkerScript from "../puppeteer/13_stealth_worker.txt" with { type: "text" };
-import { ToolError } from "../tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 export const DEFAULT_VIEWPORT = { width: 1365, height: 768, deviceScaleFactor: 1.25 };
 
@@ -82,6 +91,8 @@ const USER_AGENT_TARGET_TYPES = new Set(["page", "webview", "background_page"]);
 let puppeteerCwdFailed = false;
 let puppeteerCwdFailure: unknown;
 let jsHandleConstructor: typeof JSHandle | undefined;
+let knownDevices: Readonly<Record<string, Device>> | undefined;
+let predefinedNetworkConditions: Readonly<Record<string, NetworkConditions>> | undefined;
 
 /** Identify handles using the lazily loaded Puppeteer instance without triggering an early import. */
 export function isPuppeteerHandle(value: unknown): value is JSHandle {
@@ -111,6 +122,8 @@ async function importPuppeteerWithSafeCwd(safeDir: string): Promise<typeof Puppe
 			const module = await import("puppeteer-core");
 			loaded = module.default;
 			jsHandleConstructor = module.JSHandle;
+			knownDevices = module.KnownDevices;
+			predefinedNetworkConditions = module.PredefinedNetworkConditions;
 		} catch (error) {
 			importFailed = true;
 			importFailure = error;
@@ -167,6 +180,18 @@ export async function loadPuppeteerInWorker(safeDir: string): Promise<typeof Pup
 	const loaded = await loadPuppeteerImport(safeDir, false);
 	puppeteerModuleWorker = loaded;
 	return loaded;
+}
+
+/** Return device descriptors from the already-loaded Puppeteer module. */
+export function loadedKnownDevices(): Readonly<Record<string, Device>> {
+	if (!knownDevices) throw new ToolError("Puppeteer device descriptors are not loaded");
+	return knownDevices;
+}
+
+/** Return network presets from the already-loaded Puppeteer module. */
+export function loadedNetworkConditions(): Readonly<Record<string, NetworkConditions>> {
+	if (!predefinedNetworkConditions) throw new ToolError("Puppeteer network presets are not loaded");
+	return predefinedNetworkConditions;
 }
 
 let browsersModule: typeof BrowsersNs | undefined;
@@ -412,11 +437,20 @@ async function resolveSystemChromium(): Promise<string | undefined> {
 	return undefined;
 }
 
+/** Per-process launch features controlled by browser.open options. */
+export interface HeadlessLaunchFeatures {
+	/** Trust invalid HTTPS certificates in this Chromium process. */
+	ignoreHttpsErrors?: boolean;
+	/** Permit file: documents to read other local files. */
+	allowFileAccess?: boolean;
+	/** Add the per-platform hardware-GPU ANGLE flags (default true). */
+	gpu?: boolean;
+}
+
 /** Options shared by headless Chromium consumers. */
-export interface LaunchHeadlessOptions {
+export interface LaunchHeadlessOptions extends HeadlessLaunchFeatures {
 	headless: boolean;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
-	gpu?: boolean;
 	/** Additional Chromium arguments merged with the centralized launch defaults. */
 	args?: readonly string[];
 	/** Additional exact Puppeteer default arguments to suppress. */
@@ -443,11 +477,6 @@ export interface LaunchHeadlessResult {
 }
 
 /**
- * Base Chromium argv shared by process-local puppeteer launches and the
- * broker-owned shared browser: sandbox/stealth flags, window size, and
- * PUPPETEER_PROXY* env-derived proxy flags.
- */
-/**
  * Hardware-GPU ANGLE backend per platform. Vulkan is Linux-only: macOS has no
  * Vulkan ICD, so forcing `--use-angle=vulkan` there makes ANGLE fall back to
  * SwiftShader (CPU rendering). Metal is the native macOS backend; Windows keeps
@@ -464,19 +493,28 @@ export function gpuLaunchArgs(platform: NodeJS.Platform = process.platform): str
 	}
 }
 
+/**
+ * Base Chromium argv shared by process-local puppeteer launches and the
+ * broker-owned shared browser: sandbox/stealth flags, window size, and
+ * PUPPETEER_PROXY* env-derived proxy flags.
+ */
 export function buildHeadlessLaunchArgs(
 	viewport: { width: number; height: number },
-	gpu = true,
+	features: HeadlessLaunchFeatures = {},
 	platform: NodeJS.Platform = process.platform,
 ): string[] {
 	const launchArgs = [
 		"--no-sandbox",
 		"--disable-setuid-sandbox",
 		"--disable-blink-features=AutomationControlled",
+		"--hide-scrollbars",
+		"--enable-features=WebMCPTesting,DevToolsWebMCPSupport",
 		`--window-size=${viewport.width},${viewport.height}`,
 		"--enable-unsafe-swiftshader",
 	];
-	if (gpu) {
+	if (features.ignoreHttpsErrors) launchArgs.push("--ignore-certificate-errors");
+	if (features.allowFileAccess) launchArgs.push("--allow-file-access-from-files");
+	if (features.gpu ?? true) {
 		launchArgs.push(...gpuLaunchArgs(platform));
 	}
 	const proxy = process.env.PUPPETEER_PROXY;
@@ -490,7 +528,10 @@ export function buildHeadlessLaunchArgs(
 		}
 	}
 	const ignoreCert = process.env.PUPPETEER_PROXY_IGNORE_CERT_ERRORS?.toLowerCase();
-	if (ignoreCert === "true" || ignoreCert === "1" || ignoreCert === "yes" || ignoreCert === "on") {
+	if (
+		(ignoreCert === "true" || ignoreCert === "1" || ignoreCert === "yes" || ignoreCert === "on") &&
+		!launchArgs.includes("--ignore-certificate-errors")
+	) {
 		launchArgs.push("--ignore-certificate-errors");
 	}
 	return launchArgs;
@@ -504,7 +545,11 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 		deviceScaleFactor: vp.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
 	};
 	const puppeteer = await loadPuppeteer();
-	const launchArgs = buildHeadlessLaunchArgs(initialViewport, opts.gpu ?? true);
+	const launchArgs = buildHeadlessLaunchArgs(initialViewport, {
+		ignoreHttpsErrors: opts.ignoreHttpsErrors,
+		allowFileAccess: opts.allowFileAccess,
+		gpu: opts.gpu,
+	});
 	for (const arg of opts.args ?? []) {
 		if (!launchArgs.includes(arg)) launchArgs.push(arg);
 	}
@@ -574,7 +619,7 @@ export async function resolveSharedBrowserLaunchSpec(opts: {
 	const ignored = new Set(stealthIgnoreDefaultArgs(executablePath));
 	const defaults = await puppeteer.defaultArgs({
 		headless: opts.headless,
-		args: buildHeadlessLaunchArgs(vp, opts.gpu ?? true),
+		args: buildHeadlessLaunchArgs(vp, { gpu: opts.gpu }),
 		userDataDir: opts.userDataDir,
 	});
 	return {

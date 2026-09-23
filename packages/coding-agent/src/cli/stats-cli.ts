@@ -7,6 +7,7 @@
 import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
 import { formatDuration, formatNumber, formatPercent } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { formatCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
 import { createReviewFindingLessonGenerator } from "../stats/review-finding-lesson-generator";
 import { openPath } from "../utils/open";
 
@@ -61,12 +62,6 @@ export interface StatsCommandArgs {
 	host: string;
 	json: boolean;
 	summary: boolean;
-}
-
-function formatCost(n: number): string {
-	if (n < 0.01) return `$${n.toFixed(4)}`;
-	if (n < 1) return `$${n.toFixed(3)}`;
-	return `$${n.toFixed(2)}`;
 }
 
 function normalizePremiumRequests(n: number): number {

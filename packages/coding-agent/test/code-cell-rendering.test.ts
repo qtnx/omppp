@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { renderCodeCell } from "@oh-my-pi/pi-coding-agent/tui/code-cell";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { renderCodeCell } from "@oh-my-pi/pi-tui/render/code-cell";
 
 const originalDisableSyntaxHighlight = Bun.env.OMP_DISABLE_SYNTAX_HIGHLIGHT;
 

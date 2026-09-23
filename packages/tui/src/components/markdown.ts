@@ -2122,17 +2122,8 @@ export class Markdown implements Component {
 			return EMPTY_RENDER_LINES;
 		}
 
-		// Replace tabs with spaces, then repair orphan fences in final mode.
-		const tabbed = replaceTabs(this.#text);
-		const normalizedText = this.transientRenderCache ? tabbed : repairOrphanClosingFence(tabbed);
-		if (!this.transientRenderCache && normalizedText.length < tabbed.length) {
-			// repairOrphanClosingFence deleted bytes this frame (orphan fence
-			// removed): the guard-scan memo's checked region is no longer
-			// byte-identical, and a cached false verdict may have been based
-			// on the very CR/ref-def line that was deleted. Invalidate so the
-			// next #lexTokens re-derives on the repaired buffer.
-			this.#lastScanValid = false;
-		}
+		// Fast-path inputs only: signature first, so the append-only branch below
+		// can return without scanning the whole document for tabs.
 		const signature = this.#renderSignature(width, paddingX);
 		// B+ fast path: an append-only, same-line delta re-renders ONLY the
 		// last content row (the paragraph's trailing wrapped row) with the
@@ -2258,7 +2249,20 @@ export class Markdown implements Component {
 			// Hazard → disarm until the next real render re-captures.
 			this.#fastTail = undefined;
 		}
-		// Replace tabs with 3 spaces for consistent rendering
+		// Normalize only after the append-only branch: the fast path above
+		// returns without ever reading these, so streaming frames skip the
+		// whole-document tab scan/copy (the delta-only replaceTabs inside the
+		// branch is the only tab work a streamed frame pays).
+		const tabbed = this.#text.includes("\t") ? replaceTabs(this.#text) : this.#text;
+		const normalizedText = this.transientRenderCache ? tabbed : repairOrphanClosingFence(tabbed);
+		if (!this.transientRenderCache && normalizedText.length < tabbed.length) {
+			// repairOrphanClosingFence deleted bytes this frame (orphan fence
+			// removed): the guard-scan memo's checked region is no longer
+			// byte-identical, and a cached false verdict may have been based
+			// on the very CR/ref-def line that was deleted. Invalidate so the
+			// next #lexTokens re-derives on the repaired buffer.
+			this.#lastScanValid = false;
+		}
 
 		// L2: module-level LRU — survives component disposal/recreation across
 		// session-tree navigations. Key encodes every dimension that affects the
@@ -3011,7 +3015,7 @@ export class Markdown implements Component {
 				// resolver. The art is preformatted, so clip each row to the content
 				// width: the later wrap pass would otherwise fragment the box-drawing
 				// canvas. truncateToWidth is ANSI- and wide-char-aware, and the
-				// resolver already re-fits over-wide horizontal graphs top-down.
+				// resolver picks the shortest orientation that fits this width.
 				if (token.lang === "mermaid" && this.#theme.resolveMermaidAscii) {
 					const ascii = this.#theme.resolveMermaidAscii(token.text, width);
 					if (ascii) {

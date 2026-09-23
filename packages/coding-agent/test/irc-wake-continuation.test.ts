@@ -56,9 +56,11 @@ class InMemoryAuthCredentialStore implements AuthCredentialStore {
 		if (row) row.credential = { ...credential };
 	}
 
-	deleteAuthCredential(id: number, disabledCause: string): void {
-		const row = this.#credentials.find(entry => entry.id === id);
-		if (row) row.disabledCause = disabledCause;
+	async deleteAuthCredential(id: number, disabledCause: string): Promise<boolean> {
+		const row = this.#credentials.find(entry => entry.id === id && entry.disabledCause === null);
+		if (!row) return false;
+		row.disabledCause = disabledCause;
+		return true;
 	}
 
 	tryDisableAuthCredentialIfMatches(id: number, expectedData: string, disabledCause: string): boolean {
@@ -68,14 +70,14 @@ class InMemoryAuthCredentialStore implements AuthCredentialStore {
 		return true;
 	}
 
-	replaceAuthCredentialsForProvider(provider: string, credentials: AuthCredential[]): StoredAuthCredential[] {
+	async replaceAuthCredentials(provider: string, credentials: AuthCredential[]): Promise<StoredAuthCredential[]> {
 		this.#credentials = this.#credentials.filter(entry => entry.provider !== provider);
 		const rows = credentials.map(credential => this.#createRow(provider, credential));
 		this.#credentials.push(...rows);
 		return rows.map(row => ({ ...row, credential: { ...row.credential } }));
 	}
 
-	upsertAuthCredentialForProvider(provider: string, credential: AuthCredential): StoredAuthCredential[] {
+	async upsertAuthCredential(provider: string, credential: AuthCredential): Promise<StoredAuthCredential[]> {
 		const existing = this.#credentials.find(
 			entry => entry.provider === provider && JSON.stringify(entry.credential) === JSON.stringify(credential),
 		);
@@ -83,7 +85,7 @@ class InMemoryAuthCredentialStore implements AuthCredentialStore {
 		return this.listAuthCredentials(provider);
 	}
 
-	deleteAuthCredentialsForProvider(provider: string, disabledCause: string): void {
+	async deleteAuthCredentials(provider: string, disabledCause: string): Promise<void> {
 		for (const row of this.#credentials) {
 			if (row.provider === provider) row.disabledCause = disabledCause;
 		}
@@ -135,7 +137,7 @@ async function createHarness(responses: Array<MockResponse | (() => MockResponse
 	const tempDir = path.join(os.tmpdir(), `pi-irc-wake-test-${Snowflake.next()}`);
 	fs.mkdirSync(tempDir, { recursive: true });
 	const authStorage = new AuthStorage(new InMemoryAuthCredentialStore());
-	authStorage.setRuntimeApiKey("anthropic", "test-key");
+	authStorage.keys.setRuntime("anthropic", "test-key");
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("expected claude-sonnet-4-5 to be bundled");
 	const mock = createMockModel({ responses });

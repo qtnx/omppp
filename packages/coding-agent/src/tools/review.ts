@@ -1,9 +1,11 @@
 /**
- * Review-finding shapes and priority helpers.
+ * Fork-only `report_finding` tool: reviewers report each blocking issue as they
+ * inspect the diff, and the subprocess tool registry renders the collected
+ * findings on the reviewer's transcript.
  *
- * The `report_finding` tool was removed; reviewers now record findings through
- * incremental `yield` sections (`type: ["findings"]`). These parsers and
- * priority-display helpers back the reviewer render path in `task/render.ts`.
+ * The shared finding shapes and priority helpers now live in
+ * `@oh-my-pi/pi-tui/tools/task` (TUI decoupling); they are re-exported here so
+ * existing `../tools/review` consumers keep their import path.
  */
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -12,40 +14,38 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Container, Text } from "@oh-my-pi/pi-tui";
-import { isRecord } from "@oh-my-pi/pi-utils";
-import type { Theme, ThemeColor } from "../modes/theme/theme";
+import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
+import {
+	type FindingDetails,
+	type FindingPriority,
+	getPriorityInfo,
+	parseFindingDetails,
+} from "@oh-my-pi/pi-tui/tools/task";
 import { subprocessToolRegistry } from "../task/subprocess-tool-registry";
 import type { ReviewFinding } from "../task/types";
-export type FindingPriority = "P0" | "P1" | "P2" | "P3";
 
-export interface FindingPriorityInfo {
-	ord: 0 | 1 | 2 | 3;
-	symbol: "status.error" | "status.warning" | "status.info";
-	color: ThemeColor;
-}
+export {
+	type FindingDetails,
+	type FindingPriority,
+	type FindingPriorityInfo,
+	getPriorityInfo,
+	isFindingPriority,
+	PRIORITY_LABELS,
+	parseFindingDetails,
+	type SubmitReviewDetails,
+} from "@oh-my-pi/pi-tui/tools/task";
 
-const PRIORITY_INFO: Record<FindingPriority, FindingPriorityInfo> = {
-	P0: { ord: 0, symbol: "status.error", color: "error" },
-	P1: { ord: 1, symbol: "status.warning", color: "warning" },
-	P2: { ord: 2, symbol: "status.warning", color: "muted" },
-	P3: { ord: 3, symbol: "status.info", color: "accent" },
-};
+/** Validated finding payload reported by the reviewer subagent. */
+export type ReportFindingDetails = FindingDetails;
 
-export const PRIORITY_LABELS: FindingPriority[] = ["P0", "P1", "P2", "P3"];
-
-export function isFindingPriority(value: unknown): value is FindingPriority {
-	return value === "P0" || value === "P1" || value === "P2" || value === "P3";
-}
-
-export function getPriorityInfo(priority: FindingPriority): FindingPriorityInfo {
-	return PRIORITY_INFO[priority] ?? { ord: 3, symbol: "status.info", color: "muted" };
-}
+/** Legacy parser name retained for the subprocess tool registry. */
+export const parseReportFindingDetails = parseFindingDetails;
 
 function getPriorityDisplay(
 	priority: FindingPriority,
 	theme: Theme,
 ): { label: string; icon: string; color: ThemeColor } {
-	const meta = PRIORITY_INFO[priority] ?? { symbol: "status.info", color: "muted" as const };
+	const meta = getPriorityInfo(priority);
 	return { label: priority, icon: theme.styledSymbol(meta.symbol, meta.color), color: meta.color };
 }
 
@@ -58,76 +58,6 @@ const reportFindingParams = type({
 	line_start: type("number").describe("start line"),
 	line_end: type("number").describe("end line"),
 });
-export interface ReportFindingDetails {
-	title: string;
-	body: string;
-	priority: FindingPriority;
-	confidence: number;
-	file_path: string;
-	line_start: number;
-	line_end: number;
-}
-
-export type FindingDetails = ReportFindingDetails;
-
-function normalizeFindingPriority(value: unknown): FindingPriority | undefined {
-	if (isFindingPriority(value)) return value;
-	if (value === 0) return "P0";
-	if (value === 1) return "P1";
-	if (value === 2) return "P2";
-	if (value === 3) return "P3";
-	return undefined;
-}
-
-export function parseFindingDetails(value: unknown): ReportFindingDetails | undefined {
-	if (!isRecord(value)) return undefined;
-
-	const title = typeof value.title === "string" ? value.title : undefined;
-	const body = typeof value.body === "string" ? value.body : undefined;
-	const priority = normalizeFindingPriority(value.priority);
-	const confidence =
-		typeof value.confidence === "number" &&
-		Number.isFinite(value.confidence) &&
-		value.confidence >= 0 &&
-		value.confidence <= 1
-			? value.confidence
-			: undefined;
-	const filePath = typeof value.file_path === "string" && value.file_path.length > 0 ? value.file_path : undefined;
-	const lineStart =
-		typeof value.line_start === "number" && Number.isFinite(value.line_start) ? value.line_start : undefined;
-	const lineEnd = typeof value.line_end === "number" && Number.isFinite(value.line_end) ? value.line_end : undefined;
-
-	if (
-		title === undefined ||
-		body === undefined ||
-		priority === undefined ||
-		confidence === undefined ||
-		filePath === undefined ||
-		lineStart === undefined ||
-		lineEnd === undefined
-	) {
-		return undefined;
-	}
-
-	return {
-		title,
-		body,
-		priority,
-		confidence,
-		file_path: filePath,
-		line_start: lineStart,
-		line_end: lineEnd,
-	};
-}
-/** SubmitReviewDetails - used for rendering review results from yield tool */
-export interface SubmitReviewDetails {
-	overall_correctness: "correct" | "incorrect";
-	explanation: string;
-	confidence: number;
-}
-
-/** Legacy parser name retained for the subprocess tool registry. */
-export const parseReportFindingDetails = parseFindingDetails;
 
 export function toReviewFinding(details: ReportFindingDetails): ReviewFinding {
 	return {

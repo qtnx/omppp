@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
-import type { SegmentContext } from "../src/modes/components/status-line/segments";
-import { renderSegment } from "../src/modes/components/status-line/segments";
-import { initTheme } from "../src/modes/theme/theme";
+import type { SegmentContext } from "@oh-my-pi/pi-tui/status-line/segments";
+import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 beforeAll(async () => {
 	await initTheme();
@@ -30,6 +30,8 @@ function createCtx(pr: TestPr): SegmentContext {
 		vim: null,
 		collab: null,
 		workPhase: null,
+		stream: null,
+		recording: false,
 		usageStats: {
 			input: 0,
 			output: 0,

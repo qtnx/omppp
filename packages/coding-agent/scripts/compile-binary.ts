@@ -2,6 +2,7 @@
 // absent on cross-compiling release runners.
 import { USER_AGENT } from "@oh-my-pi/pi-utils/dirs";
 import { buildDocsIndexPayload } from "./generate-docs-index";
+import { createJsonParsePlugin } from "./json-parse-plugin";
 import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
 
 /** Native runtime dependencies always resolved from the on-demand install instead of embedded into compiled binaries. */
@@ -48,21 +49,14 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			},
 			// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
 			// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).
-			// Bytecode rejects top-level await in the bundle graph.
-			// Precompiled bytecode is disabled: with `bytecode: true` the compiled
-			// executable aborts at startup with `SyntaxError: import.meta is only
-			// valid inside modules`, while the same graph runs fine from source and
-			// from `dist/cli.js`. Bytecode also rejects top-level await in the
-			// bundle graph, so the first module that needs it would break the
-			// released binary the same way. Build without it until the graph is
-			// TLA-free again — the boot-time gain (~30 ms vs ~256 ms) is not worth
-			// shipping an executable that cannot start.
-			bytecode: false,
+			// Keep import.meta.resolve in bundled dependencies valid under bytecode.
+			format: "esm",
+			bytecode: true,
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,
 			},
-			plugins: [await createLegacyPiVirtualModulePlugin()],
+			plugins: [createJsonParsePlugin(), await createLegacyPiVirtualModulePlugin()],
 			compile: {
 				// Bun's process-wide fetch User-Agent default. Any explicit
 				// provider fingerprint (Anthropic/Codex OAuth) still wins.

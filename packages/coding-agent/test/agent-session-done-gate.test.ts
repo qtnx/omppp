@@ -223,7 +223,7 @@ describe("AgentSession advisor done-review gate", () => {
 		notices = [];
 		tempDir = TempDir.createSync("@pi-done-gate-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
 

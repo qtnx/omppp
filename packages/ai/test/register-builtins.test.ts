@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import * as BedrockProvider from "@oh-my-pi/pi-ai/providers/amazon-bedrock";
 import { setBedrockProviderModule, streamBedrock } from "@oh-my-pi/pi-ai/providers/register-builtins";
 import type { AssistantMessage, Context, Model } from "@oh-my-pi/pi-ai/types";
 import type { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -56,6 +57,12 @@ function createAssistantMessage(
 }
 
 const baseContext: Context = { messages: [] };
+
+// The override is process-wide: a leaked mock routes every later Bedrock test in
+// the same Bun process into a stub that never streams.
+afterEach(() => {
+	setBedrockProviderModule(BedrockProvider);
+});
 
 describe("register-builtins lazy streams", () => {
 	it("resolves the outer stream result from source.result() when no terminal event is iterated", async () => {

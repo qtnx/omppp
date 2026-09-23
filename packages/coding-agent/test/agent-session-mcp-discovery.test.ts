@@ -16,7 +16,7 @@ import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/set
 import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import type { OutputMeta } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
+import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
 function createModel(): Model<"openai-responses"> {

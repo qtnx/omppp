@@ -6,7 +6,7 @@ import { $env, APP_DISPLAY_NAME, APP_NAME, APP_TAGLINE, CONFIG_DIR_NAME, logger 
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { DEFAULT_LINUX_PODMAN_IMAGE } from "../config/sandbox-defaults";
 import type { ServiceTierOpenAISettingValue } from "../config/service-tier";
-import { CLI_THINKING_LEVELS, type ConfiguredThinkingLevel, parseCliThinkingLevel } from "../thinking";
+import { CLI_THINKING_LEVELS, type ConfiguredThinkingLevel, parseCliThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { normalizeToolNames } from "../tools/builtin-names";
 import {
 	OPTIONAL_FLAGS,
@@ -43,6 +43,7 @@ export interface Args {
 	maxTime?: number;
 	apiKey?: string;
 	systemPrompt?: string;
+	systemPromptTemplate?: string;
 	appendSystemPrompt?: string;
 	thinking?: ConfiguredThinkingLevel;
 	serviceTier?: ServiceTierOpenAISettingValue;
@@ -364,6 +365,9 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 		}
 	}
 
+	if (result.systemPrompt !== undefined && result.systemPromptTemplate !== undefined) {
+		throw new CliUsageError("--system-prompt and --system-prompt-template cannot be combined");
+	}
 	return result;
 }
 

@@ -22,7 +22,7 @@ import { detectPlanningNeeded } from "../duo/takeover-signals";
 import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, type OrchestratorModeState } from "../orchestrator-mode/state";
 import type { PlanModeState } from "../plan-mode/state";
 import { isWorkPhase, type PromptSignals, type TurnSignals, type WorkPhase } from "../signals/index";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 export interface SessionDuoOrchestratorHost {
 	settings: Settings;
@@ -427,7 +427,7 @@ export class SessionDuoOrchestrator {
 				isSelectorSuppressed: selector => this.#host.modelRegistry.isSelectorSuppressed(selector),
 				hasUsageHeadroom: model => {
 					try {
-						return this.#host.modelRegistry.authStorage.getUsageHeadroom(model).hasRoom;
+						return this.#host.modelRegistry.authStorage.usage.headroom(model).hasRoom;
 					} catch {
 						// Headroom is advisory: an unreadable usage snapshot must not
 						// strand routing on the lowest rung.

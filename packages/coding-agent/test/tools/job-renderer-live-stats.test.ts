@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentProgress } from "@oh-my-pi/pi-coding-agent/task/types";
 import { jobToolRenderer, setJobLiveStatsProvider } from "@oh-my-pi/pi-coding-agent/tools/job";
 

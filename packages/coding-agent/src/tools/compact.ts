@@ -1,15 +1,9 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import type { Component } from "@oh-my-pi/pi-tui";
-import { Text } from "@oh-my-pi/pi-tui";
+import type { CompactToolDetails } from "@oh-my-pi/pi-tui/tools/compact";
 import { prompt } from "@oh-my-pi/pi-utils";
-import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import type { Theme } from "../modes/theme/theme";
 import compactDescription from "../prompts/tools/compact.md" with { type: "text" };
-import { renderStatusLine } from "../tui";
 import type { ToolCompactionRequest, ToolSession } from ".";
-import type { OutputMeta } from "./output-meta";
-import { Ellipsis, formatErrorMessage, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
@@ -25,12 +19,6 @@ const compactSchema = type({
 });
 
 type CompactParams = typeof compactSchema.infer;
-
-export interface CompactToolDetails {
-	reason: string;
-	status: "scheduled" | "already-scheduled";
-	meta?: OutputMeta;
-}
 
 export class CompactTool implements AgentTool<typeof compactSchema, CompactToolDetails> {
 	readonly name = "compact";
@@ -84,54 +72,3 @@ export class CompactTool implements AgentTool<typeof compactSchema, CompactToolD
 			.done();
 	}
 }
-
-interface CompactRenderArgs {
-	reason?: string;
-}
-
-export const compactToolRenderer = {
-	inline: true,
-	mergeCallAndResult: true,
-	renderCall(args: CompactRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
-		const trimmedReason = replaceTabs((args.reason ?? "").trim());
-		const description = trimmedReason
-			? truncateToWidth(trimmedReason, TRUNCATE_LENGTHS.CONTENT, Ellipsis.Unicode)
-			: undefined;
-		return new Text(
-			renderStatusLine({ icon: "pending", title: "Compact", titleColor: "toolTitle", description }, theme),
-			0,
-			0,
-		);
-	},
-	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: CompactToolDetails; isError?: boolean },
-		_options: RenderResultOptions,
-		theme: Theme,
-		args?: CompactRenderArgs,
-	): Component {
-		if (result.isError) {
-			const text = (result.content?.find(c => c.type === "text")?.text ?? "").trim();
-			return new Text(formatErrorMessage(text || "Compaction failed", theme), 0, 0);
-		}
-		const trimmedReason = replaceTabs((result.details?.reason ?? args?.reason ?? "").trim());
-		const description = trimmedReason
-			? truncateToWidth(trimmedReason, TRUNCATE_LENGTHS.CONTENT, Ellipsis.Unicode)
-			: undefined;
-		const status = result.details?.status;
-		const meta = status === "already-scheduled" ? ["already scheduled"] : ["scheduled"];
-		return new Text(
-			renderStatusLine(
-				{
-					icon: status === "already-scheduled" ? "warning" : "success",
-					title: "Compact",
-					titleColor: "toolTitle",
-					description,
-					meta,
-				},
-				theme,
-			),
-			0,
-			0,
-		);
-	},
-};

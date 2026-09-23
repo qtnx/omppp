@@ -93,7 +93,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 				};
 			},
 		});
-		await authStorage.set("openai-codex", [
+		await authStorage.credentials.set("openai-codex", [
 			{
 				type: "oauth",
 				access: "codex-stale-access",
@@ -104,7 +104,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 		]);
 		const credentialId = store.listAuthCredentials("openai-codex")[0]!.id;
 
-		const newKey = await authStorage.refreshCredentialMatching("openai-codex", "codex-stale-access");
+		const newKey = await authStorage.oauth.refreshMatching("openai-codex", "codex-stale-access");
 
 		expect(newKey).toBe("codex-fresh-access");
 		expect(newKey).not.toBe("codex-stale-access");
@@ -131,7 +131,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 				return { access: "unused", refresh: credential.refresh, expires: Date.now() + HOUR_MS };
 			},
 		});
-		await authStorage.set("openai-codex", [
+		await authStorage.credentials.set("openai-codex", [
 			{
 				type: "oauth",
 				access: "codex-access",
@@ -141,7 +141,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 			},
 		]);
 
-		const result = await authStorage.refreshCredentialMatching("openai-codex", "some-other-token");
+		const result = await authStorage.oauth.refreshMatching("openai-codex", "some-other-token");
 
 		expect(result).toBeUndefined();
 		expect(refreshed).toBe(false);
@@ -156,7 +156,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 				);
 			},
 		});
-		await authStorage.set("openai-codex", [
+		await authStorage.credentials.set("openai-codex", [
 			{
 				type: "oauth",
 				access: "codex-stale-access",
@@ -167,7 +167,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 		]);
 		const credentialId = store.listAuthCredentials("openai-codex")[0]!.id;
 
-		const result = await authStorage.refreshCredentialMatching("openai-codex", "codex-stale-access");
+		const result = await authStorage.oauth.refreshMatching("openai-codex", "codex-stale-access");
 
 		expect(result).toBeUndefined();
 		// The matched row MUST stay active and unchanged: the caller handles the
@@ -192,7 +192,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 					throw new Error(`HTTP 400 invalid_grant ${sensitiveFailure}`);
 				},
 			});
-			await authStorage.set("openai-codex", [
+			await authStorage.credentials.set("openai-codex", [
 				{
 					type: "oauth",
 					access: "codex-stale-access",
@@ -202,7 +202,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 				},
 			]);
 
-			expect(await authStorage.refreshCredentialMatching("openai-codex", "codex-stale-access")).toBeUndefined();
+			expect(await authStorage.oauth.refreshMatching("openai-codex", "codex-stale-access")).toBeUndefined();
 			expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(sensitiveFailure);
 		} finally {
 			debugSpy.mockRestore();
@@ -219,7 +219,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 				accountId: credential.accountId,
 			}),
 		});
-		await authStorage.set("openai-codex", [
+		await authStorage.credentials.set("openai-codex", [
 			{
 				type: "oauth",
 				access: "codex-stale-access",
@@ -259,7 +259,7 @@ describe("AuthStorage.refreshCredentialMatching", () => {
 			apiKey: async ({ error }) => {
 				if (error === undefined) return "codex-stale-access";
 				authErrors += 1;
-				return authStorage!.refreshCredentialMatching("openai-codex", "codex-stale-access");
+				return authStorage!.oauth.refreshMatching("openai-codex", "codex-stale-access");
 			},
 		});
 		for await (const _event of stream) {

@@ -1,7 +1,7 @@
 import { Args, Command } from "@oh-my-pi/pi-utils/cli";
 import { linearHelp as commandHelp } from "../cli/command-help";
 import { ensureLinearMcpConfig } from "../linear/config";
-import { initTheme } from "../modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 export default class Linear extends Command {
 	static description = commandHelp.description;

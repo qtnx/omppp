@@ -5,7 +5,8 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { BashTool, type BashToolDetails } from "@oh-my-pi/pi-coding-agent/tools/bash";
+import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
+import type { BashToolDetails } from "@oh-my-pi/pi-tui/tools/bash";
 
 // The seam under test lives in BashTool.execute: after internal-URL expansion it
 // swaps `command` for `rewriteCommandWithRtk(command)` when `rtk.enabled`. These

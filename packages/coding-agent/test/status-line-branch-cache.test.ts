@@ -16,8 +16,9 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
-import { StatusLineComponent } from "../src/modes/components/status-line";
-import { initTheme } from "../src/modes/theme/theme";
+import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
+import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "../src/session/agent-session";
 
 beforeAll(async () => {
@@ -54,7 +55,7 @@ function stubGit() {
  * exercises branch resolution (#getCurrentBranch runs in #buildSegmentContext
  * only when a git segment is visible) without other renderers' session deps. */
 function makeComp(): StatusLineComponent {
-	const comp = new StatusLineComponent(makeSession());
+	const comp = new StatusLineComponent(makeSession(), statusLineHost);
 	comp.updateSettings({ preset: "custom", leftSegments: ["git"], rightSegments: [], segmentOptions: {} });
 	return comp;
 }

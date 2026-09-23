@@ -2,7 +2,7 @@ import * as path from "node:path";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { getLogsDir, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
-import type { SingleResult } from "../task/types";
+import type { SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import type {
 	LearningAuditClassifierStatus,
 	LearningAuditInsert,

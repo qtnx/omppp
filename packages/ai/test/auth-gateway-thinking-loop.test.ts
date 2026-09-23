@@ -38,7 +38,7 @@ function upstreamHttpError(status: number, message: string): Error {
 }
 
 async function storeAnthropicCredentialPair(storage: AuthStorage): Promise<void> {
-	await storage.set("anthropic", [
+	await storage.credentials.set("anthropic", [
 		{
 			type: "oauth",
 			access: OAUTH_CREDENTIAL_A,
@@ -54,7 +54,7 @@ async function storeAnthropicCredentialPair(storage: AuthStorage): Promise<void>
 			accountId: "account-low-credit-b",
 		},
 	]);
-	storage.setConfigApiKey("anthropic", CONFIG_API_KEY_FALLBACK);
+	storage.keys.setConfig("anthropic", CONFIG_API_KEY_FALLBACK);
 }
 
 function postChat(handleUrl: string, model: string, stream: boolean): Promise<Response> {
@@ -99,7 +99,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-thinking-loop-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
-		storage.setRuntimeApiKey("openrouter", "test-key");
+		storage.keys.setRuntime("openrouter", "test-key");
 		const mock = createMockModel({ provider: "openrouter", id: "google/gemini-3.5-flash" });
 		for (let i = 0; i < 4; i++) {
 			mock.push({ content: [{ type: "thinking", thinking: loopThinking() }, "Unreachable cooked answer."] });
@@ -140,7 +140,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-thinking-loop-err-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
-		storage.setRuntimeApiKey("openrouter", "test-key");
+		storage.keys.setRuntime("openrouter", "test-key");
 		const mock = createMockModel({ provider: "openrouter", id: "google/gemini-3.5-flash" });
 		mock.push({ throw: "upstream exploded" });
 		const handle = startAuthGateway({
@@ -176,7 +176,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-auth-same-bearer-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
-		await storage.set("anthropic", [
+		await storage.credentials.set("anthropic", [
 			{
 				type: "oauth",
 				access: OAUTH_CREDENTIAL_A,
@@ -185,9 +185,9 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 				accountId: "account-same-bearer",
 			},
 		]);
-		storage.setConfigApiKey("anthropic", OAUTH_CREDENTIAL_A);
-		const originalGetApiKeyWithOrigin = storage.getApiKeyWithOrigin.bind(storage);
-		const resolutionSpy = spyOn(storage, "getApiKeyWithOrigin").mockImplementation(
+		storage.keys.setConfig("anthropic", OAUTH_CREDENTIAL_A);
+		const originalGetApiKeyWithOrigin = storage.keys.withOrigin.bind(storage.keys);
+		const resolutionSpy = spyOn(storage.keys, "withOrigin").mockImplementation(
 			async (provider, sessionId, options) => {
 				if (options?.forceRefresh) {
 					return { apiKey: OAUTH_CREDENTIAL_A, origin: { kind: "config" } };
@@ -237,7 +237,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 			{ apiKey: OAUTH_CREDENTIAL_B, origin: { kind: "oauth" as const } },
 			{ apiKey: OAUTH_CREDENTIAL_A, origin: { kind: "config" as const } },
 		];
-		const resolutionSpy = spyOn(storage, "getApiKeyWithOrigin").mockImplementation(async () => resolutions.shift());
+		const resolutionSpy = spyOn(storage.keys, "withOrigin").mockImplementation(async () => resolutions.shift());
 		const mock = createMockModel({
 			provider: "anthropic",
 			id: "claude-auth-key-cycle",
@@ -278,7 +278,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 			usageProviderResolver: () => undefined,
 			rankingStrategyResolver: () => undefined,
 		});
-		await storage.set("anthropic", [
+		await storage.credentials.set("anthropic", [
 			{
 				type: "oauth",
 				access: OAUTH_CREDENTIAL_A,
@@ -287,7 +287,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 				accountId: "account-low-credit-same-bearer",
 			},
 		]);
-		storage.setConfigApiKey("anthropic", OAUTH_CREDENTIAL_A);
+		storage.keys.setConfig("anthropic", OAUTH_CREDENTIAL_A);
 		const mock = createMockModel({
 			provider: "anthropic",
 			id: "claude-low-credit-same-bearer",
@@ -327,7 +327,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const token = "sk-ant-oat-test-token";
 		const user = "sensitive-user@example.com";
 		const previousResponseId = "resp-sensitive-chain-id";
-		storage.setRuntimeApiKey("anthropic", token);
+		storage.keys.setRuntime("anthropic", token);
 		const mock = createMockModel({ provider: "anthropic", id: "claude-test" });
 		mock.push({ content: ["ok"], usage: EXPECTED_MOCK_USAGE });
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
@@ -382,7 +382,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
 		const oauthToken = "sk-ant-oat-stored-oauth-token";
 		const configApiKey = "gateway-key";
-		await storage.set("anthropic", [
+		await storage.credentials.set("anthropic", [
 			{
 				type: "oauth",
 				access: oauthToken,
@@ -391,7 +391,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 				accountId: "acct-stored-oauth",
 			},
 		]);
-		storage.setConfigApiKey("anthropic", configApiKey);
+		storage.keys.setConfig("anthropic", configApiKey);
 		const mock = createMockModel({ provider: "anthropic", id: "claude-test" });
 		mock.push({ content: ["ok"], usage: EXPECTED_MOCK_USAGE });
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
@@ -438,7 +438,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-pi-native-credential-log-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
 		const token = "sk-ant-oat-pi-native-test-token";
-		storage.setRuntimeApiKey("anthropic", token);
+		storage.keys.setRuntime("anthropic", token);
 		const mock = createMockModel({ provider: "anthropic", id: "claude-test" });
 		mock.push({ content: ["ok"], usage: EXPECTED_MOCK_USAGE });
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
@@ -485,7 +485,7 @@ describe("auth-gateway completion audit logs", () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-audit-chat-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
 		const token = "sk-openrouter-completion-audit-token";
-		storage.setRuntimeApiKey("openrouter", token);
+		storage.keys.setRuntime("openrouter", token);
 		const mock = createMockModel({ provider: "openrouter", id: "audit-chat-non-stream" });
 		mock.push({ content: ["ok"], usage: EXPECTED_MOCK_USAGE });
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
@@ -538,7 +538,7 @@ describe("auth-gateway completion audit logs", () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-audit-pi-native-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
 		const token = "sk-openrouter-pi-native-audit-token";
-		storage.setRuntimeApiKey("openrouter", token);
+		storage.keys.setRuntime("openrouter", token);
 		const mock = createMockModel({ provider: "openrouter", id: "audit-pi-native-non-stream" });
 		mock.push({ content: ["ok"], usage: EXPECTED_MOCK_USAGE });
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
@@ -590,7 +590,7 @@ describe("auth-gateway completion audit logs", () => {
 		registerMockApi();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-audit-stream-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
-		storage.setRuntimeApiKey("openrouter", "test-key");
+		storage.keys.setRuntime("openrouter", "test-key");
 		const mock = createMockModel({ provider: "openrouter", id: "audit-chat-stream" });
 		mock.push({ content: ["stream ok"], usage: EXPECTED_MOCK_USAGE });
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
@@ -639,7 +639,7 @@ describe("auth-gateway completion audit logs", () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-audit-failure-"));
 		const storage = await AuthStorage.create(path.join(dir, "auth.db"));
 		const token = "sk-openrouter-failure-audit-token";
-		storage.setRuntimeApiKey("openrouter", token);
+		storage.keys.setRuntime("openrouter", token);
 		const mock = createMockModel({ provider: "openrouter", id: "audit-chat-upstream-failure" });
 		mock.push({ throw: "audit upstream exploded" });
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
@@ -706,8 +706,8 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 				return { content: ["non-streaming rotated success"], usage: EXPECTED_MOCK_USAGE };
 			},
 		});
-		const usageLimitSpy = spyOn(storage, "markUsageLimitReached");
-		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		const usageLimitSpy = spyOn(storage.limits, "markReached");
+		const invalidateSpy = spyOn(storage.limits, "invalidateMatching");
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const warnSpy = spyOn(logger, "warn").mockImplementation(() => undefined);
 		const debugSpy = spyOn(logger, "debug").mockImplementation(() => undefined);
@@ -785,8 +785,8 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 				return { content: ["streaming rotated success"], usage: EXPECTED_MOCK_USAGE };
 			},
 		});
-		const usageLimitSpy = spyOn(storage, "markUsageLimitReached");
-		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		const usageLimitSpy = spyOn(storage.limits, "markReached");
+		const invalidateSpy = spyOn(storage.limits, "invalidateMatching");
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
 			bearerTokens: ["t"],
@@ -845,7 +845,7 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 			usageProviderResolver: () => undefined,
 			rankingStrategyResolver: () => undefined,
 		});
-		await storage.set("anthropic", [
+		await storage.credentials.set("anthropic", [
 			{
 				type: "oauth",
 				access: OAUTH_CREDENTIAL_A,
@@ -854,7 +854,7 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 				accountId: "account-low-credit-a",
 			},
 		]);
-		storage.setConfigApiKey("anthropic", CONFIG_API_KEY_FALLBACK);
+		storage.keys.setConfig("anthropic", CONFIG_API_KEY_FALLBACK);
 		const mock = createMockModel({
 			provider: "anthropic",
 			id: "claude-low-credit-config-fallback",
@@ -866,8 +866,8 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 				return { content: ["config fallback success"], usage: EXPECTED_MOCK_USAGE };
 			},
 		});
-		const usageLimitSpy = spyOn(storage, "markUsageLimitReached");
-		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		const usageLimitSpy = spyOn(storage.limits, "markReached");
+		const invalidateSpy = spyOn(storage.limits, "invalidateMatching");
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
@@ -927,8 +927,8 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 				throw upstreamHttpError(503, "Service unavailable");
 			},
 		});
-		const usageLimitSpy = spyOn(storage, "markUsageLimitReached");
-		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		const usageLimitSpy = spyOn(storage.limits, "markReached");
+		const invalidateSpy = spyOn(storage.limits, "invalidateMatching");
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
 			bearerTokens: ["t"],
@@ -960,12 +960,12 @@ describe("auth-gateway auth retry", () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-quota-rotation-"));
 		const store = await SqliteAuthCredentialStore.open(path.join(dir, "auth.db"));
 		const storage = new AuthStorage(store);
-		await storage.set("mock", [
+		await storage.credentials.set("mock", [
 			{ type: "api_key", key: "quota-key" },
 			{ type: "api_key", key: "healthy-key" },
 		]);
-		const markUsageLimitSpy = spyOn(storage, "markUsageLimitReached");
-		const invalidateSpy = spyOn(storage, "invalidateCredentialMatching");
+		const markUsageLimitSpy = spyOn(storage.limits, "markReached");
+		const invalidateSpy = spyOn(storage.limits, "invalidateMatching");
 		let attempt = 0;
 		const mock = createMockModel({
 			provider: "mock",
@@ -1020,7 +1020,7 @@ describe("auth-gateway auth retry", () => {
 			expect(usageLimitOptions?.apiKey).toBe(failedKey);
 			expect(invalidateSpy.mock.calls).toHaveLength(0);
 			expect(store.listAuthCredentials("mock")).toHaveLength(2);
-			expect(await storage.getApiKey("mock", "gw-quota-rotation")).toBe(retriedKey);
+			expect(await storage.keys.get("mock", "gw-quota-rotation")).toBe(retriedKey);
 		} finally {
 			markUsageLimitSpy.mockRestore();
 			invalidateSpy.mockRestore();

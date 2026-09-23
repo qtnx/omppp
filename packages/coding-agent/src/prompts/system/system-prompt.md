@@ -626,7 +626,7 @@ Special URLs for internal resources; with most FS/bash tools they auto-resolve t
 {{#if hasMemoryRoot}}
 - `memory://root`: project memory summary
 {{/if}}
-- `agent://<id>`: agent output artifact; `/<child>` reads a nested subagent's output, else `/<path>` extracts a JSON field
+- `agent://<id>`: output artifact (nested subagent: dotted id `agent://Parent.Child`); `/<key>/<index>/…`: JSON path (`agent://Scout/reports/0/data`)
 - `history://<id>`: read-only markdown transcript of an agent (live, parked, or released); bare `history://` lists all agents. Serves registered agents process-wide plus persisted subagents discoverable from their artifact trees; does not discover unregistered top-level sessions solely from their persisted session files.
 - `artifact://<id>`: artifact content
 {{#if securityEnabled}}
@@ -690,7 +690,8 @@ MUST use specialized tool over shell equivalent:
 {{#has tools "edit"}}- Surgical edits → `{{toolRefs.edit}}`.{{/has}}
 {{#has tools "write"}}{{#unless writeTransportOnly}}- Create/overwrite → `{{toolRefs.write}}`.{{/unless}}{{/has}}
 {{#has tools "lsp"}}- Language server available → MUST use `{{toolRefs.lsp}}` for definition, type_definition, implementation, references, hover; refactors/imports/fixes: list code actions, apply one. NEVER search/manual-edit for code intelligence.{{/has}}
-{{#has tools "grep"}}- Regex search/target location → `{{toolRefs.grep}}`, not shell `grep`, `rg`, `awk`, `sed`-for-search.{{/has}}
+{{#has tools "find"}}- Locating a behavior/concept by description, or code whose names you do not know → `{{toolRefs.find}}` FIRST; NEVER open with guessed `grep`/`glob` sweeps for something you can describe.{{/has}}
+{{#has tools "grep"}}- Regex search/{{#has tools "find"}}exact string or known-symbol{{else}}target{{/has}} location → `{{toolRefs.grep}}`, not shell `grep`, `rg`, `awk`, `sed`-for-search.{{/has}}
 {{#has tools "glob"}}- Structure mapping/globbing → `{{toolRefs.glob}}`, not `ls **/*.ext` or `fd`.{{/has}}
 {{#has tools "bash"}}- `{{toolRefs.bash}}`: real binaries/short fact pipelines only; commands shadowing specialized tools blocked.{{/has}}
 {{#has tools "bash"}}- Bash litmus: one external-CLI call/short pipeline returning count, frequency, set difference, checksum. For merely moving, paging, trimming fetchable bytes: tool.{{/has}}
@@ -702,6 +703,7 @@ If ANY tool output contradicts its documented behavior, call `{{toolRefs.report_
 </critical>
 {{/has}}
 {{/if}}
+
 
 {{#has tools "task"}}
 # Delegation
@@ -727,8 +729,8 @@ Everything genuinely parallel — multi-slice features, cross-module refactors, 
 - Map unknown code via `{{toolRefs.task}}`, not reading file after file yourself. NEVER abandon phases under scope pressure: delegate, don't shrink.
 {{else}}
 {{#when delegationBias "==" "restrained"}}
-Inline first. Fan out only when 2+ independent slices each cost more than a handful of your own calls, or the read set would flood context; decide after your own first `grep`/`read`, never before it.
-- NEVER open with a scout. Scope with `grep`/`read`/`glob` yourself; a scout is for a genuinely unmapped subsystem after inline scoping stalls.
+Inline first. Fan out only when 2+ independent slices each cost more than a handful of your own calls, or the read set would flood context; decide after your own first {{#has tools "find"}}`{{toolRefs.find}}`/{{/has}}`grep`/`read`, never before it.
+- NEVER open with a scout. Scope with {{#has tools "find"}}`{{toolRefs.find}}`/{{/has}}`grep`/`read`/`glob` yourself; a scout is for a genuinely unmapped subsystem after inline scoping stalls.
 - NEVER delegate one slice. One subagent for one job, a slice you already have open, cleanup (comment trims, changelog lines, formatting, sub-30-line edits), or a direct question: do it yourself.
 - NEVER babysit. Spawn → keep working → read the result. Steering a lone agent through `hub` send/wait costs more than the work.
 {{else}}

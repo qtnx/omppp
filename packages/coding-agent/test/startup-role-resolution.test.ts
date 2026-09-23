@@ -32,7 +32,7 @@ describe("startup role target resolution", () => {
 		using tempDir = TempDir.createSync("@omp-startup-role-resolution-");
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 		try {
-			authStorage.setRuntimeApiKey(authenticated.provider, "test-key");
+			authStorage.keys.setRuntime(authenticated.provider, "test-key");
 			const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 			const settings = Settings.isolated({
 				modelRoles: {

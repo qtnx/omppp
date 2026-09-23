@@ -116,7 +116,6 @@ function groupConcurrency(group: string): number {
 // their short TS suites can run together. CI still downloads the Linux x64 native
 // addon before this bucket: shared utility barrels may load native-backed modules.
 const fastWorkspacePackages = [
-	"packages/wire",
 	"packages/omptype",
 	"packages/utils",
 	"packages/catalog",
@@ -1007,6 +1006,27 @@ export async function runTestCommandsInParallel(commands: TestCommand[], concurr
 	}
 }
 
+// `OMP_TEST_SHARD=i/n` splits a mode's chunk commands across n CI jobs; job i
+// runs every chunk whose index ≡ i-1 (mod n). Round-robin rather than
+// contiguous ranges because the chunk list follows sorted file order, so slow
+// neighbouring suites spread evenly instead of piling into one shard. Every
+// chunk lands in exactly one shard; unset/empty runs everything.
+export function selectShard<T>(commands: T[], spec: string | undefined): T[] {
+	const trimmed = spec?.trim();
+	if (!trimmed) return commands;
+	const match = /^(\d+)\/(\d+)$/.exec(trimmed);
+	const index = match ? Number(match[1]) : 0;
+	const count = match ? Number(match[2]) : 0;
+	if (!match || count < 1 || index < 1 || index > count) {
+		throw new Error(`Invalid OMP_TEST_SHARD=${JSON.stringify(trimmed)}; expected i/n with 1 <= i <= n`);
+	}
+	const selected = commands.filter((_, i) => i % count === index - 1);
+	if (selected.length === 0) {
+		throw new Error(`OMP_TEST_SHARD=${trimmed} selects no chunks (${commands.length} available)`);
+	}
+	return selected;
+}
+
 // Skipped when imported (e.g. by the runner's own unit tests), where
 // `process.argv` carries test-file paths rather than a mode/flags.
 if (import.meta.main) {
@@ -1016,7 +1036,7 @@ if (import.meta.main) {
 		);
 	}
 
-	const requestedCommands = await commandsForMode(requestedMode as Mode);
+	const requestedCommands = selectShard(await commandsForMode(requestedMode as Mode), Bun.env.OMP_TEST_SHARD);
 	const explicitConcurrency = Boolean(Bun.env.OMP_TEST_CONCURRENCY?.trim());
 	// CI remains sequential unless the workflow grants an explicit process pool;
 	// fork-owned command groups still preserve isolated homes for shared-state suites.

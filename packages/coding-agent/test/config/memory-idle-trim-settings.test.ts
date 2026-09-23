@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getDefault, SETTINGS_SCHEMA, TAB_GROUPS } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import { getDefault, SETTINGS_SCHEMA } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import { TAB_GROUPS } from "@oh-my-pi/pi-tui/overlays/settings-defs";
 
 describe("memory idle trim settings", () => {
 	beforeEach(async () => {

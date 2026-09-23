@@ -3,9 +3,9 @@ import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { SegmentContext } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
-import { renderSegment } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
-import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { SegmentContext } from "@oh-my-pi/pi-tui/status-line/segments";
+import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -61,7 +61,7 @@ function createStatusContext(
 	return {
 		session: {
 			getTimeBudgetSnapshot: () => snapshot,
-		} as SegmentContext["session"],
+		} as unknown as SegmentContext["session"],
 		width: 120,
 		compactThinkingLevel: false,
 		options: {},
@@ -73,6 +73,8 @@ function createStatusContext(
 		vim: null,
 		collab: null,
 		workPhase: null,
+		stream: null,
+		recording: false,
 		usageStats: {
 			input: 0,
 			output: 0,

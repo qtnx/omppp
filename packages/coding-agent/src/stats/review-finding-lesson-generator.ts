@@ -5,7 +5,8 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import reviewFindingLessonSystemPrompt from "../prompts/stats/review-finding-lesson-system.md" with { type: "text" };
 import reviewFindingLessonUserPrompt from "../prompts/stats/review-finding-lesson-user.md" with { type: "text" };
 import * as taskExecutor from "../task/executor";
-import type { AgentDefinition, AgentProgress, SingleResult } from "../task/types";
+import type { AgentDefinition } from "../task/types";
+import type { AgentProgress, SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 
 const REVIEW_FINDING_LESSON_OUTPUT_SCHEMA = {
 	type: "object",

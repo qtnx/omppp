@@ -4,8 +4,8 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	materializeImageReferenceLinks,
 	materializeImageReferenceLinksSync,
-} from "@oh-my-pi/pi-coding-agent/modes/image-references";
-import { BlobStore, isBlobRef } from "@oh-my-pi/pi-coding-agent/session/blob-store";
+} from "@oh-my-pi/pi-tui/prompt/image-references";
+import { BlobStore, isBlobRef, resolveImageDataSync } from "@oh-my-pi/pi-coding-agent/session/blob-store";
 import { getAgentDir, getBlobsDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 const PNG_BYTES = Buffer.from([
@@ -42,11 +42,15 @@ describe("image-references blob ref guards", () => {
 
 		const image: ImageContent = { type: "image", data: ref, mimeType: "image/png" };
 		let putCalled = false;
-		const links = materializeImageReferenceLinksSync([image], data => {
-			putCalled = true;
-			expect(Buffer.compare(data, PNG_BYTES)).toBe(0);
-			return blobs.putSync(data, { extension: "png" });
-		});
+		const links = materializeImageReferenceLinksSync(
+			[image],
+			data => {
+				putCalled = true;
+				expect(Buffer.compare(data, PNG_BYTES)).toBe(0);
+				return blobs.putSync(data, { extension: "png" });
+			},
+			ref => resolveImageDataSync(blobs, ref),
+		);
 
 		expect(putCalled).toBe(true);
 		expect(links?.[0]).toBeTruthy();
@@ -54,36 +58,38 @@ describe("image-references blob ref guards", () => {
 	});
 
 	it("skips a missing blob ref without throwing (sync)", () => {
-		withAgentBlobs();
+		const blobs = withAgentBlobs();
 		const image: ImageContent = {
 			type: "image",
 			data: `blob:sha256:${"0".repeat(64)}`,
 			mimeType: "image/png",
 		};
-
-		expect(() =>
-			materializeImageReferenceLinksSync([image], () => {
-				throw new Error("putBlob must not run for missing refs");
-			}),
-		).not.toThrow();
-
-		const links = materializeImageReferenceLinksSync([image], () => {
+		const putBlob = () => {
 			throw new Error("putBlob must not run for missing refs");
-		});
+		};
+		const resolve = (ref: string) => resolveImageDataSync(blobs, ref);
+
+		expect(() => materializeImageReferenceLinksSync([image], putBlob, resolve)).not.toThrow();
+
+		const links = materializeImageReferenceLinksSync([image], putBlob, resolve);
 		expect(links === undefined || links.every(link => link === undefined)).toBe(true);
 	});
 
 	it("skips a missing blob ref without throwing (async)", async () => {
-		withAgentBlobs();
+		const blobs = withAgentBlobs();
 		const image: ImageContent = {
 			type: "image",
 			data: `blob:sha256:${"a".repeat(64)}`,
 			mimeType: "image/png",
 		};
 
-		const links = await materializeImageReferenceLinks([image], async () => {
-			throw new Error("putBlob must not run for missing refs");
-		});
+		const links = await materializeImageReferenceLinks(
+			[image],
+			async () => {
+				throw new Error("putBlob must not run for missing refs");
+			},
+			ref => resolveImageDataSync(blobs, ref),
+		);
 		expect(links === undefined || links.every(link => link === undefined)).toBe(true);
 	});
 

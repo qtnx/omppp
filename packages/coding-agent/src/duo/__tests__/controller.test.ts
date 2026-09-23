@@ -4,7 +4,7 @@ import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { DuoResolvedConfig } from "../../config/model-resolver";
 import type { TurnSignals } from "../../signals/index";
-import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../../thinking";
+import { AUTO_THINKING, type ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { DuoController, type DuoControllerHost } from "../controller";
 import type { DuoStateSnapshot } from "../state";
 import type { TakeoverSignalReport } from "../takeover-signals";

@@ -5,15 +5,12 @@
  * config consumed by {@link buildAnthropicSearchHeaders} / {@link buildAnthropicUrl}.
  *
  * Credential storage and refresh live in `AuthStorage` — call
- * `authStorage.getApiKey("anthropic", sessionId)` first, then pass the result
+ * `authStorage.keys.get("anthropic", sessionId)` first, then pass the result
  * through {@link buildAnthropicAuthConfig} for header/URL shaping.
  */
 import { $env } from "@oh-my-pi/pi-utils";
-import {
-	buildAnthropicHeaders as buildProviderAnthropicHeaders,
-	normalizeAnthropicBaseUrl,
-	resolveAnthropicCustomHeadersForBaseUrl,
-} from "../providers/anthropic";
+import { buildAnthropicHeaders, resolveAnthropicCustomHeadersForBaseUrl } from "../providers/anthropic";
+import { normalizeAnthropicBaseUrl } from "../providers/anthropic-state";
 import { isFoundryEnabled } from "./foundry";
 
 /** Auth configuration for Anthropic */
@@ -50,7 +47,7 @@ export function isOAuthToken(apiKey: string): boolean {
  * Build an {@link AnthropicAuthConfig} from an already-resolved API key.
  *
  * `apiKey` is whatever the caller chose for `Authorization`/`x-api-key` —
- * usually `authStorage.getApiKey("anthropic")`. `baseUrl` overrides the
+ * usually `authStorage.keys.get("anthropic")`. `baseUrl` overrides the
  * env-derived base; pass `undefined` to fall back to FOUNDRY/ANTHROPIC env
  * resolution and finally `DEFAULT_BASE_URL`.
  *
@@ -73,7 +70,7 @@ export function buildAnthropicAuthConfig(apiKey: string, baseUrl?: string): Anth
  * gateway), matching the streaming path so web search behaves identically.
  */
 export function buildAnthropicSearchHeaders(auth: AnthropicAuthConfig): Record<string, string> {
-	return buildProviderAnthropicHeaders({
+	return buildAnthropicHeaders({
 		apiKey: auth.apiKey,
 		baseUrl: auth.baseUrl,
 		isOAuth: auth.isOAuth,

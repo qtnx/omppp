@@ -182,8 +182,8 @@ async function createTurnEndHarness(options: TurnEndHarnessOptions = {}): Promis
 	const sessionManager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "session.jsonl"));
 	const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 	authStorages.push(authStorage);
-	authStorage.setRuntimeApiKey("anthropic", "test-api-key");
-	authStorage.setRuntimeApiKey("openai", "test-api-key");
+	authStorage.keys.setRuntime("anthropic", "test-api-key");
+	authStorage.keys.setRuntime("openai", "test-api-key");
 	const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 	track(spyOn(modelRegistry, "getAvailable").mockReturnValue([planner, executor, gpt55]));
 	track(spyOn(modelRegistry, "hasConfiguredAuth").mockReturnValue(true));
@@ -259,8 +259,8 @@ describe("AgentSession duo turn-end maintenance", () => {
 		const sessionManager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "session.jsonl"));
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey("anthropic", "test-api-key");
-		authStorage.setRuntimeApiKey("openai", "test-api-key");
+		authStorage.keys.setRuntime("anthropic", "test-api-key");
+		authStorage.keys.setRuntime("openai", "test-api-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 		track(spyOn(modelRegistry, "getAvailable").mockReturnValue([planner, executor, gpt55]));
 		track(spyOn(modelRegistry, "hasConfiguredAuth").mockReturnValue(true));

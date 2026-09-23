@@ -23,6 +23,7 @@
 #![feature(alloc_error_hook)]
 
 pub mod appearance;
+pub mod applefm;
 pub mod ast;
 pub mod audio;
 pub mod block;
@@ -43,6 +44,7 @@ pub mod iofs;
 pub mod js;
 pub mod keys;
 pub mod live;
+pub mod mermaid;
 pub mod oauth_callback;
 /// PDF inspection and Markdown conversion.
 pub mod pdf;
