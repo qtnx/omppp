@@ -1078,6 +1078,14 @@ export interface AssistantMessage {
 	 * other than what was requested.
 	 */
 	upstreamModel?: string;
+	/**
+	 * Anthropic effort in force for the request that produced this turn when the
+	 * model carries effort changes as per-message controls (`"default"` = the
+	 * API's per-model default). Persisted so a resumed session rebuilds the same
+	 * top-level effort and controls, keeping the prompt cache warm across
+	 * processes.
+	 */
+	anthropicEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "default";
 	usage: Usage;
 	stopReason: StopReason;
 	stopDetails?: StopDetails | null;

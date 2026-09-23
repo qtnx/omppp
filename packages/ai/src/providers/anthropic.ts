@@ -446,6 +446,16 @@ let warnedStopSequencesTrim = false;
 const ANTHROPIC_PROVIDER_SESSION_STATE_KEY = "anthropic-messages";
 
 /**
+ * Recorded `AssistantMessage.anthropicEffort` carried by the wire assistant
+ * param it was converted into. Symbol-keyed so it never reaches the wire.
+ */
+const kRecordedAnthropicEffort = Symbol("anthropic.recordedEffort");
+
+type RecordedAnthropicEffortCarrier = {
+	[kRecordedAnthropicEffort]?: NonNullable<AssistantMessage["anthropicEffort"]>;
+};
+
+/**
  * A mid-conversation `role: "system"` message omp inserts at a fixed slot in
  * the wire history so top-level `tools` and `output_config.effort` can stay
  * byte-stable for preserved thinking and the prompt cache. `messageCount` is
@@ -2639,6 +2649,12 @@ const streamAnthropicOnce = (
 				});
 				controlState = built.controlState;
 				prefixDroppedThinking = built.prefixDroppedThinking;
+				// Record the effort this request runs at so a resumed session can
+				// rebuild the same top-level effort and per-message controls.
+				output.anthropicEffort =
+					model.compat.supportsPerMessageEffort && controlState?.effortBaselined
+						? (controlState.currentEffort ?? "default")
+						: undefined;
 				let nextParams = built.params;
 				if (disableStrictTools) {
 					dropAnthropicStrictTools(nextParams);
@@ -4802,17 +4818,65 @@ function planStableAnthropicEffort(
 	if (!state || !enabled) return current;
 	if (!state.effortBaselined) {
 		state.effortBaselined = true;
-		state.baseEffortWire = current;
-		state.currentEffort = current;
-		return current;
+		const [first, ...rest] = recordedAnthropicEffortRun(messages);
+		if (!first) {
+			state.baseEffortWire = current;
+			state.currentEffort = current;
+			return current;
+		}
+		// A fresh state over a transcript this model already answered (resume in
+		// a new process, or a re-baseline after a history rewrite): replay the
+		// baseline and every change exactly as the original requests planned
+		// them, so the rebuilt prefix matches the cached one byte for byte.
+		state.baseEffortWire = first.effort;
+		state.currentEffort = first.effort;
+		for (const turn of rest) applyAnthropicEffortChange(state, messages, turn.messageCount, turn.effort);
 	}
-	if (current !== undefined && state.currentEffort !== current) {
-		const lastUserIndex = messages.findLastIndex(message => message.role === "user");
-		const messageCount = lastUserIndex >= 0 ? lastUserIndex : messages.length;
-		recordAnthropicControlTransition(state, messages, messageCount, [], current);
-		state.currentEffort = current;
-	}
+	applyAnthropicEffortChange(state, messages, anthropicEffortControlSlot(messages, messages.length), current);
 	return state.baseEffortWire;
+}
+
+function applyAnthropicEffortChange(
+	state: AnthropicControlState,
+	messages: readonly MessageParam[],
+	messageCount: number,
+	effort: AnthropicOutputEffort | undefined,
+): void {
+	if (effort === undefined || state.currentEffort === effort) return;
+	recordAnthropicControlTransition(state, messages, messageCount, [], effort);
+	state.currentEffort = effort;
+}
+
+/** Slot before the latest `user` message among the first `length` wire messages. */
+function anthropicEffortControlSlot(messages: readonly MessageParam[], length: number): number {
+	for (let index = length - 1; index >= 0; index--) {
+		if (messages[index]?.role === "user") return index;
+	}
+	return length;
+}
+
+/**
+ * Recorded effort of the trailing run of assistant turns this model produced
+ * under per-message effort, oldest first, each with the control slot its
+ * request used. The run stops at the first turn without a record (another
+ * model, a compaction summary, a turn from before recording existed), where
+ * the original session re-baselined as well.
+ */
+function recordedAnthropicEffortRun(
+	messages: readonly MessageParam[],
+): Array<{ messageCount: number; effort: AnthropicOutputEffort | undefined }> {
+	const run: Array<{ messageCount: number; effort: AnthropicOutputEffort | undefined }> = [];
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index] as MessageParam & RecordedAnthropicEffortCarrier;
+		if (message.role !== "assistant") continue;
+		const recorded = message[kRecordedAnthropicEffort];
+		if (recorded === undefined) break;
+		run.push({
+			messageCount: anthropicEffortControlSlot(messages, index),
+			effort: recorded === "default" ? undefined : recorded,
+		});
+	}
+	return run.reverse();
 }
 
 function materializeAnthropicControlTransitions(
@@ -5568,6 +5632,9 @@ export function convertAnthropicMessages(
 				content: blocks,
 			};
 			copyPerCallContextMessage(assistantParam, msg);
+			if (msg.anthropicEffort !== undefined && msg.provider === model.provider && msg.model === model.id) {
+				(assistantParam as RecordedAnthropicEffortCarrier)[kRecordedAnthropicEffort] = msg.anthropicEffort;
+			}
 			params.push(assistantParam);
 			// Flush queued file metadata unless this turn left tool calls open:
 			// their results must follow the turn contiguously, so the metadata
