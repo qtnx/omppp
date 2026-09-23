@@ -134,6 +134,26 @@ describe("SearchToolBm25Tool", () => {
 		]);
 	});
 
+	it("names the xd:// path of activated tools that mount as devices", async () => {
+		const mountedNames = new Set<string>();
+		const session = createSession(discoverableTools, {
+			xdev: { tools: new Map(), mountedNames, builtInNames: new Set(["read", "write"]), isActive: () => true },
+			activateDiscoveredMCPTools: async (toolNames: string[]) => {
+				// Only the GitHub issue tool mounts under xd://; the other stays a native tool.
+				mountedNames.add("mcp__github_create_issue");
+				return toolNames;
+			},
+		});
+		const tool = new SearchToolBm25Tool(session);
+
+		const result = await tool.execute("call-mounted", { query: "github" });
+		const content = result.content[0];
+		expect(content?.type === "text" ? JSON.parse(content.text) : undefined).toMatchObject({
+			activated_tools: ["mcp__github_create_issue", "mcp__github_list_pull_requests"],
+			mounted_devices: ["xd://mcp__github_create_issue"],
+		});
+	});
+
 	it("returns ranked matches and unions activated tools across repeated searches", async () => {
 		const session = createSession(discoverableTools);
 		const tool = new SearchToolBm25Tool(session);

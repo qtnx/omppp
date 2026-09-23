@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Activating an MCP tool through tool discovery mid-conversation no longer rewrites the system prompt, which forced the provider to re-cache the whole conversation history (measured on Anthropic: ~45K tokens re-written per activation). The search result now names the new `xd://` path, and the next mount notice names the original MCP call.
+
 ## [1.11.2] - 2026-09-22
 
 ### Added
