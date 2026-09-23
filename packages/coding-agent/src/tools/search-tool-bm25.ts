@@ -3,6 +3,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import searchToolBm25Description from "../prompts/tools/search-tool-bm25.md" with { type: "text" };
@@ -65,10 +66,14 @@ function formatMatch(tool: DiscoverableTool, score: number): SearchToolBm25Match
 	};
 }
 
-function buildSearchToolBm25Content(details: SearchToolBm25Details): string {
+function buildSearchToolBm25Content(details: SearchToolBm25Details, mountedDevices: string[]): string {
 	return JSON.stringify({
 		query: details.query,
 		activated_tools: details.activated_tools,
+		// Activated tools mounted under xd:// run through `write`, not as native
+		// calls. Naming the path here keeps them usable before the next user
+		// prompt delivers the mount notice (the system prompt stays unchanged).
+		...(mountedDevices.length > 0 && { mounted_devices: mountedDevices }),
 		match_count: details.tools.length,
 		total_tools: details.total_tools,
 	});
@@ -312,8 +317,12 @@ export class SearchToolBm25Tool implements AgentTool<typeof searchToolBm25Schema
 			tools: ranked.map(result => formatMatch(result.tool, result.score)),
 		};
 
+		const mountedNames = this.session.xdev?.mountedNames;
+		const mountedDevices = mountedNames
+			? activated.filter(name => mountedNames.has(name)).map(name => `${XD_URL_PREFIX}${name}`)
+			: [];
 		return {
-			content: [{ type: "text", text: buildSearchToolBm25Content(details) }],
+			content: [{ type: "text", text: buildSearchToolBm25Content(details, mountedDevices) }],
 			details,
 		};
 	}

@@ -259,6 +259,15 @@ function formatMCPXdevGuidanceLabel(label: string): string {
 		.replaceAll("\u2029", "\\u2029");
 }
 
+/** Separates the trailing mounted-MCP-route segment of an applied tool signature. */
+const MOUNTED_MCP_ROUTE_SEPARATOR = "\u000b";
+
+/** Applied tool signature minus its mounted-MCP-route segment. The segment is JSON, so it never holds a raw separator. */
+function withoutMountedMCPRouteSegment(signature: string): string {
+	const index = signature.lastIndexOf(MOUNTED_MCP_ROUTE_SEPARATOR);
+	return index === -1 ? signature : signature.slice(0, index);
+}
+
 /**
  * Project exact live MCP routes into the bounded, Markdown-safe mapping data
  * rendered by the static MCP guidance prompt.
@@ -1503,12 +1512,23 @@ export class SessionTools {
 					promptXdevRouteSources,
 					mountedSignatureTools,
 				);
+				// Mid-conversation, a change confined to the mounted MCP route guidance
+				// (discovery activating an `xd://` MCP device, a server adding a tool)
+				// must not rewrite the system prompt: the prompt precedes every message,
+				// so a rebuild re-encodes the whole cached history. The mount notice
+				// carries the new route instead; the guidance catches up on the next
+				// rebuild that happens for another reason.
+				const conversationStarted = this.#host.agent.state.messages.some(message => message.role === "assistant");
+				const onlyMountedMCPRoutesChanged =
+					this.#lastAppliedToolSignature !== undefined &&
+					withoutMountedMCPRouteSegment(signature) ===
+						withoutMountedMCPRouteSegment(this.#lastAppliedToolSignature);
 				const freezeImplicitPromptRefresh =
 					!forcePromptRefresh &&
 					signature !== this.#lastAppliedToolSignature &&
 					this.#lastAppliedToolSignature !== undefined &&
-					this.#host.model()?.thinking?.prefixBinding === true &&
-					this.#host.agent.state.messages.some(message => message.role === "assistant");
+					conversationStarted &&
+					(this.#host.model()?.thinking?.prefixBinding === true || onlyMountedMCPRoutesChanged);
 				if (freezeImplicitPromptRefresh) {
 					frozenSignature = signature;
 				} else if (forcePromptRefresh || signature !== this.#lastAppliedToolSignature) {
@@ -1895,7 +1915,21 @@ export class SessionTools {
 			return { notice: undefined, announcedMounts };
 		}
 		const summaries = new Map(this.#xdev ? xdevEntries(this.#xdev).map(entry => [entry.name, entry.summary]) : []);
-		const added = addedNames.map(name => ({ name, summary: summaries.get(name) ?? "" }));
+		// Mid-conversation MCP mounts no longer rebuild the global route guidance,
+		// so the notice names the original MCP call each new device executes.
+		const mcpToolNames = new Map(
+			this.#xdev
+				? Array.from(collectMountedMCPToolRoutes(listXdevTools(this.#xdev)), route => [
+						route.name,
+						formatMCPXdevGuidanceLabel(route.mcpToolName),
+					])
+				: [],
+		);
+		const added = addedNames.map(name => ({
+			name,
+			mcpToolName: mcpToolNames.get(name),
+			summary: summaries.get(name) ?? "",
+		}));
 		const removed = removedNames.map(name => ({ name }));
 		const docs = this.#xdev
 			? xdevDocsFor(
@@ -2475,7 +2509,9 @@ export class SessionTools {
 			.map(tool => tool.name)
 			.sort()
 			.join("\u0002");
-		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}\u0008${mountedMCPRouteSegment}${directSegment}\u0009${mountedReaderSegment}`;
+		// The route segment stays last behind its own separator so
+		// `withoutMountedMCPRouteSegment` can tell a route-only change apart.
+		return `${nameSegment}\u0003${descriptionSegment}\u0007${instructionsSegment}${directSegment}\u0009${mountedReaderSegment}${MOUNTED_MCP_ROUTE_SEPARATOR}${mountedMCPRouteSegment}`;
 	}
 
 	/**

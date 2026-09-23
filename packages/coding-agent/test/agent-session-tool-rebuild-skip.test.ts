@@ -1017,9 +1017,10 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		expect(mountNotices[0]).toContain("xd://mcp__nucleus_fetch");
 		expect(mountNotices[0]).not.toContain("Unmounted; writes fail:");
 
-		// A later unmount is likewise held for the following user prompt.
+		// A later unmount is likewise held for the following user prompt, and a
+		// mid-conversation route-only change leaves the system prompt untouched.
 		await session.refreshMCPTools([search]);
-		expect(rebuildCount).toBe(3);
+		expect(rebuildCount).toBe(2);
 		expect(contexts).toHaveLength(2);
 		await session.prompt("third");
 		const allNotices = mountNoticesIn(contexts[2]);
@@ -1244,7 +1245,7 @@ These tools became available:
 		expect(fetchText).not.toContain("xd://mcp__nucleus_search");
 	});
 
-	it("does not re-list catalog devices in a mount notice when the rebuild exposes them (#7139)", async () => {
+	it("keeps catalog devices out of mount notices and mid-conversation MCP mounts prompt-stable (#7139)", async () => {
 		const { session, contexts } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
 			xdev: createTestXdevState(),
 			responses: [{ content: ["ok"] }, { content: ["ok"] }],
@@ -1264,13 +1265,17 @@ These tools became available:
 		).toHaveLength(0);
 		expect(mountNoticesIn(contexts[0])).toHaveLength(0);
 
-		// A later device the next rebuild also exposes stays notice-free too.
+		// Mid-conversation, a new MCP mount must not rewrite the system prompt
+		// (it precedes the whole cached history); the next user prompt carries a
+		// notice that names the device and the original MCP call it executes.
+		const promptBefore = session.systemPrompt;
 		await session.refreshMCPTools([search, fetch]);
 		await session.prompt("again");
-		expect(session.systemPrompt.join("\n")).toContain("mcp__nucleus_fetch");
-		expect(
-			session.agent.state.messages.filter(m => m.role === "custom" && m.customType === "xdev-mount-notice"),
-		).toHaveLength(0);
+		expect(session.systemPrompt).toEqual(promptBefore);
+		const notices = mountNoticesIn(contexts.at(-1) ?? []);
+		expect(notices).toHaveLength(1);
+		expect(notices[0]).toContain('xd://mcp__nucleus_fetch (MCP "fetch")');
+		expect(notices[0]).not.toContain("xd://mcp__nucleus_search");
 	});
 
 	it("announces an unmount after a maintenance rebuild delivered the pending addition", async () => {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Activating an MCP tool through tool discovery mid-conversation no longer rewrites the system prompt, which forced the provider to re-cache the whole conversation history (measured on Anthropic: ~45K tokens re-written per activation). The search result now names the new `xd://` path, and the next mount notice names the original MCP call.
+
 ### Changed
 
 - Streaming a large tool call no longer slows every frame: the status line tracks tool-argument growth without re-serializing the arguments (1000 frames with a 200 KB argument: ~100 ms → <1 ms).
