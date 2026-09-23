@@ -1108,7 +1108,7 @@ describe("native Herdr agent state extension", () => {
 		}
 	});
 
-	it("reports and clears blocked state without releasing Herdr on shutdown", async () => {
+	it("reports and clears blocked state, then releases Herdr authority on shutdown", async () => {
 		const harness = await createHarness();
 
 		await harness.runner.emit({ type: "session_start" });
@@ -1124,11 +1124,19 @@ describe("native Herdr agent state extension", () => {
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
 
+		const reportSource = harness.requests.at(-1)?.params.source;
+		const reportSeq = Number(harness.requests.at(-1)?.params.seq);
 		const requestCount = harness.requests.length;
 		await harness.runner.emit({ type: "session_shutdown" });
 
-		expect(harness.requests).toHaveLength(requestCount);
-		expect(harness.requests.some(request => request.method === "pane.release_agent")).toBe(false);
+		// An exited session must not stay idle/done in the sidebar: the claiming
+		// source hands authority back so herdr falls back to process detection.
+		expect(harness.requests).toHaveLength(requestCount + 1);
+		expect(harness.requests.at(-1)?.method).toBe("pane.release_agent");
+		expect(harness.requests.at(-1)?.params.source).toBe(reportSource);
+		expect(harness.requests.at(-1)?.params.agent).toBe("omp");
+		// Herdr acks an unsequenced or stale release but ignores it.
+		expect(Number(harness.requests.at(-1)?.params.seq)).toBeGreaterThan(reportSeq);
 	});
 
 	it("ignores post-shutdown lifecycle events and best-effort release failures", async () => {

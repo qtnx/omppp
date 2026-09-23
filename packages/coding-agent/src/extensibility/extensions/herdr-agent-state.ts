@@ -55,7 +55,7 @@ function isRetryableErrorMessage(errorMessage: string): boolean {
 }
 
 type HerdrAgentState = "working" | "blocked" | "idle";
-type HerdrMethod = "pane.report_agent";
+type HerdrMethod = "pane.report_agent" | "pane.release_agent";
 
 type HerdrRequest = {
 	id: string;
@@ -962,11 +962,30 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 			queuedState = undefined;
 			const server = controlServer;
 			controlServer = undefined;
-			if (server) await server.close();
 			if (drainPromise) await drainPromise;
-			// Do not pane.release_agent. Herdr 0.8.0 ends ownership on process
-			// exit; official OMP v8 never releases. A release from a child that
-			// inherited this pane's HERDR_* env rolled the sidebar up as unknown.
+			// Herdr keeps a lifecycle authority's last state after the process
+			// exits, so an exited session would stay idle/done in the sidebar
+			// forever. Release it so the pane falls back to process detection.
+			// Only the UI session that claimed the pane releases: headless
+			// children inheriting HERDR_* never activate, and the per-instance
+			// source keeps the release from tombstoning a later session. Herdr
+			// orders a release against the source's reports by `seq`: without one
+			// it is acked `ok` but dropped as stale, so it must outrank every
+			// state and metadata report this source sent.
+			if (uiSession && lastState !== undefined) {
+				try {
+					const seq = Math.max(nextReportSeq(), metadataSeq + 1);
+					await transport({
+						id: `${source}:release:${seq}`,
+						method: "pane.release_agent",
+						params: { pane_id: paneId, source, agent: AGENT, seq },
+					});
+					logger.debug("herdr-agent-state: released pane authority", { paneId });
+				} catch {
+					// Best-effort: exit must never fail on a sidebar update.
+				}
+			}
+			if (server) await server.close();
 		});
 
 		markNativeHerdrAgentStateEnabled(env);
