@@ -41,6 +41,7 @@ import { setTransports as setLoggerTransports } from "@oh-my-pi/pi-utils/logger"
 import { $ } from "bun";
 import { refreshManagedMcpOAuthCredential } from "../mcp/oauth-credentials";
 import { isManagedMCPOAuthCredentialId, mcpOAuthServerUrlFromCredentialId } from "../mcp/oauth-flow";
+import { TAILNET_SHORTCUT_LABEL, tailnetCallbackHint } from "../utils/oauth-tailnet";
 import { resolveAuthBrokerConfig } from "../session/auth-broker-config";
 import { startCredentialWatcher } from "../session/credential-watcher";
 
@@ -273,7 +274,7 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 		// for non-paste-code providers, so this is defense-in-depth on the same gate.
 		const usesManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(provider);
 		await storage.login(provider, {
-			onAuth({ url, launchUrl, instructions }) {
+			onAuth({ url, launchUrl, tailnetLaunchUrl, instructions }) {
 				process.stdout.write("\nOpen this URL in your browser:\n");
 				// Full URL first so the CLI works from any machine, including SSH
 				// sessions where a `launchUrl` (loopback `/launch` on the OMP
@@ -285,6 +286,10 @@ async function runLocalLogin(provider: OAuthProvider): Promise<void> {
 					// screen-scrapers narrower than the full URL still get an
 					// unbroken copy target here.
 					process.stdout.write(`Local shortcut (this machine only): ${launchUrl}\n`);
+				}
+				if (tailnetLaunchUrl) {
+					process.stdout.write(`${TAILNET_SHORTCUT_LABEL} ${tailnetLaunchUrl}\n`);
+					process.stdout.write(`${tailnetCallbackHint(tailnetLaunchUrl)}\n`);
 				}
 				if (instructions) process.stdout.write(`${instructions}\n`);
 				process.stdout.write("\n");

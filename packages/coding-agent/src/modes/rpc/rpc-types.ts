@@ -436,6 +436,11 @@ export type RpcExtensionUIRequest =
 			 * truncation cannot corrupt OAuth query parameters on the full URL.
 			 */
 			launchUrl?: string;
+			/**
+			 * The same `/launch` shortcut on the host's Tailscale address, present
+			 * when a Tailscale interface is up. Works from any tailnet device.
+			 */
+			tailnetLaunchUrl?: string;
 			instructions?: string;
 	  };
 

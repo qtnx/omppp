@@ -57,6 +57,12 @@ export type OAuthAuthInfo = {
 	 * providers with fixed non-loopback redirects, etc.).
 	 */
 	launchUrl?: string;
+	/**
+	 * The same `/launch` shortcut served on this host's Tailscale address, set
+	 * when a Tailscale interface is up. Opens the login from any device on the
+	 * tailnet, where {@link launchUrl} (loopback) only works on this machine.
+	 */
+	tailnetLaunchUrl?: string;
 	instructions?: string;
 };
 

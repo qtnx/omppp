@@ -140,6 +140,24 @@ describe("MCPAuthorizationLinkPrompt", () => {
 		expect(withRedundantLaunch.some(line => line.includes(SHORTCUT_LABEL))).toBe(false);
 	});
 
+	it("adds the Tailscale shortcut and host-swap hint, wrapped to width", () => {
+		const tailnetUrl = "http://100.75.161.60:14570/launch";
+		const width = 40;
+		const lines = new MCPAuthorizationLinkPrompt(LINEAR_AUTH_URL, "http://localhost:14570/launch", tailnetUrl).render(
+			width,
+		);
+		const plainLines = lines.map(line => stripVTControlCharacters(line));
+
+		for (const line of plainLines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		}
+		expect(reassembleUrl(plainLines, "Tailscale shortcut (other devices):")).toBe(tailnetUrl);
+		expect(plainLines.join(" ").replace(/\s+/g, " ")).toContain('replace "localhost" with 100.75.161.60');
+
+		const withoutTailnet = new MCPAuthorizationLinkPrompt(LINEAR_AUTH_URL).render(width);
+		expect(withoutTailnet.some(line => line.includes("Tailscale"))).toBe(false);
+	});
+
 	it("floors the wrap width so degenerately-narrow viewports still emit every character", () => {
 		// Below 16 cols the terminal is unusable, but the render still emits
 		// chunks (bounded at the 16-column floor). No character is silently

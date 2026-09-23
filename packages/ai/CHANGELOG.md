@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- OAuth callback servers also listen on this host's Tailscale address when a Tailscale interface is up, and `OAuthAuthInfo.tailnetLaunchUrl` carries a `/launch` shortcut on that address, so a provider login can be opened — and its callback finished — from another device on the tailnet instead of only from `localhost`.
+
 ### Fixed
 
 - Fixed Anthropic per-message effort when a session starts without an explicit effort: the omitted level was assumed to be `high`, but Opus 5.5 defaults to `medium`, so a later switch to `high` never reached the API. Omitted effort is now tracked as its own baseline and every later explicit level is sent as a per-message control (upstream `20f18f8`).

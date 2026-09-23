@@ -4,7 +4,7 @@
  * Handles /mcp subcommands for managing MCP servers.
  */
 import * as path from "node:path";
-import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { type Component, replaceTabs, Spacer, Text, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
 import { clearCache as clearFsCache } from "../../capability/fs";
 import type { SourceMeta } from "../../capability/types";
@@ -61,6 +61,7 @@ import { urlHyperlinkAlways } from "../../tui";
 import { copyToClipboard } from "../../utils/clipboard";
 import { isTimeoutError } from "../../utils/fetch-timeout";
 import { openPath } from "../../utils/open";
+import { TAILNET_SHORTCUT_LABEL, tailnetCallbackHint } from "../../utils/oauth-tailnet";
 import { ChatBlock } from "../components/chat-block";
 import { DynamicBorder } from "../components/dynamic-border";
 import { MCPAddWizard } from "../components/mcp-add-wizard";
@@ -222,10 +223,12 @@ function wrapUrlRows(label: string, url: string, width: number): string[] {
 export class MCPAuthorizationLinkPrompt implements Component {
 	readonly #fullUrl: string;
 	readonly #launchUrl: string | undefined;
+	readonly #tailnetLaunchUrl: string | undefined;
 
-	constructor(url: string, launchUrl?: string) {
+	constructor(url: string, launchUrl?: string, tailnetLaunchUrl?: string) {
 		this.#fullUrl = url;
 		this.#launchUrl = launchUrl && launchUrl !== url ? launchUrl : undefined;
+		this.#tailnetLaunchUrl = tailnetLaunchUrl;
 	}
 
 	invalidate(): void {}
@@ -239,6 +242,14 @@ export class MCPAuthorizationLinkPrompt implements Component {
 		];
 		if (this.#launchUrl) {
 			lines.push(...wrapUrlRows("Local shortcut (this machine only):", this.#launchUrl, width));
+		}
+		if (this.#tailnetLaunchUrl) {
+			lines.push(...wrapUrlRows(TAILNET_SHORTCUT_LABEL, this.#tailnetLaunchUrl, width));
+			lines.push(
+				...wrapTextWithAnsi(theme.fg("dim", tailnetCallbackHint(this.#tailnetLaunchUrl)), width - 1).map(
+					row => ` ${row}`,
+				),
+			);
 		}
 		return lines;
 	}
@@ -913,7 +924,12 @@ export class MCPCommandController {
 					stripSameOriginResource: opts?.stripSameOriginResource,
 				},
 				{
-					onAuth: (info: { url: string; launchUrl?: string; instructions?: string }) => {
+					onAuth: (info: {
+						url: string;
+						launchUrl?: string;
+						tailnetLaunchUrl?: string;
+						instructions?: string;
+					}) => {
 						// Show auth URL prominently in chat as one block
 						const block = new TranscriptBlock();
 						this.ctx.present(block);
@@ -948,7 +964,7 @@ export class MCPCommandController {
 						block.addChild(new Text(theme.fg("success", "→ Attempting to open browser..."), 1, 0));
 						block.addChild(new Spacer(1));
 						block.addChild(new Text(theme.fg("muted", "Alternative if browser did not open:"), 1, 0));
-						block.addChild(new MCPAuthorizationLinkPrompt(info.url, info.launchUrl));
+						block.addChild(new MCPAuthorizationLinkPrompt(info.url, info.launchUrl, info.tailnetLaunchUrl));
 						this.ctx.ui.requestRender();
 					},
 					onProgress: (message: string) => {

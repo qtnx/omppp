@@ -121,9 +121,14 @@ describe("OAuthCallbackFlow callback security", () => {
 			// `localhost` resolves to both loopback families, so the flow binds one
 			// literal per family: IPv4 first (it resolves the port), then — on hosts
 			// that have an IPv6 loopback — the `::1` companion. Never the
-			// `localhost` name itself, and never a routable interface.
+			// `localhost` name itself, and never a LAN or wildcard interface; the
+			// only non-loopback bind allowed is this host's Tailscale address
+			// (100.64.0.0/10), for logging in from another tailnet device.
 			expect(hostnames[0]).toBe("127.0.0.1");
-			expect(hostnames.every(hostname => hostname === "127.0.0.1" || hostname === "::1")).toBe(true);
+			const tailnet = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/;
+			expect(
+				hostnames.every(hostname => hostname === "127.0.0.1" || hostname === "::1" || tailnet.test(hostname ?? "")),
+			).toBe(true);
 		} finally {
 			abort.abort("test cleanup");
 			await login.catch(() => undefined);
