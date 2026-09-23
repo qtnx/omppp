@@ -103,7 +103,9 @@ const inputImageSchema = type({
 
 const imageProviderSchema = type
 	.enumerated(...IMAGE_PROVIDER_REQUEST_CHOICES)
-	.describe("image provider for this request; overrides the providers.imageOrder setting (default: use the setting)");
+	.describe(
+		"image provider override; omit unless the user explicitly names a provider (default: providers.imageOrder, then a connected OpenAI Codex subscription)",
+	);
 
 export const imageGenSchema = type({
 	subject: type("string").describe("main subject"),
@@ -775,12 +777,15 @@ async function findOpenAIHostedImageCredentials(
 	};
 }
 
-const CODEX_IMAGE_MODEL_PRIORITY = ["gpt-5.5", "gpt-5.4", "gpt-5.1", "gpt-5", "gpt-5-codex"] as const;
+const CODEX_IMAGE_MODEL_PRIORITY = ["gpt-6-astra", "gpt-5.5", "gpt-5.4", "gpt-5.1", "gpt-5", "gpt-5-codex"] as const;
 
-function resolveDefaultCodexImageModel(modelRegistry: ModelRegistry): Model | undefined {
+function resolveCodexImageModel(modelRegistry: ModelRegistry, activeModel: Model | undefined): Model | undefined {
 	for (const id of CODEX_IMAGE_MODEL_PRIORITY) {
 		const model = modelRegistry.find("openai-codex", id);
 		if (model && isOpenAIHostedImageModel(model)) return model;
+	}
+	if (isOpenAIHostedImageModel(activeModel) && getOpenAIHostedImageProvider(activeModel) === "openai-codex") {
+		return activeModel;
 	}
 	return modelRegistry.getAll().find(model => model.provider === "openai-codex" && isOpenAIHostedImageModel(model));
 }
@@ -789,12 +794,11 @@ function resolveDefaultCodexImageModel(modelRegistry: ModelRegistry): Model | un
  * Official Codex subscription credentials require a connected account claim.
  * Custom Codex-compatible endpoints may use opaque credentials; API keys for
  * the official ChatGPT backend cannot, so leave those for remaining providers.
- * Resolution is deliberately independent of the session's model: the only
- * model-derived preference is that a session ALREADY chatting with a Codex
- * hosted-image model keeps generating through that exact model (same account,
- * same base URL). Every other session — Anthropic, Gemini, xAI, OpenRouter,
- * local — resolves the default Codex image model instead of being denied the
- * provider.
+ * Resolution is deliberately independent of the session's model: every
+ * session — Codex, Anthropic, Gemini, xAI, OpenRouter, local — generates
+ * through the default Codex image model (`gpt-6-astra` first). A session
+ * already chatting with a Codex hosted-image model is only the fallback when
+ * the registry exposes no prioritized Codex image model.
  */
 async function findCodexSubscriptionImageCredentials(
 	modelRegistry: ModelRegistry | undefined,
@@ -804,10 +808,7 @@ async function findCodexSubscriptionImageCredentials(
 	if (!modelRegistry) return null;
 	const token = await modelRegistry.getApiKeyForProvider("openai-codex", sessionId);
 	if (!token) return null;
-	const model =
-		isOpenAIHostedImageModel(activeModel) && getOpenAIHostedImageProvider(activeModel) === "openai-codex"
-			? activeModel
-			: resolveDefaultCodexImageModel(modelRegistry);
+	const model = resolveCodexImageModel(modelRegistry, activeModel);
 	if (!model) return null;
 	const acceptsOpaqueCredentials = !isOfficialCodexApiUrl(getOpenAIResponsesUrl(model));
 	if (!acceptsOpaqueCredentials && !getCodexAccountId(token)) return null;
