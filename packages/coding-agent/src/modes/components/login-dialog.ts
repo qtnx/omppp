@@ -4,6 +4,7 @@ import { Container, getKeybindings, Input, Spacer, Text, type TUI, wrapTextWithA
 import { theme } from "../../modes/theme/theme";
 import { urlHyperlinkAlways, WidthAwareText } from "../../tui";
 import { openPath } from "../../utils/open";
+import { TAILNET_SHORTCUT_LABEL, tailnetCallbackHint } from "../../utils/oauth-tailnet";
 import { OverlayPanel } from "./overlay-box";
 
 /**
@@ -72,7 +73,7 @@ export class LoginDialogComponent extends OverlayPanel {
 	 * `code_challenge_method=S256`). Every physical URL row carries its own OSC 8
 	 * link to the full URL, so clicking any wrapped fragment opens the same target.
 	 */
-	showAuth(url: string, instructions?: string, launchUrl?: string): void {
+	showAuth(url: string, instructions?: string, launchUrl?: string, tailnetLaunchUrl?: string): void {
 		this.#contentContainer.clear();
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(
@@ -94,6 +95,12 @@ export class LoginDialogComponent extends OverlayPanel {
 			this.#contentContainer.addChild(
 				new Text(theme.fg("dim", `Local shortcut (this machine only): ${launchUrl}`), 0, 0),
 			);
+		}
+		if (tailnetLaunchUrl) {
+			this.#contentContainer.addChild(
+				new Text(theme.fg("dim", `${TAILNET_SHORTCUT_LABEL} ${tailnetLaunchUrl}`), 0, 0),
+			);
+			this.#contentContainer.addChild(new Text(theme.fg("dim", tailnetCallbackHint(tailnetLaunchUrl)), 0, 0));
 		}
 
 		if (instructions) {

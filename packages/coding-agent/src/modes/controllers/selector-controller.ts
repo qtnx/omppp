@@ -2126,10 +2126,10 @@ export class SelectorController {
 			const identity = await this.ctx.session.modelRegistry.authStorage.login(providerId as OAuthProvider, {
 				signal: dialog.signal,
 				onBrowserSession: captureBrowserSession,
-				onAuth: (info: { url: string; launchUrl?: string; instructions?: string }) => {
+				onAuth: (info: { url: string; launchUrl?: string; tailnetLaunchUrl?: string; instructions?: string }) => {
 					// The dialog renders the full URL (SSH-safe copy target) and
 					// opens the browser best-effort.
-					dialog.showAuth(info.url, info.instructions, info.launchUrl);
+					dialog.showAuth(info.url, info.instructions, info.launchUrl, info.tailnetLaunchUrl);
 				},
 				onPrompt: prompt => dialog.showPrompt(prompt),
 				onProgress: (message: string) => {

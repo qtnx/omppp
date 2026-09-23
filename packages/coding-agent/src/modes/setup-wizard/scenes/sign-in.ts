@@ -13,6 +13,7 @@ import { getAgentDbPath } from "@oh-my-pi/pi-utils";
 import { captureBrowserSession } from "../../../utils/browser-session";
 import { copyToClipboard } from "../../../utils/clipboard";
 import { OAuthSelectorComponent } from "../../components/oauth-selector";
+import { TAILNET_SHORTCUT_LABEL, tailnetCallbackHint } from "../../../utils/oauth-tailnet";
 import { theme } from "../../theme/theme";
 import type { SetupSceneHost, SetupTab } from "./types";
 
@@ -215,7 +216,12 @@ export class SignInTab implements SetupTab {
 					// shortcut for wide-terminal local users.
 					this.#authUrl = info.url;
 					this.#authLaunchUrl = info.launchUrl && info.launchUrl !== info.url ? info.launchUrl : undefined;
-					this.#statusLines = [];
+					this.#statusLines = info.tailnetLaunchUrl
+						? [
+								theme.fg("dim", `${TAILNET_SHORTCUT_LABEL} ${info.tailnetLaunchUrl}`),
+								theme.fg("dim", tailnetCallbackHint(info.tailnetLaunchUrl)),
+							]
+						: [];
 					if (info.instructions) {
 						this.#statusLines.push(theme.fg("warning", info.instructions));
 					}

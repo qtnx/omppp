@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Provider and MCP login screens (`/login`, setup wizard, `ompx auth-broker login`, RPC `open_url`) now show a Tailscale shortcut next to the local one when this machine is on a tailnet, with a hint to swap `localhost` for the tailnet address if the final redirect lands on another device.
+
 ## [1.11.3] - 2026-09-23
 
 ### Changed

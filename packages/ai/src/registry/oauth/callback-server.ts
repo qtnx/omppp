@@ -83,6 +83,36 @@ function ipv6LoopbackAvailable(): boolean {
 	return false;
 }
 
+/**
+ * Tailscale assigns every node an IPv4 address from the CGNAT range
+ * `100.64.0.0/10`. Matched on the first two octets: `100.64`–`100.127`.
+ */
+function isTailnetIPv4(address: string): boolean {
+	const [first, second] = address.split(".", 2).map(Number);
+	return first === 100 && second >= 64 && second <= 127;
+}
+
+/**
+ * The tailnet IPv4 address of this host when a Tailscale interface is up, so
+ * the callback server can also answer on it and a browser on another tailnet
+ * device can open the login shortcut. Read from the interface table rather than
+ * the `tailscale` CLI: no subprocess, and an interface only carries the address
+ * while the node is connected.
+ */
+function activeTailnetAddress(): string | undefined {
+	const interfaces = os.networkInterfaces();
+	for (const name in interfaces) {
+		const addresses = interfaces[name];
+		if (!addresses) continue;
+		for (const address of addresses) {
+			if (!address.internal && address.family === "IPv4" && isTailnetIPv4(address.address)) {
+				return address.address;
+			}
+		}
+	}
+	return undefined;
+}
+
 export interface OAuthCallbackFlowOptions {
 	preferredPort: number;
 	callbackPath?: string;
@@ -238,8 +268,13 @@ export abstract class OAuthCallbackFlow {
 		// Start callback server first to get actual redirect URI. Manual-only
 		// flows never bind a server — the advertised redirect URI is fixed and
 		// the user pastes the code/redirect URL back instead.
-		const { server, redirectUri, launchUrl } = this.#manualInputOnly
-			? { server: undefined, redirectUri: this.#buildRedirectUri(), launchUrl: undefined }
+		const { server, redirectUri, launchUrl, tailnetLaunchUrl } = this.#manualInputOnly
+			? {
+					server: undefined,
+					redirectUri: this.#buildRedirectUri(),
+					launchUrl: undefined,
+					tailnetLaunchUrl: undefined,
+				}
 			: await this.#startCallbackServer(state);
 		const receiverAbort = new AbortController();
 		let receiver: NativeSchemeCallbackReceiver | undefined;
@@ -287,7 +322,7 @@ export abstract class OAuthCallbackFlow {
 			this.#pendingAuthUrl = authUrl;
 
 			// Notify controller that auth is ready
-			this.ctrl.onAuth?.({ url: authUrl, launchUrl, instructions });
+			this.ctrl.onAuth?.({ url: authUrl, launchUrl, tailnetLaunchUrl, instructions });
 			this.#throwIfCancelled();
 			this.ctrl.onProgress?.(
 				receiver || !this.#manualInputOnly
@@ -360,21 +395,22 @@ export abstract class OAuthCallbackFlow {
 	 * callback in that case, so advertising a self-redirecting URL would be
 	 * incorrect.
 	 */
-	async #startCallbackServer(
-		expectedState: string,
-	): Promise<{ server: CallbackServer; redirectUri: string; launchUrl: string | undefined }> {
+	async #startCallbackServer(expectedState: string): Promise<{
+		server: CallbackServer;
+		redirectUri: string;
+		launchUrl: string | undefined;
+		tailnetLaunchUrl: string | undefined;
+	}> {
+		let server: CallbackServer;
+		let redirectUri: string;
+		let actualPort: number;
 		try {
-			const server = this.#createServer(this.preferredPort, expectedState);
+			server = this.#createServer(this.preferredPort, expectedState);
 			// `preferredPort: 0` opts into a random port — read the actual bound
 			// port from the server so both the redirect URI and launch URL point at
 			// a reachable socket, not the sentinel.
-			const actualPort = this.#resolveServerPort(server);
-			const launchUrl = this.#launchUrlIfSafe(actualPort);
-			if (this.redirectUri) {
-				return { server, redirectUri: this.redirectUri, launchUrl };
-			}
-			const redirectUri = `http://${this.callbackHostname}:${actualPort}${this.callbackPath}`;
-			return { server, redirectUri, launchUrl };
+			actualPort = this.#resolveServerPort(server);
+			redirectUri = this.redirectUri ?? `http://${this.callbackHostname}:${actualPort}${this.callbackPath}`;
 		} catch (cause) {
 			if (this.redirectUri) {
 				throw new AIError.ConfigurationError(
@@ -388,12 +424,51 @@ export abstract class OAuthCallbackFlow {
 					{ cause },
 				);
 			}
-			const server = this.#createServer(0, expectedState);
-			const actualPort = this.#resolveServerPort(server);
-			const redirectUri = `http://${this.callbackHostname}:${actualPort}${this.callbackPath}`;
-			const launchUrl = this.#launchUrlIfSafe(actualPort);
+			server = this.#createServer(0, expectedState);
+			actualPort = this.#resolveServerPort(server);
+			redirectUri = `http://${this.callbackHostname}:${actualPort}${this.callbackPath}`;
 			this.ctrl.onProgress?.(`Preferred port ${this.preferredPort} unavailable, using port ${actualPort}`);
-			return { server, redirectUri, launchUrl };
+		}
+		const launchUrl = this.#launchUrlIfSafe(actualPort);
+		if (!launchUrl || this.callbackHostname !== DEFAULT_HOSTNAME) {
+			return { server, redirectUri, launchUrl, tailnetLaunchUrl: undefined };
+		}
+		const tailnet = this.#serveTailnet(actualPort, expectedState);
+		if (!tailnet) return { server, redirectUri, launchUrl, tailnetLaunchUrl: undefined };
+		const loopback = server;
+		return {
+			server: {
+				get port() {
+					return loopback.port;
+				},
+				stop: (closeActiveConnections?: boolean) => {
+					void tailnet.server.stop(closeActiveConnections);
+					return loopback.stop(closeActiveConnections);
+				},
+			},
+			redirectUri,
+			launchUrl,
+			tailnetLaunchUrl: `http://${tailnet.address}:${actualPort}${LAUNCH_PATH}`,
+		};
+	}
+
+	/**
+	 * Also answer on this host's Tailscale address, same port and routes, so a
+	 * user signing in from another tailnet device can open `/launch` and, when
+	 * the provider's redirect lands on that device's own `localhost`, finish by
+	 * swapping the host for the tailnet address. The redirect URI itself stays
+	 * loopback because providers validate it against the registered callback;
+	 * callbacks arriving here pass the same state check as loopback ones.
+	 * Best-effort: no tailnet, or a failed bind, just means no remote shortcut.
+	 */
+	#serveTailnet(port: number, expectedState: string): { server: Bun.Server<unknown>; address: string } | undefined {
+		const address = activeTailnetAddress();
+		if (!address) return undefined;
+		try {
+			return { server: this.#serve(address, port, expectedState), address };
+		} catch (error) {
+			logger.debug("OAuth callback server could not bind the Tailscale address", { address, port, error });
+			return undefined;
 		}
 	}
 

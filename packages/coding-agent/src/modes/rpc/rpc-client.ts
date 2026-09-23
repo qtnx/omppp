@@ -954,7 +954,7 @@ export class RpcClient {
 	async login(
 		providerId: string,
 		options?: {
-			onOpenUrl?: (url: string, instructions?: string, launchUrl?: string) => void;
+			onOpenUrl?: (url: string, instructions?: string, launchUrl?: string, tailnetLaunchUrl?: string) => void;
 			onManualCodeInput?: (prompt: { title: string; placeholder?: string }) => string | Promise<string>;
 		},
 	): Promise<{ providerId: string }> {
@@ -963,7 +963,7 @@ export class RpcClient {
 			onOpenUrl || onManualCodeInput
 				? (req: RpcExtensionUIRequest) => {
 						if (req.method === "open_url") {
-							onOpenUrl?.(req.url, req.instructions, req.launchUrl);
+							onOpenUrl?.(req.url, req.instructions, req.launchUrl, req.tailnetLaunchUrl);
 							return;
 						}
 						if (req.method !== "input" || !onManualCodeInput) return;
