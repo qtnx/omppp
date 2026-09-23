@@ -136,6 +136,7 @@ const TNX_DEFAULT_MODEL_ID = "gpt-5.5";
 const TNX_SMOL_MODEL_ID = "smol";
 const TNX_DESIGNER_MODEL_ID = "designer";
 const TNX_SUPER_MODEL_ID = "super";
+const TNX_SCOUT_MODEL_ID = "scout";
 const TNX_DEFAULT_API_KEY = "sk-daf152fc8f22af06-lcnxi7-64c35215";
 
 // DeviceCheck attestation (`x-oai-attestation`) for ChatGPT-OAuth Codex
@@ -259,10 +260,22 @@ const TNX_DESIGNER_MODEL_PATCH: ModelPatch = {
 	compat: { cacheControlFormat: "anthropic" },
 };
 
+// `scout` is a gateway combo: its `/v1/models` row carries no `context_length`,
+// so generic discovery would pin it at the 128K default. The combo routes to
+// `grok-composer-2.5-fast`, which the same gateway advertises at 256K context /
+// 64K output (`gcli/grok-composer-2.5-fast`).
+// ponytail: pinned to the current combo target; if the gateway re-points `scout`
+// or starts reporting combo limits, update or drop this patch.
+const TNX_SCOUT_MODEL_PATCH: ModelPatch = {
+	contextWindow: 256_000,
+	maxTokens: 64_000,
+};
+
 function tnxRoleModelPatch(model: Model<Api>): ModelPatch | undefined {
 	if (model.provider !== "tnx") return undefined;
 	if (model.id === TNX_SMOL_MODEL_ID) return TNX_SMOL_MODEL_PATCH;
 	if (model.id === TNX_DESIGNER_MODEL_ID) return TNX_DESIGNER_MODEL_PATCH;
+	if (model.id === TNX_SCOUT_MODEL_ID) return TNX_SCOUT_MODEL_PATCH;
 	return undefined;
 }
 

@@ -19,6 +19,10 @@
 - `jev_scout` now carries a full query guide: when to use it, the query shape, how to pick `path` and `max_files`, how to check a hit, and a change-one-input recovery after `no_match`. The guide is built from measured scout runs: starts at a repository root missed after one listing, while lookups scoped to a file hit in one request.
 - When `codegraph_explore` is missing, unindexed, still indexing, not installed, or off-target, agents switch to `jev_scout` (or grep/read for exact names) instead of guessing greps, installing CodeGraph, or building its index. `codegraph_init` now runs only when the user asks for it.
 
+### Fixed
+
+- `tnx/scout` now reports its real 256K context window (64K output) instead of the 128K default, so sessions on it compact at the right time.
+
 ## [1.11.2] - 2026-09-22
 
 ### Added

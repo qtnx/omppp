@@ -2930,6 +2930,29 @@ describe("ModelRegistry", () => {
 							"",
 							dbPath,
 						);
+						// Combo aliases outside the built-in rows arrive via live
+						// `openai-models-list` discovery, cached under its namespace.
+						writeModelCache(
+							"tnx:openai-models-list-context-v3",
+							Date.now(),
+							[
+								buildModel({
+									id: "scout",
+									name: "scout",
+									api: "openai-completions",
+									provider: "tnx",
+									baseUrl: "http://codemc:20128/v1",
+									reasoning: false,
+									input: ["text"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 128_000,
+									maxTokens: 32_768,
+								}),
+							],
+							true,
+							"",
+							dbPath,
+						);
 					},
 				},
 			);
@@ -3220,6 +3243,11 @@ describe("ModelRegistry", () => {
 				efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 			});
 			expect(smol?.input).toEqual(["text", "image"]);
+
+			const scout = tnxCachedRoleAliases.find("tnx", "scout");
+			expect(scout?.contextWindow).toBe(256_000);
+			expect(scout?.maxTokens).toBe(64_000);
+			expect(scout?.input).toEqual(["text"]);
 		});
 
 		test("loads cached special provider discovery models on startup", () => {
