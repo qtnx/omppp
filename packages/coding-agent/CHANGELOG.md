@@ -6,9 +6,6 @@
 
 - Provider and MCP login screens (`/login`, setup wizard, `ompx auth-broker login`, RPC `open_url`) now show a Tailscale shortcut next to the local one when this machine is on a tailnet, with a hint to swap `localhost` for the tailnet address if the final redirect lands on another device.
 
-### Fixed
-
-- Activating an MCP tool through tool discovery mid-conversation no longer rewrites the system prompt, which forced the provider to re-cache the whole conversation history (measured on Anthropic: ~45K tokens re-written per activation). The search result now names the new `xd://` path, and the next mount notice names the original MCP call.
 ## [1.11.3] - 2026-09-23
 
 ### Changed

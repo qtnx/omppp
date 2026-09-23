@@ -5,6 +5,7 @@
 ### Added
 
 - OAuth callback servers also listen on this host's Tailscale address when a Tailscale interface is up, and `OAuthAuthInfo.tailnetLaunchUrl` carries a `/launch` shortcut on that address, so a provider login can be opened — and its callback finished — from another device on the tailnet instead of only from `localhost`.
+
 ## [1.11.3] - 2026-09-23
 
 ### Fixed
