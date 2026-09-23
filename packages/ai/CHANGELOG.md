@@ -2,17 +2,13 @@
 
 ## [Unreleased]
 
+## [1.11.3] - 2026-09-23
+
 ### Fixed
 
 - Fixed Anthropic per-message effort when a session starts without an explicit effort: the omitted level was assumed to be `high`, but Opus 5.5 defaults to `medium`, so a later switch to `high` never reached the API. Omitted effort is now tracked as its own baseline and every later explicit level is sent as a per-message control (upstream `20f18f8`).
 - Fixed resuming an Anthropic session in a new process after an effort change losing the whole prompt cache (Opus 5.5: ~116K tokens re-written). Each assistant turn now records the effort it ran at (`anthropicEffort`), and a fresh session rebuilds the original top-level effort and per-message effort controls from those records.
 - Fixed every request paying a failing OAuth refresh round trip when an account in the pool had a dead refresh token: a credential blocked after a failed refresh is no longer re-refreshed during candidate preflight while its 5-minute backoff runs (forced re-mints still refresh it). With one dead OpenAI Codex account next to a healthy one, resolving a key dropped from ~480 ms to ~1 ms per request.
-
-## [1.11.2] - 2026-09-22
-
-### Fixed
-
-- Fixed Anthropic multi-account rotation ignoring an account whose usage limit was reset early: Opus, Sonnet, and other non-Fable usage-limit blocks now lift as soon as a live usage report shows headroom, instead of idling the account until its original weekly reset and sending every request to a still-exhausted sibling.
 
 ## [18.2.3] - 2026-09-17
 
@@ -2281,22 +2277,16 @@
 - Made the openai-completions non-strict retry reachable for `"mixed"` strict mode (previously gated to `all_strict`, i.e. Cerebras only) and taught it to recognize upstream tool-schema validation 400s (`Invalid tool parameters schema …`, `Invalid schema for function …`). A matching rejection now retries the request with base (non-strict) schemas and persists `strictToolsDisabled` on the provider session, so later requests skip the doomed strict attempt instead of paying a 400 + retry round-trip each turn. ([#2270](https://github.com/can1357/oh-my-pi/issues/2270))
 - Cross-model `anthropic-messages → anthropic-messages` continuations now preserve prior assistant turns' reasoning chains end-to-end: every prior `thinking`/`redactedThinking` block survives (not just the latest surviving assistant), and third-party ↔ third-party replays keep their signatures intact so the reasoning chain stays signed for the next turn. Signatures are stripped (and any `redacted_thinking` sibling without a native landing spot is dropped) only when an official Anthropic endpoint is on either end of the replay — official Anthropic cryptographically binds reasoning signatures to its key+session+model, while compatible reasoning endpoints (Z.AI, DeepSeek, custom anthropic-messages providers configured via `models.yaml`) treat them as opaque continuation hints. Source-side official detection uses the canonical catalog provider id `"anthropic"` (assistant messages carry no `baseUrl`); target-side detection reuses the baked `compat.officialEndpoint` flag. Latest-turn byte-for-byte behavior (Anthropic's "thinking blocks in the latest assistant message cannot be modified" rule) and existing aborted/errored last-block sanitization are unchanged. ([#2257](https://github.com/can1357/oh-my-pi/issues/2257), [#2265](https://github.com/can1357/oh-my-pi/issues/2265))
 
+## [1.11.2] - 2026-09-22
+
+### Fixed
+
+- Fixed Anthropic multi-account rotation ignoring an account whose usage limit was reset early: Opus, Sonnet, and other non-Fable usage-limit blocks now lift as soon as a live usage report shows headroom, instead of idling the account until its original weekly reset and sending every request to a still-exhausted sibling.
+
 ## [1.11.1] - 2026-09-22
 
 ### Fixed
 
 - Claude Code OAuth now advertises CLI `2.1.280`, which Anthropic requires for Opus 5.5 (`claude_code_version_too_old`).
 
-## [1.10.1] - 2026-09-18
-
-### Fixed
-
-- Fixed Anthropic OAuth requests failing with `A maximum of 4 blocks with cache_control may be provided. Found 5.` and, before that, losing prompt-cache writes: the tool anchor is no longer added on the Claude Code OAuth layout (its system anchors already cover tools in wire order) and the request-level automatic cache now reserves one of the four `cache_control` slots, so long sessions keep reading their cached tail instead of re-billing it every turn.
-
-## [1.9.0] - 2026-09-18
-
-### Fixed
-
-- Fixed multi-account rotation stalling after logging an account out: a long-running session kept the removed account's rate-limit deadline at its old list position and applied it to whichever sibling took that slot on its next 429, so a healthy account stayed parked for hours and the pool reported "no sibling available" instead of rotating.
-
-Older entries are archived in [packages/ai/CHANGELOG.md@34dd8243c6a4](https://github.com/can1357/oh-my-pi/blob/34dd8243c6a4f0724fcda7a85158289df212aac3/packages/ai/CHANGELOG.md).
+Older entries are archived in [packages/ai/CHANGELOG.md@759fb94280f1](https://github.com/can1357/oh-my-pi/blob/759fb94280f1cc923568e4e0f66f1cd499e056be/packages/ai/CHANGELOG.md).

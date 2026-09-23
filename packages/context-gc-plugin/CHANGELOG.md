@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.3] - 2026-09-23
+
 ### Changed
 
 - The per-request context check indexes messages and branch entries once instead of comparing every record against every message, about 12x faster with 1000 messages and records.

@@ -2,9 +2,7 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- Activating an MCP tool through tool discovery mid-conversation no longer rewrites the system prompt, which forced the provider to re-cache the whole conversation history (measured on Anthropic: ~45K tokens re-written per activation). The search result now names the new `xd://` path, and the next mount notice names the original MCP call.
+## [1.11.3] - 2026-09-23
 
 ### Changed
 
@@ -21,22 +19,8 @@
 
 ### Fixed
 
+- Activating an MCP tool through tool discovery mid-conversation no longer rewrites the system prompt, which forced the provider to re-cache the whole conversation history (measured on Anthropic: ~45K tokens re-written per activation). The search result now names the new `xd://` path, and the next mount notice names the original MCP call.
 - `tnx/scout` now reports its real 256K context window (64K output) instead of the 128K default, so sessions on it compact at the right time.
-
-## [1.11.2] - 2026-09-22
-
-### Added
-
-- Central agent config (on by default; `remoteConfig.enabled: false` opts out): pull model roles, subagent overrides, fallback chains, advisor/duo settings, and agent definitions from a shared host (default `codemc`), hot-reloaded while running; your local config is the fallback and the last fetched copy keeps applying when the host is down
-- Editing advisor model settings (`advisor.*`, `duo.advisor*`) in `config.yml` while a session runs now rebuilds the advisor without a restart
-
-### Changed
-
-- Jev turn classification no longer runs on every tool step: with a live advisor it still judges each step, otherwise a live duo or `auto`-thinking session samples running tool work at most once per 15s, and duo-off sessions without `auto` send none.
-- Auto thinking takes its effort from Jev's prompt judgment (shared with duo routing), re-aims it mid-run from those 15s samples, and falls back to the tiny/smol classifier only when Jev is unavailable.
-- Subagents without an explicit effort or `:level` suffix run on `auto` thinking; bundled agents that pinned `medium`/`high`/`xhigh` now pin `auto`.
-- The status-line work-phase chip only shows while duo is live.
-- System prompt now routes behavior-to-location lookups to `jev_scout` (with an explicit tie-break against `codegraph_explore`), makes `browser_jev` the first tool for the main agent's own web UI verification, and adds a parallel fan-out playbook with concrete spawn triggers and an isolated-scope recipe for subagent waves.
 
 ## [18.2.3] - 2026-09-17
 
@@ -1723,6 +1707,21 @@
 - Added `qwenTemplateReasoningEffort` to the `models.yml` `compat` schema, so the auto-enabled Qwen 3.8+ template effort dialect (`chat_template_kwargs.reasoning_effort`) can be switched off per provider/model for strict local servers that reject unknown `chat_template_kwargs`.
 - Extensions can provide a normalized `usage` provider through `pi.registerProvider()`. Its reports now flow through AuthStorage caching, history, and usage displays, and the override is removed when the extension provider is unregistered.
 
+## [1.11.2] - 2026-09-22
+
+### Added
+
+- Central agent config (on by default; `remoteConfig.enabled: false` opts out): pull model roles, subagent overrides, fallback chains, advisor/duo settings, and agent definitions from a shared host (default `codemc`), hot-reloaded while running; your local config is the fallback and the last fetched copy keeps applying when the host is down
+- Editing advisor model settings (`advisor.*`, `duo.advisor*`) in `config.yml` while a session runs now rebuilds the advisor without a restart
+
+### Changed
+
+- Jev turn classification no longer runs on every tool step: with a live advisor it still judges each step, otherwise a live duo or `auto`-thinking session samples running tool work at most once per 15s, and duo-off sessions without `auto` send none.
+- Auto thinking takes its effort from Jev's prompt judgment (shared with duo routing), re-aims it mid-run from those 15s samples, and falls back to the tiny/smol classifier only when Jev is unavailable.
+- Subagents without an explicit effort or `:level` suffix run on `auto` thinking; bundled agents that pinned `medium`/`high`/`xhigh` now pin `auto`.
+- The status-line work-phase chip only shows while duo is live.
+- System prompt now routes behavior-to-location lookups to `jev_scout` (with an explicit tie-break against `codegraph_explore`), makes `browser_jev` the first tool for the main agent's own web UI verification, and adds a parallel fan-out playbook with concrete spawn triggers and an isolated-scope recipe for subagent waves.
+
 ## [1.11.1] - 2026-09-22
 
 ### Changed
@@ -1773,30 +1772,4 @@
 - Duo no longer keeps a planner-grade model on the main stream for exploration: reading, grepping, and globbing code with no edit landing routes to the executor rung whatever the task's difficulty or risk, so a risky or extreme task stops paying Fable/Astra prices to read the repository.
 - `duo_handoff`, `duo_escalate`, and `duo_change_phase` are now registered in every session instead of only when a duo controller happened to be live at tool-registry build time, which left an activated duo session with no handoff tool.
 
-## [1.10.2] - 2026-09-19
-
-### Added
-
-- `/usage` now ends its overview with a session cache block: one stacked bar splitting the prompt into cache hits, cache writes, and uncached input, plus the provider-priced cost of each bucket and an estimate of what the hits saved.
-- Context trim at a cold-cache model switch: when a session changes model (duo phase switch, manual switch) the provider prompt cache is cold for the new model anyway, so before the first request Jev judges every large prompt record against the upcoming work and the stale ones are shed — priced against the previous model's still-live prefix, so a flip-back inside its cache TTL is never paid for twice. Falls back to the kind-based cold-cache heuristic when Jev is unavailable.
-- Duo difficulty routing selects among deepseek-v4.1-flash, opus-5, gpt-6-astra, and fable-5-1, skips unavailable models, and shows the selected tier in `/duo status`.
-- A live Jev routing evaluation reports difficulty, reasoning, and model-selection accuracy on labeled conversation cases, including short follow-ups and quota fallbacks.
-- The scouting nudge: when the main agent has made 8+ read/grep/glob calls in one run with no edit and no `scout`/`explore` dispatched, and TypeSafe judges the slice as open-ended discovery, a notice tells it to fan the discovery out to subagents instead of paying for it in its own context.
-
-### Fixed
-
-- Duo now adjusts models and reasoning effort during a running task using recent conversation history; short follow-ups retain context, and the executor no longer replaces the brainstorming model.
-- Everything sent to the TypeSafe signals endpoint (transcript slices, plans, prompts, context digests) is now scrubbed first: the session's known secrets are replaced by their placeholders and credential-shaped tokens by `[REDACTED]`.
-
-## [1.10.1] - 2026-09-18
-
-### Changed
-
-- The default duo executor thinking level is now `high` (was `max`), in `duo.executorThinking` and the `duo.phaseModels` defaults that inherit it.
-- The advisor review gate now asks TypeSafe whether the advisor is actually needed on each turn — including turns that just yielded — so chit-chat, short answers, and routine progress no longer wake the advisor; only consults and unclassified turns still reach it unconditionally.
-
-### Fixed
-
-- Turn classification now sends the live duo work phase (`duo_phase`) with each turn, so the classifier judges a turn against the phase the session is actually in; it was accepted by the client but never populated.
-
-Older entries are archived in [packages/coding-agent/CHANGELOG.md@722ac6b97234](https://github.com/can1357/oh-my-pi/blob/722ac6b97234560bf045ad17f6aeaf2c04b4530b/packages/coding-agent/CHANGELOG.md).
+Older entries are archived in [packages/coding-agent/CHANGELOG.md@506680101053](https://github.com/can1357/oh-my-pi/blob/506680101053186106589c3e51b25176c601aa8a/packages/coding-agent/CHANGELOG.md).
