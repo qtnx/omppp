@@ -6097,6 +6097,14 @@ export class AuthStorage {
 					candidate.selection.credential = latestCredential;
 					return;
 				}
+				// A blocked credential never wins the first candidate pass, and the
+				// blocked-fallback pass refreshes it itself via #tryOAuthCredential.
+				// Refreshing it here only repeats a round trip that already failed
+				// (a transient refresh failure blocks the row for
+				// OAUTH_REFRESH_FAILURE_BACKOFF_MS) on every request.
+				if (!force && this.#isCredentialBlocked(provider, providerKey, candidate.selection.index, blockScopes)) {
+					return;
+				}
 				const credentialId = this.#getStoredCredentials(provider)[candidate.selection.index]?.id;
 				try {
 					// Hand #refreshOAuthCredential a stale clone (expires:0) so its

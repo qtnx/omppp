@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Proxy streams parse partial tool-call arguments with the same throttled parser as provider streams, instead of reparsing the full buffer on every delta (200 KB argument: ~1.6 s → ~6 ms).
+
 ## [18.2.1] - 2026-09-15
 
 ### Added

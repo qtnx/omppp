@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed every request paying a failing OAuth refresh round trip when an account in the pool had a dead refresh token: a credential blocked after a failed refresh is no longer re-refreshed during candidate preflight while its 5-minute backoff runs (forced re-mints still refresh it). With one dead OpenAI Codex account next to a healthy one, resolving a key dropped from ~480 ms to ~1 ms per request.
+
 ## [1.11.2] - 2026-09-22
 
 ### Fixed

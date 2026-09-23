@@ -5,6 +5,7 @@ import {
 	getAntigravityCounterKeyForModel,
 	scopeAntigravityLimitsForModel,
 } from "@oh-my-pi/pi-ai/usage/google-antigravity";
+import { getStreamingPartialJson, type StreamingPartialJsonCarrier } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { getNextTimeBasedPricingTransition } from "@oh-my-pi/pi-catalog/models";
 import type { Model, ModelCost } from "@oh-my-pi/pi-catalog/types";
 import type { VcsRepo } from "@oh-my-pi/pi-natives";
@@ -112,6 +113,32 @@ function codexReportMatchesExactIdentity(report: UsageReport, identity: OAuthAcc
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * Growth signal for a tool call's arguments in O(top-level keys), never
+ * O(argument bytes). While the call streams, the raw partial-JSON buffer
+ * length tracks every arriving byte; once parsed, a shallow walk of string
+ * lengths and key/element counts changes whenever a top-level value does.
+ */
+function toolCallArgumentsLen(block: StreamingPartialJsonCarrier & { arguments?: unknown }): number {
+	const partial = getStreamingPartialJson(block);
+	if (typeof partial === "string") return partial.length;
+	const args = block.arguments;
+	if (args === undefined || args === null) return 0;
+	if (typeof args === "string") return args.length;
+	if (typeof args !== "object") return 1;
+	if (Array.isArray(args)) return args.length;
+	let len = 0;
+	for (const key of Object.keys(args)) {
+		len += key.length;
+		const value = (args as Record<string, unknown>)[key];
+		if (typeof value === "string") len += value.length;
+		else if (Array.isArray(value)) len += value.length;
+		else if (value !== null && typeof value === "object") len += Object.keys(value).length;
+		else len += 1;
+	}
+	return len;
+}
+
+/**
  * Cheap structural fingerprint of a message's tokenizable content. O(blocks) —
  * only reads string `.length` and primitives, never copies or serializes.
  * Detects in-place growth of the streaming tail (and other in-place mutations)
@@ -198,15 +225,7 @@ function messageFingerprint(msg: AgentMessage): string {
 					redactedLen += b.data.length;
 				} else if (b.type === "toolCall") {
 					if (typeof b.name === "string") textLen += b.name.length;
-					if (b.arguments !== undefined) {
-						try {
-							textLen += JSON.stringify(b.arguments, (_key, value) =>
-								typeof value === "bigint" ? value.toString() : value,
-							).length;
-						} catch {
-							textLen += String(b.arguments).length;
-						}
-					}
+					textLen += toolCallArgumentsLen(b as StreamingPartialJsonCarrier & { arguments?: unknown });
 				}
 			}
 		}

@@ -33,7 +33,9 @@ case "$command" in
       exit 1
     fi
     ;;
-  sync) ;;
+  sync)
+    if [ "\${CG_SYNC_DELAY:-0}" != "0" ]; then sleep "$CG_SYNC_DELAY"; fi
+    ;;
   index) ;;
   explore)
     if [ "\${CG_EXPLORE_DELAY:-0}" != "0" ]; then exec sleep "$CG_EXPLORE_DELAY"; fi
@@ -64,6 +66,7 @@ describe("CodeGraphManager", () => {
 		process.env.CG_STATE_FILE = stateFile;
 		delete process.env.CG_INIT_MODE;
 		delete process.env.CG_EXPLORE_DELAY;
+		delete process.env.CG_SYNC_DELAY;
 		expect(Bun.spawnSync(["git", "init", "-q", workDir]).exitCode).toBe(0);
 		CodeGraphManager.disposeAll();
 	});
@@ -76,6 +79,7 @@ describe("CodeGraphManager", () => {
 		delete process.env.CG_STATE_FILE;
 		delete process.env.CG_INIT_MODE;
 		delete process.env.CG_EXPLORE_DELAY;
+		delete process.env.CG_SYNC_DELAY;
 		fs.rmSync(workDir, { recursive: true, force: true });
 	});
 
@@ -184,6 +188,38 @@ describe("CodeGraphManager", () => {
 			`status --json ${workDir}`,
 			`sync --quiet ${workDir}`,
 			"explore --path /tmp/target --max-files 3 find manager",
+		]);
+	});
+
+	it("answers an explore on an unindexed project without building an index", async () => {
+		const manager = await CodeGraphManager.forProject(workDir);
+		if (!manager) throw new Error("expected CodeGraph manager in a git repository");
+
+		await expect(manager.explore("find manager")).rejects.toThrow(`CodeGraph has no index for ${workDir}`);
+		expect(fs.readFileSync(logFile, "utf8").split("\n").filter(Boolean)).toEqual([`status --json ${workDir}`]);
+		expect(fs.existsSync(stateFile)).toBe(false);
+	});
+
+	it("stops waiting on a slow sync and serves later queries from the finished index", async () => {
+		fs.writeFileSync(stateFile, "ready");
+		process.env.CG_SYNC_DELAY = "1";
+		const manager = await CodeGraphManager.forProject(workDir);
+		if (!manager) throw new Error("expected CodeGraph manager in a git repository");
+
+		const startedAt = performance.now();
+		await expect(manager.explore("find manager", { readinessTimeoutMs: 50 })).rejects.toThrow(
+			`CodeGraph is still indexing ${workDir}`,
+		);
+		expect(performance.now() - startedAt).toBeLessThan(900);
+
+		// The sync kept running in the background; the next query reuses its result instead of syncing again.
+		expect((await manager.ensureReady()).status).toBe("ready");
+		const result = await manager.explore("find manager");
+		expect(result.stdout).toBe("explored:find manager\n");
+		expect(fs.readFileSync(logFile, "utf8").split("\n").filter(Boolean)).toEqual([
+			`status --json ${workDir}`,
+			`sync --quiet ${workDir}`,
+			"explore find manager",
 		]);
 	});
 

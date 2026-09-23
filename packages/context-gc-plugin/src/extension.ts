@@ -615,29 +615,51 @@ function liveMessageEntryId(message: ContextMessage): string | undefined {
 	return typeof entryId === "string" ? entryId : undefined;
 }
 
+interface BranchEntryCandidate {
+	readonly id: string;
+	readonly customType: string | undefined;
+}
+
 /**
  * Find the stable session entry id for an inventoried message by matching role (+ custom type) and
  * the lossless stored-payload hash. The stored hash — not the lossy text projection — is used so
  * two image-bearing messages that flatten to the same text projection (e.g. identical caption,
  * different image bytes) never alias onto the same entry id.
  */
-function resolveBranchEntryId(
+type BranchEntryResolver = (
 	role: string,
 	storedHash: string,
-	state: ContextGcSessionState,
 	consumedEntryIds?: Set<string>,
 	customType?: string,
-): string | undefined {
-	for (const entry of state.messageEntries) {
-		if (consumedEntryIds?.has(entry.id)) continue;
-		const extracted = extractMessagePayload(entry.message);
-		if (extracted.role !== role) continue;
-		if (role === "custom" && customType !== undefined && extracted.customType !== customType) continue;
-		if (hashText(payloadForMessage(entry.message).stored) !== storedHash) continue;
-		consumedEntryIds?.add(entry.id);
-		return entry.id;
-	}
-	return undefined;
+) => string | undefined;
+
+/**
+ * Build a resolver that indexes the branch entries by role + stored-payload hash once, lazily on
+ * the first lookup, so an inventory pass no longer re-extracts and re-hashes every entry per
+ * message. Entry order inside a bucket is the branch order, so the resolved entry is unchanged.
+ */
+function createBranchEntryResolver(state: ContextGcSessionState): BranchEntryResolver {
+	let index: Map<string, BranchEntryCandidate[]> | undefined;
+	return (role, storedHash, consumedEntryIds, customType) => {
+		if (!index) {
+			index = new Map();
+			for (const entry of state.messageEntries) {
+				const extracted = extractMessagePayload(entry.message);
+				const key = `${extracted.role}\u0000${hashText(payloadForMessage(entry.message).stored)}`;
+				const candidate: BranchEntryCandidate = { id: entry.id, customType: extracted.customType };
+				const bucket = index.get(key);
+				if (bucket) bucket.push(candidate);
+				else index.set(key, [candidate]);
+			}
+		}
+		for (const candidate of index.get(`${role}\u0000${storedHash}`) ?? []) {
+			if (consumedEntryIds?.has(candidate.id)) continue;
+			if (role === "custom" && customType !== undefined && candidate.customType !== customType) continue;
+			consumedEntryIds?.add(candidate.id);
+			return candidate.id;
+		}
+		return undefined;
+	};
 }
 
 async function inventoryLargeCustomMessages(
@@ -646,6 +668,7 @@ async function inventoryLargeCustomMessages(
 	messages: readonly ContextMessage[],
 	ctx: ExtensionContext,
 	state: ContextGcSessionState,
+	resolveEntryId: BranchEntryResolver,
 ): Promise<void> {
 	const consumedEntryIds = new Set<string>();
 	for (const message of messages) {
@@ -660,7 +683,7 @@ async function inventoryLargeCustomMessages(
 		const summary = normalizeAgentSummary(undefined, buildFallbackSummary(persisted.text));
 		const storedHash = hashText(persisted.stored);
 		const liveEntryId = liveMessageEntryId(message);
-		const entryId = liveEntryId ?? resolveBranchEntryId("custom", storedHash, state, consumedEntryIds, customType);
+		const entryId = liveEntryId ?? resolveEntryId("custom", storedHash, consumedEntryIds, customType);
 		if (liveEntryId) consumedEntryIds.add(liveEntryId);
 		const source: ContextSource = entryId ? { customType, entryId } : { customType };
 		const stored = await persistPayload(store, ctx, state, {
@@ -686,6 +709,7 @@ async function inventoryLargeFileMentionMessages(
 	messages: readonly ContextMessage[],
 	ctx: ExtensionContext,
 	state: ContextGcSessionState,
+	resolveEntryId: BranchEntryResolver,
 ): Promise<void> {
 	const consumedEntryIds = new Set<string>();
 	for (const message of messages) {
@@ -697,7 +721,7 @@ async function inventoryLargeFileMentionMessages(
 		const summary = normalizeAgentSummary(undefined, buildFallbackSummary(persisted.text));
 		const storedHash = hashText(persisted.stored);
 		const liveEntryId = liveMessageEntryId(message);
-		const entryId = liveEntryId ?? resolveBranchEntryId("fileMention", storedHash, state, consumedEntryIds);
+		const entryId = liveEntryId ?? resolveEntryId("fileMention", storedHash, consumedEntryIds);
 		if (liveEntryId) consumedEntryIds.add(liveEntryId);
 		const source: ContextSource = entryId ? { path: paths, entryId } : { path: paths };
 		const stored = await persistPayload(store, ctx, state, {
@@ -724,6 +748,7 @@ async function inventoryLargeExecutionMessages(
 	messages: readonly ContextMessage[],
 	ctx: ExtensionContext,
 	state: ContextGcSessionState,
+	resolveEntryId: BranchEntryResolver,
 ): Promise<void> {
 	const consumedEntryIds = new Set<string>();
 	for (const message of messages) {
@@ -741,7 +766,7 @@ async function inventoryLargeExecutionMessages(
 		const summary = normalizeAgentSummary(undefined, buildFallbackSummary(persisted.text));
 		const storedHash = hashText(persisted.stored);
 		const liveEntryId = liveMessageEntryId(message);
-		const entryId = liveEntryId ?? resolveBranchEntryId(role, storedHash, state, consumedEntryIds);
+		const entryId = liveEntryId ?? resolveEntryId(role, storedHash, consumedEntryIds);
 		if (liveEntryId) consumedEntryIds.add(liveEntryId);
 		const command = executionCommand(message);
 		const source: ContextSource = entryId ? { command, entryId } : { command };
@@ -854,9 +879,10 @@ function registerContextGcExtension(pi: ExtensionAPI, options: ContextGcExtensio
 
 	pi.on("context", async (event, ctx) => {
 		const state = readContextGcSessionState(ctx);
-		await inventoryLargeCustomMessages(store, pi, event.messages, ctx, state);
-		await inventoryLargeFileMentionMessages(store, pi, event.messages, ctx, state);
-		await inventoryLargeExecutionMessages(store, pi, event.messages, ctx, state);
+		const resolveEntryId = createBranchEntryResolver(state);
+		await inventoryLargeCustomMessages(store, pi, event.messages, ctx, state, resolveEntryId);
+		await inventoryLargeFileMentionMessages(store, pi, event.messages, ctx, state, resolveEntryId);
+		await inventoryLargeExecutionMessages(store, pi, event.messages, ctx, state, resolveEntryId);
 		let currentState = readContextGcSessionState(ctx);
 		let records = branchRecords(store, currentState);
 		let analysis = analyzeActiveContext(event.messages, records);

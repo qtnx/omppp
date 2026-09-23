@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `chalk` style chains are built once per parent builder and reused, instead of building a new builder on every property access.
+- Markdown inline lexing no longer rescans the rest of a paragraph for URLs and hard breaks after every text run, which removes quadratic work on long paragraphs.
+
 ## [18.2.3] - 2026-09-17
 
 ### Fixed
