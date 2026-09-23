@@ -10,7 +10,9 @@
 - Streamed `message_update` events are no longer queued for extensions when no extension listens for them.
 - The shared LSP daemon encodes each diagnostics message once instead of cloning it twice, and drops cached diagnostics when a document is closed (1000 publishes × 500 diagnostics: ~3.1 s → ~1.1 s).
 - A running tool with a lot of output no longer burns CPU on every spinner tick: the spinner no longer throws away the output block's render cache (5 MB bash output, 100 ticks: ~810 ms → <1 ms).
-- `codegraph_explore` no longer builds a missing index or waits minutes for one: on a project without an index it answers in milliseconds with a pointer to grep/read, and it waits at most 10 s for a sync or startup index already in progress. A first explore in a fresh worktree used to block every subagent that called it for ~6 minutes while it indexed the whole repository.
+- `codegraph_explore` no longer builds a missing index or waits minutes for one: on a project without an index it answers in milliseconds and points to `jev_scout`, and it waits at most 10 s for a sync or startup index already in progress. A first explore in a fresh worktree used to block every subagent that called it for ~6 minutes while it indexed the whole repository.
+- `jev_scout` now carries a full query guide: when to use it, the query shape, how to pick `path` and `max_files`, how to check a hit, and a change-one-input recovery after `no_match`. The guide is built from measured scout runs: starts at a repository root missed after one listing, while lookups scoped to a file hit in one request.
+- When `codegraph_explore` is missing, unindexed, still indexing, not installed, or off-target, agents switch to `jev_scout` (or grep/read for exact names) instead of guessing greps, installing CodeGraph, or building its index. `codegraph_init` now runs only when the user asks for it.
 
 ## [1.11.2] - 2026-09-22
 

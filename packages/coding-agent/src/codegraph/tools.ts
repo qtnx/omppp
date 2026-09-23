@@ -10,6 +10,9 @@ import { ToolError } from "../tools/tool-errors";
 import { CODEGRAPH_REQUIRES_GIT, type CodeGraphCommandResult, CodeGraphManager } from "./manager";
 
 const MAX_FILES = 100;
+/** Every explore failure points the agent at a fast lookup instead of an install or a full index build. */
+const EXPLORE_FALLBACK =
+	"Locate code with jev_scout, or grep/read for exact names; NEVER install CodeGraph or build its index for this lookup.";
 
 const codegraphInitSchema = type({
 	"path?": "string",
@@ -130,13 +133,16 @@ export class CodeGraphExploreTool implements AgentTool<typeof codegraphExploreSc
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<CodeGraphToolDetails>> {
 		const projectPath = params.projectPath ? resolveProjectPath(this.session, params.projectPath) : undefined;
-		const manager = await managerFor(projectPath ?? this.session.cwd);
 		const maxFiles = params.maxFiles === undefined ? undefined : Math.min(params.maxFiles, MAX_FILES);
 		try {
+			const manager = await managerFor(projectPath ?? this.session.cwd);
 			return resultFor(await manager.explore(params.query, { projectPath, maxFiles, signal }));
 		} catch (error) {
-			if (error instanceof ToolError) throw error;
-			throw new ToolError(`CodeGraph explore failed: ${error instanceof Error ? error.message : String(error)}`);
+			const message =
+				error instanceof ToolError
+					? error.message
+					: `CodeGraph explore failed: ${error instanceof Error ? error.message : String(error)}`;
+			throw new ToolError(`${message}\n${EXPLORE_FALLBACK}`);
 		}
 	}
 }

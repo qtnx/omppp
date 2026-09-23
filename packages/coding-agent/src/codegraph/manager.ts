@@ -166,7 +166,7 @@ export class CodeGraphManager {
 				(await Promise.race([readiness, timedOut])) ?? {
 					status: "initializing",
 					projectRoot: this.projectRoot,
-					error: `CodeGraph is still indexing ${this.projectRoot}; use grep/read for this lookup.`,
+					error: `CodeGraph is still indexing ${this.projectRoot}.`,
 				}
 			);
 		} finally {
@@ -198,10 +198,7 @@ export class CodeGraphManager {
 
 			if (status.error) return this.#setState("failed", status.error);
 			if (!initialize) {
-				return this.#setState(
-					"idle",
-					`CodeGraph has no index for ${this.projectRoot}; use grep/read for this lookup.`,
-				);
+				return this.#setState("idle", `CodeGraph has no index for ${this.projectRoot}.`);
 			}
 			const initialized = await this.init(signal);
 			if (initialized.exitCode === 0) return this.#setState("ready");
