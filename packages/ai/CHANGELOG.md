@@ -6,11 +6,8 @@
 
 - Fixed every request paying a failing OAuth refresh round trip when an account in the pool had a dead refresh token: a credential blocked after a failed refresh is no longer re-refreshed during candidate preflight while its 5-minute backoff runs (forced re-mints still refresh it). With one dead OpenAI Codex account next to a healthy one, resolving a key dropped from ~480 ms to ~1 ms per request.
 
-## [1.11.1] - 2026-09-22
+## [1.11.2] - 2026-09-22
 
-### Fixed
-
-- Claude Code OAuth now advertises CLI `2.1.280`, which Anthropic requires for Opus 5.5 (`claude_code_version_too_old`).
 ### Fixed
 
 - Fixed Anthropic multi-account rotation ignoring an account whose usage limit was reset early: Opus, Sonnet, and other non-Fable usage-limit blocks now lift as soon as a live usage report shows headroom, instead of idling the account until its original weekly reset and sending every request to a still-exhausted sibling.
@@ -2281,6 +2278,12 @@
 - Hardened strict tool-schema handling beyond the optional-union case: `enforceStrictSchema` now splices natively nested pure unions into the parent `anyOf` (only when the inner node carries no constraining siblings, since sibling keywords are conjunctive with `anyOf`), so source schemas with nested unions no longer produce type-less `anyOf` branches that strict upstream validators reject. ([#2270](https://github.com/can1357/oh-my-pi/issues/2270))
 - Made the openai-completions non-strict retry reachable for `"mixed"` strict mode (previously gated to `all_strict`, i.e. Cerebras only) and taught it to recognize upstream tool-schema validation 400s (`Invalid tool parameters schema …`, `Invalid schema for function …`). A matching rejection now retries the request with base (non-strict) schemas and persists `strictToolsDisabled` on the provider session, so later requests skip the doomed strict attempt instead of paying a 400 + retry round-trip each turn. ([#2270](https://github.com/can1357/oh-my-pi/issues/2270))
 - Cross-model `anthropic-messages → anthropic-messages` continuations now preserve prior assistant turns' reasoning chains end-to-end: every prior `thinking`/`redactedThinking` block survives (not just the latest surviving assistant), and third-party ↔ third-party replays keep their signatures intact so the reasoning chain stays signed for the next turn. Signatures are stripped (and any `redacted_thinking` sibling without a native landing spot is dropped) only when an official Anthropic endpoint is on either end of the replay — official Anthropic cryptographically binds reasoning signatures to its key+session+model, while compatible reasoning endpoints (Z.AI, DeepSeek, custom anthropic-messages providers configured via `models.yaml`) treat them as opaque continuation hints. Source-side official detection uses the canonical catalog provider id `"anthropic"` (assistant messages carry no `baseUrl`); target-side detection reuses the baked `compat.officialEndpoint` flag. Latest-turn byte-for-byte behavior (Anthropic's "thinking blocks in the latest assistant message cannot be modified" rule) and existing aborted/errored last-block sanitization are unchanged. ([#2257](https://github.com/can1357/oh-my-pi/issues/2257), [#2265](https://github.com/can1357/oh-my-pi/issues/2265))
+
+## [1.11.1] - 2026-09-22
+
+### Fixed
+
+- Claude Code OAuth now advertises CLI `2.1.280`, which Anthropic requires for Opus 5.5 (`claude_code_version_too_old`).
 
 ## [1.10.1] - 2026-09-18
 

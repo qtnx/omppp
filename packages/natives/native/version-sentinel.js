@@ -19,7 +19,7 @@
  * therefore keeps the sentinel — and the `.node` artifacts CI already built for
  * the identical sources stay usable. MUST stay in sync with that `js_name`.
  */
-export const NATIVE_ABI_VERSION = "1.11.1";
+export const NATIVE_ABI_VERSION = "1.11.2";
 
 /**
  * Return the version sentinel exported by an addon built for `abiVersion`.
