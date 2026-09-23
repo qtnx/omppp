@@ -2,16 +2,12 @@
 
 ## [Unreleased]
 
+## [1.11.3] - 2026-09-23
+
 ### Fixed
 
 - Fixed GPT-6 Sol and Luna missing from OpenAI Codex model discovery by advertising Codex client 0.155.1 and keying the Codex model cache on the client version ([#12885](https://github.com/can1357/oh-my-pi/pull/12885) by [@itsddvn](https://github.com/itsddvn))
 - Added GPT-6 Sol and Luna thinking efforts on GitHub Copilot
-
-## [1.11.2] - 2026-09-22
-
-### Added
-
-- Added GPT-6 Sol ($2/$10) and GPT-6 Luna ($0.10/$0.50) catalog rows copied from GPT-6 Astra, with cache at 0.1× read and 1.25× write.
 
 ## [18.2.3] - 2026-09-17
 
@@ -1612,6 +1608,12 @@
 ### Removed
 
 - Removed the runtime enrichment layer: `enrichModelThinking` (and its non-enumerable memo-slot cache), `refreshModelThinking`, `modelOmitsReasoningEffort`, and the `model-thinking` re-exports of generator-only policies. Thinking metadata is resolved exactly once inside `buildModel`; runtime helpers (`getSupportedEfforts`, `clampThinkingLevelForModel`, `requireSupportedEffort`, the effort mappers) are pure field reads.
+
+## [1.11.2] - 2026-09-22
+
+### Added
+
+- Added GPT-6 Sol ($2/$10) and GPT-6 Luna ($0.10/$0.50) catalog rows copied from GPT-6 Astra, with cache at 0.1× read and 1.25× write.
 
 ## [1.11.0] - 2026-09-22
 
