@@ -1123,19 +1123,21 @@ describe("live learnings runtime", () => {
 			],
 		});
 
+		// The novelty verdict resolves before the reinforcement lands in the DB,
+		// so wait on the persisted strength rather than on the novelty call.
 		await waitFor(() => {
 			expect(noveltySpy).toHaveBeenCalledTimes(1);
+			const resultDb = new Database(getAgentDbPath(fx.agentDir));
+			try {
+				const row = resultDb.prepare("SELECT strength FROM live_learnings WHERE id = ?").get(seededId) as {
+					strength: number;
+				} | null;
+				expect(row?.strength).toBe(2);
+			} finally {
+				resultDb.close();
+			}
 		});
 		expect(writerSpy).not.toHaveBeenCalled();
-		const resultDb = new Database(getAgentDbPath(fx.agentDir));
-		try {
-			const row = resultDb.prepare("SELECT strength FROM live_learnings WHERE id = ?").get(seededId) as {
-				strength: number;
-			} | null;
-			expect(row?.strength).toBe(2);
-		} finally {
-			resultDb.close();
-		}
 		expect(fx.refreshBaseSystemPrompt).not.toHaveBeenCalled();
 	});
 
