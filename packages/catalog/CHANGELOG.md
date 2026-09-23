@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed GPT-6 Sol and Luna missing from OpenAI Codex model discovery by advertising Codex client 0.155.1 and keying the Codex model cache on the client version ([#12885](https://github.com/can1357/oh-my-pi/pull/12885) by [@itsddvn](https://github.com/itsddvn))
+- Added GPT-6 Sol and Luna thinking efforts on GitHub Copilot
+
 ## [1.11.2] - 2026-09-22
 
 ### Added

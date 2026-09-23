@@ -636,7 +636,7 @@ describe("openai-codex Responses Lite and client metadata wire format", () => {
 			phase: "standalone_turn",
 			strategy: "memento",
 		});
-	}, 15_000);
+	});
 	it("keeps lite and strips image detail when a lite request contains images", async () => {
 		const model = buildModel({
 			id: "gpt-5.5",
@@ -706,7 +706,6 @@ describe("openai-codex Responses Lite and client metadata wire format", () => {
 
 		expect(result.stopReason).toBe("stop");
 		expect(captured!.headers.get("x-openai-internal-codex-responses-lite")).toBe("true");
-		expect(captured!.headers.get("version")).toBe("0.153.0");
 		const body = captured!.body;
 		expect(body.reasoning).toEqual({ context: "all_turns" });
 		expect(body.instructions).toBeUndefined();
