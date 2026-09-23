@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed Anthropic per-message effort when a session starts without an explicit effort: the omitted level was assumed to be `high`, but Opus 5.5 defaults to `medium`, so a later switch to `high` never reached the API. Omitted effort is now tracked as its own baseline and every later explicit level is sent as a per-message control (upstream `20f18f8`).
 - Fixed every request paying a failing OAuth refresh round trip when an account in the pool had a dead refresh token: a credential blocked after a failed refresh is no longer re-refreshed during candidate preflight while its 5-minute backoff runs (forced re-mints still refresh it). With one dead OpenAI Codex account next to a healthy one, resolving a key dropped from ~480 ms to ~1 ms per request.
 
 ## [1.11.2] - 2026-09-22
