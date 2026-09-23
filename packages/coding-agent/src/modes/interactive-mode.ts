@@ -57,6 +57,7 @@ import {
 	logger,
 	postmortem,
 	prompt,
+	releaseNativeHeap,
 	sanitizeText,
 	stableStringifyJson,
 	setProjectDir,
@@ -1593,6 +1594,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			mcp: this.mcpManager ?? null,
 			workers: buildWorkerTrimTargets(),
 			caches: buildCacheTrimTargets(),
+			nativeHeap: { release: releaseNativeHeap },
 			statusLine: this.statusLine,
 			isActive: () => {
 				const viewSession = this.viewSession ?? this.session;

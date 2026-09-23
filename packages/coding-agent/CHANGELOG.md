@@ -5,10 +5,19 @@
 ### Added
 
 - Provider and MCP login screens (`/login`, setup wizard, `ompx auth-broker login`, RPC `open_url`) now show a Tailscale shortcut next to the local one when this machine is on a tailnet, with a hint to swap `localhost` for the tailnet address if the final redirect lands on another device.
+- `ompx mnemopi-embed-server` serves memory embeddings over HTTP from one loaded model. Sessions use it through `mnemopi.embedServerUrl` (default `http://codemc:8793`, override with `MNEMOPI_EMBED_SERVER_URL`, empty to disable), so a machine with many sessions keeps a single model in memory instead of one per session. When the server is unreachable, sessions embed locally and retry the server a minute later.
+
+### Changed
+
+- The local memory embeddings worker (`__omp_worker_mnemopi_embed`) now uses far less memory and CPU: it stays around 0.35–0.5 GB instead of 1.0–1.6 GB, a recall query takes ~0.1–0.3 s instead of ~0.4–1.4 s, and a worker left idle for 5 minutes exits and restarts on the next memory lookup. Before, every open session kept its own copy loaded until the session closed.
+- Compiled Linux and macOS binaries load rarely used code on first use instead of at startup. Each helper process (daemon broker, eval and embedding workers) now holds ~17 MB of private memory instead of ~105 MB, and an idle session ~270 MB instead of ~300 MB.
+- Product Preview's web client (mermaid, canvas app, markdown renderer) loads when a preview starts instead of staying in every session's memory.
+- Idle memory trim now also returns freed native memory to the OS (after a burst of parallel searches: ~990 MB back to ~90 MB), and when a background subagent or an unsent draft keeps the session busy at the idle deadline it tries again after another idle window instead of giving up until the next turn.
 
 ### Fixed
 
 - Advisor note artifacts are now written to a temp file and renamed into place. Before, the artifact path was advertised immediately while the write was still in flight, so a read could see an empty file. A block re-rendered each turn is now written only once.
+- Exiting ompx inside a Herdr pane now clears the pane's agent status instead of leaving it stuck on idle/done.
 
 ## [1.11.3] - 2026-09-23
 

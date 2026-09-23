@@ -18,6 +18,10 @@ export const authGatewayHelp = {
 	description: "Run an auth-gateway forward proxy backed by the configured broker",
 } satisfies CommandMetadata;
 
+export const mnemopiEmbedServerHelp = {
+	description: "Serve mnemopi memory embeddings to ompx sessions on the network from one shared model",
+} satisfies CommandMetadata;
+
 export const benchHelp = {
 	description:
 		"Benchmark models: TTFT/prefill vs decode throughput with p50/p95, across chat, prefill, generation, and prompt-cache workloads",

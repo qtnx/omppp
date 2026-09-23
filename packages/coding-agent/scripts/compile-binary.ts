@@ -47,11 +47,28 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
 			},
-			// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
-			// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).
-			// Keep import.meta.resolve in bundled dependencies valid under bytecode.
+			// ESM output keeps dependency `import.meta.resolve` valid and is required
+			// for chunk splitting below.
 			format: "esm",
-			bytecode: true,
+			// Precompiled bytecode is disabled: with `bytecode: true` the compiled
+			// executable aborts at startup with `SyntaxError: import.meta is only
+			// valid inside modules`, while the same graph runs fine from source and
+			// from `dist/cli.js`. Bytecode also rejects top-level await in the
+			// bundle graph, so the first module that needs it would break the
+			// released binary the same way. Build without it until the graph is
+			// TLA-free again — the boot-time gain (~30 ms vs ~256 ms) is not worth
+			// shipping an executable that cannot start.
+			bytecode: false,
+			// Split modules reached only through dynamic `import()` into chunks
+			// loaded on first use. As one chunk, every process that re-enters the
+			// binary (daemon broker, js-eval and embed workers, sessions) pays for
+			// the whole 45 MB bundle's module record and top-level scope: a helper
+			// process such as `ompx mnemopi-embed-server` holds ~108 MB of private
+			// memory single-chunk vs ~22 MB split, and an idle session ~10-20 MB
+			// less. Windows standalone executables key modules with backslash paths
+			// (see `isProcessEntry` in cli.ts), so chunk resolution there stays
+			// single-chunk until it is verified on a Windows host.
+			splitting: !(options.target?.startsWith("bun-windows") ?? process.platform === "win32"),
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,

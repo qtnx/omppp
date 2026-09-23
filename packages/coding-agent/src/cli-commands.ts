@@ -187,6 +187,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.loginHelp,
 	},
 	{
+		name: "mnemopi-embed-server",
+		load: () => import("./commands/mnemopi-embed-server").then(m => m.default),
+		help: commandHelp.mnemopiEmbedServerHelp,
+	},
+	{
 		name: "models",
 		load: () => import("./commands/models").then(m => m.default),
 		help: commandHelp.modelsHelp,

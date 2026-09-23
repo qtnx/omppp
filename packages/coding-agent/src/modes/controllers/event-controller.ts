@@ -2191,10 +2191,10 @@ export class EventController {
 		this.#scheduleIdleCompaction();
 		this.#scheduleIdleRecap();
 		this.#scheduleIdleRating();
-		// Arm idle low-memory trim independently of idle compaction.
-		// v1 limitation: timer arms only on main agent_end. A detached subagent
-		// that outlives the turn keeps isActive() true and suppresses fire; nothing
-		// re-arms until the next main activity end.
+		// Arm idle low-memory trim independently of idle compaction. The timer
+		// arms on main agent_end; if a detached subagent or a draft keeps the
+		// session busy at expiry, the trim waits another window instead of
+		// giving up until the next main turn.
 		this.#idleMemoryTrim?.notifyActivityEnd();
 		this.sendErrorNotification(event);
 		this.sendCompletionNotification(event);

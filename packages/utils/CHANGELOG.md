@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `releaseNativeHeap()` returns freed native-heap memory to the OS (`malloc_trim` on Linux glibc; a no-op elsewhere).
+
 ## [1.11.3] - 2026-09-23
 
 ### Changed

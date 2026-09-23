@@ -11,6 +11,8 @@ export interface IdleTrimDeps {
 	readonly mcp: { sleepAll(): Promise<void> } | null;
 	readonly workers: { terminateAll(): Promise<void> };
 	readonly caches: { clear(): void };
+	/** Returns free native-heap pages to the OS; reports whether a release ran. */
+	readonly nativeHeap: { release(): boolean };
 	readonly statusLine: { setHookStatus(key: string, text: string | undefined): void } | null;
 	readonly isActive: () => boolean;
 	readonly now?: () => number;
@@ -46,14 +48,7 @@ export class IdleMemoryTrim {
 		if (this.#disposed) return;
 		this.#clearTimer();
 		if (!this.#deps.config.enabled()) return;
-
-		const idleSeconds = Math.max(MIN_IDLE_SECONDS, Math.min(MAX_IDLE_SECONDS, this.#deps.config.idleSeconds()));
-		const generation = this.#generation;
-		const timer: NodeJS.Timeout = setTimeout(() => {
-			void this.#trimFromTimer(timer, generation);
-		}, idleSeconds * 1_000);
-		this.#timer = timer;
-		timer.unref?.();
+		this.#arm(this.#generation);
 	}
 
 	notifyActivityStart(): void {
@@ -72,8 +67,26 @@ export class IdleMemoryTrim {
 	}
 
 	async #trimFromTimer(timer: NodeJS.Timeout, generation: number): Promise<void> {
+		// Activity start and dispose clear the timer, so a matching timer means
+		// this generation is still the current idle window.
 		if (this.#timer !== timer) return;
+		// Busy at expiry (a detached subagent still running, a draft in the
+		// editor): wait another window instead of dropping the trim until the
+		// next main-turn end, which may never come for an idle session.
+		if (this.#deps.config.enabled() && this.#deps.isActive()) {
+			this.#arm(generation);
+			return;
+		}
 		await this.#trim(generation, timer);
+	}
+
+	#arm(generation: number): void {
+		const idleSeconds = Math.max(MIN_IDLE_SECONDS, Math.min(MAX_IDLE_SECONDS, this.#deps.config.idleSeconds()));
+		const timer: NodeJS.Timeout = setTimeout(() => {
+			void this.#trimFromTimer(timer, generation);
+		}, idleSeconds * 1_000);
+		this.#timer = timer;
+		timer.unref?.();
 	}
 
 	async #trim(generation: number, expectedTimer?: NodeJS.Timeout): Promise<void> {
@@ -88,6 +101,7 @@ export class IdleMemoryTrim {
 			let mcpSlept = false;
 			let workers = false;
 			let cachesCleared = false;
+			let nativeHeapReleased = false;
 
 			parked = await this.#runStep("park subagents", () => this.#deps.lifecycle.parkAll());
 			if (parked) completedSteps++;
@@ -111,9 +125,24 @@ export class IdleMemoryTrim {
 			if (collected) completedSteps++;
 			if (!this.#canContinue(generation)) return;
 
+			// After GC: collected JS wrappers free their native buffers first.
+			await this.#runStep("release native heap", () => {
+				nativeHeapReleased = this.#deps.nativeHeap.release();
+			});
+			if (nativeHeapReleased) completedSteps++;
+			if (!this.#canContinue(generation)) return;
+
 			const rssAfter = process.memoryUsage().rss;
 			if (completedSteps > 0) this.#deps.statusLine?.setHookStatus("memory", "low-mem");
-			logger.info("idle memory trim", { rssBefore, rssAfter, parked, mcpSlept, workers, cachesCleared });
+			logger.info("idle memory trim", {
+				rssBefore,
+				rssAfter,
+				parked,
+				mcpSlept,
+				workers,
+				cachesCleared,
+				nativeHeapReleased,
+			});
 		} finally {
 			this.#trimming = false;
 		}

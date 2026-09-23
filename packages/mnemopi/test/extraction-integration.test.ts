@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { FetchImpl } from "@oh-my-pi/pi-ai";
 import { extractFacts } from "@oh-my-pi/pi-mnemopi/core/extraction";
 import { type ChatMessage, ExtractionClient } from "@oh-my-pi/pi-mnemopi/core/extraction/client";
@@ -17,6 +17,11 @@ function restoreEnv(): void {
 		else process.env[key] = value;
 	}
 }
+
+// Other suites share the process-wide stats counters; start each case clean.
+beforeEach(() => {
+	resetExtractionStats();
+});
 
 afterEach(() => {
 	restoreEnv();

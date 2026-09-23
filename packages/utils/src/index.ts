@@ -20,6 +20,7 @@ export * from "./materialize-string";
 export * from "./math-delimiters";
 export * from "./mermaid-ascii";
 export * from "./mime";
+export * from "./native-heap";
 export * from "./path";
 export * from "./path-tree";
 export * from "./peek-file";
