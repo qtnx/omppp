@@ -213,12 +213,17 @@ describe("imageGenTool provider preference", () => {
 		expect(result.details?.provider).toBe("openai-codex");
 	});
 
-	it("prefers the OpenAI Codex provider default over earlier suitable Codex image candidates", async () => {
-		const activeModel = makeModel("anthropic", "claude-opus-4-1", "anthropic-messages");
-		const nonDefaultCodexModel = makeModel("openai-codex", "gpt-5", "openai-codex-responses", {
+	it.each([
+		["an Anthropic session", makeModel("anthropic", "claude-opus-4-1", "anthropic-messages")],
+		[
+			"a Codex gpt-5.5 session",
+			makeModel("openai-codex", "gpt-5.5", "openai-codex-responses", { baseUrl: "https://chatgpt.com/backend-api" }),
+		],
+	])("generates through Codex gpt-6-astra from %s", async (_label, activeModel) => {
+		const nonDefaultCodexModel = makeModel("openai-codex", "gpt-5.5", "openai-codex-responses", {
 			baseUrl: "https://chatgpt.com/backend-api",
 		});
-		const defaultCodexModel = makeModel("openai-codex", "gpt-5.5", "openai-codex-responses", {
+		const defaultCodexModel = makeModel("openai-codex", "gpt-6-astra", "openai-codex-responses", {
 			baseUrl: "https://chatgpt.com/backend-api",
 		});
 		const captured: CapturedRequest[] = [];
@@ -227,7 +232,6 @@ describe("imageGenTool provider preference", () => {
 			keys: { "openai-codex": makeCodexToken("acct_codex_images") },
 		});
 
-		setPreferredImageProvider("openai-codex");
 		const result = await runImageTool({
 			model: activeModel,
 			registry,
@@ -239,9 +243,9 @@ describe("imageGenTool provider preference", () => {
 		if (!request) throw new Error("Expected an OpenAI Codex image request");
 		expect(request.url).toBe("https://chatgpt.com/backend-api/codex/responses");
 		expect(request.headers.get("chatgpt-account-id")).toBe("acct_codex_images");
-		expect(request.body).toMatchObject({ model: "gpt-5.5" });
+		expect(request.body).toMatchObject({ model: "gpt-6-astra" });
 		expect(result.details?.provider).toBe("openai-codex");
-		expect(result.details?.model).toBe("gpt-5.5");
+		expect(result.details?.model).toBe("gpt-6-astra");
 	});
 
 	it("falls through to the existing auto OpenAI path when preferred OpenAI Codex has no suitable model or key", async () => {
