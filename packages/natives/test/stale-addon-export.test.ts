@@ -17,6 +17,7 @@ import { describe, expect, it } from "bun:test";
 import "../native";
 import type { NativeAddonStatus } from "../native/loader-state.js";
 import { missingNativeExport, missingNativeExportMessage, nativeAddonStatus } from "../native/loader-state.js";
+import { NATIVE_ABI_VERSION, versionSentinelFor } from "../native/version-sentinel.js";
 
 const addonPath = "/w/packages/natives/native/pi_natives.linux-x64-modern.node";
 
@@ -63,7 +64,8 @@ describe("native exports missing from a stale addon", () => {
 		const loaded = nativeAddonStatus();
 		expect(loaded).not.toBeNull();
 		expect(loaded?.path.endsWith(".node")).toBe(true);
-		expect(loaded?.expectedSentinel).toBe(`__piNativesV${loaded?.packageVersion.replace(/[^A-Za-z0-9]/g, "_")}`);
+		// OMPx keys the sentinel on the native ABI version, not the package version.
+		expect(loaded?.expectedSentinel).toBe(versionSentinelFor(NATIVE_ABI_VERSION));
 		// Whatever the tree's build state, the flag the stubs branch on must be
 		// the one the sentinels imply.
 		expect(loaded?.stale).toBe(loaded?.sentinel !== loaded?.expectedSentinel);
