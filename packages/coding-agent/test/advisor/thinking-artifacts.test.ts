@@ -120,6 +120,37 @@ describe("ThinkingArtifactStore.renderThinking", () => {
 		expect(gistFn.mock.calls[0]?.[0]).toEqual([{ id, text: obfuscated }]);
 	});
 
+	it("never exposes an empty or partial artifact at the advertised path while the write is in flight", async () => {
+		const dir = await makeTmpDir();
+		// Slow disk: the file appears empty first and gets its bytes only when
+		// the test releases it — the window a reader following the advertised
+		// path could otherwise hit.
+		const write = Bun.write.bind(Bun) as typeof Bun.write;
+		const emptyWritten = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		vi.spyOn(Bun, "write").mockImplementation((async (path: string, data: string) => {
+			await write(path, "");
+			emptyWritten.resolve();
+			await release.promise;
+			return write(path, data);
+		}) as unknown as typeof Bun.write);
+		const store = new ThinkingArtifactStore({
+			artifactsDir: () => dir,
+			obfuscate,
+			gistEnabled: () => true,
+			clampThreshold: () => 1,
+		});
+		const text = largeText();
+		const id = extractGistId(store.renderThinking(text));
+		const artifactPath = join(dir, "__advisor-artifacts", `notes-${id}.md`);
+
+		await emptyWritten.promise;
+		expect(await Bun.file(artifactPath).exists()).toBe(false);
+		release.resolve();
+		expect(await waitForFile(artifactPath)).toBe(true);
+		expect(await Bun.file(artifactPath).text()).toBe(obfuscate(text));
+	});
+
 	it("returns obfuscated whitespace as-is without creating a gist", () => {
 		const store = new ThinkingArtifactStore({
 			artifactsDir: () => undefined,

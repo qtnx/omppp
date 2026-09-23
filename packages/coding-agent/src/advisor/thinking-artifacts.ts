@@ -12,6 +12,7 @@
  * The store is dependency-injected (no direct session imports) so it stays unit
  * testable: a fake `artifactsDir`/`obfuscate`/`gistFn` covers every path.
  */
+import * as fs from "node:fs/promises";
 import { type AssistantMessage, completeSimple } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
@@ -52,6 +53,8 @@ export class ThinkingArtifactStore {
 	readonly #gistSources = new Map<string, string>();
 	/** id → resolved gist bullets (survives re-renders; substituted verbatim). */
 	readonly #gistCache = new Map<string, string>();
+	/** Artifact paths already spilled; a block re-rendered each turn is written once. */
+	readonly #spilledPaths = new Set<string>();
 
 	constructor(deps: ThinkingArtifactDeps) {
 		this.#deps = deps;
@@ -83,13 +86,24 @@ export class ThinkingArtifactStore {
 		if (dir) {
 			artifactPath = `${dir}/${ARTIFACT_SUBDIR}/notes-${id}.md`;
 			// Fire-and-forget: a spill failure must never break rendering the feed.
-			// Bun.write creates parent dirs.
-			Bun.write(artifactPath, obfuscated).catch(err => {
-				logger.debug("advisor-notes-artifacts: failed to persist artifact", {
-					id,
-					error: err instanceof Error ? err.message : String(err),
-				});
-			});
+			// The path is advertised before the write lands, so write a temp file
+			// (Bun.write creates parent dirs) and rename it into place: a reader
+			// sees either no file or the whole artifact, never an empty/partial one.
+			const finalPath = artifactPath;
+			if (!this.#spilledPaths.has(finalPath)) {
+				this.#spilledPaths.add(finalPath);
+				const tmpPath = `${finalPath}.${crypto.randomUUID()}.tmp`;
+				Bun.write(tmpPath, obfuscated)
+					.then(() => fs.rename(tmpPath, finalPath))
+					.catch(err => {
+						this.#spilledPaths.delete(finalPath);
+						logger.debug("advisor-notes-artifacts: failed to persist artifact", {
+							id,
+							error: err instanceof Error ? err.message : String(err),
+						});
+						void fs.rm(tmpPath, { force: true }).catch(() => undefined);
+					});
+			}
 		}
 
 		const elided = artifactPath
