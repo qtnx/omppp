@@ -6,6 +6,10 @@
 
 - Provider and MCP login screens (`/login`, setup wizard, `ompx auth-broker login`, RPC `open_url`) now show a Tailscale shortcut next to the local one when this machine is on a tailnet, with a hint to swap `localhost` for the tailnet address if the final redirect lands on another device.
 
+### Fixed
+
+- Advisor note artifacts are now written to a temp file and renamed into place. Before, the artifact path was advertised immediately while the write was still in flight, so a read could see an empty file. A block re-rendered each turn is now written only once.
+
 ## [1.11.3] - 2026-09-23
 
 ### Changed
