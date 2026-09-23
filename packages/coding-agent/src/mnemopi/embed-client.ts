@@ -121,6 +121,24 @@ export interface MnemopiSubprocessEmbeddingModel {
  */
 const EMBED_REQUEST_TIMEOUT_MS = 120_000;
 
+/**
+ * How long a loaded worker may sit with nothing in flight before it is
+ * reaped. The loaded model costs every session hundreds of MB of RSS until
+ * shutdown, while the TUI idle trim only covers interactive sessions whose
+ * trim window happens to land fully idle. A later request respawns the child
+ * and it self-initializes from the `(model, cacheDir)` each embed carries.
+ */
+const EMBED_WORKER_IDLE_MS = 5 * 60_000;
+
+/** Probe budget before routing to the shared server; unreachable hosts must not stall recall. */
+const EMBED_SERVER_PROBE_TIMEOUT_MS = 2_000;
+
+/** How long a successful probe vouches for the server before the next one. */
+const EMBED_SERVER_UP_TTL_MS = 60_000;
+
+/** After a failed probe or request, embed locally for this long before retrying the server. */
+const EMBED_SERVER_DOWN_TTL_MS = 60_000;
+
 /** Race marker for {@link MnemopiEmbedClient.#awaitRequest}. */
 const REQUEST_TIMED_OUT = Symbol("mnemopi.embed.timedOut");
 
@@ -131,15 +149,36 @@ export class MnemopiEmbedClient {
 	#pending = new Map<string, PendingRequest>();
 	#nextRequestId = 0;
 	#refed = false;
+	#idleTimer: NodeJS.Timeout | undefined;
 	#spawnWorker: () => MnemopiEmbedWorkerHandle;
 	#requestTimeoutMs: number;
+	#idleTimeoutMs: number;
+	#serverUrl = "";
+	#serverUpUntil = 0;
+	#serverDownUntil = 0;
 
 	constructor(
 		spawnWorker: () => MnemopiEmbedWorkerHandle = spawnMnemopiEmbedWorker,
 		requestTimeoutMs: number = EMBED_REQUEST_TIMEOUT_MS,
+		idleTimeoutMs: number = EMBED_WORKER_IDLE_MS,
 	) {
 		this.#spawnWorker = spawnWorker;
 		this.#requestTimeoutMs = requestTimeoutMs;
+		this.#idleTimeoutMs = idleTimeoutMs;
+	}
+
+	/**
+	 * Route embeds to a shared `ompx mnemopi-embed-server` so every session on
+	 * the tailnet reuses one loaded model instead of spawning its own worker.
+	 * Empty disables it. Any probe or request failure falls back to the local
+	 * worker for {@link EMBED_SERVER_DOWN_TTL_MS}.
+	 */
+	setServerUrl(url: string | undefined): void {
+		const next = url?.trim().replace(/\/+$/, "") ?? "";
+		if (next === this.#serverUrl) return;
+		this.#serverUrl = next;
+		this.#serverUpUntil = 0;
+		this.#serverDownUntil = 0;
 	}
 
 	/**
@@ -148,12 +187,16 @@ export class MnemopiEmbedClient {
 	 * `null` when the worker cannot init the model (missing peer, native
 	 * load failure, etc.). Multiple calls with the same model reuse the
 	 * single in-flight worker; calling with a different model loads it on
-	 * the child without restarting the process.
+	 * the child without restarting the process. When the shared embed server
+	 * answers its probe, no local worker is spawned at all.
 	 */
 	async initialize(
 		model: MnemopiEmbedModelId,
 		cacheDir: string | undefined,
 	): Promise<MnemopiSubprocessEmbeddingModel | null> {
+		if (this.#serverUrl && (await this.#serverReady())) {
+			return { embed: (texts, batchSize) => this.#streamEmbed(model, cacheDir, texts, batchSize) };
+		}
 		try {
 			const worker = this.#ensureWorker();
 			const id = String(++this.#nextRequestId);
@@ -189,6 +232,8 @@ export class MnemopiEmbedClient {
 		}
 		this.#pending.clear();
 		this.#refed = false;
+		clearTimeout(this.#idleTimer);
+		this.#idleTimer = undefined;
 		try {
 			await worker?.terminate();
 		} catch {
@@ -197,6 +242,74 @@ export class MnemopiEmbedClient {
 	}
 
 	async #embed(
+		model: MnemopiEmbedModelId,
+		cacheDir: string | undefined,
+		texts: string[],
+		batchSize: number | undefined,
+	): Promise<number[][]> {
+		// Only await the probe when a server is configured: the local path must
+		// send in the same tick so callers observe the request as in flight.
+		if (this.#serverUrl && (await this.#serverReady())) {
+			try {
+				return await this.#embedRemote(model, texts, batchSize);
+			} catch (error) {
+				logger.warn("mnemopi-embed: shared embed server failed; embedding locally", {
+					server: this.#serverUrl,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				this.#markServerDown();
+			}
+		}
+		return this.#embedLocal(model, cacheDir, texts, batchSize);
+	}
+
+	/** Whether the shared server should take this request; probes `/health` at most once per TTL. */
+	async #serverReady(): Promise<boolean> {
+		if (!this.#serverUrl) return false;
+		const now = Date.now();
+		if (now < this.#serverDownUntil) return false;
+		if (now < this.#serverUpUntil) return true;
+		try {
+			const response = await fetch(`${this.#serverUrl}/health`, {
+				signal: AbortSignal.timeout(EMBED_SERVER_PROBE_TIMEOUT_MS),
+			});
+			if (response.ok) {
+				this.#serverUpUntil = Date.now() + EMBED_SERVER_UP_TTL_MS;
+				return true;
+			}
+		} catch (error) {
+			logger.debug("mnemopi-embed: shared embed server unreachable", {
+				server: this.#serverUrl,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		this.#markServerDown();
+		return false;
+	}
+
+	#markServerDown(): void {
+		this.#serverUpUntil = 0;
+		this.#serverDownUntil = Date.now() + EMBED_SERVER_DOWN_TTL_MS;
+	}
+
+	async #embedRemote(model: MnemopiEmbedModelId, texts: string[], batchSize: number | undefined): Promise<number[][]> {
+		// The server resolves `model` against its own fastembed cache; the caller's
+		// `cacheDir` is a path on another machine.
+		const response = await fetch(`${this.#serverUrl}/v1/embed`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model, texts, batchSize }),
+			signal: AbortSignal.timeout(this.#requestTimeoutMs),
+		});
+		if (!response.ok) throw new Error(`server answered ${response.status}: ${await response.text()}`);
+		const { vectors } = (await response.json()) as { vectors?: unknown };
+		if (!Array.isArray(vectors) || vectors.length !== texts.length || !vectors.every(Array.isArray)) {
+			throw new Error("server returned a malformed embedding response");
+		}
+		return vectors as number[][];
+	}
+
+	async #embedLocal(
 		model: MnemopiEmbedModelId,
 		cacheDir: string | undefined,
 		texts: string[],
@@ -285,12 +398,22 @@ export class MnemopiEmbedClient {
 	 * The embeddings subprocess is spawned unref'd so an idle interactive or
 	 * daemon session never blocks exit. Keep it referenced only while a request
 	 * is pending so short-lived print-mode commands cannot exit before recall
-	 * receives the worker response (issue #12067).
+	 * receives the worker response (issue #12067). Once nothing is in flight,
+	 * arm {@link EMBED_WORKER_IDLE_MS}; any new request disarms it.
 	 */
 	#syncWorkerRef(): void {
 		const worker = this.#worker;
 		if (!worker) return;
 		const shouldRef = this.#pending.size > 0;
+		clearTimeout(this.#idleTimer);
+		this.#idleTimer = undefined;
+		if (!shouldRef) {
+			this.#idleTimer = setTimeout(() => {
+				this.#idleTimer = undefined;
+				if (this.#worker === worker && this.#pending.size === 0) void this.terminate();
+			}, this.#idleTimeoutMs);
+			this.#idleTimer.unref();
+		}
 		if (shouldRef === this.#refed) return;
 		this.#refed = shouldRef;
 		if (shouldRef) worker.ref();

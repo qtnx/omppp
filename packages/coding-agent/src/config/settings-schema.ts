@@ -4285,6 +4285,18 @@ export const SETTINGS_SCHEMA = {
 			condition: "mnemopiActive",
 		},
 	},
+	"mnemopi.embedServerUrl": {
+		type: "string",
+		default: "http://codemc:8793",
+		ui: {
+			tab: "memory",
+			group: "Mnemopi",
+			label: "Mnemopi Shared Embed Server",
+			description:
+				"Shared `ompx mnemopi-embed-server` for local embeddings. Defaults to codemc on the tailnet so sessions share one loaded model; when it is unreachable, sessions embed locally. Leave empty to always embed locally. MNEMOPI_EMBED_SERVER_URL overrides this.",
+			condition: "mnemopiActive",
+		},
+	},
 	"mnemopi.embeddingApiUrl": {
 		type: "string",
 		default: undefined,

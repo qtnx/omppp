@@ -38,6 +38,8 @@ export interface MnemopiBackendConfig {
 	llmBaseUrl?: string;
 	llmApiKey?: string;
 	llmModel?: string;
+	/** Shared `ompx mnemopi-embed-server`; empty embeds locally. */
+	embedServerUrl?: string;
 }
 
 export function loadMnemopiConfig(settings: Settings, agentDir: string): MnemopiBackendConfig {
@@ -100,6 +102,8 @@ export function loadMnemopiConfig(settings: Settings, agentDir: string): Mnemopi
 		llmBaseUrl: settings.get("mnemopi.llmBaseUrl"),
 		llmApiKey: settings.get("mnemopi.llmApiKey"),
 		llmModel: settings.get("mnemopi.llmModel"),
+		// Env wins even when empty, so `MNEMOPI_EMBED_SERVER_URL=` forces local embedding.
+		embedServerUrl: Bun.env.MNEMOPI_EMBED_SERVER_URL ?? settings.get("mnemopi.embedServerUrl"),
 	};
 }
 

@@ -58,6 +58,16 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			// TLA-free again — the boot-time gain (~30 ms vs ~256 ms) is not worth
 			// shipping an executable that cannot start.
 			bytecode: false,
+			// Split modules reached only through dynamic `import()` into chunks
+			// loaded on first use. As one chunk, every process that re-enters the
+			// binary (daemon broker, js-eval and embed workers, sessions) pays for
+			// the whole 45 MB bundle's module record and top-level scope: a helper
+			// process such as `ompx mnemopi-embed-server` holds ~108 MB of private
+			// memory single-chunk vs ~22 MB split, and an idle session ~10-20 MB
+			// less. Windows standalone executables key modules with backslash paths
+			// (see `isProcessEntry` in cli.ts), so chunk resolution there stays
+			// single-chunk until it is verified on a Windows host.
+			splitting: !(options.target?.startsWith("bun-windows") ?? process.platform === "win32"),
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,
