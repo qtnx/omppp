@@ -446,6 +446,16 @@ let warnedStopSequencesTrim = false;
 const ANTHROPIC_PROVIDER_SESSION_STATE_KEY = "anthropic-messages";
 
 /**
+ * Recorded `AssistantMessage.anthropicEffort` carried by the wire assistant
+ * param it was converted into. Symbol-keyed so it never reaches the wire.
+ */
+const kRecordedAnthropicEffort = Symbol("anthropic.recordedEffort");
+
+type RecordedAnthropicEffortCarrier = {
+	[kRecordedAnthropicEffort]?: NonNullable<AssistantMessage["anthropicEffort"]>;
+};
+
+/**
  * A mid-conversation `role: "system"` message omp inserts at a fixed slot in
  * the wire history so top-level `tools` and `output_config.effort` can stay
  * byte-stable for preserved thinking and the prompt cache. `messageCount` is
@@ -467,8 +477,11 @@ type AnthropicControlState = {
 	stableSystemBlocks: AnthropicSystemBlock[] | undefined;
 	systemFingerprint: string | undefined;
 	controlTransitions: AnthropicControlTransition[];
-	baseEffort: AnthropicOutputEffort | undefined;
+	/** Whether the effort baseline was captured; `undefined` efforts are a valid baseline. */
+	effortBaselined: boolean;
+	/** Top-level `output_config.effort` of the baseline request; `undefined` = API default. */
 	baseEffortWire: AnthropicOutputEffort | undefined;
+	/** Effort in force at the conversation tail; `undefined` = API default. */
 	currentEffort: AnthropicOutputEffort | undefined;
 	cacheDiagnostics: AnthropicCacheDiagnosticState | undefined;
 };
@@ -515,7 +528,7 @@ function createAnthropicControlState(): AnthropicControlState {
 		stableSystemBlocks: undefined,
 		systemFingerprint: undefined,
 		controlTransitions: [],
-		baseEffort: undefined,
+		effortBaselined: false,
 		baseEffortWire: undefined,
 		currentEffort: undefined,
 		cacheDiagnostics: undefined,
@@ -2636,6 +2649,12 @@ const streamAnthropicOnce = (
 				});
 				controlState = built.controlState;
 				prefixDroppedThinking = built.prefixDroppedThinking;
+				// Record the effort this request runs at so a resumed session can
+				// rebuild the same top-level effort and per-message controls.
+				output.anthropicEffort =
+					model.compat.supportsPerMessageEffort && controlState?.effortBaselined
+						? (controlState.currentEffort ?? "default")
+						: undefined;
 				let nextParams = built.params;
 				if (disableStrictTools) {
 					dropAnthropicStrictTools(nextParams);
@@ -4560,7 +4579,7 @@ function resetAnthropicControlState(state: AnthropicControlState): void {
 	state.stableSystemBlocks = undefined;
 	state.systemFingerprint = undefined;
 	state.controlTransitions = [];
-	state.baseEffort = undefined;
+	state.effortBaselined = false;
 	state.baseEffortWire = undefined;
 	state.currentEffort = undefined;
 }
@@ -4782,6 +4801,13 @@ function planStableAnthropicTools(
  * later changes as per-message effort. Anthropic applies a system message's
  * `output_config.effort` from the next `user` turn on, so the control is
  * anchored before the latest user message to take effect on this response.
+ *
+ * An omitted effort means the API's per-model default (`medium` on Opus 5.5,
+ * `high` elsewhere), so it is tracked as its own state rather than assumed to
+ * be any concrete level: every later explicit level is sent as a control. A
+ * per-message control cannot express "back to the API default", so a request
+ * that drops its effort mid-session keeps the level already in force instead
+ * of rewriting the top-level value and invalidating the cache.
  */
 function planStableAnthropicEffort(
 	current: AnthropicOutputEffort | undefined,
@@ -4790,20 +4816,67 @@ function planStableAnthropicEffort(
 	enabled: boolean,
 ): AnthropicOutputEffort | undefined {
 	if (!state || !enabled) return current;
-	const effective = current ?? "high";
-	if (state.baseEffort === undefined) {
-		state.baseEffort = effective;
-		state.baseEffortWire = current;
-		state.currentEffort = effective;
-		return current;
+	if (!state.effortBaselined) {
+		state.effortBaselined = true;
+		const [first, ...rest] = recordedAnthropicEffortRun(messages);
+		if (!first) {
+			state.baseEffortWire = current;
+			state.currentEffort = current;
+			return current;
+		}
+		// A fresh state over a transcript this model already answered (resume in
+		// a new process, or a re-baseline after a history rewrite): replay the
+		// baseline and every change exactly as the original requests planned
+		// them, so the rebuilt prefix matches the cached one byte for byte.
+		state.baseEffortWire = first.effort;
+		state.currentEffort = first.effort;
+		for (const turn of rest) applyAnthropicEffortChange(state, messages, turn.messageCount, turn.effort);
 	}
-	if (state.currentEffort !== effective) {
-		const lastUserIndex = messages.findLastIndex(message => message.role === "user");
-		const messageCount = lastUserIndex >= 0 ? lastUserIndex : messages.length;
-		recordAnthropicControlTransition(state, messages, messageCount, [], effective);
-		state.currentEffort = effective;
-	}
+	applyAnthropicEffortChange(state, messages, anthropicEffortControlSlot(messages, messages.length), current);
 	return state.baseEffortWire;
+}
+
+function applyAnthropicEffortChange(
+	state: AnthropicControlState,
+	messages: readonly MessageParam[],
+	messageCount: number,
+	effort: AnthropicOutputEffort | undefined,
+): void {
+	if (effort === undefined || state.currentEffort === effort) return;
+	recordAnthropicControlTransition(state, messages, messageCount, [], effort);
+	state.currentEffort = effort;
+}
+
+/** Slot before the latest `user` message among the first `length` wire messages. */
+function anthropicEffortControlSlot(messages: readonly MessageParam[], length: number): number {
+	for (let index = length - 1; index >= 0; index--) {
+		if (messages[index]?.role === "user") return index;
+	}
+	return length;
+}
+
+/**
+ * Recorded effort of the trailing run of assistant turns this model produced
+ * under per-message effort, oldest first, each with the control slot its
+ * request used. The run stops at the first turn without a record (another
+ * model, a compaction summary, a turn from before recording existed), where
+ * the original session re-baselined as well.
+ */
+function recordedAnthropicEffortRun(
+	messages: readonly MessageParam[],
+): Array<{ messageCount: number; effort: AnthropicOutputEffort | undefined }> {
+	const run: Array<{ messageCount: number; effort: AnthropicOutputEffort | undefined }> = [];
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index] as MessageParam & RecordedAnthropicEffortCarrier;
+		if (message.role !== "assistant") continue;
+		const recorded = message[kRecordedAnthropicEffort];
+		if (recorded === undefined) break;
+		run.push({
+			messageCount: anthropicEffortControlSlot(messages, index),
+			effort: recorded === "default" ? undefined : recorded,
+		});
+	}
+	return run.reverse();
 }
 
 function materializeAnthropicControlTransitions(
@@ -5559,6 +5632,9 @@ export function convertAnthropicMessages(
 				content: blocks,
 			};
 			copyPerCallContextMessage(assistantParam, msg);
+			if (msg.anthropicEffort !== undefined && msg.provider === model.provider && msg.model === model.id) {
+				(assistantParam as RecordedAnthropicEffortCarrier)[kRecordedAnthropicEffort] = msg.anthropicEffort;
+			}
 			params.push(assistantParam);
 			// Flush queued file metadata unless this turn left tool calls open:
 			// their results must follow the turn contiguously, so the metadata

@@ -358,6 +358,100 @@ describe("Anthropic preserved-thinking request shaping", () => {
 		expect(payload.messages?.at(-2)?.output_config?.effort).toBe("low");
 		expect(payload.messages?.at(-1)?.role).toBe("user");
 	});
+
+	it("sends an explicit effort as a control when the session started on the API default", async () => {
+		// Omitted effort is the API default (`medium` on Opus 5.5), not `high`:
+		// a later explicit `high` must still reach the wire.
+		const model = makeAnthropicModel("claude-opus-5-5");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const first = await capturePayload(model, { thinkingEnabled: true, providerSessionState });
+		const payload = await capturePayload(
+			model,
+			{ thinkingEnabled: true, reasoning: Effort.High, providerSessionState },
+			{
+				...CONTEXT,
+				messages: [...CONTEXT.messages, { role: "user", content: "continue", timestamp: Date.now() }],
+			},
+		);
+
+		expect(first.output_config?.effort).toBeUndefined();
+		expect(payload.output_config?.effort).toBeUndefined();
+		expect(payload.messages?.at(-2)?.role).toBe("system");
+		expect(payload.messages?.at(-2)?.output_config?.effort).toBe("high");
+		expect(payload.messages?.at(-1)?.role).toBe("user");
+	});
+
+	it("rebuilds the same effort wire from recorded turns in a fresh session state", async () => {
+		// A resumed session starts with empty in-memory control state. The effort
+		// recorded on each assistant turn must reproduce the continuous session's
+		// top-level effort and controls, or the resumed request misses the cache.
+		const model = makeAnthropicModel("claude-opus-5-5");
+		const opus = (text: string, timestamp: number, anthropicEffort: AssistantMessage["anthropicEffort"]) => ({
+			...assistant(text, timestamp),
+			model: "claude-opus-5-5",
+			anthropicEffort,
+		});
+		const turn1 = [{ role: "user" as const, content: "one", timestamp: 1 }];
+		const turn2 = [...turn1, opus("1", 2, "low"), { role: "user" as const, content: "two", timestamp: 3 }];
+		const turn3 = [...turn2, opus("2", 4, "high"), { role: "user" as const, content: "three", timestamp: 5 }];
+		const context = (messages: Context["messages"]): Context => ({ systemPrompt: ["Stay concise."], messages });
+
+		const continuous = new Map<string, ProviderSessionState>();
+		await capturePayload(
+			model,
+			{ thinkingEnabled: true, reasoning: Effort.Low, providerSessionState: continuous },
+			context(turn1),
+		);
+		await capturePayload(
+			model,
+			{ thinkingEnabled: true, reasoning: Effort.High, providerSessionState: continuous },
+			context(turn2),
+		);
+		const expected = await capturePayload(
+			model,
+			{ thinkingEnabled: true, reasoning: Effort.Medium, providerSessionState: continuous },
+			context(turn3),
+		);
+		const resumed = await capturePayload(
+			model,
+			{ thinkingEnabled: true, reasoning: Effort.Medium, providerSessionState: new Map() },
+			context(turn3),
+		);
+
+		expect(expected.output_config?.effort).toBe("low");
+		expect(resumed.output_config).toEqual(expected.output_config);
+		expect(resumed.messages).toEqual(expected.messages);
+		expect(resumed.messages?.filter(message => message.role === "system").map(m => m.output_config?.effort)).toEqual([
+			"high",
+			"medium",
+		]);
+	});
+
+	it("records the effort in force on the assistant turn", async () => {
+		const model = makeAnthropicModel("claude-opus-5-5");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const first = streamAnthropic(model, CONTEXT, {
+			apiKey: "sk-ant-oat-test",
+			isOAuth: true,
+			signal: abortedSignal(),
+			thinkingEnabled: true,
+			providerSessionState,
+		});
+		expect((await first.result()).anthropicEffort).toBe("default");
+		const second = streamAnthropic(
+			model,
+			{ ...CONTEXT, messages: [...CONTEXT.messages, { role: "user", content: "again", timestamp: 2 }] },
+			{
+				apiKey: "sk-ant-oat-test",
+				isOAuth: true,
+				signal: abortedSignal(),
+				thinkingEnabled: true,
+				reasoning: Effort.XHigh,
+				providerSessionState,
+			},
+		);
+		expect((await second.result()).anthropicEffort).toBe("xhigh");
+	});
 });
 
 describe("Anthropic Fable/Mythos forced tool_choice", () => {
