@@ -160,7 +160,6 @@ jobs:
          linux-x64-baseline-run-id: ${{ steps.find.outputs.linux-x64-baseline-run-id }}
          linux-x64-modern-run-id: ${{ steps.find.outputs.linux-x64-modern-run-id }}
          linux-musl-x64-baseline-run-id: ${{ steps.find.outputs.linux-musl-x64-baseline-run-id }}
-         darwin-x64-baseline-run-id: ${{ steps.find.outputs.darwin-x64-baseline-run-id }}
          darwin-arm64-run-id: ${{ steps.find.outputs.darwin-arm64-run-id }}
          win32-x64-baseline-run-id: ${{ steps.find.outputs.win32-x64-baseline-run-id }}
       steps:
@@ -186,7 +185,7 @@ jobs:
            run: |
               set -euo pipefail
               hash="${{ steps.compute.outputs.source-hash }}"
-              keys=(linux-x64-baseline linux-x64-modern linux-musl-x64-baseline darwin-x64-baseline darwin-arm64 win32-x64-baseline)
+              keys=(linux-x64-baseline linux-x64-modern linux-musl-x64-baseline darwin-arm64 win32-x64-baseline)
               declare -A trusted=()
               # An artifact is trusted only when it came from a CI push run whose
               # exact head SHA is reachable from main.
@@ -510,38 +509,35 @@ jobs:
       name: "Native: ${{ matrix.platform }} ${{ matrix.arch }}"
       needs: [release_metadata, native_artifact_lookup]
       if: ${{ needs.release_metadata.outputs.is-companion != 'true' && (needs.release_metadata.outputs.is-release == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.native_artifact_lookup.outputs.cross-platform-run-id == '')) }}
-      # `macos-15-intel` has been hitting the 25m ceiling on main (cancelled at
-      # ~25.5m on the last two pushes) while arm64 finishes in ~21m; the
-      # `pdf-inspector` crate added by the v17.3.4 sync widens that gap.
+      # Apple Silicon only: Intel macOS (darwin-x64) is no longer shipped.
       timeout-minutes: 45
       strategy:
          fail-fast: false
          matrix:
             include:
-               - { os: macos-15-intel, platform: darwin, arch: x64, variant: baseline }
                - { os: macos-14, platform: darwin, arch: arm64 }
       # Reusing a trusted artifact only downloads and re-uploads it; do that on
       # a Linux runner instead of waiting for a macOS machine.
-      runs-on: ${{ ((matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id != '') || (matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.darwin-arm64-run-id != '')) && 'ubuntu-22.04' || matrix.os }}
+      runs-on: ${{ needs.native_artifact_lookup.outputs.darwin-arm64-run-id != '' && 'ubuntu-22.04' || matrix.os }}
       steps:
          - uses: actions/checkout@v4
          - name: Download trusted macOS native artifact
-           if: ${{ (matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id != '') || (matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.darwin-arm64-run-id != '') }}
+           if: ${{ needs.native_artifact_lookup.outputs.darwin-arm64-run-id != '' }}
            uses: actions/download-artifact@v4
            with:
               name: pi-natives-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native
-              run-id: ${{ matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id || needs.native_artifact_lookup.outputs.darwin-arm64-run-id }}
+              run-id: ${{ needs.native_artifact_lookup.outputs.darwin-arm64-run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: Stage macOS native artifact for this run
-           if: ${{ (matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id != '') || (matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.darwin-arm64-run-id != '') }}
+           if: ${{ needs.native_artifact_lookup.outputs.darwin-arm64-run-id != '' }}
            uses: actions/upload-artifact@v4
            with:
               name: pi-natives-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}-h${{ needs.native_artifact_lookup.outputs.source-hash }}
               path: packages/natives/native/pi_natives.${{ matrix.platform }}-${{ matrix.arch }}*.node
               if-no-files-found: error
          - uses: ./.github/actions/build-native
-           if: ${{ (matrix.arch == 'x64' && needs.native_artifact_lookup.outputs.darwin-x64-baseline-run-id == '') || (matrix.arch == 'arm64' && needs.native_artifact_lookup.outputs.darwin-arm64-run-id == '') }}
+           if: ${{ needs.native_artifact_lookup.outputs.darwin-arm64-run-id == '' }}
            with:
               hash: ${{ needs.native_artifact_lookup.outputs.source-hash }}
               platform: ${{ matrix.platform }}
@@ -906,14 +902,6 @@ jobs:
                     native_artifact_pattern: pi-natives-linux-musl-x64-*,
                  }
                - {
-                    os: macos-15-intel,
-                    platform: darwin,
-                    arch: x64,
-                    target_id: darwin-x64,
-                    binary_path: packages/coding-agent/binaries/ompx-darwin-x64,
-                    native_artifact_pattern: pi-natives-darwin-x64*,
-                 }
-               - {
                     os: macos-14,
                     platform: darwin,
                     arch: arm64,
@@ -1109,7 +1097,6 @@ jobs:
          matrix:
             include:
                - { platform: linux, arch: x64, target_id: linux-x64 }
-               - { platform: darwin, arch: x64, target_id: darwin-x64 }
                - { platform: darwin, arch: arm64, target_id: darwin-arm64 }
                - { platform: win32, arch: x64, target_id: win32-x64 }
       runs-on: ubuntu-22.04

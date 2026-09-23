@@ -385,7 +385,6 @@ const nativeArtifactKeys = [
 	"linux-x64-baseline",
 	"linux-x64-modern",
 	"linux-musl-x64-baseline",
-	"darwin-x64-baseline",
 	"darwin-arm64",
 	"win32-x64-baseline",
 ];
@@ -582,7 +581,7 @@ describe("ci.yml workflow scheduling", () => {
 				["trusted-complete", "trusted-newer"],
 			),
 		);
-		expect(output).toContain("darwin-x64-baseline-run-id=300\n");
+		expect(output).toContain("darwin-arm64-run-id=300\n");
 		expect(output).toContain("win32-x64-baseline-run-id=100\n");
 		expect(output).toContain("linux-x64-run-id=300\n");
 		expect(output).toContain("cross-platform-run-id=100\n");
