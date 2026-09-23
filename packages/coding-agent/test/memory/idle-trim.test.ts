@@ -33,6 +33,10 @@ function createHarness(
 	const clear = vi.fn(() => {
 		calls.push("caches");
 	});
+	const release = vi.fn(() => {
+		calls.push("native");
+		return true;
+	});
 	const deps: IdleTrimDeps = {
 		config: {
 			enabled: () => options.enabled ?? true,
@@ -43,10 +47,11 @@ function createHarness(
 		mcp: { sleepAll },
 		workers: { terminateAll },
 		caches: { clear },
+		nativeHeap: { release },
 		statusLine: { setHookStatus },
 		isActive: options.active ?? (() => false),
 	};
-	return { calls, clear, deps, parkAll, setHookStatus, sleepAll, terminateAll };
+	return { calls, clear, deps, parkAll, release, setHookStatus, sleepAll, terminateAll };
 }
 
 describe("IdleMemoryTrim", () => {
@@ -72,7 +77,7 @@ describe("IdleMemoryTrim", () => {
 		vi.advanceTimersByTime(1);
 		await flushMicrotasks();
 
-		expect(harness.calls).toEqual(["park", "mcp", "workers", "caches"]);
+		expect(harness.calls).toEqual(["park", "mcp", "workers", "caches", "native"]);
 		expect(harness.setHookStatus).toHaveBeenCalledWith("memory", "low-mem");
 		expect(infoSpy).toHaveBeenCalledTimes(1);
 		const [message, fields] = infoSpy.mock.calls[0] ?? [];
@@ -83,6 +88,7 @@ describe("IdleMemoryTrim", () => {
 				mcpSlept: true,
 				workers: true,
 				cachesCleared: true,
+				nativeHeapReleased: true,
 			}),
 		);
 		expect(typeof fields?.rssBefore).toBe("number");
@@ -102,15 +108,24 @@ describe("IdleMemoryTrim", () => {
 		expect(harness.setHookStatus).toHaveBeenCalledWith("memory", undefined);
 	});
 
-	it("does not start a trim while the session is active", async () => {
-		const harness = createHarness({ active: () => true });
+	it("waits another idle window instead of trimming while the session is busy", async () => {
+		let busy = true;
+		const harness = createHarness({ active: () => busy });
 		const trim = new IdleMemoryTrim(harness.deps);
 
 		trim.notifyActivityEnd();
 		vi.advanceTimersByTime(60_000);
 		await flushMicrotasks();
-
 		expect(harness.calls).toEqual([]);
+
+		// A detached subagent finishing does not end a main turn; the trim must still run.
+		busy = false;
+		vi.advanceTimersByTime(59_999);
+		await flushMicrotasks();
+		expect(harness.calls).toEqual([]);
+		vi.advanceTimersByTime(1);
+		await flushMicrotasks();
+		expect(harness.calls).toEqual(["park", "mcp", "workers", "caches", "native"]);
 	});
 
 	it("does not start a trim after the feature is disabled", async () => {
@@ -132,7 +147,7 @@ describe("IdleMemoryTrim", () => {
 		vi.advanceTimersByTime(60_000);
 		await flushMicrotasks();
 
-		expect(harness.calls).toEqual(["park", "workers", "caches"]);
+		expect(harness.calls).toEqual(["park", "workers", "caches", "native"]);
 		expect(harness.sleepAll).not.toHaveBeenCalled();
 	});
 
@@ -150,7 +165,7 @@ describe("IdleMemoryTrim", () => {
 		vi.advanceTimersByTime(60_000);
 		await flushMicrotasks();
 
-		expect(harness.calls).toEqual(["park", "mcp", "workers", "caches"]);
+		expect(harness.calls).toEqual(["park", "mcp", "workers", "caches", "native"]);
 		expect(warnSpy).toHaveBeenCalledTimes(1);
 		expect(harness.setHookStatus).toHaveBeenCalledWith("memory", "low-mem");
 	});
@@ -189,7 +204,7 @@ describe("IdleMemoryTrim", () => {
 		vi.advanceTimersByTime(60_000);
 		await flushMicrotasks();
 
-		expect(harness.calls).toEqual(["park", "mcp", "workers", "caches"]);
+		expect(harness.calls).toEqual(["park", "mcp", "workers", "caches", "native"]);
 	});
 
 	it("does not overlap trims while a target is still awaiting", async () => {
@@ -226,7 +241,7 @@ describe("IdleMemoryTrim", () => {
 
 		vi.advanceTimersByTime(1);
 		await flushMicrotasks();
-		expect(harness.calls).toEqual(["park", "mcp", "workers", "caches"]);
+		expect(harness.calls).toEqual(["park", "mcp", "workers", "caches", "native"]);
 	});
 
 	it("honours the upper clamp and dispose cancels the pending trim", async () => {
