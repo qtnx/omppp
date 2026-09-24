@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { customMessageEntryMessage, isUserRequestEntry } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { getAnthropicCompactionPayload, isTurnStartEntry } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	coerceServiceTierByFamily,
@@ -8,20 +9,15 @@ import {
 import { isRecord } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import {
-	type CustomMessage,
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
 	createCustomMessage,
 	INTERRUPTED_THINKING_MESSAGE_TYPE,
-	isCustomMessageContent,
 	isEmptyErrorTurn,
-	isUserTurnInitiator,
-	normalizeCustomMessagePayload,
 	PREWALK_PLAN_MESSAGE_TYPE,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
 import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes, renderContextNotes } from "./context-notes";
-import { titleTextFromSkillPrompt } from "./skill-title-input";
 import {
 	type CompactionEntry,
 	type CustomMessageEntry,
@@ -40,7 +36,7 @@ const LEGACY_SNAPCOMPACT_TRUNCATED_CHARS_GUARD = 1_000_000;
 const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
 const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
 
-function normalizePersistedMCPToolNames(toolNames: unknown): string[] {
+function normalizePersistedToolNames(toolNames: unknown): string[] {
 	if (!Array.isArray(toolNames)) return [];
 	return toolNames.filter((toolName): toolName is string => typeof toolName === "string");
 }
@@ -121,6 +117,8 @@ export interface SessionContext {
 	selectedMCPToolNames: string[];
 	/** Whether this branch explicitly persisted an MCP selection, including an empty one. */
 	hasPersistedMCPToolSelection: boolean;
+	/** Last persisted built-in tools activated through tool discovery on the resolved branch. */
+	selectedDiscoveredToolNames?: string[];
 	/**
 	 * Array parallel to messages, indicating which assistant turns should
 	 * have their prompt-cache misses suppressed/explained (because a model,
@@ -244,69 +242,6 @@ export function isTranscriptEntry(entry: SessionEntry): entry is TranscriptEntry
 	return entry.type === "message" || entry.type === "custom_message";
 }
 
-/** The message a `custom_message` entry replays as; `undefined` when its persisted content is unsendable. */
-export function customMessageEntryMessage(entry: CustomMessageEntry): CustomMessage | undefined {
-	if (!isCustomMessageContent(entry.content)) return undefined;
-	const normalized = normalizeCustomMessagePayload(entry);
-	const attribution = entry.attribution === undefined ? undefined : normalized.attribution;
-	return createCustomMessage(
-		normalized.customType,
-		normalized.content,
-		normalized.display,
-		normalized.details,
-		entry.timestamp,
-		attribution,
-	);
-}
-
-/** The message a transcript entry replays as (see {@link customMessageEntryMessage} for the custom case). */
-export function transcriptEntryMessage(entry: TranscriptEntry): AgentMessage | undefined {
-	return entry.type === "message" ? entry.message : customMessageEntryMessage(entry);
-}
-
-/**
- * True for entries that represent a user-attributed request: an ordinary user
- * message, or a custom message that initiates a user turn per the shared
- * `isUserTurnInitiator` semantics (directly invoked `/skill:` prompts and
- * writable-collab prompts). Drives rewind/copy turn selection and notes-backed
- * rollover retention, so a custom request is treated exactly like an ordinary
- * one everywhere a "user turn" matters.
- */
-export function isUserRequestEntry(entry: SessionEntry): boolean {
-	if (entry.type === "message") {
-		if (entry.message.role === "user") return true;
-		if (entry.message.role === "custom") return isUserTurnInitiator(entry.message as CustomMessage);
-		return false;
-	}
-	if (entry.type === "custom_message") {
-		const message = customMessageEntryMessage(entry);
-		return message !== undefined && isUserTurnInitiator(message);
-	}
-	return false;
-}
-
-/**
- * Editor draft that re-creates a user request when rewinding past it: the
- * prompt's text (attachments ride separately), or for a user-initiated custom
- * message the text the user actually typed — a skill prompt restores its
- * `/skill:<name>` draft, never the expanded SKILL.md body (issue #5374).
- * `undefined` for anything that is not a user request.
- */
-export function userTurnDraft(entry: TranscriptEntry): string | undefined {
-	const message = transcriptEntryMessage(entry);
-	if (!message) return undefined;
-	if (message.role === "user") return textContent(message.content);
-	if (message.role !== "custom" || !isUserTurnInitiator(message)) return undefined;
-	return titleTextFromSkillPrompt(message) ?? textContent(message.content);
-}
-
-function textContent(content: string | ReadonlyArray<{ type: string; text?: string }>): string {
-	if (typeof content === "string") return content;
-	let text = "";
-	for (const block of content) if (block.type === "text" && block.text !== undefined) text += block.text;
-	return text;
-}
-
 export function buildSessionContext(
 	entries: SessionEntry[],
 	leafId?: string | null,
@@ -330,6 +265,7 @@ export function buildSessionContext(
 			thinkingLevel: "off",
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
+			selectedDiscoveredToolNames: [],
 			serviceTier: undefined,
 			models: {},
 			injectedTtsrRules: [],
@@ -348,6 +284,7 @@ export function buildSessionContext(
 		return {
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
+			selectedDiscoveredToolNames: [],
 			messages: [],
 			thinkingLevel: "off",
 			serviceTier: undefined,
@@ -373,6 +310,7 @@ export function buildSessionContext(
 	let thinkingLevel: string | undefined = "off";
 	let selectedMCPToolNames: string[] = [];
 	let hasPersistedMCPToolSelection = false;
+	let selectedDiscoveredToolNames: string[] = [];
 	let configuredThinkingLevel: string | undefined;
 	let serviceTier: ServiceTierByFamily | undefined;
 	const models: Record<string, string> = {};
@@ -405,8 +343,10 @@ export function buildSessionContext(
 		} else if (entry.type === "service_tier_change") {
 			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
 		} else if (entry.type === "mcp_tool_selection") {
-			selectedMCPToolNames = normalizePersistedMCPToolNames(entry.toolNames);
+			selectedMCPToolNames = normalizePersistedToolNames(entry.toolNames);
 			hasPersistedMCPToolSelection = true;
+		} else if (entry.type === "tool_discovery_selection") {
+			selectedDiscoveredToolNames = normalizePersistedToolNames(entry.toolNames);
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			// Legacy fallback: infer default model from assistant messages only
 			// when no explicit `model_change` (role=default) entry has been
@@ -828,5 +768,6 @@ export function buildSessionContext(
 		modeData,
 		selectedMCPToolNames,
 		hasPersistedMCPToolSelection,
+		selectedDiscoveredToolNames,
 	};
 }

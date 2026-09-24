@@ -1,9 +1,9 @@
 import { Container, matchesKey } from "@oh-my-pi/pi-tui";
+import { matchesSelectDown, matchesSelectUp } from "@oh-my-pi/pi-tui/keybinding-matchers";
+import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import type { WorkflowRunAgentEntry, WorkflowRunRecord } from "../../workflow/run-registry";
-import type { Theme, ThemeColor } from "../theme/theme";
-import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
 
 const AGE_TICK_MS = 5_000;
 

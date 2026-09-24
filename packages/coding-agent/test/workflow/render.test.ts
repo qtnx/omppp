@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import { resetSettingsForTest, Settings } from "../../src/config/settings";
-import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
 import type { AgentProgress } from "../../src/task/types";
 import { renderWorkflowTree } from "../../src/workflow/render";
 import type { WorkflowProgressFrame } from "../../src/workflow/types";

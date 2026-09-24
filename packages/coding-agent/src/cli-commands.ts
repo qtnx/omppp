@@ -111,6 +111,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.dryBalanceHelp,
 	},
 	{
+		name: "find",
+		load: () => import("./commands/find").then(m => m.default),
+		help: commandHelp.findHelp,
+	},
+	{
 		name: "gc",
 		load: () => import("./commands/gc").then(m => m.default),
 		help: commandHelp.gcHelp,
@@ -177,6 +182,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.linearHelp,
 	},
 	{
+		name: "login",
+		load: () => import("./commands/login").then(m => m.default),
+		help: commandHelp.loginHelp,
+	},
+	{
 		name: "mnemopi-embed-server",
 		load: () => import("./commands/mnemopi-embed-server").then(m => m.default),
 		help: commandHelp.mnemopiEmbedServerHelp,
@@ -215,6 +225,16 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.sayHelp,
 	},
 	{
+		name: "clip",
+		load: () => import("./commands/clip").then(m => m.default),
+		help: commandHelp.clipHelp,
+	},
+	{
+		name: "play",
+		load: () => import("./commands/play").then(m => m.default),
+		help: commandHelp.playHelp,
+	},
+	{
 		name: "secrets",
 		load: () => import("./commands/secrets").then(m => m.default),
 		help: commandHelp.secretsHelp,
@@ -245,6 +265,12 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.renderHelp,
 	},
 	{
+		name: "skill",
+		load: () => import("./commands/skill").then(m => m.default),
+		aliases: ["skills"],
+		help: commandHelp.skillHelp,
+	},
+	{
 		name: "ssh",
 		load: () => import("./commands/ssh").then(m => m.default),
 		help: commandHelp.sshHelp,
@@ -253,6 +279,11 @@ export const commands: CommandEntry[] = [
 		name: "stats",
 		load: () => import("./commands/stats").then(m => m.default),
 		help: commandHelp.statsHelp,
+	},
+	{
+		name: "stream",
+		load: () => import("./commands/stream").then(m => m.default),
+		help: commandHelp.streamHelp,
 	},
 	{
 		name: "update",
@@ -275,6 +306,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.tokenHelp,
 	},
 	{
+		name: "toks",
+		load: () => import("./commands/toks").then(m => m.default),
+		help: commandHelp.toksHelp,
+	},
+	{
 		name: "ttsr",
 		load: () => import("./commands/ttsr").then(m => m.default),
 		help: commandHelp.ttsrHelp,
@@ -288,7 +324,7 @@ export const commands: CommandEntry[] = [
 	{
 		name: "search",
 		load: () => import("./commands/web-search").then(m => m.default),
-		aliases: ["q"],
+		aliases: ["q", "web-search"],
 		help: commandHelp.searchHelp,
 	},
 ];

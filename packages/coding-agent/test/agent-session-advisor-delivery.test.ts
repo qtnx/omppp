@@ -42,7 +42,7 @@ describe("AgentSession advisor delivery during a tool batch", () => {
 	beforeEach(async () => {
 		tempDir = TempDir.createSync("@pi-advisor-delivery-");
 		authStorage = await AuthStorage.create(tempDir.join("auth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 	});
 
 	afterEach(async () => {

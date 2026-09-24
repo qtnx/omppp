@@ -143,7 +143,7 @@ describe("topic-switch compaction on a new user prompt", () => {
 			} catch {}
 		});
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		cleanup.push(() => authStorage.close());
 		const sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");

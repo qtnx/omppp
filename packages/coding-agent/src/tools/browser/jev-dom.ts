@@ -3,7 +3,7 @@
  * behave identically on the worker (puppeteer) and cmux paths.
  */
 
-import { ToolError } from "../tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 interface OptionNode {
 	tagName?: string;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ToolError } from "../../tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { buildActionSpace, type JevDriver, runJevAct, validateChoice } from "../jev";
 import type { Observation, ObservationEntry } from "../tab-protocol";
 

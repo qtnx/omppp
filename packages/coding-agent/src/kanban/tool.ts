@@ -11,7 +11,7 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { getKanbanModelApi } from "../kanban";
 import type { ToolSession } from "../tools";
-import type { OutputMeta } from "../tools/output-meta";
+import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { ToolError } from "../tools/tool-errors";
 import { toolResult } from "../tools/tool-result";
 import { KanbanError } from "./errors";

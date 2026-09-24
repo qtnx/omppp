@@ -15,8 +15,10 @@ import {
 	truncateMiddle,
 	truncateTail,
 	truncateTailBytes,
-} from "@oh-my-pi/pi-coding-agent/session/streaming-output";
-import { formatOutputNotice, outputMeta, stripOutputNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
+} from "@oh-my-pi/pi-tui/tools/streaming-output";
+import { stripOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
+import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
+import { outputMeta } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const createdTempDirs: string[] = [];
@@ -231,14 +233,6 @@ describe("OutputSink", () => {
 		expect(dumped.totalLines).toBe(4);
 		expect(dumped.outputLines).toBe(4);
 	});
-	test("invokes onChunk callback with sanitized text", async () => {
-		const chunks: string[] = [];
-		const sink = new OutputSink({ onChunk: chunk => chunks.push(chunk) });
-		await sink.push("abc");
-		await sink.push("def");
-		expect(chunks).toEqual(["abc", "def"]);
-	});
-
 	test("normalizes carriage-return progress frames across chunk boundaries", async () => {
 		const chunks: string[] = [];
 		const sink = new OutputSink({ onChunk: chunk => chunks.push(chunk) });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { KanbanTool } from "@oh-my-pi/pi-coding-agent/kanban/tool";
+import { FindTool } from "@oh-my-pi/pi-coding-agent/tools/jfind";
 import type { BuiltinToolLoadMode, ToolLoopManager, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	AskTool,
@@ -74,6 +75,8 @@ async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summa
 		new KanbanTool(toolSession),
 		// `secrets` is conditional on an open vault, so construct it directly.
 		new SecretsTool(toolSession),
+		// `find` is gated on a native judge (find.enabled=auto), so construct it directly.
+		new FindTool(toolSession),
 		new ContextNotesTool(toolSession),
 		new NewContextTool(toolSession),
 		// `browser_jev` only builds with a TypeSafe key in the environment, so
@@ -161,8 +164,9 @@ describe("computeEssentialBuiltinNames", () => {
 	});
 
 	it("maps legacy essential override tool names", () => {
+		// `find` is a built-in tool again (semantic find), so it survives; `search` still maps to `grep`.
 		const settings = Settings.isolated({ "tools.essentialOverride": ["read", "find", "search", "glob"] });
-		expect(computeEssentialBuiltinNames(settings).sort()).toEqual(["glob", "grep", "read"]);
+		expect(computeEssentialBuiltinNames(settings).sort()).toEqual(["find", "glob", "grep", "read"]);
 	});
 
 	it("filters override entries that are not known built-in tools", () => {

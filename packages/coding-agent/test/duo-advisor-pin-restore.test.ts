@@ -54,7 +54,7 @@ describe("AgentSession duo advisor pin restore", () => {
 	beforeAll(async () => {
 		sharedDir = TempDir.createSync("@pi-duo-advisor-pin-shared-");
 		authStorage = await AuthStorage.create(path.join(sharedDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 		plannerModel = modelOrThrow("anthropic", "claude-fable-5");
 		executorModel = modelOrThrow("anthropic", "claude-opus-4-8");

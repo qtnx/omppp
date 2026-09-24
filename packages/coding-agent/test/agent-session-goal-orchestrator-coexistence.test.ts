@@ -7,7 +7,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { Goal, GoalModeState } from "@oh-my-pi/pi-coding-agent/goals/state";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/orchestrator-mode/state";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -93,7 +93,7 @@ describe("AgentSession goal/orchestrator coexistence", () => {
 		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
 
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), `testauth-${cleanups.length}.db`));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), `models-${cleanups.length}.yml`));
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
@@ -215,6 +215,22 @@ describe("AgentSession goal/orchestrator coexistence", () => {
 
 		expect(session.getGoalModeState()?.enabled).toBe(false);
 		expectActiveTools(session, ["read", "extra_tool"]);
+	});
+
+	it("restores a tool the goal turned off while keeping one activated during the goal", async () => {
+		const { session, mode } = await createHarness(["read", "bash"]);
+		const promptSpy = vi.spyOn(session, "prompt").mockResolvedValue(true);
+		// The guided interview records the pre-goal toolset; the goal then drops
+		// "bash" and discovers "extra_tool".
+		await mode.handleGuidedGoalCommand("Trim the flaky suite");
+		promptSpy.mockRestore();
+		await enterGoal(mode, "Trim the flaky suite");
+		await session.setActiveToolsByName(["read", GOAL_TOOL_NAME, "extra_tool"]);
+
+		await pauseGoal(mode);
+
+		expect(session.getGoalModeState()?.enabled).toBe(false);
+		expect(new Set(session.getActiveToolNames())).toEqual(new Set(["read", "bash", "extra_tool"]));
 	});
 
 	it("auto-enters orchestrator from the public prompt seam while an active goal stays intact", async () => {

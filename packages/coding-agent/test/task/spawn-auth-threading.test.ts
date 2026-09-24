@@ -111,7 +111,7 @@ describe("task subagent auth threading", () => {
 
 	it("reuses the parent registry and auth storage through the task-tool spawn path", async () => {
 		const authStorage = createAuthStorage();
-		await authStorage.reload();
+		await authStorage.credentials.reload();
 		const modelRegistry = createParentModelRegistry(authStorage);
 		const discoverAuthStorageSpy = vi
 			.spyOn(sdkModule, "discoverAuthStorage")
@@ -138,7 +138,7 @@ describe("task subagent auth threading", () => {
 
 	it("keeps the standalone executor fallback when only auth storage is supplied", async () => {
 		const authStorage = createAuthStorage();
-		await authStorage.reload();
+		await authStorage.credentials.reload();
 		const discoverAuthStorageSpy = vi.spyOn(sdkModule, "discoverAuthStorage");
 		const createAgentSessionSpy = vi
 			.spyOn(sdkModule, "createAgentSession")

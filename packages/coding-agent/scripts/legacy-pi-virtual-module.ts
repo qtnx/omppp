@@ -49,6 +49,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Directory boundaries keep a `$` so `tools/browser/react-vitals` and
+ * `tools/browser/react/vitals` stay distinct identifiers: collapsing both
+ * separators produced the same binding and tripped the duplicate guard.
+ */
 function bindingForSubpath(identifier: string, subpath: string): string {
 	const segments = subpath
 		.split("/")
@@ -60,7 +65,7 @@ function bindingForSubpath(identifier: string, subpath: string): string {
 				.map(part => part.charAt(0).toUpperCase() + part.slice(1))
 				.join(""),
 		);
-	return `bundled${identifier}${segments.join("")}`;
+	return `bundled${identifier}${segments.join("$")}`;
 }
 
 function isSafeWildcardBasename(basename: string): boolean {

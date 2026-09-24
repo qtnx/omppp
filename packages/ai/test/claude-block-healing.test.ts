@@ -93,11 +93,13 @@ function makeHarness(report: UsageReport, blockScope = "tier:fable"): HealHarnes
 		close() {},
 		listAuthCredentials: provider => rows.filter(row => provider === undefined || row.provider === provider),
 		updateAuthCredential() {},
-		deleteAuthCredential() {},
+		async deleteAuthCredential() {
+			return false;
+		},
 		tryDisableAuthCredentialIfMatches: () => false,
-		replaceAuthCredentialsForProvider: () => rows,
-		upsertAuthCredentialForProvider: () => rows,
-		deleteAuthCredentialsForProvider() {},
+		replaceAuthCredentials: async () => rows,
+		upsertAuthCredential: async () => rows,
+		async deleteAuthCredentials() {},
 		getCredentialBlock: (credentialId: number, _providerKey: string, scope: string) =>
 			blocks.get(`${credentialId}:${scope}`),
 		upsertCredentialBlock: block => {
@@ -168,14 +170,14 @@ describe("claude usage-block healing", () => {
 			claudeReport([sharedLimit("5h", "5h", 0.1), sharedLimit("7d", "7d", 0.2), tierLimit("fable", 0)]),
 		);
 		storages.push(storage);
-		await storage.reload();
+		await storage.credentials.reload();
 
-		await storage.getModelUsageHealth("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
+		await storage.health.model("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
 
 		expect(clearedScopes).toContain("tier:fable");
 		// The user-visible contract: the recovered account is selectable again,
 		// not merely reported healthy.
-		expect(await storage.getApiKey("anthropic", "s-heal", { modelId: "claude-fable-5-1" })).toBe("access-1");
+		expect(await storage.keys.get("anthropic", "s-heal", { modelId: "claude-fable-5-1" })).toBe("access-1");
 	});
 
 	it("lifts a stale tier:fable block during credential selection without a prior health check", async () => {
@@ -183,9 +185,9 @@ describe("claude usage-block healing", () => {
 			claudeReport([sharedLimit("5h", "5h", 0.1), sharedLimit("7d", "7d", 0.2), tierLimit("fable", 0)]),
 		);
 		storages.push(storage);
-		await storage.reload();
+		await storage.credentials.reload();
 
-		expect(await storage.getApiKey("anthropic", "s-direct-heal", { modelId: "claude-fable-5-1" })).toBe("access-1");
+		expect(await storage.keys.get("anthropic", "s-direct-heal", { modelId: "claude-fable-5-1" })).toBe("access-1");
 		expect(clearedScopes).toContain("tier:fable");
 	});
 
@@ -198,9 +200,9 @@ describe("claude usage-block healing", () => {
 			"opus",
 		);
 		storages.push(storage);
-		await storage.reload();
+		await storage.credentials.reload();
 
-		expect(await storage.getApiKey("anthropic", "s-opus-heal", { modelId: "claude-opus-4-5" })).toBe("access-1");
+		expect(await storage.keys.get("anthropic", "s-opus-heal", { modelId: "claude-opus-4-5" })).toBe("access-1");
 		expect(clearedScopes).toContain("opus");
 	});
 
@@ -210,9 +212,9 @@ describe("claude usage-block healing", () => {
 			"opus",
 		);
 		storages.push(storage);
-		await storage.reload();
+		await storage.credentials.reload();
 
-		expect(await storage.getApiKey("anthropic", "s-opus-spent", { modelId: "claude-opus-4-5" })).toBe("access-2");
+		expect(await storage.keys.get("anthropic", "s-opus-spent", { modelId: "claude-opus-4-5" })).toBe("access-2");
 		expect(clearedScopes).not.toContain("opus");
 	});
 
@@ -221,12 +223,12 @@ describe("claude usage-block healing", () => {
 			claudeReport([sharedLimit("5h", "5h", 1), sharedLimit("7d", "7d", 0.2), tierLimit("fable", 0)]),
 		);
 		storages.push(storage);
-		await storage.reload();
+		await storage.credentials.reload();
 
-		await storage.getModelUsageHealth("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
+		await storage.health.model("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
 
 		expect(clearedScopes).not.toContain("tier:fable");
-		expect(await storage.getApiKey("anthropic", "s-5h", { modelId: "claude-fable-5-1" })).toBe("access-2");
+		expect(await storage.keys.get("anthropic", "s-5h", { modelId: "claude-fable-5-1" })).toBe("access-2");
 	});
 
 	it("keeps the block when the report omits a shared gate", async () => {
@@ -236,12 +238,12 @@ describe("claude usage-block healing", () => {
 			claudeReport([sharedLimit("7d", "7d", 0.2), tierLimit("fable", 0)]),
 		);
 		storages.push(storage);
-		await storage.reload();
+		await storage.credentials.reload();
 
-		await storage.getModelUsageHealth("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
+		await storage.health.model("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
 
 		expect(clearedScopes).not.toContain("tier:fable");
-		expect(await storage.getApiKey("anthropic", "s-partial", { modelId: "claude-fable-5-1" })).toBe("access-2");
+		expect(await storage.keys.get("anthropic", "s-partial", { modelId: "claude-fable-5-1" })).toBe("access-2");
 	});
 
 	it("spends no usage request on a block its scopes cannot heal", async () => {
@@ -252,9 +254,9 @@ describe("claude usage-block healing", () => {
 			"",
 		);
 		storages.push(storage);
-		await storage.reload();
+		await storage.credentials.reload();
 
-		const health = await storage.getModelUsageHealth("anthropic", {
+		const health = await storage.health.model("anthropic", {
 			modelId: "claude-fable-5-1",
 			reserveFraction: 0.1,
 		});
@@ -274,12 +276,12 @@ describe("claude usage-block healing", () => {
 		);
 		const { storage, clearedScopes } = makeHarness(stale);
 		storages.push(storage);
-		await storage.reload();
+		await storage.credentials.reload();
 
-		await storage.getModelUsageHealth("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
+		await storage.health.model("anthropic", { modelId: "claude-fable-5-1", reserveFraction: 0.1 });
 
 		expect(clearedScopes).not.toContain("tier:fable");
-		expect(await storage.getApiKey("anthropic", "s-stale", { modelId: "claude-fable-5-1" })).toBe("access-2");
+		expect(await storage.keys.get("anthropic", "s-stale", { modelId: "claude-fable-5-1" })).toBe("access-2");
 	});
 
 	it("spends no probe while an unscoped block also holds the credential", async () => {
@@ -291,9 +293,9 @@ describe("claude usage-block healing", () => {
 		);
 		storages.push(storage);
 		blocks.set("1:", Date.now() + 60 * 60_000);
-		await storage.reload();
+		await storage.credentials.reload();
 
-		const health = await storage.getModelUsageHealth("anthropic", {
+		const health = await storage.health.model("anthropic", {
 			modelId: "claude-fable-5-1",
 			reserveFraction: 0.1,
 		});

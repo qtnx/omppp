@@ -41,15 +41,17 @@ import {
 	isInterruptingSeverity,
 	quarantineAdvisorUnsafeOutput,
 	resolveAdvisorDeliveryChannel,
-	type WatchdogConfigDoc,
 } from "../../src/advisor";
 import { ADVISOR_DEFAULT_TOOL_NAMES } from "../../src/advisor/advise-tool";
 import { ThinkingArtifactStore } from "../../src/advisor/thinking-artifacts";
-import type { ModelRegistry } from "../../src/config/model-registry";
-import type { Settings } from "../../src/config/settings";
-import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
-import { createAdvisorMessageCard } from "../../src/modes/components/advisor-message";
-import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
+import type { ModelBrowserSource } from "@oh-my-pi/pi-tui/overlays/model-browser";
+import {
+	type AdvisorConfigDeps,
+	AdvisorConfigOverlayComponent,
+	type WatchdogConfigDoc,
+} from "@oh-my-pi/pi-tui/overlays/advisor-config";
+import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import doneReviewTemplate from "../../src/prompts/advisor/done-review.md" with { type: "text" };
 import advisorSystemPrompt from "../../src/prompts/advisor/system.md" with { type: "text" };
 import { obfuscateMessages } from "../../src/secrets/message-transform";
@@ -8121,9 +8123,10 @@ describe("advisor", () => {
 		});
 
 		describe("AdvisorConfigOverlayComponent", () => {
-			const deps = {
-				modelRegistry: {} as unknown as ModelRegistry,
-				settings: {} as unknown as Settings,
+			const deps: AdvisorConfigDeps = {
+				getAvailableModels: () => [],
+				browserSource: {} as unknown as ModelBrowserSource,
+				defaultToolNames: ADVISOR_DEFAULT_TOOL_NAMES,
 				scopedModels: [],
 				availableToolNames: ["read", "grep", "glob", "lsp", "web_search"],
 			};

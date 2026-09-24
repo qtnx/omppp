@@ -99,8 +99,8 @@ async function withSharedSQLiteAuth<T>(
 		const storeB = await SqliteAuthCredentialStore.open(dbPath);
 		authA = new AuthStorage(storeA);
 		authB = new AuthStorage(storeB);
-		await authA.reload();
-		await authB.reload();
+		await authA.credentials.reload();
+		await authB.credentials.reload();
 		return await fn({ authA, authB, storeA, storeB });
 	} finally {
 		authA?.close();
@@ -118,12 +118,12 @@ describe("MCPManager OAuth refresh failure", () => {
 	beforeEach(async () => {
 		store = new SqliteAuthCredentialStore(new Database(":memory:"));
 		authStorage = new AuthStorage(store);
-		await authStorage.reload();
+		await authStorage.credentials.reload();
 
 		// Seed an expired credential so `#resolveAuthConfig` decides to refresh
 		// (a non-expired credential takes the no-refresh branch and never reaches
 		// the bug).
-		await authStorage.set(CREDENTIAL_ID, {
+		await authStorage.credentials.set(CREDENTIAL_ID, {
 			type: "oauth",
 			access: STALE_ACCESS,
 			refresh: STALE_REFRESH,
@@ -175,7 +175,7 @@ describe("MCPManager OAuth refresh failure", () => {
 		expect(getAuthorizationHeader(prepared)).toBeUndefined();
 		// The credential row is gone so neither this nor a future session keeps
 		// shipping the dead refresh token.
-		expect(authStorage.get(CREDENTIAL_ID)).toBeUndefined();
+		expect(authStorage.credentials.get(CREDENTIAL_ID)).toBeUndefined();
 	});
 
 	test("keeps the credential when the token endpoint replies with a bare HTTP 401", async () => {
@@ -186,7 +186,7 @@ describe("MCPManager OAuth refresh failure", () => {
 		const prepared = await manager.prepareConfig(serverConfig);
 
 		expect(getAuthorizationHeader(prepared)).toBe(`Bearer ${STALE_ACCESS}`);
-		const remaining = authStorage.get(CREDENTIAL_ID);
+		const remaining = authStorage.credentials.get(CREDENTIAL_ID);
 		expect(remaining).toMatchObject({ type: "oauth", access: STALE_ACCESS, refresh: STALE_REFRESH });
 	});
 
@@ -201,7 +201,7 @@ describe("MCPManager OAuth refresh failure", () => {
 		const prepared = await manager.prepareConfig(serverConfig);
 
 		expect(getAuthorizationHeader(prepared)).toBe(`Bearer ${STALE_ACCESS}`);
-		const remaining = authStorage.get(CREDENTIAL_ID);
+		const remaining = authStorage.credentials.get(CREDENTIAL_ID);
 		expect(remaining?.type).toBe("oauth");
 	});
 
@@ -218,7 +218,7 @@ describe("MCPManager OAuth refresh failure", () => {
 		const prepared = await manager.prepareConfig(serverConfig);
 
 		expect(getAuthorizationHeader(prepared)).toBe("Bearer fresh-access");
-		const remaining = authStorage.get(CREDENTIAL_ID);
+		const remaining = authStorage.credentials.get(CREDENTIAL_ID);
 		expect(remaining).toMatchObject({ type: "oauth", access: "fresh-access", refresh: "fresh-refresh" });
 	});
 
@@ -290,13 +290,13 @@ describe("MCPManager shared SQLite OAuth refresh", () => {
 			const sleeps = installControlledBunSleep();
 			const renewSpy = vi.spyOn(storeA, "renewCredentialRefreshLease");
 
-			await authA.set(SHARED_CREDENTIAL_ID, {
+			await authA.credentials.set(SHARED_CREDENTIAL_ID, {
 				type: "oauth",
 				access: SHARED_STALE_ACCESS,
 				refresh: SHARED_STALE_REFRESH,
 				expires: startMs - 60_000,
 			});
-			await authB.reload();
+			await authB.credentials.reload();
 
 			const refreshStarted = Promise.withResolvers<void>();
 			const allowRefreshResponse = Promise.withResolvers<void>();
@@ -372,13 +372,13 @@ describe("MCPManager shared SQLite OAuth refresh", () => {
 	});
 	test("shares refresh ownership so peer managers do not replay a rotating refresh token", async () => {
 		await withSharedSQLiteAuth(async ({ authA, authB }) => {
-			await authA.set(SHARED_CREDENTIAL_ID, {
+			await authA.credentials.set(SHARED_CREDENTIAL_ID, {
 				type: "oauth",
 				access: SHARED_STALE_ACCESS,
 				refresh: SHARED_STALE_REFRESH,
 				expires: Date.now() - 60_000,
 			});
-			await authB.reload();
+			await authB.credentials.reload();
 
 			const refreshStarted = Promise.withResolvers<void>();
 			const allowRefreshResponse = Promise.withResolvers<void>();
@@ -433,8 +433,8 @@ describe("MCPManager shared SQLite OAuth refresh", () => {
 				expect(getAuthorizationHeader(resolvedA)).toBe(`Bearer ${SHARED_FRESH_ACCESS}`);
 				expect(getAuthorizationHeader(resolvedB)).toBe(`Bearer ${SHARED_FRESH_ACCESS}`);
 
-				await authA.reload();
-				const canonical = authA.get(SHARED_CREDENTIAL_ID);
+				await authA.credentials.reload();
+				const canonical = authA.credentials.get(SHARED_CREDENTIAL_ID);
 				expect(canonical).toMatchObject({
 					type: "oauth",
 					access: SHARED_FRESH_ACCESS,
@@ -448,13 +448,13 @@ describe("MCPManager shared SQLite OAuth refresh", () => {
 
 	test("keeps the peer-rotated credential when a stale refresh attempt returns invalid_grant", async () => {
 		await withSharedSQLiteAuth(async ({ authA, authB, storeB }) => {
-			await authA.set(SHARED_CREDENTIAL_ID, {
+			await authA.credentials.set(SHARED_CREDENTIAL_ID, {
 				type: "oauth",
 				access: SHARED_STALE_ACCESS,
 				refresh: SHARED_STALE_REFRESH,
 				expires: Date.now() - 60_000,
 			});
-			await authB.reload();
+			await authB.credentials.reload();
 			const storedBefore = storeB.listAuthCredentials(SHARED_CREDENTIAL_ID);
 			expect(storedBefore).toHaveLength(1);
 			const rowId = storedBefore[0]!.id;
@@ -507,8 +507,8 @@ describe("MCPManager shared SQLite OAuth refresh", () => {
 				expect(refreshTokens).toEqual([SHARED_STALE_REFRESH]);
 				expect(getAuthorizationHeader(resolved)).toBe(`Bearer ${SHARED_FRESH_ACCESS}`);
 
-				await authA.reload();
-				const canonical = authA.get(SHARED_CREDENTIAL_ID);
+				await authA.credentials.reload();
+				const canonical = authA.credentials.get(SHARED_CREDENTIAL_ID);
 				expect(canonical).toMatchObject({
 					type: "oauth",
 					access: SHARED_FRESH_ACCESS,

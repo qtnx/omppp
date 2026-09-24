@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { parseAgentFields } from "../../src/discovery/helpers";
 import { clearBundledAgentsCache, getBundledAgent, loadBundledAgents } from "../../src/task/agents";
-import { AUTO_THINKING } from "../../src/thinking";
+import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 afterEach(() => {
 	clearBundledAgentsCache();

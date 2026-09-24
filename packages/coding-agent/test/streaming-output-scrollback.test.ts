@@ -1,13 +1,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
-import { theme as activeTheme, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { theme as activeTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentProgress, TaskToolDetails } from "@oh-my-pi/pi-coding-agent/task/types";
-import { evalToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/eval-render";
-import { previewWindowRows } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
+import { evalToolRenderer } from "@oh-my-pi/pi-tui/tools/eval";
+import { previewWindowRows } from "@oh-my-pi/pi-tui/render/render-utils";
 import { type Component, type TerminalFrameProvider, TUI, type ViewportSize } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 

@@ -632,23 +632,47 @@ export declare function __ompInstallTokioRuntime(): void
 
 /**
  * Version sentinel — exists solely so the JS loader can prove at load time
- * that the `.node` file on disk is from the same package release as the
+ * that the `.node` file on disk was built from the same native sources as the
  * `index.js` ESM wrapper invoking it.
  *
- * The `js_name` is bumped by `scripts/release.ts` to match the new
- * `Cargo.toml` / `package.json` version on every release. The JS loader
- * computes the expected name from `package.json#version` and refuses to use
- * a `.node` that doesn't expose it, turning the silent
- * `<sym> is not a function` crash from a locked-file update (the canonical
- * Windows `bun install -g` failure mode) into a clear load-time error.
+ * The `js_name` encodes the *native ABI version*: the release version at which
+ * the native inputs last changed (`NATIVE_INPUT_PATHS` in
+ * `scripts/native-source-hash.ts`). `scripts/release.ts` bumps it, together
+ * with `NATIVE_ABI_VERSION` in `packages/natives/native/version-sentinel.js`,
+ * only when those inputs differ from the previous release tag — so a release
+ * that leaves the native sources alone keeps the sentinel (and the `.node`
+ * artifacts CI already built) unchanged. The JS loader computes the expected
+ * name from `NATIVE_ABI_VERSION` and refuses to use a `.node` that doesn't
+ * expose it, turning the silent `<sym> is not a function` crash from a
+ * locked-file update (the canonical Windows `bun install -g` failure mode)
+ * into a clear load-time error.
  *
  * Bump policy: `__piNativesV{major}_{minor}_{patch}` — non-alphanumerics in
  * the version string are mapped to `_` to keep it a valid JS identifier.
- * MUST stay in sync with `VERSION_SENTINEL_EXPORT` in
- * `packages/natives/native/index.js` (which derives the name from
- * `package.json#version`).
+ * MUST stay in sync with `NATIVE_ABI_VERSION` in
+ * `packages/natives/native/version-sentinel.js`.
  */
 export declare function __piNativesV1_11_2(): void
+
+/**
+ * Reports whether the on-device model can generate, as an `availability`
+ * event JSON: `{available, reason?, contextSize?, variant?, vision?,
+ * toolCalling?}`.
+ */
+export declare function appleFmAvailability(): Promise<string>
+
+/**
+ * Cancels a generation; its stream then ends with a `cancelled` error event.
+ * Unknown or finished handles are ignored.
+ */
+export declare function appleFmCancel(handle: number): void
+
+/**
+ * Starts one model turn for a JSON request and streams JSON events to
+ * `on_event` until a terminal `done` or `error` event. Returns a handle for
+ * [`apple_fm_cancel`].
+ */
+export declare function appleFmGenerate(request: string, onEvent: (err: null | Error, event: string) => void): number
 
 /**
  * Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns
@@ -1007,7 +1031,7 @@ export declare function cosineSimilarityPairs(vectors: Float64Array, count: numb
  * use ordinary encoding (no special-token handling) and the Claude
  * encodings count message content without the fixed per-message frame.
  * Defaults to `o200k_base`; pass a `Claude*` encoding for exact Claude
- * counts, or the matching family encoding for Qwen/DeepSeek/Kimi/GLM.
+ * counts, or the matching family encoding for Qwen/DeepSeek/Kimi/GLM/Jev.
  */
 export declare function countTokens(input: string | string[], encoding?: Encoding | undefined | null): number
 
@@ -1451,7 +1475,9 @@ export declare enum Encoding {
   /** Kimi K2 … K3. */
   KimiK2 = 'KimiK2',
   /** GLM-5.x exact; GLM-4.x near-exact. */
-  Glm5 = 'Glm5'
+  Glm5 = 'Glm5',
+  /** `TypeSafe` Jev 1.13 judgment `state` (request frame excluded). */
+  Jev = 'Jev'
 }
 
 /**
@@ -1479,7 +1505,7 @@ export declare function execReplace(argv: Array<string>): void
  */
 export declare function executeShell(options: ShellExecuteOptions, onChunk?: ((error: Error | null, chunk: string) => void) | undefined | null): Promise<ShellRunResult>
 
-/** Locate `<SM:EDIT path="…">` payloads the model emitted as plain text. */
+/** Locate `*** Edit File: path` payloads the model emitted as plain text. */
 export declare function extractInlineSloppyRegions(text: string): Array<InlineSloppyRegion>
 
 /**
@@ -2104,6 +2130,36 @@ export declare function matchesKittySequence(data: string, expectedCodepoint: nu
  */
 export declare function matchesLegacySequence(data: string, keyName: string): boolean
 
+/**
+ * Options for [`render_mermaid_ascii`]; every field defaults like the
+ * TypeScript renderer (`useAscii: false`, paddings 5, border padding 1,
+ * `colorMode: "auto"`).
+ */
+export interface MermaidRenderOptions {
+  /** `+-|>` instead of Unicode box-drawing characters. */
+  useAscii?: boolean
+  paddingX?: number
+  paddingY?: number
+  boxBorderPadding?: number
+  /** Force the flowchart/state layout direction. */
+  direction?: 'TD' | 'TB' | 'LR' | 'BT' | 'RL'
+  /** `auto` (or omitted) detects from the terminal environment. */
+  colorMode?: 'none' | 'auto' | 'ansi16' | 'ansi256' | 'truecolor' | 'html'
+  theme?: MermaidTheme
+}
+
+/** Theme colors for [`render_mermaid_ascii`]; hex strings, all optional. */
+export interface MermaidTheme {
+  fg?: string
+  border?: string
+  line?: string
+  arrow?: string
+  accent?: string
+  bg?: string
+  corner?: string
+  junction?: string
+}
+
 /** N-API opt-in handle for the minimizer. */
 export interface MinimizerOptions {
   /** Master switch. Absent / false = disabled. */
@@ -2432,6 +2488,16 @@ export declare function rasterizeSvg(input: Uint8Array, maxWidthPx: number, maxH
  * Returns an error if clipboard access fails or image encoding fails.
  */
 export declare function readImageFromClipboard(): Promise<ClipboardImage | undefined | null>
+
+/**
+ * Render Mermaid diagram text (flowchart, state, sequence, class, ER, or
+ * xychart) to ASCII/Unicode art. Synchronous: callers render inside the
+ * TUI compositor.
+ *
+ * # Errors
+ * Unparseable flowchart source or an unknown `direction`/`colorMode` value.
+ */
+export declare function renderMermaidAscii(text: string, options?: MermaidRenderOptions | undefined | null): string
 
 /**
  * Render one snapcompact frame on a libuv worker: print pre-normalized text
@@ -2975,7 +3041,10 @@ export interface VectorTopK {
  */
 export declare function visibleWidth(text: string, tabWidth: number): number
 
-/** Warm syntax grammars and scope matchers on the native worker pool. */
+/**
+ * Warm syntax grammars, scope matchers, and the regexes of commonly
+ * highlighted languages on the native worker pool.
+ */
 export declare function warmHighlighter(): Promise<undefined>
 
 /** Profiling results returned to JavaScript. */

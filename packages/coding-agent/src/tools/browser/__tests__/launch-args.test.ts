@@ -3,7 +3,7 @@ import { buildHeadlessLaunchArgs } from "../launch";
 
 describe("buildHeadlessLaunchArgs", () => {
 	it("includes Vulkan GPU and unsafe SwiftShader flags when gpu is true on linux", () => {
-		const args = buildHeadlessLaunchArgs({ width: 1234, height: 567 }, true, "linux");
+		const args = buildHeadlessLaunchArgs({ width: 1234, height: 567 }, { gpu: true }, "linux");
 
 		expect(args).toContain("--no-sandbox");
 		expect(args).toContain("--window-size=1234,567");
@@ -14,7 +14,7 @@ describe("buildHeadlessLaunchArgs", () => {
 	});
 
 	it("keeps unsafe SwiftShader fallback without Vulkan GPU flags when gpu is false", () => {
-		const args = buildHeadlessLaunchArgs({ width: 800, height: 600 }, false, "linux");
+		const args = buildHeadlessLaunchArgs({ width: 800, height: 600 }, { gpu: false }, "linux");
 
 		expect(args).toContain("--no-sandbox");
 		expect(args).toContain("--window-size=800,600");
@@ -25,7 +25,7 @@ describe("buildHeadlessLaunchArgs", () => {
 	});
 
 	it("uses the Metal ANGLE backend instead of Vulkan on macOS so WebGL stays on the hardware GPU", () => {
-		const args = buildHeadlessLaunchArgs({ width: 800, height: 600 }, true, "darwin");
+		const args = buildHeadlessLaunchArgs({ width: 800, height: 600 }, { gpu: true }, "darwin");
 
 		expect(args).toContain("--use-angle=metal");
 		expect(args).not.toContain("--use-angle=vulkan");
@@ -33,7 +33,7 @@ describe("buildHeadlessLaunchArgs", () => {
 	});
 
 	it("leaves Chrome's default GPU backend on windows", () => {
-		const args = buildHeadlessLaunchArgs({ width: 800, height: 600 }, true, "win32");
+		const args = buildHeadlessLaunchArgs({ width: 800, height: 600 }, { gpu: true }, "win32");
 
 		expect(args.some(arg => arg.startsWith("--use-angle="))).toBe(false);
 		expect(args).not.toContain("--enable-features=Vulkan");

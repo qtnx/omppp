@@ -12,11 +12,17 @@ import { Text } from "@oh-my-pi/pi-tui";
 import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { daemonClientForProject } from "../launch/client";
-import type { DaemonOperation, DaemonRpcResult, DaemonSnapshot, DaemonSpec, DaemonState } from "../launch/protocol";
+import type { DaemonOperation, DaemonRpcResult } from "../launch/protocol";
+import type { DaemonSnapshot, DaemonSpec, DaemonState } from "@oh-my-pi/pi-tui/tools/hub";
 import type { TerminalOutputOptions } from "../launch/terminal-output";
-import type { Theme, ThemeColor } from "../modes/theme/theme";
+import type { Theme, ThemeColor } from "@oh-my-pi/pi-tui/theme";
 import launchDescription from "../prompts/tools/launch.md" with { type: "text" };
-import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
+import {
+	CachedOutputBlock,
+	markFramedBlockComponent,
+	outputBlockContentWidth,
+	renderStatusLine,
+} from "@oh-my-pi/pi-tui/render";
 import type { ToolSession } from ".";
 import { resolveToCwd } from "./path-utils";
 import {
@@ -33,9 +39,9 @@ import {
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
-} from "./render-utils";
-import { styleTerminalRow } from "./terminal-output";
-import { ToolError } from "./tool-errors";
+} from "@oh-my-pi/pi-tui/render/render-utils";
+import { styleTerminalRow } from "@oh-my-pi/pi-tui/tools/terminal-output";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const launchSchema = type({
 	op: type("'start' | 'list' | 'logs' | 'wait' | 'send' | 'stop' | 'restart' | 'describe'").describe(
@@ -616,23 +622,32 @@ export const launchToolRenderer = {
 		);
 
 		if (op === "logs") {
-			return framedBlock(theme, width => {
-				const innerWidth = outputBlockContentWidth(width);
-				const rows = body.map(line => truncateToWidth(line, innerWidth));
-				return {
-					header,
-					state: options.isPartial ? "pending" : failed ? "error" : "success",
-					sections: [
+			// Inlined from the fork's `framedBlock` helper: pi-tui has no equivalent
+			// self-framing wrapper, so build the cached block component directly.
+			const outputBlock = new CachedOutputBlock();
+			return markFramedBlockComponent({
+				render: (width: number) => {
+					const innerWidth = outputBlockContentWidth(width);
+					const rows = body.map(line => truncateToWidth(line, innerWidth));
+					return outputBlock.render(
 						{
-							label: theme.fg("toolTitle", "Output"),
-							lines: capPreviewLines(rows, theme, {
-								expanded: options.expanded,
-								max: DEFAULT_TERMINAL_PREVIEW_LINES,
-							}),
+							header,
+							state: options.isPartial ? "pending" : failed ? "error" : "success",
+							sections: [
+								{
+									label: theme.fg("toolTitle", "Output"),
+									lines: capPreviewLines(rows, theme, {
+										expanded: options.expanded,
+										max: DEFAULT_TERMINAL_PREVIEW_LINES,
+									}),
+								},
+							],
+							width,
 						},
-					],
-					width,
-				};
+						theme,
+					);
+				},
+				invalidate: () => outputBlock.invalidate(),
 			});
 		}
 

@@ -40,7 +40,14 @@ import {
 	triggerReviewFindingLessonGeneration,
 } from "./review-findings";
 import { getSessionTrace, listSessions } from "./sessions";
-import { buildSessionTrace, getTraceEntry, listSessionSummaries, TRACE_ETAG_VERSION, TracePathError } from "./trace";
+import {
+	buildSessionTrace,
+	getTraceEntry,
+	listSessionSummaries,
+	TRACE_ETAG_VERSION,
+	traceFingerprintForEtag,
+	TracePathError,
+} from "./trace";
 
 const EMBEDDED_CLIENT_ARCHIVE = decodeEmbeddedClientArchive(embeddedClientArchiveTxt);
 
@@ -457,9 +464,24 @@ export async function handleStatsApiRequest(req: Request, options: StatsApiOptio
 		const file = url.searchParams.get("file");
 		if (!file) return Response.json({ error: "file required" }, { status: 400 });
 		try {
+			// ETag-first: compare the client's etag against the
+			// root+child fingerprint WITHOUT building the trace. A matching
+			// (unchanged) poll returns 304 after stats only; only a changed
+			// tree pays the full re-read/re-parse/rebuild in
+			// buildSessionTrace (itself memoized for non-conditional polls).
+			// The fingerprint covers child transcripts, so a subagent-only
+			// append changes the ETag and never 304s stale.
+			const clientEtag = req.headers.get("if-none-match");
+			if (clientEtag) {
+				const fingerprint = await traceFingerprintForEtag(file);
+				if (fingerprint !== undefined) {
+					const etag = `"${TRACE_ETAG_VERSION}:${fingerprint}"`;
+					if (clientEtag === etag) return new Response(null, { status: 304 });
+				}
+			}
 			const trace = await buildSessionTrace(file);
-			const etag = `"${TRACE_ETAG_VERSION}:${trace.mtimeMs}"`;
-			if (req.headers.get("if-none-match") === etag) return new Response(null, { status: 304 });
+			const etag = `"${TRACE_ETAG_VERSION}:${trace.etag}"`;
+			if (clientEtag === etag) return new Response(null, { status: 304 });
 			return Response.json(trace, { headers: { ETag: etag } });
 		} catch (err) {
 			if (err instanceof TracePathError) return Response.json({ error: err.message }, { status: 400 });

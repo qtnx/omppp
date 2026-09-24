@@ -37,17 +37,21 @@ function makeStore(rows: StoredAuthCredential[]): ObservableStore {
 			return rows.filter(row => row.disabledCause === null);
 		},
 		updateAuthCredential() {},
-		deleteAuthCredential() {},
+		deleteAuthCredential() {
+			return Promise.resolve(false);
+		},
 		tryDisableAuthCredentialIfMatches() {
 			return false;
 		},
-		replaceAuthCredentialsForProvider() {
-			return rows;
+		replaceAuthCredentials() {
+			return Promise.resolve(rows);
 		},
-		upsertAuthCredentialForProvider() {
-			return rows;
+		upsertAuthCredential() {
+			return Promise.resolve(rows);
 		},
-		deleteAuthCredentialsForProvider() {},
+		deleteAuthCredentials() {
+			return Promise.resolve();
+		},
 		getCache(key, options) {
 			const entry = cache.get(key);
 			if (!entry) return null;
@@ -236,12 +240,13 @@ function usageWindow(headroom: UsageHeadroom, kind: "5h" | "weekly") {
 
 async function warmUsageCache(storage: AuthStorage, syntheticReport: UsageReport | null): Promise<number> {
 	const fetchSpy = vi.spyOn(claudeUsage.claudeUsageProvider, "fetchUsage").mockResolvedValue(syntheticReport);
-	await storage.fetchUsageReports();
+	await storage.usage.reports();
 	return fetchSpy.mock.calls.length;
 }
 function oauthUsageCacheKey(credential: AuthCredential): string {
 	if (credential.type !== "oauth") throw new Error("expected OAuth credential");
-	return `usage_cache:report:2:anthropic:default:oauth|account:${credential.accountId}|email:${credential.email?.toLowerCase()}`;
+	const version = claudeUsage.claudeUsageProvider.cacheVersion;
+	return `usage_cache:report:${version}:anthropic:default:oauth|account:${credential.accountId}|email:${credential.email?.toLowerCase()}`;
 }
 
 function seedUsageCache(store: ObservableStore, credential: AuthCredential, syntheticReport: UsageReport): void {
@@ -277,7 +282,7 @@ async function makeStorage(rows: StoredAuthCredential[] = [oauthRow(1)]): Promis
 	const storage = new AuthStorage(makeStore(rows), {
 		usageProviderResolver: provider => (provider === "anthropic" ? claudeUsage.claudeUsageProvider : undefined),
 	});
-	await storage.reload();
+	await storage.credentials.reload();
 	return storage;
 }
 
@@ -299,7 +304,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 				}),
 			);
 
-			const allMode = storage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "all" });
+			const allMode = storage.usage.headroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "all" });
 			expect(allMode.hasRoom).toBe(false);
 			expect(allMode.reason).toBe("window-utilization");
 			expect(allMode.window).toBe("weekly");
@@ -308,7 +313,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 			expect(usageWindow(allMode, "5h")?.usedFraction).toBe(0.1);
 			expect(usageWindow(allMode, "weekly")?.usedFraction).toBe(0.9);
 
-			const anyMode = storage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "any" });
+			const anyMode = storage.usage.headroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "any" });
 			expect(anyMode.hasRoom).toBe(true);
 			expect(windowKinds(anyMode)).toEqual(["5h", "weekly"]);
 		} finally {
@@ -329,14 +334,14 @@ describe("AuthStorage.getUsageHeadroom", () => {
 				}),
 			);
 
-			const allMode = storage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "all" });
+			const allMode = storage.usage.headroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "all" });
 			expect(allMode.hasRoom).toBe(false);
 			expect(allMode.reason).toBe("window-utilization");
 			expect(allMode.window).toBe("5h");
 			expect(allMode.resetAtMs).toBe(fiveHourResetAt);
 			expect(windowKinds(allMode)).toEqual(["5h", "weekly"]);
 
-			const anyMode = storage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "any" });
+			const anyMode = storage.usage.headroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "any" });
 			expect(anyMode.hasRoom).toBe(true);
 			expect(windowKinds(anyMode)).toEqual(["5h", "weekly"]);
 		} finally {
@@ -354,7 +359,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 					weeklyFraction: 0.49,
 				}),
 			);
-			expect(belowStorage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5")).hasRoom).toBe(true);
+			expect(belowStorage.usage.headroom(anthropicModel("claude-sonnet-4-5")).hasRoom).toBe(true);
 		} finally {
 			belowStorage.close();
 		}
@@ -370,7 +375,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 				}),
 			);
 
-			const headroom = boundaryStorage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"));
+			const headroom = boundaryStorage.usage.headroom(anthropicModel("claude-sonnet-4-5"));
 			expect(headroom.hasRoom).toBe(false);
 			expect(headroom.reason).toBe("window-utilization");
 			expect(headroom.window).toBe("5h");
@@ -393,7 +398,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 				}),
 			);
 
-			const headroom = storage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "any" });
+			const headroom = storage.usage.headroom(anthropicModel("claude-sonnet-4-5"), { windowMode: "any" });
 			expect(headroom.hasRoom).toBe(false);
 			expect(headroom.reason).toBe("window-exhausted");
 			expect(headroom.window).toBe("weekly");
@@ -420,7 +425,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 				}),
 			);
 
-			const headroom = storage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"));
+			const headroom = storage.usage.headroom(anthropicModel("claude-sonnet-4-5"));
 			expect(headroom.hasRoom).toBe(true);
 			expect(usageWindow(headroom, "weekly")?.usedFraction).toBe(0.99);
 			expect(usageWindow(headroom, "weekly")?.resetsAt).toBe(pastResetAt);
@@ -442,12 +447,12 @@ describe("AuthStorage.getUsageHeadroom", () => {
 				}),
 			);
 
-			const defaultThreshold = storage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"));
+			const defaultThreshold = storage.usage.headroom(anthropicModel("claude-sonnet-4-5"));
 			expect(defaultThreshold.hasRoom).toBe(false);
 			expect(defaultThreshold.reason).toBe("window-utilization");
 			expect(defaultThreshold.window).toBe("5h");
 
-			const customThreshold = storage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"), {
+			const customThreshold = storage.usage.headroom(anthropicModel("claude-sonnet-4-5"), {
 				utilizationMax: 0.7,
 			});
 			expect(customThreshold.hasRoom).toBe(true);
@@ -460,7 +465,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 		const storage = await makeStorage();
 		try {
 			const callsAfterWarm = await warmUsageCache(storage, tieredReport({ opusFraction: 1, sonnetFraction: 0.1 }));
-			const headroom = storage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"));
+			const headroom = storage.usage.headroom(anthropicModel("claude-sonnet-4-5"));
 
 			expect(headroom.hasRoom).toBe(true);
 			expect(windowKinds(headroom)).toEqual(["5h", "weekly", "weekly"]);
@@ -473,7 +478,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 	it("preserves optimistic answers for missing credentials, null reports, and empty scoped limits", async () => {
 		const noCredsStorage = await makeStorage([]);
 		try {
-			expect(noCredsStorage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"))).toEqual({ hasRoom: true });
+			expect(noCredsStorage.usage.headroom(anthropicModel("claude-sonnet-4-5"))).toEqual({ hasRoom: true });
 		} finally {
 			noCredsStorage.close();
 		}
@@ -482,7 +487,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 		const nullReportStorage = await makeStorage();
 		try {
 			await warmUsageCache(nullReportStorage, null);
-			expect(nullReportStorage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"))).toEqual({ hasRoom: true });
+			expect(nullReportStorage.usage.headroom(anthropicModel("claude-sonnet-4-5"))).toEqual({ hasRoom: true });
 		} finally {
 			nullReportStorage.close();
 		}
@@ -503,7 +508,7 @@ describe("AuthStorage.getUsageHeadroom", () => {
 					}),
 				]),
 			);
-			expect(noScopedLimitsStorage.getUsageHeadroom(anthropicModel("claude-sonnet-4-5"))).toEqual({ hasRoom: true });
+			expect(noScopedLimitsStorage.usage.headroom(anthropicModel("claude-sonnet-4-5"))).toEqual({ hasRoom: true });
 		} finally {
 			noScopedLimitsStorage.close();
 		}
@@ -520,12 +525,12 @@ describe("AuthStorage.getUsageHeadroom", () => {
 			mockAnthropicOAuthAccess();
 			try {
 				seedStickySession(store, "anthropic", "sticky-a", rowA);
-				await storage.reload();
-				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				await storage.credentials.reload();
+				expect(storage.oauth.identity("anthropic", "sticky-a")?.accountId).toBe("account-1");
 				seedUsageCache(store, rowA.credential, dualWindowReport({ fiveHourFraction: 1, weeklyFraction: 0.1 }));
 				seedUsageCache(store, rowB.credential, dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 0.1 }));
 
-				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+				expect(await storage.keys.get("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
 					"api-account-2",
 				);
 			} finally {
@@ -543,12 +548,12 @@ describe("AuthStorage.getUsageHeadroom", () => {
 			mockAnthropicOAuthAccess();
 			try {
 				seedStickySession(store, "anthropic", "sticky-a", rowA);
-				await storage.reload();
-				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				await storage.credentials.reload();
+				expect(storage.oauth.identity("anthropic", "sticky-a")?.accountId).toBe("account-1");
 				seedUsageCache(store, rowA.credential, dualWindowReport({ fiveHourFraction: 1, weeklyFraction: 0.1 }));
 				seedUsageCache(store, rowB.credential, dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 1 }));
 
-				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+				expect(await storage.keys.get("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
 					"api-account-1",
 				);
 			} finally {
@@ -566,12 +571,12 @@ describe("AuthStorage.getUsageHeadroom", () => {
 			mockAnthropicOAuthAccess();
 			try {
 				seedStickySession(store, "anthropic", "sticky-a", rowA);
-				await storage.reload();
-				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				await storage.credentials.reload();
+				expect(storage.oauth.identity("anthropic", "sticky-a")?.accountId).toBe("account-1");
 				seedUsageCache(store, rowA.credential, dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 0.1 }));
 				const fetchSpy = vi.spyOn(claudeUsage.claudeUsageProvider, "fetchUsage").mockResolvedValue(null);
 
-				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+				expect(await storage.keys.get("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
 					"api-account-1",
 				);
 				// Ranking would have to fetch sibling B's missing usage for Anthropic model-scoped selection.
@@ -595,10 +600,10 @@ describe("AuthStorage.getUsageHeadroom", () => {
 			mockAnthropicOAuthAccess();
 			try {
 				seedStickySession(store, "anthropic", "sticky-a", rowA);
-				await storage.reload();
-				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				await storage.credentials.reload();
+				expect(storage.oauth.identity("anthropic", "sticky-a")?.accountId).toBe("account-1");
 
-				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+				expect(await storage.keys.get("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
 					"api-account-2",
 				);
 			} finally {
@@ -616,14 +621,14 @@ describe("AuthStorage.getUsageHeadroom", () => {
 			mockAnthropicOAuthAccess();
 			try {
 				seedStickySession(store, "anthropic", "sticky-a", rowA);
-				await storage.reload();
-				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				await storage.credentials.reload();
+				expect(storage.oauth.identity("anthropic", "sticky-a")?.accountId).toBe("account-1");
 				// 0.9 is above HEADROOM_UTILIZATION_MAX (0.5) but below the hard exhaustion boundary (1.0).
 				seedUsageCache(store, rowA.credential, dualWindowReport({ fiveHourFraction: 0.9, weeklyFraction: 0.1 }));
 				seedUsageCache(store, rowB.credential, dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 0.1 }));
 				const fetchSpy = vi.spyOn(claudeUsage.claudeUsageProvider, "fetchUsage").mockResolvedValue(null);
 
-				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+				expect(await storage.keys.get("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
 					"api-account-1",
 				);
 				// A looser sticky gate would rank and fetch missing usage instead of staying on hard-limit parity.
@@ -646,10 +651,10 @@ describe("AuthStorage.getUsageHeadroom", () => {
 			mockAnthropicOAuthAccess();
 			try {
 				seedStickySession(store, "anthropic", "sticky-a", rowA);
-				await storage.reload();
-				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				await storage.credentials.reload();
+				expect(storage.oauth.identity("anthropic", "sticky-a")?.accountId).toBe("account-1");
 
-				expect(await storage.getApiKey("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
+				expect(await storage.keys.get("anthropic", "sticky-a", { modelId: "claude-sonnet-4-5" })).toBe(
 					"api-account-2",
 				);
 			} finally {
@@ -672,10 +677,10 @@ describe("AuthStorage.getUsageHeadroom", () => {
 			mockAnthropicOAuthAccess();
 			try {
 				seedStickySession(store, "anthropic", "sticky-a", rowA);
-				await storage.reload();
-				expect(storage.getOAuthAccountId("anthropic", "sticky-a")).toBe("account-1");
+				await storage.credentials.reload();
+				expect(storage.oauth.identity("anthropic", "sticky-a")?.accountId).toBe("account-1");
 
-				expect(await storage.getApiKey("anthropic", "sticky-a")).toBe("api-account-1");
+				expect(await storage.keys.get("anthropic", "sticky-a")).toBe("api-account-1");
 				// No modelId means the sticky probe mirrors the ranker: cache-first broker refreshes only for
 				// the sticky check and the selected credential preflight, without the extra awaited
 				// authoritative reads that would force needless ranking and then re-pin the sticky account.

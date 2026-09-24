@@ -7,7 +7,7 @@ import { resolveDuoConfig } from "../../src/config/model-resolver";
 import { Settings } from "../../src/config/settings";
 import { getDefault, type SettingPath } from "../../src/config/settings-schema";
 import { advisorDefaultsOffForModel, resolveAdvisorEnabled } from "../../src/session/session-advisors";
-import { parseConfiguredThinkingLevel } from "../../src/thinking";
+import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
 function model(provider: string, id: string, reasoning = false): Model {
 	return buildModel({

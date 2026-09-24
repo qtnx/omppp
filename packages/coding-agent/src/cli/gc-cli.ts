@@ -6,6 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import { withStatsSyncLock } from "@oh-my-pi/omp-stats/aggregator";
 import {
+	formatBytes,
 	getAgentDir,
 	getBlobsDir,
 	getCustomSessionFilesDir,
@@ -704,13 +705,18 @@ function deleteHistoryRowsForSessions(dbPath: string, sessionIds: string[]): { d
 	const db = new Database(dbPath);
 	try {
 		db.run("PRAGMA busy_timeout = 5000");
-		if (!tableExists(db, "history")) return { deleted: 0, ftsRebuilt: false };
-		if (!historyHasSessionId(db)) return { deleted: 0, ftsRebuilt: false };
-		const hasFts = tableExists(db, "history_fts");
-		const deleteStmt = db.prepare("DELETE FROM history WHERE session_id = ?");
+		const hasHistory = tableExists(db, "history") && historyHasSessionId(db);
+		const hasRecaps = tableExists(db, "session_recaps");
+		if (!hasHistory && !hasRecaps) return { deleted: 0, ftsRebuilt: false };
+		const hasFts = hasHistory && tableExists(db, "history_fts");
+		const deleteStmt = hasHistory ? db.prepare("DELETE FROM history WHERE session_id = ?") : undefined;
+		// Recaps are session-scoped side output with no life beyond their session.
+		const deleteRecapsStmt = hasRecaps ? db.prepare("DELETE FROM session_recaps WHERE session_id = ?") : undefined;
 		let deleted = 0;
 		const tx = db.transaction((ids: string[]) => {
 			for (const id of ids) {
+				deleteRecapsStmt?.run(id);
+				if (!deleteStmt) continue;
 				const result = deleteStmt.run(id) as SqliteRunResult;
 				deleted += sqliteNumber(result.changes);
 			}
@@ -1650,13 +1656,6 @@ async function withGcLock<T>(agentDir: string, fn: (lockPath: string) => Promise
 	if (closeError) throw closeError;
 	if (unlinkError) throw unlinkError;
 	return result as T;
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
 function renderText(result: GcResult): string {

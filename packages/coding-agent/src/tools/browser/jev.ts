@@ -27,7 +27,8 @@ import {
 	postSystemOne,
 	validateChoice as sharedValidateChoice,
 } from "../../jev/systemone";
-import { ToolError, throwIfAborted } from "../tool-errors";
+import { throwIfAborted } from "../tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import nextActionRules from "../../prompts/tools/browser-jev/next-action.md" with { type: "text" };
 import targetRules from "../../prompts/tools/browser-jev/target.md" with { type: "text" };
 import rescueRules from "../../prompts/tools/browser-jev/rescue.md" with { type: "text" };

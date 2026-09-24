@@ -101,11 +101,12 @@ export const hindsightBackend: MemoryBackend = {
 	async beforeAgentStartPrompt(
 		session: AgentSession,
 		promptText: string,
+		signal?: AbortSignal,
 	): Promise<MemoryPromptPreparation | undefined> {
 		const state = session.getHindsightSessionState();
 		if (!state) return undefined;
 
-		const preparation = await state.beforeAgentStartPrompt(promptText);
+		const preparation = await state.beforeAgentStartPrompt(promptText, signal);
 		if (!preparation) return undefined;
 		const primary = state.aliasOf ?? state;
 		const context =

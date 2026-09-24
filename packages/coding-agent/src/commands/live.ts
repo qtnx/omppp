@@ -13,7 +13,7 @@ import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { BridgeAgentEndpoint, type BridgeWelcome } from "../live/bridge-agent-endpoint";
 import { LiveSessionController, type LiveTranscript } from "../live/controller";
 import { LiveInputDeviceError, LocalMediaEndpoint } from "../live/local-endpoints";
-import type { LivePhase } from "../live/visualizer";
+import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 import { discoverAuthStorage } from "../session/auth-broker-config";
 
 const PHASE_LABEL: Record<LivePhase, string> = {

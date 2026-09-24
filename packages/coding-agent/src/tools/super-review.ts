@@ -26,9 +26,10 @@ import {
 	concreteThinkingLevel,
 	resolveThinkingLevelForModel,
 	toReasoningEffort,
-} from "../thinking";
+} from "@oh-my-pi/pi-tui/thinking";
 import type { ToolSession } from ".";
-import { formatPathRelativeToCwd, parseLineRanges } from "./path-utils";
+import { formatPathRelativeToCwd } from "./path-utils";
+import { parseLineRanges } from "@oh-my-pi/pi-tui/tools/line-ranges";
 import { ToolError } from "./tool-errors";
 
 const SUPER_REVIEW_ROLE = formatModelRoleAlias("super_review");

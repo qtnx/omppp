@@ -26,7 +26,7 @@ import testerMd from "../prompts/agents/tester.md" with { type: "text" };
 import uiUxReviewerMd from "../prompts/agents/ui_ux_reviewer.md" with { type: "text" };
 import uxCopywriterMd from "../prompts/agents/ux_copywriter.md" with { type: "text" };
 import workflowSubagentMd from "../prompts/agents/workflow-subagent.md" with { type: "text" };
-import { AUTO_THINKING } from "../thinking";
+import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 import type { AgentDefinition, AgentReviewGatePolicy, AgentSource } from "./types";
 

@@ -8,7 +8,7 @@ import {
 	type LiveBridgeServerFrame,
 } from "./bridge-protocol";
 import type { LiveAgentEndpoint, LiveAgentIdentity } from "./endpoints";
-import type { LivePhase } from "./visualizer";
+import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 
 /** Byte sink for the client → host direction of the bridge (the ssh child's stdin). */
 export interface BridgeWriter {

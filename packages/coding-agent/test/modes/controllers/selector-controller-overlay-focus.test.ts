@@ -1,10 +1,11 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AgentTranscriptViewer } from "@oh-my-pi/pi-coding-agent/modes/components/agent-transcript-viewer";
-import type { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
+import { AgentTranscriptViewer } from "@oh-my-pi/pi-tui/overlays/agent-transcript-viewer";
+import type { SessionSelectorComponent } from "@oh-my-pi/pi-tui/overlays/session-selector";
+import { agentTranscriptSource } from "@oh-my-pi/pi-coding-agent/modes/agent-hub-runtime";
 import { WorkflowHubOverlayComponent } from "@oh-my-pi/pi-coding-agent/modes/components/workflow-hub";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -138,6 +139,9 @@ describe("SelectorController.focusActiveEditorArea", () => {
 
 describe("SelectorController workflow transcript opening", () => {
 	it("keeps a provisional workflow-agent transcript read-only until its live session exists", () => {
+		// The viewer re-syncs its editor on its transcript poll interval, so the
+		// live registration below lands on the next tick, not on the next render.
+		vi.useFakeTimers();
 		const editor = { id: "editor" };
 		const slot = createEditorSlot(editor);
 		let transcript: AgentTranscriptViewer | undefined;
@@ -194,6 +198,7 @@ describe("SelectorController workflow transcript opening", () => {
 				status: "running",
 			});
 
+			vi.advanceTimersByTime(300);
 			const liveRendered = transcript
 				.render(100)
 				.map(line => Bun.stripANSI(line))
@@ -201,6 +206,7 @@ describe("SelectorController workflow transcript opening", () => {
 			expect(liveRendered).toContain("Enter:send");
 		} finally {
 			hub.handleInput("\u001B");
+			vi.useRealTimers();
 		}
 	});
 	it("keeps a transient workflow transcript read-only after reopening the workflow hub", () => {
@@ -341,6 +347,7 @@ describe("AgentTranscriptViewer workflow transcript submission", () => {
 		});
 		const viewer = new AgentTranscriptViewer({
 			agentId: workflowAgentId,
+			transcript: agentTranscriptSource,
 			registry,
 			lifecycle: () => ({ ensureLive }) as never,
 			ui: { requestRender: vi.fn() } as never,
@@ -410,7 +417,7 @@ describe("SelectorController session replacement overlay", () => {
 			firstMessage: "first",
 			allMessagesText: "first second",
 		};
-		vi.spyOn(SessionManager, "list").mockResolvedValue([session]);
+		vi.spyOn(SessionManager, "listForPicker").mockResolvedValue([session]);
 
 		const overlayHidden = Promise.withResolvers<void>();
 		const hide = vi.fn(() => overlayHidden.resolve());

@@ -7,7 +7,7 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
-import type { StructuredSubagentSchemaMode } from "../task/types";
+import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import type { PersistedWorkspaceRoot } from "../workspace-roots";
 import type { CompactionMethod } from "./compaction-methods";
 
@@ -123,6 +123,16 @@ export interface MCPToolSelectionEntry extends SessionEntryBase {
 	toolNames: string[];
 }
 
+/**
+ * Persisted built-in tools activated through tool discovery (`search_tool_bm25`).
+ * Restored on resume so the provider tool list stays identical to the last turn;
+ * a changed tool list invalidates prefix caches (notably OpenAI Codex).
+ */
+export interface DiscoveredToolSelectionEntry extends SessionEntryBase {
+	type: "tool_discovery_selection";
+	toolNames: string[];
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -207,6 +217,7 @@ declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
 	interface CustomCompactionSessionEntries {
 		titleChange: TitleChangeEntry;
 		mcpToolSelection: MCPToolSelectionEntry;
+		toolDiscoverySelection: DiscoveredToolSelectionEntry;
 		credentialPin: CredentialPinEntry;
 		modelUsage: ModelUsageEntry;
 	}
@@ -309,6 +320,7 @@ export type SessionEntry =
 	| ModelChangeEntry
 	| ServiceTierChangeEntry
 	| MCPToolSelectionEntry
+	| DiscoveredToolSelectionEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| CustomEntry
@@ -346,4 +358,21 @@ export interface UsageStatistics {
 	orchestrationCacheRead: number;
 	premiumRequests: number;
 	cost: number;
+}
+/**
+ * True when a raw JSONL line is a complete `message` record carrying an
+ * assistant role. Parses the line, so valid JSON whitespace (`"role" :
+ * "assistant"`, tabs, newlines-in-string excluded by line framing) classifies
+ * correctly — unlike substring checks for exact serializations. Malformed or
+ * partial lines (mid-write truncation) return false.
+ */
+export function isAssistantMessageLine(line: string): boolean {
+	if (line.length === 0 || line.charCodeAt(0) !== 123) return false;
+	let record: { type?: unknown; message?: { role?: unknown } };
+	try {
+		record = JSON.parse(line) as { type?: unknown; message?: { role?: unknown } };
+	} catch {
+		return false;
+	}
+	return record.type === "message" && record.message?.role === "assistant";
 }

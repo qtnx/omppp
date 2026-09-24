@@ -4,7 +4,7 @@ import { classifyModel } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { DuoPhaseModelCandidate, DuoResolvedConfig } from "../config/model-resolver";
-import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
+import { type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import advisorInstructions from "./prompts/advisor-instructions.md" with { type: "text" };
 import autoSignalDirective from "./prompts/auto-signal-directive.md" with { type: "text" };
 import effortChangeNotice from "./prompts/effort-change-notice.md" with { type: "text" };

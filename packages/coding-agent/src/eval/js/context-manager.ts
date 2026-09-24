@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { logger, Snowflake, workerHostEntry } from "@oh-my-pi/pi-utils";
 import {
 	createWorkerHandle,
@@ -6,7 +7,8 @@ import {
 	workerEnvFromParent,
 } from "../../subprocess/worker-client";
 import type { ToolSession } from "../../tools";
-import { ToolAbortError, ToolError } from "../../tools/tool-errors";
+import { ToolAbortError } from "../../tools/tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { safeSend as safeSendIpc } from "../../utils/ipc";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../bridge-timeout";
 import { getEnabledEvalPreludes } from "../preludes";
@@ -17,6 +19,7 @@ import {
 	type SessionOwners,
 } from "../executor-base";
 import { shouldDetachKernel } from "../py/spawn-options";
+import { updateEvalState } from "../state";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
 import { getActiveEvalShadowCell } from "../speculation/runtime-context";
 import type { ShadowPlan } from "../speculation/types";
@@ -95,9 +98,13 @@ interface PendingRun {
 interface JsSession {
 	sessionKey: string;
 	sessionId: string;
+	kernelId: string;
 	cwd: string;
+	packageRoot?: string;
+	packageEnvironment?: string;
 	worker: JsEvalWorkerHandle;
 	state: "alive" | "dead";
+	stateSessions: Set<ToolSession>;
 	pending: Map<string, PendingRun>;
 	pendingSnapshots: Map<string, PromiseWithResolvers<Extract<WorkerOutbound, { type: "shadow-snapshot" }>>>;
 	pendingShadowRuns: Map<string, PromiseWithResolvers<Extract<WorkerOutbound, { type: "shadow-run" }>>>;
@@ -150,6 +157,10 @@ export async function executeInVmContext(options: {
 	cwd: string;
 	session: ToolSession;
 	localRoots?: Record<string, string>;
+	/** Selected package directory consulted only after the importing file's project. */
+	packageRoot?: string;
+	/** Model-visible description of the selected package environment. */
+	packageEnvironment?: string;
 	reset?: boolean;
 	code: string;
 	filename: string;
@@ -189,12 +200,27 @@ export async function executeInVmContext(options: {
 	}
 	const session = await acquireSession(
 		sessionKey,
-		{ cwd: options.cwd, sessionId: options.sessionId, localRoots: options.localRoots },
+		{
+			cwd: options.cwd,
+			sessionId: options.sessionId,
+			localRoots: options.localRoots,
+			packageRoot: options.packageRoot,
+			packageEnvironment: options.packageEnvironment,
+		},
+		options.session,
 		options.timeoutMs,
 		options.ownerId,
 	);
-
-	return await runOnce(session, options);
+	const result = await runOnce(session, options);
+	if (session.state === "alive" && path.isAbsolute(options.filename)) {
+		updateEvalState(options.session, {
+			language: "js",
+			kernelId: session.kernelId,
+			alive: true,
+			loadedPath: options.filename,
+		});
+	}
+	return result;
 }
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {
@@ -305,7 +331,13 @@ export async function snapshotVmContext(options: {
 		session.worker.send({
 			type: "shadow-snapshot",
 			id,
-			snapshot: { cwd: options.cwd, sessionId: options.sessionId, localRoots: options.localRoots },
+			snapshot: {
+				cwd: options.cwd,
+				sessionId: options.sessionId,
+				localRoots: options.localRoots,
+				packageRoot: session.packageRoot,
+				packageEnvironment: session.packageEnvironment,
+			},
 		});
 		const reply = await raceWithTimeout(
 			deferred.promise,
@@ -447,9 +479,11 @@ export async function smokeTestJsEvalWorker(): Promise<void> {
 	const session: JsSession = {
 		sessionKey: "smoke",
 		sessionId: "smoke",
+		kernelId: `js-${Snowflake.next()}`,
 		cwd: process.cwd(),
 		worker,
 		state: "alive",
+		stateSessions: new Set(),
 		pending: new Map(),
 		pendingSnapshots: new Map(),
 		pendingShadowRuns: new Map(),
@@ -482,6 +516,8 @@ async function runOnce(
 		cwd: string;
 		session: ToolSession;
 		localRoots?: Record<string, string>;
+		packageRoot?: string;
+		packageEnvironment?: string;
 		code: string;
 		filename: string;
 		runState: VmRunState;
@@ -533,11 +569,15 @@ async function runOnce(
 	}
 
 	try {
+		if (options.packageRoot !== undefined) session.packageRoot = options.packageRoot;
+		if (options.packageEnvironment !== undefined) session.packageEnvironment = options.packageEnvironment;
 		const snapshot = {
 			cwd: options.cwd,
 			sessionId: options.sessionId,
 			localRoots: options.localRoots,
 			preludes: javascriptPreludeSources(options.session),
+			packageRoot: session.packageRoot,
+			packageEnvironment: session.packageEnvironment,
 		};
 		if (options.expectedRevision !== undefined && options.expectedDigest !== undefined) {
 			const id = `shadow-run-${Snowflake.next()}`;
@@ -576,6 +616,7 @@ async function runOnce(
 async function acquireSession(
 	sessionKey: string,
 	snapshot: SessionSnapshot,
+	toolSession: ToolSession,
 	timeoutMs?: number,
 	ownerId?: string,
 ): Promise<JsSession> {
@@ -583,13 +624,18 @@ async function acquireSession(
 	if (existing && existing.state === "alive") {
 		existing.sessionId = snapshot.sessionId;
 		existing.cwd = snapshot.cwd;
+		existing.packageRoot = snapshot.packageRoot;
+		existing.packageEnvironment = snapshot.packageEnvironment;
 		attachSessionOwner(existing, snapshot.sessionId, ownerId);
+		markJsSessionAlive(existing, toolSession, snapshot.packageEnvironment);
 		return existing;
 	}
 	const starting = startingSessions.get(sessionKey);
 	if (starting) {
 		attachSessionOwner(starting, snapshot.sessionId, ownerId);
-		return await starting.promise;
+		const session = await starting.promise;
+		markJsSessionAlive(session, toolSession, snapshot.packageEnvironment);
+		return session;
 	}
 	let startingSession!: StartingJsSession;
 
@@ -600,9 +646,13 @@ async function acquireSession(
 		const session: JsSession = {
 			sessionKey,
 			sessionId: snapshot.sessionId,
+			kernelId: `js-${Snowflake.next()}`,
 			cwd: snapshot.cwd,
+			packageRoot: snapshot.packageRoot,
+			packageEnvironment: snapshot.packageEnvironment,
 			worker,
 			state: "alive",
+			stateSessions: new Set(),
 			pending: new Map(),
 			pendingSnapshots: new Map(),
 			pendingShadowRuns: new Map(),
@@ -655,7 +705,9 @@ async function acquireSession(
 	attachSessionOwner(startingSession, snapshot.sessionId, ownerId);
 	startingSessions.set(sessionKey, startingSession);
 	try {
-		return await startup;
+		const session = await startup;
+		markJsSessionAlive(session, toolSession, snapshot.packageEnvironment);
+		return session;
 	} finally {
 		if (startingSessions.get(sessionKey) === startingSession) startingSessions.delete(sessionKey);
 	}
@@ -844,6 +896,9 @@ async function killSessionFor(session: JsSession, error: Error, options: { force
 async function killSession(session: JsSession, error: Error, options: { force: boolean }): Promise<void> {
 	if (session.state === "dead") return;
 	session.state = "dead";
+	for (const toolSession of session.stateSessions) {
+		updateEvalState(toolSession, { language: "js", kernelId: session.kernelId, alive: false });
+	}
 	for (const pending of session.pending.values()) {
 		if (pending.settled) continue;
 		pending.settled = true;
@@ -861,6 +916,18 @@ async function killSession(session: JsSession, error: Error, options: { force: b
 	}
 	if (await session.worker.close().catch(() => false)) return;
 	await session.worker.terminate().catch(() => undefined);
+}
+
+function markJsSessionAlive(session: JsSession, toolSession: ToolSession, environment: string | undefined): void {
+	if (session.state !== "alive") return;
+	session.stateSessions.add(toolSession);
+	updateEvalState(toolSession, {
+		language: "js",
+		kernelId: session.kernelId,
+		alive: true,
+		environment,
+		interpreter: `Bun ${Bun.version}`,
+	});
 }
 
 function safeSend(session: JsSession, msg: WorkerInbound): void {

@@ -11,12 +11,14 @@ import { formatModelString } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { validateProviderMaxInFlightRequests } from "../config/settings";
 import type { LocalProtocolOptions } from "../internal-urls";
+import { resolveLocalUrlToPath } from "../internal-urls/local-protocol";
 import { deobfuscateSessionContext, obfuscateMessages } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { stripPendingSecretPlaceholderSuffix } from "../secrets/placeholder";
 import { normalizeModelContextImages } from "../utils/image-loading";
+import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { describeAttachedImagesForTextModel } from "../utils/image-vision-fallback";
-import { blobExtensionForImageMimeType } from "./blob-store";
+import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
 import { type CustomMessage, convertToLlm } from "./messages";
 import { IMAGE_ATTACHMENT_DESCRIPTION_TYPE } from "./queued-messages";
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
@@ -61,7 +63,18 @@ export class SessionProviderBoundary {
 			return images.flatMap((image, index) => {
 				const label = `Image #${index + 1}`;
 				const uri = `attachment://${index + 1}`;
+				// File-backed attachments resolve to their file so tools and clickable links
+				// open it. Clipboard images committed to the session carry a `local://` URL,
+				// resolved against the session's current root so `/move` keeps them readable.
+				// Payloads without a file materialize a blob copy instead.
+				const source = imageAttachmentSource(image)?.path;
 				try {
+					if (source) {
+						const sourcePath = source.startsWith("local://")
+							? resolveLocalUrlToPath(source, this.#host.localProtocolOptions())
+							: source;
+						return [{ label, uri, image, sourcePath }];
+					}
 					const sourcePath = this.#host.sessionManager.putBlobSync(Buffer.from(image.data, "base64"), {
 						extension: blobExtensionForImageMimeType(image.mimeType),
 					}).displayPath;

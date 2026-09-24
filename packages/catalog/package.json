@@ -16,10 +16,10 @@
 	},
 	"keywords": [
 		"ai",
-		"llm",
-		"models",
 		"catalog",
-		"discovery"
+		"discovery",
+		"llm",
+		"models"
 	],
 	"main": "./src/index.ts",
 	"types": "./src/index.ts",

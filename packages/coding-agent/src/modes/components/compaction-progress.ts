@@ -1,6 +1,6 @@
 import { type Component, replaceTabs, sliceByColumn, type TUI, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { renderAsciiBar } from "../../slash-commands/helpers/format";
-import { getSymbolTheme, theme } from "../theme/theme";
+import { renderAsciiBar } from "@oh-my-pi/pi-tui/chrome/format";
+import { getSymbolTheme, theme } from "@oh-my-pi/pi-tui/theme";
 
 // Live progress overlay shown while compaction runs. Remote (OpenAI V2 SSE)
 // compaction gives no completion total, so the bar is INDETERMINATE — we never

@@ -1,7 +1,7 @@
 import type { Page } from "puppeteer-core";
 import reactHookScript from "../puppeteer/react-hook.txt" with { type: "text" };
 import vitalsScript from "../puppeteer/vitals.txt" with { type: "text" };
-import { ToolError } from "../tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const REACT_HOOK_MISSING = "React DevTools hook not installed — reopen the tab with react: true";
 

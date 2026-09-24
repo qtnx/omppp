@@ -18,12 +18,12 @@
 		"url": "https://github.com/qtnx/omppp/issues"
 	},
 	"keywords": [
-		"coding-agent",
+		"agent",
 		"ai",
-		"llm",
 		"cli",
-		"tui",
-		"agent"
+		"coding-agent",
+		"llm",
+		"tui"
 	],
 	"main": "./src/index.ts",
 	"types": "./src/index.ts",
@@ -98,7 +98,8 @@
 		"react-dom": "catalog:",
 		"turndown": "catalog:",
 		"turndown-plugin-gfm": "catalog:",
-		"zod": "catalog:"
+		"zod": "catalog:",
+		"axe-core": "4.13.0"
 	},
 	"optionalDependencies": {
 		"@huggingface/transformers": "catalog:",
@@ -485,45 +486,17 @@
 			"types": "./src/modes/components/*.ts",
 			"import": "./src/modes/components/*.ts"
 		},
-		"./modes/components/extensions": {
-			"types": "./src/modes/components/extensions/index.ts",
-			"import": "./src/modes/components/extensions/index.ts"
-		},
 		"./modes/components/extensions/*": {
 			"types": "./src/modes/components/extensions/*.ts",
 			"import": "./src/modes/components/extensions/*.ts"
-		},
-		"./modes/components/status-line": {
-			"types": "./src/modes/components/status-line/index.ts",
-			"import": "./src/modes/components/status-line/index.ts"
-		},
-		"./modes/components/status-line/*": {
-			"types": "./src/modes/components/status-line/*.ts",
-			"import": "./src/modes/components/status-line/*.ts"
 		},
 		"./modes/controllers/*": {
 			"types": "./src/modes/controllers/*.ts",
 			"import": "./src/modes/controllers/*.ts"
 		},
-		"./modes/setup-wizard": {
-			"types": "./src/modes/setup-wizard/index.ts",
-			"import": "./src/modes/setup-wizard/index.ts"
-		},
-		"./modes/setup-wizard/*": {
-			"types": "./src/modes/setup-wizard/*.ts",
-			"import": "./src/modes/setup-wizard/*.ts"
-		},
 		"./modes/rpc/*": {
 			"types": "./src/modes/rpc/*.ts",
 			"import": "./src/modes/rpc/*.ts"
-		},
-		"./modes/theme/*": {
-			"types": "./src/modes/theme/*.ts",
-			"import": "./src/modes/theme/*.ts"
-		},
-		"./modes/theme/defaults": {
-			"types": "./src/modes/theme/defaults/index.ts",
-			"import": "./src/modes/theme/defaults/index.ts"
 		},
 		"./modes/utils/*": {
 			"types": "./src/modes/utils/*.ts",
@@ -594,14 +567,6 @@
 			"types": "./src/tools/*.ts",
 			"import": "./src/tools/*.ts"
 		},
-		"./tui": {
-			"types": "./src/tui/index.ts",
-			"import": "./src/tui/index.ts"
-		},
-		"./tui/*": {
-			"types": "./src/tui/*.ts",
-			"import": "./src/tui/*.ts"
-		},
 		"./utils/*": {
 			"types": "./src/utils/*.ts",
 			"import": "./src/utils/*.ts"
@@ -630,6 +595,22 @@
 			"types": "./src/web/search/providers/*.ts",
 			"import": "./src/web/search/providers/*.ts"
 		},
-		"./*.js": "./src/*.ts"
+		"./*.js": "./src/*.ts",
+		"./extensibility/custom-commands/bundled/annotate": {
+			"types": "./src/extensibility/custom-commands/bundled/annotate/index.ts",
+			"import": "./src/extensibility/custom-commands/bundled/annotate/index.ts"
+		},
+		"./judgment": {
+			"types": "./src/judgment/index.ts",
+			"import": "./src/judgment/index.ts"
+		},
+		"./tools/jfind": {
+			"types": "./src/tools/jfind/index.ts",
+			"import": "./src/tools/jfind/index.ts"
+		},
+		"./tools/jfind/*": {
+			"types": "./src/tools/jfind/*.ts",
+			"import": "./src/tools/jfind/*.ts"
+		}
 	}
 }

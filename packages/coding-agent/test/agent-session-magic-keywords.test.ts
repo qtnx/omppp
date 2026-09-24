@@ -12,7 +12,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
+import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const mockTaskTool: AgentTool = {
@@ -31,9 +31,17 @@ const mockWorkflowTool: AgentTool = {
 	execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
 };
 
+const mockEvalTool: AgentTool = {
+	name: "eval",
+	label: "Eval",
+	description: "Mock eval tool",
+	parameters: type({}),
+	execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+};
+
 async function createMagicKeywordSession(
 	modelRegistry: ModelRegistry,
-	tools: AgentTool[] = [mockTaskTool, mockWorkflowTool],
+	tools: AgentTool[] = [mockTaskTool, mockWorkflowTool, mockEvalTool],
 ): Promise<{
 	session: AgentSession;
 	settings: Settings;
@@ -70,7 +78,7 @@ describe("AgentSession magic keyword settings", () => {
 	beforeAll(async () => {
 		authRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-magic-keywords-auth-"));
 		authStorage = await AuthStorage.create(path.join(authRoot, "auth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage, path.join(authRoot, "models.yml"));
 	});
 
@@ -198,8 +206,40 @@ describe("AgentSession magic keyword settings", () => {
 		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
 	});
 
+	it("appends the jevify notice only while the eval tool is active", async () => {
+		const withEval = await createMagicKeywordSession(modelRegistry, [mockEvalTool]);
+		session = withEval.session;
+		const withEvalSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+		await session.prompt("jevify this commit for unrelated changes");
+		const withEvalMessages = withEvalSpy.mock.calls[0]![0] as unknown as Array<{
+			content?: string;
+			customType?: string;
+		}>;
+		const notice = withEvalMessages.find(message => message.customType === "jevify-notice");
+		expect(notice?.content).toContain("judge(state, questions)");
+		await session.dispose();
+
+		const withoutEval = await createMagicKeywordSession(modelRegistry, [mockTaskTool]);
+		session = withoutEval.session;
+		const withoutEvalSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+		await session.prompt("jevify this commit for unrelated changes");
+		const withoutEvalMessages = withoutEvalSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
+		expect(withoutEvalMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
+	});
+
 	it("skips workflowz notice when the task tool is inactive", async () => {
 		const created = await createMagicKeywordSession(modelRegistry, []);
+		session = created.session;
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
+
+		await session.prompt("please workflowz this");
+
+		const promptMessages = promptSpy.mock.calls[0]![0] as unknown as Array<{ customType?: string }>;
+		expect(promptMessages.map(message => message.customType).filter(Boolean)).toEqual([]);
+	});
+
+	it("skips workflowz notice when the eval tool is inactive", async () => {
+		const created = await createMagicKeywordSession(modelRegistry, [mockTaskTool]);
 		session = created.session;
 		const promptSpy = vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 

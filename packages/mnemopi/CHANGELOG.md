@@ -4,6 +4,13 @@
 
 ### Changed
 
+- Migrated all hashing operations from `node:crypto` to `Bun.SHA256`
+
+## [18.2.5] - 2026-09-17
+
+### Fixed
+
+- Improved SQLite vector search and import performance by reducing repeated database metadata checks.
 - Local fastembed embeddings turn off ONNX Runtime's CPU memory arena and memory-pattern planning, stop padding every input to 512 tokens (only inputs of equal token length share a run, at most 8 per run). Vectors match to float noise; peak worker memory drops from ~1.6 GB to ~0.5 GB and a single-query embed is 2–4× faster.
 
 ## [18.2.1] - 2026-09-15

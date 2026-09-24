@@ -52,7 +52,8 @@ import {
 	visibleWidth,
 } from "./utils";
 
-const SEGMENT_RESET = "\x1b[0m";
+/** Full-attribute reset terminating each rendered content row. */
+export const SEGMENT_RESET = "\x1b[0m";
 /**
  * Per-line terminator written after every non-image content row. It closes both
  * SGR state and any in-flight OSC 8 hyperlink so styles/links cannot bleed
@@ -122,8 +123,26 @@ export interface RenderScheduler {
 	scheduleRender(callback: () => void, delayMs: number): RenderTimer;
 }
 
+/** Rows painted by one TUI frame, observed through `TUIOptions.onPaint`. */
+export interface TuiPaint {
+	/** Rows committed above the viewport by this paint (native scrollback). Empty on diff paints and alt-screen paints. */
+	readonly history: readonly string[];
+	/** Complete live viewport after this paint: one prepared (normalized, width-truncated, SGR-coalesced) ANSI string per row. */
+	readonly viewport: readonly string[];
+	/** True when this paint erased scrollback and repainted from row zero (destructive reset or history replay): consumers drop their history copy before applying `history`. */
+	readonly reset: boolean;
+	/** True when `viewport` is an alternate-screen overlay; history is untouched. */
+	readonly alt: boolean;
+	readonly columns: number;
+	readonly rows: number;
+}
+
+/** Observer of completed terminal paints; see {@link TUI.addPaintListener}. */
+export type PaintListener = (paint: TuiPaint) => void;
+
 export interface TUIOptions {
 	renderScheduler?: RenderScheduler;
+	onPaint?: PaintListener;
 }
 /** Physical terminal dimensions supplied to a frame provider. */
 export interface ViewportSize {
@@ -782,6 +801,7 @@ export class TUI extends Container {
 	#debugNextWindowTop = 0;
 	#inputListeners = new Set<InputListener>();
 	#startListeners = new Set<StartListener>();
+	#paintListeners = new Set<PaintListener>();
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	onDebug?: () => void;
@@ -915,12 +935,24 @@ export class TUI extends Container {
 		super();
 		this.terminal = terminal;
 		this.#renderScheduler = options?.renderScheduler ?? DEFAULT_RENDER_SCHEDULER;
+		if (options?.onPaint) this.#paintListeners.add(options.onPaint);
 		this.#showHardwareCursor = showHardwareCursor === undefined ? this.#showHardwareCursor : showHardwareCursor;
 		this.#watchdog = new LoopWatchdog();
 	}
 	static #initialResizeScrollbackMode(): ResizeScrollbackMode {
 		const mode = Bun.env.PI_TUI_RESIZE_SCROLLBACK;
 		return mode === "append" || mode === "rebuild" || mode === "preserve" ? mode : "preserve";
+	}
+
+	/**
+	 * Observe completed terminal paints; returns the unsubscribe. Independent
+	 * observers (live stream publisher, session recorder) coexist.
+	 */
+	addPaintListener(listener: PaintListener): () => void {
+		this.#paintListeners.add(listener);
+		return () => {
+			this.#paintListeners.delete(listener);
+		};
 	}
 
 	/** Install the product-owned bounded frame provider. */
@@ -1245,6 +1277,13 @@ export class TUI extends Container {
 			// custom Terminal that does not distinguish DECRPM codes.
 			if (!supported && isInsideHerdr() && status === 0) return;
 			this.#setSynchronizedOutput(supported);
+		});
+		// Icons painted before the Glyph Protocol registration landed may sit in
+		// the terminal as tofu; a full repaint re-emits them against the glossary.
+		this.terminal.onGlyphProtocolReport?.(supported => {
+			if (!supported || this.#stopped) return;
+			this.invalidate();
+			this.requestRender(true);
 		});
 		this.terminal.start(
 			data => this.#handleInput(data),
@@ -1735,7 +1774,8 @@ export class TUI extends Container {
 		} while (this.#imageBudget.endPass());
 		const viewport = rendered.length > height ? rendered.slice(rendered.length - height) : Array.from(rendered);
 		this.#extractCursorMarkers(viewport);
-		this.#emitAltFrame(this.#prepareLinesArray(viewport, width, this.#altPreparedRows, height), width, height);
+		// The borrowed resize buffer is transient, not a streamable session paint.
+		this.#emitAltFrame(this.#prepareLinesArray(viewport, width, this.#altPreparedRows, height), width, height, false);
 	}
 
 	/**
@@ -2588,6 +2628,17 @@ export class TUI extends Container {
 	#terminalLine(line: PreparedLine): string {
 		return line.terminalContent + (line.hasOsc8 ? LINE_TERMINATOR : SEGMENT_RESET);
 	}
+
+	#notifyPaint(paint: TuiPaint): void {
+		for (const listener of this.#paintListeners) {
+			try {
+				listener(paint);
+			} catch (err) {
+				logger.error("TUI paint listener failed", { err });
+			}
+		}
+	}
+
 	#renderProviderFrame(width: number, height: number): void {
 		const provider = this.#frameProvider;
 		if (!provider || width <= 0 || height <= 0) return;
@@ -2758,9 +2809,10 @@ export class TUI extends Container {
 		const pendingAltExit = this.#pendingAltExit;
 		let buffer = this.#paintBeginSequence + pendingAltExit;
 		if (destructiveReset && TERMINAL.imageProtocol === ImageProtocol.Kitty) {
-			// ED2/ED3 erase text cells but leave Kitty graphics visible. A reset is
-			// explicitly destructive, so remove every placement—not only the ones
-			// this TUI tracked—then resend images composed for the clean replay.
+			// A reset is explicitly destructive, so remove every placement—not only
+			// the ones this TUI tracked—then resend images composed for the clean
+			// replay. ED2 below reclaims the rest, but only on terminals that treat
+			// an erase as a graphics clear; the explicit delete covers the others.
 			buffer += encodeKittyDeleteAllImages();
 			// `d=A` spares virtual placements, and erasing the placeholder text it
 			// leaves behind does not remove the prototype either. The ids this
@@ -2774,7 +2826,6 @@ export class TUI extends Container {
 		} else {
 			this.#imageBudget.takePurgeIds();
 		}
-		for (const sequence of this.#imageBudget.takeTransmits()) buffer += sequence;
 		// ED2 MUST precede ED3: tmux implements ED2 by scrolling the live screen
 		// into pane history (so cleared content stays reachable), so erasing
 		// history first would let ED2 refill it with a copy of the old screen —
@@ -2782,7 +2833,16 @@ export class TUI extends Container {
 		// ED2-then-ED3 clears the screen, then wipes history including that
 		// push. On xterm-family terminals the two erases are independent and
 		// the order is irrelevant.
+		//
+		// Both erases MUST precede the image transmits. kitty and Ghostty treat
+		// ED2 as a graphics clear that also frees every image left without a
+		// placement — which is exactly what freshly transmitted data is until
+		// the row carrying its placement is written. Transmitting first let the
+		// erase reclaim the data, so the replay's placements then referenced an
+		// image the terminal no longer had and every inline image vanished
+		// after a settled width resize.
 		if (destructiveReset) buffer += "\x1b[H\x1b[2J\x1b[3J";
+		for (const sequence of this.#imageBudget.takeTransmits()) buffer += sequence;
 		const diffable =
 			geometryStable &&
 			historyRows.length === 0 &&
@@ -2899,6 +2959,16 @@ export class TUI extends Container {
 		this.#forceViewportRepaintOnNextRender = false;
 		this.#hasEverRendered = true;
 		this.#resizeReplaySize = undefined;
+		// Replay-split rows in `prepared.lines` now occupy the physical viewport;
+		// only `preparedHistory.lines` crossed above it into native scrollback.
+		this.#notifyPaint({
+			history: preparedHistory.lines,
+			viewport: prepared.lines,
+			reset: destructiveReset || history?.kind === "replay",
+			alt: false,
+			columns: width,
+			rows: height,
+		});
 		if (history !== undefined) {
 			this.#acceptedHistoryBatchId = history.id;
 			provider?.acknowledgeHistory(history.id);
@@ -3503,7 +3573,7 @@ export class TUI extends Container {
 		} while (this.#imageBudget.endPass());
 		this.#extractCursorMarkers(lines);
 		const prepared = this.#prepareLinesArray(lines, width, this.#altPreparedRows, height);
-		this.#emitAltFrame(prepared, width, height);
+		this.#emitAltFrame(prepared, width, height, true);
 	}
 
 	/**
@@ -3511,7 +3581,7 @@ export class TUI extends Container {
 	 * brackets, a cursor home, and per-row rewrites — never ED3 or any
 	 * native-scrollback byte. The hardware cursor stays hidden here.
 	 */
-	#emitAltFrame(prepared: PreparedLines, width: number, height: number): void {
+	#emitAltFrame(prepared: PreparedLines, width: number, height: number, notifyPaint: boolean): void {
 		// The pass that composed this frame ran with `altScreen`, so the normal
 		// screen's own placements behind it are not treated as retired.
 		this.#imageBudget.limitResidentImages();
@@ -3576,6 +3646,16 @@ export class TUI extends Container {
 		this.#altPreviousLines = prepared.lines;
 		this.#altPreparedRows = prepared.rows;
 		this.#debugPaint = { lines: prepared.lines, windowTop: 0, altScreen: true };
+		if (notifyPaint) {
+			this.#notifyPaint({
+				history: [],
+				viewport: prepared.lines,
+				reset: false,
+				alt: true,
+				columns: width,
+				rows: height,
+			});
+		}
 		this.#fullRedrawCount += 1;
 	}
 }

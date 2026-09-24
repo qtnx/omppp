@@ -58,7 +58,7 @@ describe("AgentSession live entry id", () => {
 		if (!model) throw new Error("Expected bundled claude-sonnet-4-5 model to exist");
 
 		authStorage = await AuthStorage.create(path.join(tempDir, "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 
 		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });

@@ -22,7 +22,7 @@ import type { ModelRegistry } from "../../config/model-registry";
 import { type Settings, withActiveSettings } from "../../config/settings";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
-import { type Theme, theme } from "../../modes/theme/theme";
+import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
 import type { ContextTrimInput, ContextTrimSignals } from "../../signals/types";
@@ -30,6 +30,7 @@ import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-wr
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { ManagedTimers } from "./managed-timers";
 import { createExtensionModelQuery } from "./model-api";
+import type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import type {
 	AfterProviderResponseEvent,
 	AssistantThinkingRenderer,
@@ -37,8 +38,9 @@ import type {
 	BeforeAgentStartEventResult,
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
+	BeforeSubagentSpawnEvent,
+	BeforeSubagentSpawnEventResult,
 	CompactOptions,
-	ComposerShapeDefinition,
 	ContextEvent,
 	ContextEventResult,
 	ContextUsage,
@@ -1816,5 +1818,41 @@ export class ExtensionRunner {
 		}
 
 		return undefined;
+	}
+
+	/**
+	 * Runs `before_subagent_spawn` handlers; a `block` short-circuits, the last defined `model` wins.
+	 * `signal` (the spawn's abort signal) cancels an awaiting handler instead of parking until the timeout.
+	 */
+	async emitBeforeSubagentSpawn(
+		event: BeforeSubagentSpawnEvent,
+		signal?: AbortSignal,
+	): Promise<BeforeSubagentSpawnEventResult | undefined> {
+		if (!this.hasHandlers("before_subagent_spawn")) return undefined;
+		const ctx = this.createContext();
+		let chosen: Pick<BeforeSubagentSpawnEventResult, "model" | "note"> | undefined;
+
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("before_subagent_spawn");
+			if (!handlers || handlers.length === 0) continue;
+
+			for (const handler of handlers) {
+				const handlerResult = await this.#runHandlerWithTimeout(
+					handler,
+					event,
+					ctx,
+					ext,
+					extensionHandlerTimeoutMs,
+					undefined,
+					signal,
+				);
+				if (!handlerResult) continue;
+				const result = handlerResult as BeforeSubagentSpawnEventResult;
+				if (result.block) return result;
+				if (result.model !== undefined) chosen = { model: result.model, note: result.note };
+			}
+		}
+
+		return chosen;
 	}
 }

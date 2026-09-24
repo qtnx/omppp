@@ -24,7 +24,7 @@ import { ModelRegistry } from "../config/model-registry";
 import { formatModelString, getModelMatchPreferences, resolveCliModel } from "../config/model-resolver";
 import { Settings } from "../config/settings";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
-import { concreteThinkingLevel, resolveThinkingLevelForModel } from "../thinking";
+import { concreteThinkingLevel, resolveThinkingLevelForModel } from "@oh-my-pi/pi-tui/thinking";
 
 /** Injection point for the provider call; tests pass a synthetic event stream. */
 export type StreamSimpleFn = (
@@ -66,10 +66,10 @@ export interface BenchTarget {
 
 /** Open the auth vault, settings, and model registry for a benchmark run. */
 export async function createDefaultBenchRuntime(): Promise<BenchRuntime> {
-	const authStorage = await discoverAuthStorage();
+	const cwd = getProjectDir();
+	const settings = await Settings.init({ cwd });
+	const authStorage = await discoverAuthStorage(undefined, { settings });
 	try {
-		const cwd = getProjectDir();
-		const settings = await Settings.init({ cwd });
 		const modelRegistry = new ModelRegistry(authStorage);
 		await modelRegistry.hydrateCredentialScopedModelCaches();
 		await loadCliExtensionProviders(modelRegistry, settings, cwd);

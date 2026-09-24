@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { KeybindingsManager } from "../src/config/keybindings";
-import { createPromptActionAutocompleteProvider } from "../src/modes/prompt-action-autocomplete";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
+import { createPromptActionAutocompleteProvider } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
 import {
 	buildDollarMentionContextMessages,
 	type DollarMentionAgent,

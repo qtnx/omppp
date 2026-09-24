@@ -18,7 +18,6 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveRoleSelection } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
-import { ONLINE_TINY_TITLE_MODEL_KEY } from "../tiny/models";
 
 /** LRU cap for the in-memory gist-source map (id → full obfuscated note). */
 const MIDDLE_LRU_CAP = 64;
@@ -172,12 +171,11 @@ export class ThinkingArtifactStore {
 /**
  * Build the production `gistFn`: a one-shot smol-model summarizer for elided
  * note sources. Mirrors `title-generator.ts` for the side-request pattern and
- * the local-tiny billing-consent rule (issue #3187): when the user has configured
- * a local on-device tiny model (`providers.tinyModel` ≠ `ONLINE_TINY_TITLE_MODEL_KEY`),
- * we must NOT silently fall back to an online smol model that would bill an
- * arbitrary provider without consent — so we return `undefined` (gisting
- * unavailable; placeholders resolve to "" next to the artifact pointer). Only
- * the default/explicit online selection proceeds to `resolveRoleSelection`.
+ * the local-tiny billing-consent rule (issue #3187): when the resolved tiny/smol
+ * candidate is an on-device model (`api === "local-inference"`), we must NOT
+ * silently fall back to an online model that would bill an arbitrary provider
+ * without consent — the call returns `null` (gisting unavailable; placeholders
+ * resolve to "" next to the artifact pointer).
  */
 export function createSmolGistFn(opts: {
 	registry: ModelRegistry;
@@ -185,12 +183,6 @@ export function createSmolGistFn(opts: {
 	sessionId?: string;
 }): ThinkingArtifactDeps["gistFn"] | undefined {
 	const { registry, settings, sessionId } = opts;
-	// Local-tiny consent rule, replicated from title-generator.ts (~130-143):
-	// the online key is the only value that permits an online side-request; any
-	// other value means a local tiny model was chosen → no online fallback.
-	if (settings.get("providers.tinyModel") !== ONLINE_TINY_TITLE_MODEL_KEY) {
-		return undefined;
-	}
 
 	return async (excerpts, signal) => {
 		if (excerpts.length === 0) return new Map();
@@ -200,6 +192,9 @@ export function createSmolGistFn(opts: {
 			const resolved = resolveRoleSelection(["tiny", "smol"], settings, available);
 			const model = resolved?.model;
 			if (!model) return null;
+			// Local-tiny consent boundary, mirrored from title-generator.ts: an
+			// on-device candidate never silently falls back to a billed online model.
+			if (model.api === "local-inference") return null;
 			const apiKey = await registry.getApiKey(model, sessionId);
 			if (!apiKey) return null;
 

@@ -10,7 +10,7 @@ import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { openaiCodexModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/special";
-import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
+import { modelKind, type ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import { resolveProviderModelReference } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 
 describe("Codex model discovery", () => {
@@ -464,7 +464,64 @@ describe("Codex model discovery", () => {
 				"online",
 			);
 
-			expect(result.models.map(model => model.id).sort()).toEqual(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]);
+			expect(
+				result.models
+					.filter(model => modelKind(model) === "chat")
+					.map(model => model.id)
+					.sort(),
+			).toEqual(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]);
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps per-account Codex cyber entitlements on shared and exclusive models", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-codex-access-"));
+		const fetchFn: typeof fetch = Object.assign(
+			async (_input: string | URL | Request, init?: RequestInit) => {
+				const accountId = new Headers(init?.headers).get("chatgpt-account-id");
+				const models = [
+					{
+						slug: "gpt-6-sol",
+						display_name: "GPT-6 Sol",
+						available_access_programs: {
+							cyber: accountId === "account-a" ? ["standard", "daybreak_blue"] : ["standard"],
+						},
+					},
+				];
+				if (accountId === "account-a") {
+					models.push({
+						slug: "gpt-daybreak-blue-latest",
+						display_name: "Daybreak Blue",
+						available_access_programs: { cyber: ["daybreak_blue"] },
+					});
+				}
+				return Response.json({ models });
+			},
+			{ preconnect() {} },
+		);
+		try {
+			const result = await resolveProviderModels(
+				{
+					...openaiCodexModelManagerOptions({
+						resolveAccounts: async () => [
+							{ accessToken: "token-a", accountId: "account-a" },
+							{ accessToken: "token-b", accountId: "account-b" },
+						],
+						fetch: fetchFn,
+					}),
+					cacheDbPath: path.join(tempDir, "models.db"),
+				},
+				"online",
+			);
+
+			expect(result.models.find(model => model.id === "gpt-6-sol")?.accountAccess).toEqual({
+				"account-a": { cyberPrograms: ["standard", "daybreak_blue"] },
+				"account-b": { cyberPrograms: ["standard"] },
+			});
+			expect(result.models.find(model => model.id === "gpt-daybreak-blue-latest")?.accountAccess).toEqual({
+				"account-a": { cyberPrograms: ["daybreak_blue"] },
+			});
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}

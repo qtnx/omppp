@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { WorkflowRunRecord } from "../../workflow/run-registry";
-import type { Theme } from "../theme/theme";
 import { WorkflowHubOverlayComponent } from "./workflow-hub";
 
 const originalRowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "rows");

@@ -3,9 +3,9 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
+import { XD_URL_PREFIX } from "@oh-my-pi/pi-tui/tools/xd-url";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import type { Theme } from "../modes/theme/theme";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import searchToolBm25Description from "../prompts/tools/search-tool-bm25.md" with { type: "text" };
 import {
 	buildDiscoverableToolSearchIndex,
@@ -17,10 +17,21 @@ import {
 	searchDiscoverableTools,
 	summarizeDiscoverableTools,
 } from "../tool-discovery/tool-index";
-import { framedBlock, renderStatusLine, truncateToWidth } from "../tui";
+import {
+	CachedOutputBlock,
+	markFramedBlockComponent,
+	renderStatusLine,
+	truncateToWidth,
+} from "@oh-my-pi/pi-tui/render";
 import type { ToolSession } from ".";
-import { formatCount, formatExpandHint, formatMoreItems, replaceTabs, TRUNCATE_LENGTHS } from "./render-utils";
-import { ToolError } from "./tool-errors";
+import {
+	formatCount,
+	formatExpandHint,
+	formatMoreItems,
+	replaceTabs,
+	TRUNCATE_LENGTHS,
+} from "@oh-my-pi/pi-tui/render/render-utils";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const DEFAULT_LIMIT = 8;
 const TOOL_DISCOVERY_TITLE = "Tool Discovery";
@@ -378,14 +389,23 @@ export const searchToolBm25Renderer = {
 			return new Text(`${header}\n${uiTheme.fg("muted", emptyMessage)}`, 0, 0);
 		}
 
-		return framedBlock(uiTheme, width => ({
-			header,
-			sections: [{ lines: renderMatchBullets(details.tools, options.expanded ?? false, uiTheme) }],
-			state: "success",
-			borderColor: "borderMuted",
-			applyBg: false,
-			width,
-		}));
+		// Inlined from the fork's `framedBlock` helper (no pi-tui equivalent).
+		const outputBlock = new CachedOutputBlock();
+		return markFramedBlockComponent({
+			render: (width: number) =>
+				outputBlock.render(
+					{
+						header,
+						sections: [{ lines: renderMatchBullets(details.tools, options.expanded ?? false, uiTheme) }],
+						state: "success",
+						borderColor: "borderMuted",
+						applyBg: false,
+						width,
+					},
+					uiTheme,
+				),
+			invalidate: () => outputBlock.invalidate(),
+		});
 	},
 
 	mergeCallAndResult: true,

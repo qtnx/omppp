@@ -9,7 +9,7 @@ import type { LiveAgentEndpoint, LiveAgentIdentity, LiveMediaEndpoint } from "..
 import { LiveInputDeviceError } from "../../src/live/local-endpoints";
 import { buildDelegationContextAppend, type LiveClientMessage, type LiveServerEvent } from "../../src/live/protocol";
 import type { LiveTransportOptions } from "../../src/live/transport";
-import type { LivePhase } from "../../src/live/visualizer";
+import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 
 // Drain the queued microtasks that serialize the controller's send chain (no wall clock).
 const flush = async (): Promise<void> => {

@@ -119,6 +119,9 @@ describe("AgentSession eager todo enforcement", () => {
 			"todo.eager": "always",
 			"todo.reminders": false,
 			"title.refreshOnReplan": false,
+			// The stop gate is an external TypeSafe judgment; a reachable endpoint would
+			// append its own continuation and change this file's turn counts.
+			"signals.enabled": false,
 			...settingsOverride,
 		});
 		const sessionManager = SessionManager.inMemory(tempDir.path());
@@ -217,7 +220,7 @@ describe("AgentSession eager todo enforcement", () => {
 	beforeAll(async () => {
 		sharedDir = TempDir.createSync("@pi-agent-session-eager-todo-shared-");
 		sharedAuthStorage = await AuthStorage.create(path.join(sharedDir.path(), "auth.db"));
-		sharedAuthStorage.setRuntimeApiKey("anthropic", "test-key");
+		sharedAuthStorage.keys.setRuntime("anthropic", "test-key");
 		sharedModelRegistry = new ModelRegistry(sharedAuthStorage, path.join(sharedDir.path(), "models.yml"));
 	});
 

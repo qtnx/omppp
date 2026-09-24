@@ -103,7 +103,7 @@ describe("AgentSession auto_compaction_progress", () => {
 		const model = makeCompactionModel();
 
 		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("openai", "test-key");
+		authStorage.keys.setRuntime("openai", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 		const settings = Settings.isolated({
 			"compaction.enabled": true,

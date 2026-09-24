@@ -33,7 +33,7 @@ describe("agent-requested compaction", () => {
 	beforeAll(async () => {
 		sharedDir = TempDir.createSync("@pi-agent-compact-request-shared-");
 		authStorage = await AuthStorage.create(path.join(sharedDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 
 		const bundled = getBundledModel("anthropic", "claude-sonnet-4-5");

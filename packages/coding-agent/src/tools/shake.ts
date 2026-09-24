@@ -4,14 +4,20 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import type { Theme } from "../modes/theme/theme";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import shakeDescription from "../prompts/tools/shake.md" with { type: "text" };
 import type { ShakeMode } from "../session/shake-types";
-import { renderStatusLine } from "../tui";
+import { renderStatusLine } from "@oh-my-pi/pi-tui/render";
 import type { ToolSession, ToolShakeRequest } from ".";
-import type { OutputMeta } from "./output-meta";
-import { Ellipsis, formatErrorMessage, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "./render-utils";
-import { ToolError } from "./tool-errors";
+import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
+import {
+	Ellipsis,
+	formatErrorMessage,
+	replaceTabs,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
+} from "@oh-my-pi/pi-tui/render/render-utils";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
 
 const shakeSchema = type({

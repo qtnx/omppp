@@ -1,6 +1,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
-import { type BlobStore, blobExtensionForImageMimeType, isBlobRef, isImageDataUrl, parseBlobRef } from "./blob-store";
+import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
+import { type BlobStore, isBlobRef, isImageDataUrl, parseBlobRef } from "./blob-store";
 import type { SessionEntry } from "./session-entries";
 
 export const TEXT_ARCHIVE_THRESHOLD = 16 * 1024;

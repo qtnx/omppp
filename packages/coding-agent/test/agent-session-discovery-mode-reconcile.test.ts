@@ -154,7 +154,7 @@ describe("AgentSession tool-discovery mode reconcile", () => {
 		beforeAll(async () => {
 			sharedDir = TempDir.createSync("@pi-discovery-reconcile-");
 			authStorage = await AuthStorage.create(path.join(sharedDir.path(), "auth.db"));
-			authStorage.setRuntimeApiKey("openai", "test-key");
+			authStorage.keys.setRuntime("openai", "test-key");
 			registry = new ModelRegistry(authStorage, path.join(sharedDir.path(), "models.yml"));
 		});
 

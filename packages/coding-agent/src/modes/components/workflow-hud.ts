@@ -1,10 +1,10 @@
 import { stripVTControlCharacters } from "node:util";
 
 import { Container } from "@oh-my-pi/pi-tui";
+import { PREVIEW_LIMITS, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { theme } from "@oh-my-pi/pi-tui/theme";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
-import { PREVIEW_LIMITS, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import type { WorkflowRunAgentEntry, WorkflowRunRecord } from "../../workflow/run-registry";
-import { theme } from "../theme/theme";
 
 /** Keep the live HUD compact enough to leave room for the composer. */
 export const WORKFLOW_HUD_VISIBLE_LIMIT = PREVIEW_LIMITS.COLLAPSED_ITEMS;

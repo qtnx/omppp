@@ -19,14 +19,14 @@ import type {
 	ToolChoice,
 } from "@oh-my-pi/pi-ai";
 import type { postmortem } from "@oh-my-pi/pi-utils";
-import type { AdvisorConfig } from "../advisor";
+import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import type { AsyncJob, AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings, SkillsSettings } from "../config/settings";
 import type { CursorMcpResourceAdapter } from "../cursor";
-import type { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
+import type { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
 import type { EvalPreludeDefinition } from "../eval/preludes";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
@@ -37,7 +37,7 @@ import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { SecretVaultLike } from "../secrets/vault";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { EffectiveToolDiscoveryMode } from "../tool-discovery/mode";
 import type { ToolSession } from "../tools";
 import type { XdevState } from "../tools/xdev";
@@ -249,7 +249,7 @@ export interface AgentSessionConfig {
 	advisorStreamFn?: StreamFn;
 	/** Prefer websocket transport for OpenAI Codex requests when supported. */
 	preferWebsockets?: boolean;
-	/** Codex saved-reset coordinator; defaults to the process-wide singleton so concurrent sessions can't double-spend. Inject a fresh one in tests. */
+	/** Shared saved-reset coordinator; defaults process-wide so concurrent Codex/Claude sessions cannot double-spend. Inject a fresh one in tests. */
 	codexResetCoordinator?: CodexAutoRedeemCoordinator;
 	/** Provider payload hook used by the active session request path. */
 	onPayload?: SimpleStreamOptions["onPayload"];
@@ -293,6 +293,8 @@ export interface AgentSessionConfig {
 	initialSelectedMCPToolNames?: string[];
 	/** MCP tools selected for a new session. */
 	defaultSelectedMCPToolNames?: string[];
+	/** Built-in tools activated by discovery in a restored session snapshot. */
+	initialSelectedDiscoveredToolNames?: string[];
 	/** Persist the initial MCP selection for a fresh session. */
 	persistInitialMCPToolSelection?: boolean;
 	/** MCP servers selected for a new session. */
@@ -459,13 +461,8 @@ export interface RoleModelCycleResult {
 	role: string;
 }
 
-/** A configured role resolved to a concrete model. */
-export interface ResolvedRoleModel {
-	role: string;
-	model: Model;
-	thinkingLevel?: ConfiguredThinkingLevel;
-	explicitThinkingLevel: boolean;
-}
+import type { ResolvedRoleModel } from "@oh-my-pi/pi-tui/overlays/model-picker";
+export type { ResolvedRoleModel } from "@oh-my-pi/pi-tui/overlays/model-picker";
 
 /** Resolvable role models and the currently active index. */
 export interface RoleModelCycle {

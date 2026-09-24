@@ -56,7 +56,7 @@ async function rig(
 ) {
 	const temp = TempDir.createSync("ompx-completion-");
 	const storage = createInMemoryAuthStorage();
-	storage.setRuntimeApiKey("mock", "fixture");
+	storage.keys.setRuntime("mock", "fixture");
 	const mock = createMockModel({ responses });
 	const file = path.join(temp.path(), "result.txt");
 	let onRecord = () => {};

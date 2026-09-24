@@ -4,7 +4,7 @@ import { normalizeBrowserProfile, resolveBrowserKind } from "../browser";
 import { browserKey } from "../browser/registry";
 import { sharedBrowserDaemonName } from "../browser/shared-daemon";
 import type { ToolSession } from "../index";
-import { ToolError } from "../tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const session = {
 	cwd: "/tmp/test",

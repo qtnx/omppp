@@ -4,7 +4,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { DuoResolvedConfig } from "../src/config/model-resolver";
 import { DuoController, type DuoControllerHost } from "../src/duo/controller";
 import { formatRoutingHistory } from "../src/session/session-history-format";
-import type { ConfiguredThinkingLevel } from "../src/thinking";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { TYPESAFE_SYSTEMONE_URL, TurnSignalService, TypeSafeClient } from "../src/signals/index";
 import type { TurnSignals } from "../src/signals/types";
 

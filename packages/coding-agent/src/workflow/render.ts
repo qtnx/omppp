@@ -1,8 +1,8 @@
 /** Render workflow progress frames into a phase→agent tree. */
-import type { Theme } from "../modes/theme/theme";
-import { type RenderAgentProgressOptions, renderAgentProgress } from "../task/render";
+import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
+import { type RenderAgentProgressOptions, renderAgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import type { AgentProgress } from "../task/types";
-import { replaceTabs, truncateToWidth } from "../tools/render-utils";
 import type { WorkflowAgentState, WorkflowProgressFrame } from "./types";
 
 type AgentFrame = Extract<WorkflowProgressFrame, { kind: "agent" }>;

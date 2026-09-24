@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { AuthStorage, type CredentialOrigin, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
+import { CredentialHealth } from "@oh-my-pi/pi-ai/auth/health";
 import {
 	AuthBrokerClient,
 	type FetchSnapshotOptions,
@@ -19,7 +20,7 @@ import { runAuthGatewayCommand } from "@oh-my-pi/pi-coding-agent/cli/auth-gatewa
 import AuthGateway from "@oh-my-pi/pi-coding-agent/commands/auth-gateway";
 import { ModelsConfigFile } from "@oh-my-pi/pi-coding-agent/config/models-config";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import * as theme from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import * as theme from "@oh-my-pi/pi-tui/theme";
 import { getAgentDbPath, getAgentDir, getConfigRootDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import type { CliConfig } from "@oh-my-pi/pi-utils/cli";
 import * as loggerModule from "@oh-my-pi/pi-utils/logger";
@@ -62,7 +63,7 @@ function makeSnapshot(provider: string, key: string): SnapshotResponse {
 async function seedLocalCredential(provider: string, key: string): Promise<void> {
 	const storage = await AuthStorage.create(getAgentDbPath());
 	try {
-		storage.upsertCredential(provider, { type: "api_key", key });
+		await storage.credentials.upsert(provider, { type: "api_key", key });
 	} finally {
 		storage.close();
 	}
@@ -203,15 +204,33 @@ function exposedModelIds(opts: AuthGatewayBootOptions): Set<string> {
 	return new Set(Array.from(opts.listModels?.() ?? []).flatMap(model => [model.id, `${model.provider}/${model.id}`]));
 }
 
+/**
+ * The gateway builds its own AuthStorage, so the probe is stubbed on the
+ * CredentialHealth prototype (AuthStorage.health is a per-instance namespace).
+ * Every stored row reports healthy, which keeps `check` off the network.
+ */
 function stubCredentialHealthFromStorage(): void {
-	spyOn(AuthStorage.prototype, "checkCredentials").mockImplementation(async function (this: AuthStorage) {
-		return this.exportSnapshot().credentials.map(credential => ({
-			id: credential.id,
-			provider: credential.provider,
-			type: credential.credential.type,
-			ok: true,
-		}));
+	spyOn(CredentialHealth.prototype, "check").mockImplementation(async () => {
+		const store = await SqliteAuthCredentialStore.open(getAgentDbPath());
+		try {
+			return store.listAuthCredentials().map(row => ({
+				id: row.id,
+				provider: row.provider,
+				type: row.credential.type,
+				ok: true,
+			}));
+		} finally {
+			store.close();
+		}
 	});
+}
+
+/** Structured auth provenance without the resolver's `concrete` flag. */
+function credentialOrigin(storage: AuthStorage, provider: string): CredentialOrigin | undefined {
+	const source = storage.keys.source(provider);
+	if (!source) return undefined;
+	const { kind, envVar } = source;
+	return envVar === undefined ? { kind } : { kind, envVar };
 }
 
 beforeEach(async () => {
@@ -327,7 +346,7 @@ describe("auth-gateway serve credential source selection", () => {
 
 		expect(starts).toHaveLength(1);
 		expect(modelProviders(starts[0])).toContain("anthropic");
-		expect(starts[0].storage.describeCredentialSource("anthropic")).toContain(`local ${getAgentDbPath()}`);
+		expect(starts[0].storage.keys.describe("anthropic")).toContain(`local ${getAgentDbPath()}`);
 		expect(capturedStdout).toContain("auth-gateway listening on http://127.0.0.1:49000");
 	});
 
@@ -362,7 +381,7 @@ describe("auth-gateway serve credential source selection", () => {
 		expect(starts).toHaveLength(1);
 		expect(modelProviders(starts[0])).toContain("openai");
 		expect(modelProviders(starts[0])).not.toContain("anthropic");
-		expect(starts[0].storage.describeCredentialSource("openai")).toContain(`broker ${BROKER_URL}`);
+		expect(starts[0].storage.keys.describe("openai")).toContain(`broker ${BROKER_URL}`);
 	});
 
 	it("ignores local models.yml provider apiKeys when serving broker snapshot credentials by default", async () => {
@@ -381,8 +400,8 @@ describe("auth-gateway serve credential source selection", () => {
 		const providers = modelProviders(starts[0]);
 		expect(providers).toContain("openai");
 		expect(providers).not.toContain("anthropic");
-		expect(starts[0].storage.describeCredentialSource("openai")).toContain(`broker ${BROKER_URL}`);
-		expect(starts[0].storage.getCredentialOrigin("anthropic")).toBeUndefined();
+		expect(starts[0].storage.keys.describe("openai")).toContain(`broker ${BROKER_URL}`);
+		expect(credentialOrigin(starts[0].storage, "anthropic")).toBeUndefined();
 	});
 
 	it("ignores local disabled-provider settings when serving broker snapshot credentials", async () => {
@@ -453,7 +472,7 @@ describe("auth-gateway serve credential source selection", () => {
 		const openaiModel = Array.from(starts[0].listModels?.() ?? []).find(model => model.provider === "openai");
 		expect(openaiModel).toBeDefined();
 		expect(openaiModel?.headers?.Authorization).not.toBe("Bearer local-config-openai-key");
-		expect(starts[0].storage.getCredentialOrigin("openai")).toEqual({ kind: "api_key" });
+		expect(credentialOrigin(starts[0].storage, "openai")).toEqual({ kind: "api_key" });
 	});
 
 	it("--local bypasses configured broker credentials and serves the local auth store", async () => {
@@ -473,7 +492,7 @@ describe("auth-gateway serve credential source selection", () => {
 		expect(starts).toHaveLength(1);
 		expect(modelProviders(starts[0])).toContain("anthropic");
 		expect(modelProviders(starts[0])).not.toContain("openai");
-		expect(starts[0].storage.describeCredentialSource("anthropic")).toContain(`local ${getAgentDbPath()}`);
+		expect(starts[0].storage.keys.describe("anthropic")).toContain(`local ${getAgentDbPath()}`);
 	});
 });
 

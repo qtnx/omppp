@@ -9,5 +9,6 @@ Searches files/internal URLs: Rust regex, PCRE2 fallback.
 
 <critical>
 - MUST use built-in `grep` for any content search. NEVER shell out to `grep`, `rg`, `ripgrep`, `ag`, `ack`, `git grep`, `awk`, `sed`-for-search, or any CLI search via Bash — not even for one match or a quick check.
+{{#if hasFind}}- Describing a behavior rather than a literal pattern, or guessing symbol names → `find` first; grep for exact strings, regexes, and known symbols.{{/if}}
 - Open-ended multi-round search MUST use {{#if scoutAvailable}}Task + scout{{else}}Task + explore{{/if}}, not chained `grep` calls.
 </critical>

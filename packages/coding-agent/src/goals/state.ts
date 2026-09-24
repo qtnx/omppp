@@ -1,30 +1,12 @@
+import { type Goal, type GoalStatus } from "@oh-my-pi/pi-tui/tools/goal";
 import type { UsageStatistics } from "../session/session-entries";
 
-export type GoalStatus = "active" | "paused" | "blocked" | "usage-limited" | "budget-limited" | "complete" | "dropped";
-
-export interface Goal {
-	id: string;
-	objective: string;
-	status: GoalStatus;
-	tokenBudget?: number;
-	tokensUsed: number;
-	timeUsedSeconds: number;
-	createdAt: number;
-	updatedAt: number;
-}
-
+export type { Goal, GoalStatus };
 export interface GoalModeState {
 	enabled: boolean;
 	mode: "active" | "exiting";
 	reason?: "completed";
 	goal: Goal;
-}
-
-export interface GoalToolDetails {
-	op: "create" | "get" | "complete" | "block" | "resume" | "drop";
-	goal?: Goal | null;
-	remainingTokens?: number | null;
-	completionBudgetReport?: string | null;
 }
 
 export type GoalRuntimeEvent =

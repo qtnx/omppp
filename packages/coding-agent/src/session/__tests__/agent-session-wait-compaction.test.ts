@@ -67,11 +67,23 @@ function track<T extends MockHandle>(handle: T): T {
 	return handle;
 }
 
+/**
+ * AuthStorage and friends expose namespaces (`usage.observe`, `keys.get`, …),
+ * so an unknown member has to answer both a call and a nested lookup. `then`
+ * stays undefined: an awaited member must not look thenable.
+ */
+function noopMember(): unknown {
+	return new Proxy(() => undefined, {
+		get: (_target, prop) => (prop === "then" ? undefined : noopMember()),
+		apply: () => undefined,
+	});
+}
+
 function createNoopProxy<T extends object>(overrides: Record<string, unknown>): T {
 	return new Proxy(overrides, {
 		get(target, prop) {
 			if (typeof prop === "string" && prop in target) return target[prop];
-			return () => undefined;
+			return noopMember();
 		},
 		set(target, prop, value) {
 			if (typeof prop === "string") target[prop] = value;

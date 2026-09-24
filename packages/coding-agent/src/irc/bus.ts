@@ -1,3 +1,4 @@
+import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
 /**
  * IrcBus - Process-global mailbox bus for agent-to-agent messaging.
  *
@@ -22,25 +23,15 @@ import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
 import type { CustomMessage } from "../session/messages";
 
-export interface IrcMessage {
-	id: string;
-	/** Sender agent id. */
-	from: string;
-	/** Recipient agent id (resolved; "all" is expanded by the tool, not stored). */
-	to: string;
-	body: string;
-	ts: number;
-	/** Message id being answered. */
-	replyTo?: string;
-	/**
-	 * Automated wake-turn relay of a woken subagent's stop output (task executor
-	 * `relayWakeTurnOutput`). Relays are answers, never wake sources: the
-	 * recipient's own wake-turn relay must skip them or two idle peers
-	 * ping-pong forever.
-	 */
-	wakeRelay?: boolean;
-}
+/** Message shape shared with the renderers that now live in `@oh-my-pi/pi-tui/tools/hub`. */
+export type { IrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
 
+/**
+ * Delivery receipt for one peer recipient. Kept in this package (not pi-tui,
+ * where the message shape moved) because the fork's `irc` tool reports park
+ * revival independently of the delivery outcome: `revived` never erases
+ * "injected"/"woken".
+ */
 export interface IrcDeliveryReceipt {
 	to: string;
 	outcome: "injected" | "woken" | "failed";
@@ -48,7 +39,6 @@ export interface IrcDeliveryReceipt {
 	revived?: boolean;
 	error?: string;
 }
-
 interface IrcWaiter {
 	from?: string;
 	resolve: (msg: IrcMessage) => void;

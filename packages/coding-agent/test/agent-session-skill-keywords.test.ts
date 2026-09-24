@@ -6,6 +6,7 @@ import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream"
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { renderWorkflowNotice } from "@oh-my-pi/pi-coding-agent/modes/magic-keywords";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import {
@@ -50,7 +51,7 @@ describe("AgentSession skill prompt keyword steering", () => {
 		observedTurns.length = 0;
 
 		authStorage = await AuthStorage.create(":memory:");
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
@@ -109,7 +110,7 @@ describe("AgentSession skill prompt keyword steering", () => {
 		const details: SkillPromptDetails = {
 			name: "deep-research",
 			path: skillPath,
-			args: "workflow +500k! compare these approaches",
+			args: "please workflow this +500k! compare these approaches",
 			lineCount: 1,
 		};
 		await session.promptCustomMessage({
@@ -124,7 +125,31 @@ describe("AgentSession skill prompt keyword steering", () => {
 		const observedTurn = observedTurns[0];
 		if (!observedTurn) throw new Error("Expected prompt context to be captured");
 		expect(observedTurn.texts).toContain(`Skill body\n\n---\n\nSkill: ${skillPath}\nUser: ${details.args}`);
-		expect(observedTurn.texts.some(text => text.includes("workflow-tool"))).toBe(false);
+		expect(observedTurn.texts).toContain(
+			renderWorkflowNotice({ taskBatch: true, scoutAvailable: true, evalTools: true }),
+		);
+		expect(session.sessionManager.getTurnBudget()).toEqual({ total: 500_000, spent: 0, hard: true });
+	});
+
+	it("keeps the turn budget but no workflow notice for a non-directive mention", async () => {
+		const skillPath = path.join(tempDir.path(), "deep-research.md");
+		const details: SkillPromptDetails = {
+			name: "deep-research",
+			path: skillPath,
+			args: "workflow +500k! compare these approaches",
+			lineCount: 1,
+		};
+		await session.promptCustomMessage({
+			customType: SKILL_PROMPT_MESSAGE_TYPE,
+			content: `Skill body\n\n---\n\nSkill: ${skillPath}\nUser: ${details.args}`,
+			display: true,
+			details,
+			attribution: "user",
+		});
+
+		const observedTurn = observedTurns[0];
+		if (!observedTurn) throw new Error("Expected prompt context to be captured");
+		expect(observedTurn.texts.some(text => text.includes("workflow script"))).toBe(false);
 		expect(session.sessionManager.getTurnBudget()).toEqual({ total: 500_000, spent: 0, hard: true });
 	});
 });

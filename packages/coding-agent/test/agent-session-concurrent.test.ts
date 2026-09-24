@@ -62,8 +62,8 @@ beforeAll(async () => {
 	sharedDir = path.join(os.tmpdir(), `pi-concurrent-shared-${Snowflake.next()}`);
 	fs.mkdirSync(sharedDir, { recursive: true });
 	sharedAuthStorage = await AuthStorage.create(path.join(sharedDir, "auth.db"));
-	sharedAuthStorage.setRuntimeApiKey("anthropic", "test-key");
-	sharedAuthStorage.setRuntimeApiKey("openai-codex", "test-key");
+	sharedAuthStorage.keys.setRuntime("anthropic", "test-key");
+	sharedAuthStorage.keys.setRuntime("openai-codex", "test-key");
 	sharedModelRegistry = new ModelRegistry(sharedAuthStorage, path.join(sharedDir, "models.yml"));
 });
 
@@ -167,7 +167,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		const settings = Settings.isolated({ "autonomy.stopGate": false });
 		const authStorage = await AuthStorage.create(path.join(tempDir, "testauth-abort-busy-retry.db"));
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models-abort-busy-retry.yml"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const waitGate = Promise.withResolvers<void>();
 		const waitEntered = Promise.withResolvers<void>();
 		let promptCalls = 0;

@@ -1,50 +1,89 @@
 /**
  * Per-prompt difficulty classifier for the `auto` thinking level.
  *
- * Picks a coding-difficulty bucket for a user prompt and maps it to a concrete
- * {@link Effort}, clamped into the active model's supported range (never below
- * {@link Effort.Low}). Two backends, selected by `providers.autoThinkingModel`:
+ * Asks one {@link ChoiceQuestion} about the user's request and maps the
+ * chosen level to a concrete {@link Effort}, clamped into the active model's
+ * supported range (never below {@link Effort.Low}). The judge comes from the
+ * live `judge` role chain. A local on-device candidate gets the coarser
+ * `trivial|moderate|hard` question (3-class is more reliable
+ * than 4-way ordinal on sub-2B models), mapped to `low|high|xhigh`.
  *
- * - `online` (default): a smol model classifies into `low|medium|high|xhigh`,
- *   plus `max` when the target model exposes that tier.
- * - a local key: an on-device memory model classifies into the coarser
- *   `trivial|moderate|hard|maximum` scheme (4-class is more reliable than a
- *   full ordinal scale on sub-2B models), mapped to `low|high|xhigh|max`.
- *
- * Throws on any failure (no model, no key, unparseable output, abort/timeout);
+ * Throws on any failure (no judge, no key, unparseable output, abort/timeout);
  * the caller falls back to a concrete level and continues the turn.
  */
-import {
-	type AssistantMessage,
-	completeSimple,
-	Effort,
-	type Model,
-	retryTransientCompletion,
-	type Usage,
-} from "@oh-my-pi/pi-ai";
-import * as AIError from "@oh-my-pi/pi-ai/error";
+import { type ChoiceQuestion, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
-import { prompt } from "@oh-my-pi/pi-utils";
-
 import type { ModelRegistry } from "../config/model-registry";
-import { collectOnlineTinyCandidates } from "../tiny/online-candidates";
+import bucketQuestionInstructions from "../prompts/system/auto-thinking-bucket-question.md" with { type: "text" };
 import type { Settings } from "../config/settings";
-import difficultySystemPrompt from "../prompts/system/auto-thinking-difficulty.md" with { type: "text" };
-import difficultyLocalPrompt from "../prompts/system/auto-thinking-difficulty-local.md" with { type: "text" };
-import { clampAutoThinkingEffort } from "../thinking";
+import { type JudgmentUsage, resolveJudge } from "../judgment";
+import { clampAutoThinkingEffort } from "@oh-my-pi/pi-tui/thinking";
 import { preprocessTinyMessage } from "../tiny/message-preproc";
-import {
-	isTinyMemoryLocalModelKey,
-	isTinyMemoryReasoningModelKey,
-	ONLINE_AUTO_THINKING_MODEL_KEY,
-} from "../tiny/models";
-import { tinyModelClient } from "../tiny/title-client";
 
-/**
- * Rendered classifier prompts, keyed by whether `max` is offered as a label.
- * Two variants only, so both are memoized on first use.
- */
-const DIFFICULTY_SYSTEM_PROMPTS: Partial<Record<"max" | "xhigh", string>> = {};
+type Level = "low" | "medium" | "high" | "xhigh" | "max";
+type Bucket = "trivial" | "moderate" | "hard";
+
+const LEVEL_EFFORT: Record<Level, Effort> = {
+	low: Effort.Low,
+	medium: Effort.Medium,
+	high: Effort.High,
+	xhigh: Effort.XHigh,
+	max: Effort.Max,
+};
+
+const BUCKET_EFFORT: Record<Bucket, Effort> = {
+	trivial: Effort.Low,
+	moderate: Effort.High,
+	hard: Effort.XHigh,
+};
+
+const LEVEL_CRITERIA: Record<Exclude<Level, "max">, string> = {
+	low: "Trivial or mechanical: rename, typo, one-line edit, formatting tweak, direct factual question, obvious solution.",
+	medium:
+		"Localized change needing reasoning: small self-contained feature, straightforward one-place bug fix, explain moderate code.",
+	high: "Non-trivial: multiple files or callers, real debugging, moderate design decision, refactor with several moving parts.",
+	xhigh: "Deep or open-ended: subtle concurrency or algorithmic problem, cross-system reasoning, ambiguous requirements, large or risky refactor, hard root-cause debugging.",
+};
+
+const MAX_CRITERION =
+	"Meets xhigh and at least one of: no reproduction to work from, irreversible or data-loss operation, or a live cutover that must stay correct while running. xhigh is required; difficulty alone is insufficient.";
+
+/** Full-ladder question up to `xhigh`. */
+const LEVEL_QUESTION: ChoiceQuestion<Exclude<Level, "max">> = {
+	type: "choice",
+	instructions:
+		"The state is a user's request to a coding agent. Choose the reasoning effort this turn needs, judging inherent task difficulty rather than phrasing politeness or verbosity. If torn between levels, choose the lower one.",
+	criteria: LEVEL_CRITERIA,
+};
+
+/** Full-ladder question offering `max`; used only when the target model exposes that tier. */
+const LEVEL_QUESTION_WITH_MAX: ChoiceQuestion<Level> = {
+	type: "choice",
+	instructions:
+		"The state is a user's request to a coding agent. Choose the reasoning effort this turn needs, judging inherent task difficulty rather than phrasing politeness or verbosity. If torn between levels, choose the lower one, except between xhigh and max: a request meeting the max conditions takes max.",
+	criteria: { ...LEVEL_CRITERIA, max: MAX_CRITERION },
+};
+
+/** Coarse 3-bucket question for on-device models. */
+const BUCKET_QUESTION: ChoiceQuestion<Bucket> = {
+	type: "choice",
+	instructions: bucketQuestionInstructions,
+	criteria: {
+		trivial: "Obvious, mechanical, or a direct question: rename, typo, one-liner, simple lookup.",
+		moderate: "A real localized task: small feature, normal bug fix, code explanation.",
+		hard: "Deep, multi-file, ambiguous, or tricky debugging or design.",
+	},
+};
+
+export interface ClassifyDifficultyDeps {
+	settings: Settings;
+	registry: ModelRegistry;
+	model: Model;
+	sessionId?: string;
+	signal?: AbortSignal;
+	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
+	onUsage?: (usage: JudgmentUsage) => void;
+}
 
 /**
  * Highest effort this turn's classification may resolve to: the configured
@@ -57,56 +96,6 @@ export function autoThinkingCeiling(settings: Settings, model: Model): Effort {
 	return getSupportedEfforts(model).includes(Effort.Max) ? Effort.Max : Effort.XHigh;
 }
 
-function difficultySystemPromptFor(ceiling: Effort): string {
-	const key = ceiling === Effort.Max ? "max" : "xhigh";
-	const cached = DIFFICULTY_SYSTEM_PROMPTS[key];
-	if (cached !== undefined) return cached;
-	const rendered = prompt.render(difficultySystemPrompt, { allowMax: key === "max" });
-	DIFFICULTY_SYSTEM_PROMPTS[key] = rendered;
-	return rendered;
-}
-
-/** Local classifiers occasionally need more room for chat-template boilerplate. */
-const LOCAL_ANSWER_MAX_TOKENS = 16;
-/** On-device reasoning classifiers need room for the bucket keyword after the `<think>` preamble. */
-const LOCAL_REASONING_MAX_TOKENS = 1024;
-/**
- * Online classifier budget. Sized against two independent constraints:
- *   - Backends that ignore `disableReasoning` still emit a thinking preamble
- *     (e.g. Qwen3 via llama.cpp catalogued `reasoning: false` but still thinking;
- *     Anthropic via LiteLLM/Vertex, whose `openai-completions` route downgrades a
- *     disabled request to the lowest reasoning effort instead of turning thinking
- *     off). The classifier keyword must have room to land after that preamble
- *     (issue #4355).
- *   - Anthropic-dialect proxies reject `max_tokens <= thinking.budget_tokens`. The
- *     pinned lowest effort maps to at least Anthropic's 1024-token minimum budget,
- *     so the cap MUST comfortably exceed 1024 or every classifier call 400s with
- *     `max_tokens must be greater than thinking.budget_tokens` (issue #8610).
- * `maxTokens` is a hard cap — non-thinking completions still return in a handful
- * of tokens.
- */
-const ONLINE_REASONING_SAFE_MAX_TOKENS = 4096;
-
-export interface ClassifyDifficultyDeps {
-	settings: Settings;
-	registry: ModelRegistry;
-	model: Model;
-	sessionId?: string;
-	signal?: AbortSignal;
-	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
-	onUsage?: (usage: ClassifierUsage) => void;
-}
-
-export interface ClassifierUsage {
-	role: string;
-	api: string;
-	provider: string;
-	model: string;
-	usage: Usage;
-	stopReason: AssistantMessage["stopReason"];
-	errorMessage?: string;
-}
-
 /**
  * Classify `promptText` and return a concrete effort clamped to `deps.model`,
  * or `undefined` when the model has no controllable effort surface (auto has
@@ -117,218 +106,31 @@ export async function classifyDifficulty(
 	promptText: string,
 	deps: ClassifyDifficultyDeps,
 ): Promise<Effort | undefined> {
-	const backend = deps.settings.get("providers.autoThinkingModel");
-	const input = preprocessTinyMessage(promptText);
-	const online = backend === ONLINE_AUTO_THINKING_MODEL_KEY;
-	// The 3-bucket local classifier cannot select `max`, so its ceiling stays at
-	// XHigh whatever the setting says — otherwise a sparse ladder would snap its
-	// `hard` bucket up to a tier it never chose.
-	const ceiling = online ? autoThinkingCeiling(deps.settings, deps.model) : Effort.XHigh;
-	const effort = online ? await classifyOnline(input, deps, ceiling) : await classifyLocal(input, backend, deps);
-	// The ceiling goes into the clamp itself: capping the request alone is not
-	// enough, because a sparse ladder snaps an excluded request back up.
-	return clampAutoThinkingEffort(deps.model, effort, ceiling);
-}
-
-async function classifyOnline(input: string, deps: ClassifyDifficultyDeps, ceiling: Effort): Promise<Effort> {
-	const candidates = collectOnlineTinyCandidates(["tiny", "smol"], deps.settings, deps.registry.getAvailable());
-	if (candidates.length === 0) {
-		throw new Error("auto-thinking: no tiny/smol model available for classification");
-	}
-	const maxTokens = ONLINE_REASONING_SAFE_MAX_TOKENS;
-	let lastError: string | undefined;
-	for (const resolved of candidates) {
-		if (deps.signal?.aborted) {
-			throw deps.signal.reason instanceof Error
-				? deps.signal.reason
-				: new AIError.AbortError("auto-thinking: classification aborted");
-		}
-		const model = resolved.model;
-		try {
-			const apiKey = await deps.registry.getApiKey(model, deps.sessionId);
-			if (!apiKey) {
-				lastError = `no API key for ${model.provider}/${model.id}`;
-				continue;
-			}
-			// Resolve metadata after getApiKey so the session-sticky credential is recorded first.
-			const metadata = deps.metadataResolver?.(model.provider);
-			const response = await retryTransientCompletion(
-				() =>
-					completeSimple(
-						model,
-						{
-							systemPrompt: [difficultySystemPromptFor(ceiling)],
-							messages: [{ role: "user", content: input, timestamp: Date.now() }],
-						},
-						{
-							apiKey: deps.registry.resolver(model, deps.sessionId),
-							sessionId: deps.sessionId,
-							maxTokens,
-							disableReasoning: true,
-							metadata,
-							signal: deps.signal,
-							onAttempt: attempt =>
-								deps.onUsage?.({
-									role: resolved.role,
-									api: attempt.api,
-									provider: attempt.provider,
-									model: attempt.model,
-									usage: attempt.usage,
-									stopReason: attempt.stopReason,
-									errorMessage: attempt.errorMessage,
-								}),
-						},
-					),
-				{ signal: deps.signal, provider: model.provider },
-			);
-
-			if (response.stopReason === "aborted" || deps.signal?.aborted) {
-				throw deps.signal?.reason instanceof Error
-					? deps.signal.reason
-					: new AIError.AbortError("auto-thinking: classification aborted");
-			}
-			if (response.stopReason === "error") {
-				lastError = response.errorMessage ?? "unknown error";
-				continue;
-			}
-
-			const text = extractText(response.content);
-			const effort = parseDifficultyLevel(text);
-			if (!effort) {
-				lastError = `unparseable online classification: ${JSON.stringify(text)}`;
-				continue;
-			}
-			return effort;
-		} catch (err) {
-			if (deps.signal?.aborted) {
-				throw deps.signal.reason instanceof Error
-					? deps.signal.reason
-					: err instanceof Error
-						? err
-						: new AIError.AbortError("auto-thinking: classification aborted");
-			}
-			if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
-				throw err;
-			}
-			lastError = err instanceof Error ? err.message : String(err);
-		}
-	}
-	throw new Error(`auto-thinking: online classification failed: ${lastError ?? "unknown error"}`);
-}
-
-async function classifyLocal(input: string, modelKey: string, deps: ClassifyDifficultyDeps): Promise<Effort> {
-	if (!isTinyMemoryLocalModelKey(modelKey)) {
-		throw new Error(`auto-thinking: unsupported local classifier model: ${modelKey}`);
-	}
-	const maxTokens = isTinyMemoryReasoningModelKey(modelKey)
-		? Math.max(LOCAL_ANSWER_MAX_TOKENS, LOCAL_REASONING_MAX_TOKENS)
-		: LOCAL_ANSWER_MAX_TOKENS;
-	const builtPrompt = prompt.render(difficultyLocalPrompt, { prompt: input });
-	const text = await tinyModelClient.complete(modelKey, builtPrompt, {
-		maxTokens,
-		signal: deps.signal,
+	const judge = resolveJudge({
+		settings: deps.settings,
+		registry: deps.registry,
+		sessionModel: deps.model,
+		sessionId: deps.sessionId,
+		metadataResolver: deps.metadataResolver,
+		onUsage: deps.onUsage,
 	});
-	if (!text) {
-		throw new Error("auto-thinking: local classification returned no output");
-	}
-	const effort = parseDifficultyBucket(text);
-	if (!effort) {
-		throw new Error(`auto-thinking: unparseable local classification: ${JSON.stringify(text)}`);
-	}
-	return effort;
-}
-
-const ONLINE_MARKED_LABEL =
-	/(?:answer|classification|label)\s*(?:is|:|-)?\s*(max(?:imum)?|x[\s_-]?high|high|med(?:ium)?|low)\b/;
-const ONLINE_START_LABEL = /^\W*(max(?:imum)?|x[\s_-]?high|high|med(?:ium)?|low)\b/;
-const ONLINE_LABEL = /\b(max(?:imum)?|x[\s_-]?high|high|med(?:ium)?|low)\b/g;
-
-const LOCAL_MARKED_LABEL = /(?:answer|classification|label)\s*(?:is|:|-)?\s*(max(?:imum)?|trivial|moderate|hard)\b/;
-const LOCAL_START_LABEL = /^\W*(max(?:imum)?|trivial|moderate|hard)\b/;
-const LOCAL_LABEL = /\b(max(?:imum)?|trivial|moderate|hard)\b/g;
-
-/** Map the online 5-way level keyword to an {@link Effort}; classifier labels beat incidental prose. */
-export function parseDifficultyLevel(text: string): Effort | undefined {
-	const lower = text.toLowerCase();
-	return parseClassifierLabel(lower, ONLINE_MARKED_LABEL, ONLINE_START_LABEL, ONLINE_LABEL, onlineLabelToEffort);
-}
-
-/** Map the local bucket keyword to an {@link Effort}; classifier labels beat incidental prose. */
-export function parseDifficultyBucket(text: string): Effort | undefined {
-	const lower = text.toLowerCase();
-	return parseClassifierLabel(lower, LOCAL_MARKED_LABEL, LOCAL_START_LABEL, LOCAL_LABEL, localLabelToEffort);
-}
-
-function parseClassifierLabel(
-	lower: string,
-	markedPattern: RegExp,
-	startPattern: RegExp,
-	labelPattern: RegExp,
-	toEffort: (label: string) => Effort | undefined,
-): Effort | undefined {
-	let match = markedPattern.exec(lower) ?? startPattern.exec(lower);
-	const markedLabel = match?.[1];
-	if (markedLabel !== undefined) return toEffort(markedLabel);
-
-	let last: Effort | undefined;
-	labelPattern.lastIndex = 0;
-	while (true) {
-		match = labelPattern.exec(lower);
-		if (match === null) break;
-		const label = match[1];
-		const effort = label !== undefined ? toEffort(label) : undefined;
-		if (effort === Effort.Max && isNegatedLabel(lower, match.index)) continue;
-		if (effort !== undefined) last = effort;
-	}
-	return last;
-}
-function isNegatedLabel(lower: string, index: number): boolean {
-	const prefix = lower.slice(Math.max(0, index - 24), index);
-	return /\b(?:not|no)(?:\W+\w+){0,3}\W*$/.test(prefix);
-}
-
-function onlineLabelToEffort(label: string): Effort | undefined {
-	switch (label) {
-		case "max":
-		case "maximum":
-			return Effort.Max;
-		case "xhigh":
-		case "x-high":
-		case "x_high":
-		case "x high":
-			return Effort.XHigh;
-		case "high":
-			return Effort.High;
-		case "med":
-		case "medium":
-			return Effort.Medium;
-		case "low":
-			return Effort.Low;
-		default:
-			return undefined;
-	}
-}
-
-function localLabelToEffort(label: string): Effort | undefined {
-	switch (label) {
-		case "max":
-		case "maximum":
-			return Effort.Max;
-		case "hard":
-			return Effort.XHigh;
-		case "moderate":
-			return Effort.High;
-		case "trivial":
-			return Effort.Low;
-		default:
-			return undefined;
-	}
-}
-
-function extractText(content: AssistantMessage["content"]): string {
-	return content
-		.filter((block): block is Extract<AssistantMessage["content"][number], { type: "text" }> => block.type === "text")
-		.map(block => block.text)
-		.join(" ")
-		.trim();
+	const state = { request: preprocessTinyMessage(promptText) };
+	const options = { signal: deps.signal };
+	const classified = await judge.withCandidate(async (candidate, kind) => {
+		// The 3-bucket local question cannot select `max`, so its ceiling stays at
+		// XHigh whatever the setting says — otherwise a sparse ladder would snap its
+		// `hard` bucket up to a tier it never chose.
+		if (kind === "local") {
+			const { answers } = await candidate.judge({ state, questions: { bucket: BUCKET_QUESTION } }, options);
+			return { effort: BUCKET_EFFORT[answers.bucket.choice], ceiling: Effort.XHigh };
+		}
+		const ceiling = autoThinkingCeiling(deps.settings, deps.model);
+		const level = ceiling === Effort.Max ? LEVEL_QUESTION_WITH_MAX : LEVEL_QUESTION;
+		const { answers } = await candidate.judge({ state, questions: { level } }, options);
+		return { effort: LEVEL_EFFORT[answers.level.choice], ceiling };
+	}, options);
+	// The successful branch's ceiling goes into the clamp itself: capping the
+	// request alone is not enough, because a sparse ladder snaps an excluded
+	// request back up.
+	return clampAutoThinkingEffort(deps.model, classified.effort, classified.ceiling);
 }
