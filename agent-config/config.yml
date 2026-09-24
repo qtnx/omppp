@@ -1,0 +1,53 @@
+# Central ompx agent config, served by the `agent-config` user service on codemc
+# (http://codemc:8792/v1/agent-config) from `scripts/agent-config-server.ts`.
+# The server reads this directory from origin/main, so merging a change here is
+# the deploy. Every ompx with remoteConfig.enabled (the default) pulls it within
+# ~90s; values here override each machine's ~/.omp/agent/config.yml, while
+# project config and in-session choices still win.
+#
+# Only these keys are honored: modelRoles, advisor.*, duo.*, retry.fallbackChains,
+# task.agentModelOverrides, task.agentServiceTierOverrides, task.agentPrewalk,
+# task.agentAdvisor, task.disabledAgents, task.maxEffort.
+# Agent definitions go in agents/<name>.md (same format as ~/.omp/agent/agents).
+#
+# Subagent routing (seeded 2026-09-23 from codemc ~/.omp/agent/config.yml;
+# migrated 2026-09-24 to gpt-6-sol/gpt-6-luna, claude-fable-5-1, claude-opus-5-5).
+task:
+  agentModelOverrides:
+    browser_qa: anthropic/claude-opus-5-5
+    designer: anthropic/claude-opus-5-5
+    explore: openai-codex/gpt-5.6-luna:medium
+    frontend_ui: anthropic/claude-opus-5-5
+    oracle: openai-codex/gpt-6-sol:high
+    plan: anthropic/claude-fable-5-1:high
+    qa: openai-codex/gpt-6-sol:medium
+    quick_task: openai-codex/gpt-6-luna:xhigh
+    reviewer: openai-codex/codex-auto-review
+    scout: tnx/scout
+    task: openai-codex/gpt-6-sol:medium
+    tester: openai-codex/gpt-5.6-terra:medium
+    ui_ux_reviewer: anthropic/claude-opus-5-5
+    ux_copywriter: anthropic/claude-opus-5-5
+  agentAdvisor:
+    task: "off"
+
+# Fallbacks for subagent models; merged per key with each machine's chains.
+retry:
+  fallbackChains:
+    task:
+      - openai-codex/gpt-5.6-luna:xhigh
+      - anthropic/claude-opus-5-5
+      - google-antigravity/gemini-3.8-flash
+    quick_task:
+      - openai-codex/gpt-5.6-luna:xhigh
+      - anthropic/claude-opus-5-5
+      - google-antigravity/gemini-3.8-flash
+    plan:
+      - anthropic/claude-fable-5-1:high
+      - anthropic/claude-opus-5-5:max
+      - openai-codex/gpt-5.5:xhigh
+    scout:
+      - openai-codex/gpt-5.3-codex-spark
+      - anthropic/claude-haiku-4-5
+    tnx/openrouter/deepseek/deepseek-v4.1-flash:
+      - anthropic/claude-opus-5-5:high
