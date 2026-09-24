@@ -2,31 +2,11 @@
 
 ## [Unreleased]
 
+## [1.11.5] - 2026-09-24
+
 ### Added
 
 - Browser annotations now tell the agent that a screenshot is attached and save a copy under `~/.omp/annotate/shots`. The message shows the file path so the agent can reopen the image after it drops out of context. Shots older than 7 days, or beyond the newest 200, are deleted automatically.
-
-## [1.11.4] - 2026-09-24
-
-### Added
-
-- Provider and MCP login screens (`/login`, setup wizard, `ompx auth-broker login`, RPC `open_url`) now show a Tailscale shortcut next to the local one when this machine is on a tailnet, with a hint to swap `localhost` for the tailnet address if the final redirect lands on another device.
-- `ompx mnemopi-embed-server` serves memory embeddings over HTTP from one loaded model. Sessions use it through `mnemopi.embedServerUrl` (default `http://codemc:8793`, override with `MNEMOPI_EMBED_SERVER_URL`, empty to disable), so a machine with many sessions keeps a single model in memory instead of one per session. When the server is unreachable, sessions embed locally and retry the server a minute later.
-
-### Changed
-
-- The local memory embeddings worker (`__omp_worker_mnemopi_embed`) now uses far less memory and CPU: it stays around 0.35–0.5 GB instead of 1.0–1.6 GB, a recall query takes ~0.1–0.3 s instead of ~0.4–1.4 s, and a worker left idle for 5 minutes exits and restarts on the next memory lookup. Before, every open session kept its own copy loaded until the session closed.
-- Compiled Linux and macOS binaries load rarely used code on first use instead of at startup. Each helper process (daemon broker, eval and embedding workers) now holds ~17 MB of private memory instead of ~105 MB, and an idle session ~270 MB instead of ~300 MB.
-- Product Preview's web client (mermaid, canvas app, markdown renderer) loads when a preview starts instead of staying in every session's memory.
-- Idle memory trim now also returns freed native memory to the OS (after a burst of parallel searches: ~990 MB back to ~90 MB), and when a background subagent or an unsent draft keeps the session busy at the idle deadline it tries again after another idle window instead of giving up until the next turn.
-- Browser tabs left open by the agent now close after 10 minutes idle instead of 30 (`browser.idleCloseSec`, new 5/10-minute options).
-
-### Fixed
-
-- Advisor note artifacts are now written to a temp file and renamed into place. Before, the artifact path was advertised immediately while the write was still in flight, so a read could see an empty file. A block re-rendered each turn is now written only once.
-- Exiting ompx inside a Herdr pane now clears the pane's agent status instead of leaving it stuck on idle/done.
-- Codex models keep their prompt cache across turns and resumes: `grep` is always available, and tools activated through tool search are restored when a session is resumed, so the tool list no longer changes mid-session (cache hit on a 3-turn session: ~78% → ~88%, turns after the first ~85% → ~98%, cost ~35% lower).
-- The shared headless Chromium no longer lingers after the agent is done with the browser: once no running session holds a tab in it, it stops ~15 s later (or at exit). Before, it kept running with zero tabs, using RAM and CPU, for as long as any ompx session stayed open in the project.
 
 ## [18.2.11] - 2026-09-23
 
@@ -1771,5 +1751,27 @@
 - Fixed `formatContent` reporting no-formatter as unchanged: when no configured server supports formatting, the result is now correctly classified as `FileFormatResult.UNSUPPORTED` ([#8388](https://github.com/can1357/oh-my-pi/issues/8388)).
 - Fixed MCP request timeouts surfacing as `Unexpected end of JSON input` instead of `Request timeout after Nms` when the abort lands mid-JSON-body read.
 - Fixed CJS modules being misclassified as ESM when imported from an ESM parent module. The extension loader now identifies unshadowed CommonJS syntax from Babel's parsed AST before deferring to the importer's module kind. This resolves `SyntaxError: Missing 'default' export` for packages with conditional exports (e.g. playwright-core) where an ESM wrapper re-exports from a CJS entry, while ambiguous files continue to inherit their importer's classification.
+
+## [1.11.4] - 2026-09-24
+
+### Added
+
+- Provider and MCP login screens (`/login`, setup wizard, `ompx auth-broker login`, RPC `open_url`) now show a Tailscale shortcut next to the local one when this machine is on a tailnet, with a hint to swap `localhost` for the tailnet address if the final redirect lands on another device.
+- `ompx mnemopi-embed-server` serves memory embeddings over HTTP from one loaded model. Sessions use it through `mnemopi.embedServerUrl` (default `http://codemc:8793`, override with `MNEMOPI_EMBED_SERVER_URL`, empty to disable), so a machine with many sessions keeps a single model in memory instead of one per session. When the server is unreachable, sessions embed locally and retry the server a minute later.
+
+### Changed
+
+- The local memory embeddings worker (`__omp_worker_mnemopi_embed`) now uses far less memory and CPU: it stays around 0.35–0.5 GB instead of 1.0–1.6 GB, a recall query takes ~0.1–0.3 s instead of ~0.4–1.4 s, and a worker left idle for 5 minutes exits and restarts on the next memory lookup. Before, every open session kept its own copy loaded until the session closed.
+- Compiled Linux and macOS binaries load rarely used code on first use instead of at startup. Each helper process (daemon broker, eval and embedding workers) now holds ~17 MB of private memory instead of ~105 MB, and an idle session ~270 MB instead of ~300 MB.
+- Product Preview's web client (mermaid, canvas app, markdown renderer) loads when a preview starts instead of staying in every session's memory.
+- Idle memory trim now also returns freed native memory to the OS (after a burst of parallel searches: ~990 MB back to ~90 MB), and when a background subagent or an unsent draft keeps the session busy at the idle deadline it tries again after another idle window instead of giving up until the next turn.
+- Browser tabs left open by the agent now close after 10 minutes idle instead of 30 (`browser.idleCloseSec`, new 5/10-minute options).
+
+### Fixed
+
+- Advisor note artifacts are now written to a temp file and renamed into place. Before, the artifact path was advertised immediately while the write was still in flight, so a read could see an empty file. A block re-rendered each turn is now written only once.
+- Exiting ompx inside a Herdr pane now clears the pane's agent status instead of leaving it stuck on idle/done.
+- Codex models keep their prompt cache across turns and resumes: `grep` is always available, and tools activated through tool search are restored when a session is resumed, so the tool list no longer changes mid-session (cache hit on a 3-turn session: ~78% → ~88%, turns after the first ~85% → ~98%, cost ~35% lower).
+- The shared headless Chromium no longer lingers after the agent is done with the browser: once no running session holds a tab in it, it stops ~15 s later (or at exit). Before, it kept running with zero tabs, using RAM and CPU, for as long as any ompx session stayed open in the project.
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@5f9d7276187f](https://github.com/can1357/oh-my-pi/blob/5f9d7276187f72a1946dc1e0209dc03ffb866d0a/packages/coding-agent/CHANGELOG.md).

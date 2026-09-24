@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.5] - 2026-09-24
+
 ### Fixed
 
 - Clicking the annotate toolbar (Pick, Draw, Send, …) or drawing a box no longer counts as a click on the page underneath, so the page's own modals and menus stay open.

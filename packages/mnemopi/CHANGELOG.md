@@ -2,16 +2,6 @@
 
 ## [Unreleased]
 
-## [1.11.4] - 2026-09-24
-
-### Changed
-
-- Migrated all hashing operations from `node:crypto` to `Bun.SHA256`
-
-### Fixed
-
-- Local fastembed embeddings turn off ONNX Runtime's CPU memory arena and memory-pattern planning, stop padding every input to 512 tokens (only inputs of equal token length share a run, at most 8 per run). Vectors match to float noise; peak worker memory drops from ~1.6 GB to ~0.5 GB and a single-query embed is 2–4× faster.
-
 ## [18.2.5] - 2026-09-17
 
 ### Fixed
@@ -303,6 +293,16 @@
 - Fixed `extract: true` fact extraction to continue safely when no LLM is configured by turning extraction failures into no-op background tasks
 - Fixed configured LLM fact extraction by using temperature 0 so re-ingesting the same text is deterministic and avoids near-duplicate extractions
 - Fixed `remember(..., { extract: true })` silently dropping the flag: it now schedules the LLM fact extractor (`extractFactsSafe`) over the stored content and persists the extracted facts so they become recallable. Previously the LLM extractor had no production callers and `extract` was dead.
+
+## [1.11.4] - 2026-09-24
+
+### Changed
+
+- Migrated all hashing operations from `node:crypto` to `Bun.SHA256`
+
+### Fixed
+
+- Local fastembed embeddings turn off ONNX Runtime's CPU memory arena and memory-pattern planning, stop padding every input to 512 tokens (only inputs of equal token length share a run, at most 8 per run). Vectors match to float noise; peak worker memory drops from ~1.6 GB to ~0.5 GB and a single-query embed is 2–4× faster.
 
 ## [1.6.4] - 2026-07-19
 

@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.11.4] - 2026-09-24
-
-### Added
-
-- OAuth callback servers also listen on this host's Tailscale address when a Tailscale interface is up, and `OAuthAuthInfo.tailnetLaunchUrl` carries a `/launch` shortcut on that address, so a provider login can be opened — and its callback finished — from another device on the tailnet instead of only from `localhost`.
-
 ## [18.2.11] - 2026-09-23
 
 ### Fixed
@@ -2308,5 +2302,11 @@
 - Fixed explicit request-debug path mode to create missing parent directories before writing request logs
 - Fixed explicit request-debug mode to overwrite existing `.res.log` files for the requested path instead of failing when they already exist
 - Fixed OpenAI Responses `previous_response_id` chaining on Zero Data Retention orgs: the in-provider retry classifier missed the ZDR-specific 400 ("Previous response cannot be used for this organization due to Zero Data Retention"), so chained turns kept failing every other request after a brief recovery — the chain was reset but not disabled, so the next successful full-replay turn re-armed it. The ZDR phrasing is now classified categorically: one strike disables chaining for the session (skipping the three-strike circuit breaker) and the in-call retry drops `store: true`/`previous_response_id` and replays the full transcript instead ([#2341](https://github.com/can1357/oh-my-pi/issues/2341)).
+
+## [1.11.4] - 2026-09-24
+
+### Added
+
+- OAuth callback servers also listen on this host's Tailscale address when a Tailscale interface is up, and `OAuthAuthInfo.tailnetLaunchUrl` carries a `/launch` shortcut on that address, so a provider login can be opened — and its callback finished — from another device on the tailnet instead of only from `localhost`.
 
 Older entries are archived in [packages/ai/CHANGELOG.md@3e4f96f48530](https://github.com/can1357/oh-my-pi/blob/3e4f96f4853069c8888e5fb33947fe56728ad74b/packages/ai/CHANGELOG.md).

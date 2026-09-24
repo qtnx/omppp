@@ -2,13 +2,6 @@
 
 ## [Unreleased]
 
-## [1.11.4] - 2026-09-24
-
-### Added
-
-- Added `appleFmAvailability`, `appleFmGenerate`, and `appleFmCancel` native bindings
-- Added `Encoding.Jev` to `countTokens` for offline TypeSafe Jev 1.13 `state` input-token counts (request frame excluded), reconstructed from live API measurements
-
 ## [18.2.11] - 2026-09-23
 
 ### Changed
@@ -1462,6 +1455,13 @@
 ### Fixed
 
 - Fixed potential crashes when updating native binaries by using safe copy strategy that avoids overwriting in-memory binaries
+
+## [1.11.4] - 2026-09-24
+
+### Added
+
+- Added `appleFmAvailability`, `appleFmGenerate`, and `appleFmCancel` native bindings
+- Added `Encoding.Jev` to `countTokens` for offline TypeSafe Jev 1.13 `state` input-token counts (request frame excluded), reconstructed from live API measurements
 
 ## [1.7.8] - 2026-08-29
 

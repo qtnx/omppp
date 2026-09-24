@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [1.11.4] - 2026-09-24
-
-### Added
-
-- `releaseNativeHeap()` returns freed native-heap memory to the OS (`malloc_trim` on Linux glibc; a no-op elsewhere).
-
 ## [18.2.7] - 2026-09-21
 
 ### Changed
@@ -751,6 +745,12 @@
 ### Added
 
 - Added an XDG-aware tiny-title model cache directory helper for coding-agent local title models.
+
+## [1.11.4] - 2026-09-24
+
+### Added
+
+- `releaseNativeHeap()` returns freed native-heap memory to the OS (`malloc_trim` on Linux glibc; a no-op elsewhere).
 
 ## [1.11.3] - 2026-09-23
 
