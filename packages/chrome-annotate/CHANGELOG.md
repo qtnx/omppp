@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Cmd+. / Ctrl+. sometimes doing nothing after the page re-rendered or removed the overlay, and one keypress toggling the overlay twice.
+- Fixed duplicate overlays after reloading or updating the extension: the old copy now closes and stops answering the shortcut.
+- Only one marker note input is open at a time; starting a new box saves the previous note.
+
 ## [1.7.14] - 2026-09-06
 
 ### Added
