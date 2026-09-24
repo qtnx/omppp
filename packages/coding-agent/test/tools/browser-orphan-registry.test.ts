@@ -19,6 +19,7 @@ import { daemonRuntimeDir } from "@oh-my-pi/pi-coding-agent/launch/paths";
 import {
 	collectOrphanTargets,
 	forgetSharedTarget,
+	hasLiveSharedTargetOwners,
 	reapOrphanSharedTargets,
 	recordSharedTarget,
 	resetOrphanRegistryForTest,
@@ -214,5 +215,30 @@ describe("orphan-registry — reap", () => {
 		expect(retryCount).toBe(1);
 		expect(retryClosed).toEqual(["retry-later"]);
 		expect(await Bun.file(path.join(registryDir(scope), `${dead}.json`)).exists()).toBe(false);
+	});
+});
+
+// The shared Chromium is stopped when this reports false, so a live owner
+// anywhere (this process included) must keep it running, while dead owners
+// and emptied files must not pin an idle Chromium forever.
+describe("orphan-registry — idle-stop gate", () => {
+	it("reports no owners once this process forgets its last target", async () => {
+		const scope = trackedScope();
+		await recordSharedTarget(scope, "mine");
+		expect(await hasLiveSharedTargetOwners(scope)).toBe(true);
+
+		await forgetSharedTarget(scope, "mine");
+		expect(await hasLiveSharedTargetOwners(scope)).toBe(false);
+	});
+
+	it("keeps the browser for a live foreign owner but not for a dead one", async () => {
+		const scope = trackedScope();
+		const dead = await deadPid();
+		const live = 424242;
+		await writeOwnershipFile(scope, { pid: dead, updatedAt: Date.now(), targets: ["dead-a"] });
+		expect(await hasLiveSharedTargetOwners(scope, { isAlive: pid => pid === live })).toBe(false);
+
+		await writeOwnershipFile(scope, { pid: live, updatedAt: Date.now(), targets: ["live-a"] });
+		expect(await hasLiveSharedTargetOwners(scope, { isAlive: pid => pid === live })).toBe(true);
 	});
 });

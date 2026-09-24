@@ -192,6 +192,42 @@ export async function collectOrphanTargets(
 }
 
 /**
+ * True when any live omp process — this one included — still owns targets in
+ * the shared browser. Torn/unreadable ownership files count as live (safe
+ * direction: never stop a Chromium someone may still be using).
+ */
+export async function hasLiveSharedTargetOwners(
+	scope: SharedTargetScope,
+	opts: Pick<CollectOrphanOptions, "isAlive"> = {},
+): Promise<boolean> {
+	const dir = registryDir(scope);
+	if ((ownedByDir.get(dir)?.size ?? 0) > 0) return true;
+	// Let this process's in-flight forget/flush land before reading the dir.
+	await writeChains.get(dir);
+	const isAlive = opts.isAlive ?? isPidAlive;
+	let entries: string[];
+	try {
+		entries = await fs.readdir(dir);
+	} catch (err) {
+		if (isEnoent(err)) return false;
+		throw err;
+	}
+	for (const entry of entries) {
+		if (!entry.endsWith(".json")) continue;
+		let record: OwnershipFile;
+		try {
+			record = (await Bun.file(path.join(dir, entry)).json()) as OwnershipFile;
+		} catch {
+			return true;
+		}
+		if (typeof record?.pid !== "number" || !Array.isArray(record.targets)) continue;
+		if (record.pid === process.pid || record.targets.length === 0) continue;
+		if (isAlive(record.pid)) return true;
+	}
+	return false;
+}
+
+/**
  * Close a page target by id through a fresh CDP session. Returns true only
  * when CDP confirms the close or confirms the target no longer exists; a
  * dropped connection or transient protocol failure returns false so durable
