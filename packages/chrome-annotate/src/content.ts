@@ -4,6 +4,8 @@ type ExtWindow = Window &
 	typeof globalThis & {
 		__ompxExtAnnotateActive?: boolean;
 		__ompxExtAnnotateFocusGuard?: EventListener;
+		__ompxExtAnnotateHost?: HTMLElement;
+		__ompxExtAnnotateLastToggle?: number;
 		__ompxExtAnnotateListenerInstalled?: boolean;
 		__ompxExtAnnotateShortcutInstalled?: boolean;
 		__ompxExtAnnotateTeardown?: () => void;
@@ -63,15 +65,22 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 	const HOST_ID = "__ompx-ext-annotate-host";
 	const MIN_RECT = 4;
 	const NOTE_MAX = 1000;
-
+	// Chrome can deliver one keypress both as the manifest command and as the
+	// in-page keydown; key auto-repeat also fires bursts. Collapse them.
+	const TOGGLE_DEBOUNCE_MS = 350;
 	const openOverlay = () => {
 		if (extWindow.__ompxExtAnnotateActive) return;
 		extWindow.__ompxExtAnnotateActive = true;
 
 		const install = () => {
+			// Toggled off again while waiting for DOMContentLoaded.
+			if (!extWindow.__ompxExtAnnotateActive) return;
 			const doc = document;
 			const root = doc.documentElement;
-			if (!root) return;
+			if (!root) {
+				extWindow.__ompxExtAnnotateActive = false;
+				return;
+			}
 
 			const stale = doc.getElementById(HOST_ID);
 			stale?.remove();
@@ -91,6 +100,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 			host.style.pointerEvents = "none";
 			const shadow = host.attachShadow({ mode: "open" });
 			root.appendChild(host);
+			extWindow.__ompxExtAnnotateHost = host;
 
 			const style = doc.createElement("style");
 			style.textContent = [
@@ -575,7 +585,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 				}
 			};
 
+			// At most one note editor at a time: starting another rect (or a new
+			// drag) commits the open one instead of stacking inputs on the page.
+			let closeNote: ((commit: boolean) => void) | null = null;
+
 			const promptNote = (entry: RectEntry, clientX: number, clientY: number) => {
+				closeNote?.(true);
 				const input = doc.createElement("input");
 				input.type = "text";
 				input.className = "note-input";
@@ -589,9 +604,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 					if (done) return;
 					done = true;
 					noteOpen = false;
+					if (closeNote === finish) closeNote = null;
 					if (commit) entry.note = input.value.slice(0, NOTE_MAX);
 					input.remove();
 				};
+				closeNote = finish;
 				input.addEventListener("keydown", event => {
 					if (event.key === "Enter") {
 						event.preventDefault();
@@ -624,6 +641,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 			capture.addEventListener("pointerdown", event => {
 				if (event.button !== 0) return;
+				closeNote?.(true);
 				if (pickActive) {
 					event.preventDefault();
 					return;
@@ -766,11 +784,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 				}
 			};
 
+			let tornDown = false;
 			const teardown = () => {
-				extWindow.__ompxExtAnnotateActive = false;
-				if (extWindow.__ompxExtAnnotateTeardown === teardown) {
+				if (tornDown) return;
+				tornDown = true;
+				hostObserver.disconnect();
+				if (extWindow.__ompxExtAnnotateTeardown === teardown || extWindow.__ompxExtAnnotateHost === host) {
+					extWindow.__ompxExtAnnotateActive = false;
 					extWindow.__ompxExtAnnotateTeardown = undefined;
+					extWindow.__ompxExtAnnotateHost = undefined;
 				}
+				closeNote?.(false);
 				window.removeEventListener("scroll", syncScroll, true);
 				window.removeEventListener("resize", syncScroll);
 				window.removeEventListener("scroll", onPickScroll, true);
@@ -782,6 +806,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 				window.clearTimeout(toastTimer);
 				host.remove();
 			};
+			// The page (SPA re-render) or a newer copy of this script (extension
+			// reload/update) can remove our host. Tear down with it so a stale
+			// instance never keeps listeners or blocks the next toggle.
+			const hostObserver = new MutationObserver(() => {
+				if (!host.isConnected) teardown();
+			});
+			hostObserver.observe(root, { childList: true });
 
 			let sending = false;
 			const send = async () => {
@@ -931,16 +962,50 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 			if (window.matchMedia("(pointer: coarse)").matches || window.innerWidth < 768) setPick(true);
 		};
 
-		if (document.documentElement) install();
-		else document.addEventListener("DOMContentLoaded", install, { once: true });
+		const safeInstall = () => {
+			try {
+				install();
+			} catch (error) {
+				extWindow.__ompxExtAnnotateTeardown?.();
+				extWindow.__ompxExtAnnotateHost?.remove();
+				extWindow.__ompxExtAnnotateHost = undefined;
+				extWindow.__ompxExtAnnotateActive = false;
+				throw error;
+			}
+		};
+		if (document.documentElement) safeInstall();
+		else document.addEventListener("DOMContentLoaded", safeInstall, { once: true });
+	};
+
+	const toggle = () => {
+		const now = performance.now();
+		const last = extWindow.__ompxExtAnnotateLastToggle;
+		if (last !== undefined && now - last < TOGGLE_DEBOUNCE_MS) return;
+		extWindow.__ompxExtAnnotateLastToggle = now;
+		if (extWindow.__ompxExtAnnotateActive) {
+			const host = extWindow.__ompxExtAnnotateHost;
+			if (host?.isConnected) {
+				extWindow.__ompxExtAnnotateTeardown?.();
+				return;
+			}
+			if (!host) {
+				// Install still pending on DOMContentLoaded: cancel it.
+				extWindow.__ompxExtAnnotateActive = false;
+				return;
+			}
+			// Host was removed behind our back: drop the stale state and reopen.
+			extWindow.__ompxExtAnnotateTeardown?.();
+			extWindow.__ompxExtAnnotateActive = false;
+			extWindow.__ompxExtAnnotateHost = undefined;
+		}
+		openOverlay();
 	};
 
 	if (!extWindow.__ompxExtAnnotateListenerInstalled) {
 		extWindow.__ompxExtAnnotateListenerInstalled = true;
 		chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
 			if (!isRecord(message) || message.type !== "ompx-annotate-toggle") return;
-			if (extWindow.__ompxExtAnnotateActive) extWindow.__ompxExtAnnotateTeardown?.();
-			else openOverlay();
+			toggle();
 			sendResponse({ ok: true });
 		});
 	}
@@ -950,17 +1015,21 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 	// can be re-opened after Close/Esc without the toolbar popup.
 	if (!extWindow.__ompxExtAnnotateShortcutInstalled) {
 		extWindow.__ompxExtAnnotateShortcutInstalled = true;
-		document.addEventListener(
-			"keydown",
-			event => {
-				if (event.key !== "." || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
-				event.preventDefault();
-				event.stopPropagation();
-				if (extWindow.__ompxExtAnnotateActive) extWindow.__ompxExtAnnotateTeardown?.();
-				else openOverlay();
-			},
-			true,
-		);
+		const onShortcut = (event: KeyboardEvent) => {
+			if (event.key !== "." && event.code !== "Period") return;
+			if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+			// Orphaned by an extension reload/update: the fresh injection owns the
+			// shortcut now, so this copy must stop reacting (it cannot send anyway).
+			if (!chrome.runtime?.id) {
+				document.removeEventListener("keydown", onShortcut, true);
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			if (event.repeat) return;
+			toggle();
+		};
+		document.addEventListener("keydown", onShortcut, true);
 	}
 
 	openOverlay();
