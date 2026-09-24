@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.4] - 2026-09-24
+
 ### Fixed
 
 - Fixed Cmd+. / Ctrl+. sometimes doing nothing after the page re-rendered or removed the overlay, and one keypress toggling the overlay twice.

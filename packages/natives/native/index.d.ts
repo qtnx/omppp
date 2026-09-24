@@ -652,7 +652,7 @@ export declare function __ompInstallTokioRuntime(): void
  * MUST stay in sync with `NATIVE_ABI_VERSION` in
  * `packages/natives/native/version-sentinel.js`.
  */
-export declare function __piNativesV1_11_2(): void
+export declare function __piNativesV1_11_4(): void
 
 /**
  * Reports whether the on-device model can generate, as an `availability`

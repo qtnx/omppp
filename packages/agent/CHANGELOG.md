@@ -2,11 +2,6 @@
 
 ## [Unreleased]
 
-## [1.11.3] - 2026-09-23
-
-### Changed
-
-- Proxy streams parse partial tool-call arguments with the same throttled parser as provider streams, instead of reparsing the full buffer on every delta (200 KB argument: ~1.6 s → ~6 ms).
 ## [18.2.11] - 2026-09-23
 
 ### Fixed
@@ -1404,6 +1399,12 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.11.3] - 2026-09-23
+
+### Changed
+
+- Proxy streams parse partial tool-call arguments with the same throttled parser as provider streams, instead of reparsing the full buffer on every delta (200 KB argument: ~1.6 s → ~6 ms).
 
 ## [1.8.8] - 2026-09-18
 

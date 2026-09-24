@@ -2,29 +2,11 @@
 
 ## [Unreleased]
 
+## [1.11.4] - 2026-09-24
+
 ### Added
 
 - OAuth callback servers also listen on this host's Tailscale address when a Tailscale interface is up, and `OAuthAuthInfo.tailnetLaunchUrl` carries a `/launch` shortcut on that address, so a provider login can be opened — and its callback finished — from another device on the tailnet instead of only from `localhost`.
-
-## [1.11.3] - 2026-09-23
-
-### Fixed
-
-- Fixed Anthropic per-message effort when a session starts without an explicit effort: the omitted level was assumed to be `high`, but Opus 5.5 defaults to `medium`, so a later switch to `high` never reached the API. Omitted effort is now tracked as its own baseline and every later explicit level is sent as a per-message control (upstream `20f18f8`).
-- Fixed resuming an Anthropic session in a new process after an effort change losing the whole prompt cache (Opus 5.5: ~116K tokens re-written). Each assistant turn now records the effort it ran at (`anthropicEffort`), and a fresh session rebuilds the original top-level effort and per-message effort controls from those records.
-- Fixed every request paying a failing OAuth refresh round trip when an account in the pool had a dead refresh token: a credential blocked after a failed refresh is no longer re-refreshed during candidate preflight while its 5-minute backoff runs (forced re-mints still refresh it). With one dead OpenAI Codex account next to a healthy one, resolving a key dropped from ~480 ms to ~1 ms per request.
-- Added support for Apple Foundation Models (on-device) integration, including tool calling and vision capabilities
-- Added multi-account discovery and authorization resolution for Codex cyber access programs
-- Added automated request replay logic to handle access program rejections
-- Implemented `SessionAffinity` for persistent, sticky session-to-credential mapping
-- Added persistent rate-limit block tracking with auto-healing and account-specific routing policy support
-- Introduced `KeyCascade` for unified hierarchical authentication resolution
-- Added per-account OAuth routing policies with strict selectors, deterministic priority, and protected quota reserves ([#12243](https://github.com/can1357/oh-my-pi/pull/12243) by [@schickling-assistant](https://github.com/schickling-assistant)).
-
-### Changed
-
-- Refactored `AuthStorage` into namespaced sub-modules (`credentials`, `keys`, `oauth`, `limits`, `health`, `blocks`, `resets`, `usage`)
-- Migrated all internal crypto-hashing to native `Bun` performance primitives
 
 ## [18.2.11] - 2026-09-23
 
@@ -2327,77 +2309,4 @@
 - Fixed explicit request-debug mode to overwrite existing `.res.log` files for the requested path instead of failing when they already exist
 - Fixed OpenAI Responses `previous_response_id` chaining on Zero Data Retention orgs: the in-provider retry classifier missed the ZDR-specific 400 ("Previous response cannot be used for this organization due to Zero Data Retention"), so chained turns kept failing every other request after a brief recovery — the chain was reset but not disabled, so the next successful full-replay turn re-armed it. The ZDR phrasing is now classified categorically: one strike disables chaining for the session (skipping the three-strike circuit breaker) and the in-call retry drops `store: true`/`previous_response_id` and replays the full transcript instead ([#2341](https://github.com/can1357/oh-my-pi/issues/2341)).
 
-## [15.11.4] - 2026-06-12
-
-### Added
-
-- Codex/Responses providers now map `end_turn: false` on the terminal stream event (Codex backend signal for "response ended, turn didn't" — commentary-only progress updates) to `stopDetails: { type: "pause_turn" }` with stopReason `"stop"`, so the agent loop can re-sample instead of ending the turn. Wired in `openai-codex-responses` and `processResponsesStream` (`openai-responses`/`azure-openai-responses`); inert for backends that never send the field.
-- Added Codex upstream protocol features to `openai-codex-responses` (tracking codex-rs as of June 2026): `onModerationMetadata` callback surfacing `response.metadata` → `openai_chatgpt_moderation_metadata` on both transports; `reasoningContext` option emitting `reasoning.context` (`auto`/`current_turn`/`all_turns`); `clientMetadata` option emitting `client_metadata` in the request body (canonical `x-codex-turn-metadata` envelope) without breaking the websocket append fast-path; and an opt-in `responsesLite` mode mirroring codex-rs — lite header on HTTP requests and the websocket upgrade, `ws_request_header_*` marker in `response.create` client metadata, lite-keyed socket pooling, image-detail stripping, forced serial tool calls, and `reasoning.context: all_turns` default. Dormant until OpenAI flips `use_responses_lite` in the model catalog.
-- Added `withOAuthAccess` — the `withAuth` counterpart for OAuth-access consumers: runs an operation through the central a/b/c auth-retry policy (resolve → force-refresh same account → rotate to a sibling) while handing the attempt the full `OAuthAccess` (bearer plus `accountId`/`projectId`/`enterpriseUrl` identity metadata). Use it instead of hand-rolled `getOAuthAccess` + fetch flows so 401s and usage-limits rotate credentials instead of failing the call.
-- Added `ProviderHttpError` — a typed HTTP error carrying `status`, `headers`, and `code` — replacing the ad-hoc `as Error & { status?... }` / `Object.assign` hacks at provider throw sites, with per-provider subclasses `CodexApiError`, `AuthGatewayError`, `GoogleApiError`, `GeminiCliApiError`, `OllamaApiError`, and `BedrockApiError`; `AnthropicApiError` now extends it. Google, Gemini CLI, Ollama, and Bedrock HTTP errors now also carry response headers, so server-suggested `retry-after` delays are visible to retry classification on those paths. The internal `withHttpStatus` helper was removed.
-- Added stateful SSE turn chaining for OpenAI Codex (on by default; disable with `PI_CODEX_STATEFUL=0` or `statefulResponses: false`): SSE requests now reuse `previous_response_id` with delta-only input instead of replaying the full transcript, mirroring the websocket fast-path via a shared transport-aware builder. Any history mutation or option change falls back to a full replay; a server-side `previous_response_not_found` (HTTP or in-stream) resets the chain and retries the turn with full context, and three consecutive stale failures disable chaining for the session.
-- Added stateful `previous_response_id` chaining to the platform OpenAI Responses provider (`openai-responses`): on by default against the official api.openai.com endpoint (forces `store: true`, which chaining requires), off for other Responses endpoints; override with `statefulResponses` or `PI_OPENAI_STATEFUL`. Chain detection compares the wire form of the conversation arguments alone — per-turn trailing scaffolding such as the GPT-5 "Juice: 0" developer item is excluded from the append-baseline prefix check and re-appended to the delta — and a rejected/stale previous response falls back to a one-shot full replay with the same circuit breaker.
-- Added `AuthStorage.getOAuthAccountIdentity()` and the `OAuthAccountIdentity` type — a read-only lookup returning the `accountId`/`email`/`projectId` of the OAuth credential a session is currently routed to, for display and metadata paths.
-
-### Changed
-
-- The GPT-5 "Juice: 0" no-reasoning developer item in `applyResponsesReasoningParams` is now gated on the resolved `compat.requiresJuiceZeroHack` flag (auto-detected from GPT-5-family model names by `@oh-my-pi/pi-catalog`, overridable per model) instead of an inline model-name check.
-
-### Fixed
-
-- Fixed websocket append fast-path to remain usable when only `client_metadata` changes between turns
-- Fixed `onModerationMetadata` handling so exceptions thrown by callback observers no longer terminate the response stream
-- Fixed local SQLite OAuth credential caches returning a stale Anthropic access token after another `omp` process refreshed and persisted the same row. `AuthStorage` now syncs the selected row from storage before returning or force-refreshing OAuth credentials, so concurrent sessions pick up peer-rotated tokens instead of surfacing a one-turn `401 Invalid authentication credentials`.
-- Fixed forced OAuth preflight refresh failures being swallowed silently in credential selection; they now emit a debug log (`OAuth preflight refresh failed`) so stale-refresh-token replays from concurrent sessions are diagnosable.
-
-## [15.11.3] - 2026-06-11
-
-### Fixed
-
-- Fixed GitHub Copilot long-context model requests to use the upstream `requestModelId` when calling Anthropic, OpenAI Responses, and OpenAI Completions APIs
-- Fixed GitHub Copilot model enablement to deduplicate catalog variants by upstream model ID when enabling all models
-
-## [15.11.2] - 2026-06-11
-
-### Fixed
-
-- Fixed Anthropic encoding of error tool results with whitespace-only content so requests no longer 400 with `tool_result: content cannot be empty if is_error is true`
-
-## [15.11.1] - 2026-06-11
-
-### Changed
-
-- Exported `resolveAnthropicMetadataUserId` so non-streaming Anthropic Messages consumers (e.g. the coding-agent web search provider) can produce the same Claude-Code-shaped `metadata.user_id` as the main streaming path.
-
-### Fixed
-
-- Preserved Anthropic `stop_details` on assistant messages so refusal and sensitive classifier stops remain structurally visible to callers. ([#2290](https://github.com/can1357/oh-my-pi/issues/2290))
-- Fixed OpenAI Responses, Azure OpenAI Responses, and OpenAI Completions streams hanging until the 120s idle watchdog errored the turn when a provider delivers the terminal frame but never sends `[DONE]` nor closes the connection. `processResponsesStream` now breaks out of the event loop on `response.completed`/`response.incomplete` (mirroring the Codex websocket/SSE terminal break), and the completions consumer breaks once `finish_reason` plus a usage payload arrived — or, for hosts that never send usage, ends the stream cleanly via a short post-finish grace window (`iterateWithTerminalGrace`) that aborts the transport to release the socket.
-
-## [15.11.0] - 2026-06-10
-
-### Added
-
-- Added optional `ImageContent.detail` (`"auto" | "low" | "high" | "original"`): an OpenAI resolution hint forwarded by the `openai-responses` serializers (default stays `auto`) and by `openai-completions` for the values Chat Completions supports. `"original"` preserves native resolution — required for snapcompact frames, whose pixel-font glyphs do not survive the default downscale. Providers without a detail knob ignore the field.
-
-### Fixed
-
-- Fixed OpenRouter DeepSeek V4 strict tool schemas nesting `anyOf` inside the nullable wrapper for optional unions, which produced a branch without `type` and triggered OpenRouter's `Invalid tool parameters schema : field anyOf: missing field type` 400. ([#2270](https://github.com/can1357/oh-my-pi/issues/2270))
-- Hardened strict tool-schema handling beyond the optional-union case: `enforceStrictSchema` now splices natively nested pure unions into the parent `anyOf` (only when the inner node carries no constraining siblings, since sibling keywords are conjunctive with `anyOf`), so source schemas with nested unions no longer produce type-less `anyOf` branches that strict upstream validators reject. ([#2270](https://github.com/can1357/oh-my-pi/issues/2270))
-- Made the openai-completions non-strict retry reachable for `"mixed"` strict mode (previously gated to `all_strict`, i.e. Cerebras only) and taught it to recognize upstream tool-schema validation 400s (`Invalid tool parameters schema …`, `Invalid schema for function …`). A matching rejection now retries the request with base (non-strict) schemas and persists `strictToolsDisabled` on the provider session, so later requests skip the doomed strict attempt instead of paying a 400 + retry round-trip each turn. ([#2270](https://github.com/can1357/oh-my-pi/issues/2270))
-- Cross-model `anthropic-messages → anthropic-messages` continuations now preserve prior assistant turns' reasoning chains end-to-end: every prior `thinking`/`redactedThinking` block survives (not just the latest surviving assistant), and third-party ↔ third-party replays keep their signatures intact so the reasoning chain stays signed for the next turn. Signatures are stripped (and any `redacted_thinking` sibling without a native landing spot is dropped) only when an official Anthropic endpoint is on either end of the replay — official Anthropic cryptographically binds reasoning signatures to its key+session+model, while compatible reasoning endpoints (Z.AI, DeepSeek, custom anthropic-messages providers configured via `models.yaml`) treat them as opaque continuation hints. Source-side official detection uses the canonical catalog provider id `"anthropic"` (assistant messages carry no `baseUrl`); target-side detection reuses the baked `compat.officialEndpoint` flag. Latest-turn byte-for-byte behavior (Anthropic's "thinking blocks in the latest assistant message cannot be modified" rule) and existing aborted/errored last-block sanitization are unchanged. ([#2257](https://github.com/can1357/oh-my-pi/issues/2257), [#2265](https://github.com/can1357/oh-my-pi/issues/2265))
-
-## [1.11.2] - 2026-09-22
-
-### Fixed
-
-- Fixed Anthropic multi-account rotation ignoring an account whose usage limit was reset early: Opus, Sonnet, and other non-Fable usage-limit blocks now lift as soon as a live usage report shows headroom, instead of idling the account until its original weekly reset and sending every request to a still-exhausted sibling.
-
-## [1.11.1] - 2026-09-22
-
-### Fixed
-
-- Claude Code OAuth now advertises CLI `2.1.280`, which Anthropic requires for Opus 5.5 (`claude_code_version_too_old`).
-
-Older entries are archived in [packages/ai/CHANGELOG.md@759fb94280f1](https://github.com/can1357/oh-my-pi/blob/759fb94280f1cc923568e4e0f66f1cd499e056be/packages/ai/CHANGELOG.md).
-Older entries are archived in [packages/ai/CHANGELOG.md@d58593a30902](https://github.com/can1357/oh-my-pi/blob/d58593a3090258473304608d68ffd1f620e6b695/packages/ai/CHANGELOG.md).
+Older entries are archived in [packages/ai/CHANGELOG.md@3e4f96f48530](https://github.com/can1357/oh-my-pi/blob/3e4f96f4853069c8888e5fb33947fe56728ad74b/packages/ai/CHANGELOG.md).

@@ -2,18 +2,6 @@
 
 ## [Unreleased]
 
-## [1.11.3] - 2026-09-23
-
-### Fixed
-
-- Fixed GPT-6 Sol and Luna missing from OpenAI Codex model discovery by advertising Codex client 0.155.1 and keying the Codex model cache on the client version ([#12885](https://github.com/can1357/oh-my-pi/pull/12885) by [@itsddvn](https://github.com/itsddvn))
-- Added GPT-6 Sol and Luna thinking efforts on GitHub Copilot
-### Added
-
-- Added provider and auth rule definitions for on-device Apple Foundation Models
-- Added per-account discovery support for Codex cyber access entitlements
-- Added `org-scoped-identity` and `oauth-token-env` rule support for auth providers
-
 ## [18.2.11] - 2026-09-23
 
 ### Added
@@ -1679,6 +1667,19 @@
 ### Removed
 
 - Removed the runtime enrichment layer: `enrichModelThinking` (and its non-enumerable memo-slot cache), `refreshModelThinking`, `modelOmitsReasoningEffort`, and the `model-thinking` re-exports of generator-only policies. Thinking metadata is resolved exactly once inside `buildModel`; runtime helpers (`getSupportedEfforts`, `clampThinkingLevelForModel`, `requireSupportedEffort`, the effort mappers) are pure field reads.
+
+## [1.11.3] - 2026-09-23
+
+### Fixed
+
+- Fixed GPT-6 Sol and Luna missing from OpenAI Codex model discovery by advertising Codex client 0.155.1 and keying the Codex model cache on the client version ([#12885](https://github.com/can1357/oh-my-pi/pull/12885) by [@itsddvn](https://github.com/itsddvn))
+- Added GPT-6 Sol and Luna thinking efforts on GitHub Copilot
+
+### Added
+
+- Added provider and auth rule definitions for on-device Apple Foundation Models
+- Added per-account discovery support for Codex cyber access entitlements
+- Added `org-scoped-identity` and `oauth-token-env` rule support for auth providers
 
 ## [1.11.2] - 2026-09-22
 

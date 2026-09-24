@@ -2,19 +2,11 @@
 
 ## [Unreleased]
 
+## [1.11.4] - 2026-09-24
+
 ### Added
 
 - `releaseNativeHeap()` returns freed native-heap memory to the OS (`malloc_trim` on Linux glibc; a no-op elsewhere).
-
-## [1.11.3] - 2026-09-23
-
-### Changed
-
-- `chalk` style chains are built once per parent builder and reused, instead of building a new builder on every property access.
-- Markdown inline lexing no longer rescans the rest of a paragraph for URLs and hard breaks after every text run, which removes quadratic work on long paragraphs.
-### Changed
-
-- Migrated internal cryptographic utilities to `Bun` performance-optimized hashers
 
 ## [18.2.7] - 2026-09-21
 
@@ -759,6 +751,14 @@
 ### Added
 
 - Added an XDG-aware tiny-title model cache directory helper for coding-agent local title models.
+
+## [1.11.3] - 2026-09-23
+
+### Changed
+
+- `chalk` style chains are built once per parent builder and reused, instead of building a new builder on every property access.
+- Markdown inline lexing no longer rescans the rest of a paragraph for URLs and hard breaks after every text run, which removes quadratic work on long paragraphs.
+- Migrated internal cryptographic utilities to `Bun` performance-optimized hashers
 
 ## [1.6.4] - 2026-07-19
 

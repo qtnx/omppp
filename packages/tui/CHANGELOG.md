@@ -2,28 +2,6 @@
 
 ## [Unreleased]
 
-## [1.11.3] - 2026-09-23
-
-### Changed
-
-- Streaming Markdown renders ~4x faster on long replies: frozen prefix tokens and rows are reused instead of copied every frame, and a growing top-level list re-renders only its new items (56 KB reply: ~1.4 s → ~0.3 s total).
-- Typing in a large editor draft is fast again: wrap measurements for the whole draft stay cached instead of being cleared every 256 lines (2000-line draft: ~56 ms → ~1 ms per keystroke).
-### Added
-
-- Added a fullscreen annotation overlay for diffs and text, with multi-line notes, editing, deletion, and undo ([#12601](https://github.com/can1357/oh-my-pi/pull/12601) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy))
-- Added Daybreak-enabled account listing to usage dashboard overlay
-
-### Changed
-
-- Updated status line context usage to include tool examples in token estimation
-- Mermaid flowcharts and state diagrams now re-pick layout on terminal resize: the shortest orientation that fits the width wins, and the narrowest is used only when none fit.
-- Updated model hub and oauth selector components to use namespaced `authStorage` API
-- Plan Review annotations can now be edited or deleted, span multiple lines, and be undone ([#12601](https://github.com/can1357/oh-my-pi/pull/12601) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy))
-
-### Fixed
-
-- Fixed AltGr characters (such as `[`, `]`, `{`, `}` on Hungarian and other international layouts) being dropped in Windows Terminal with the kitty keyboard protocol, where they instead triggered Alt shortcuts like word movement ([#12984](https://github.com/can1357/oh-my-pi/pull/12984) by [@H4vC](https://github.com/H4vC)).
-
 ## [18.2.11] - 2026-09-23
 
 ### Added
@@ -2427,6 +2405,26 @@
 ## [1.337.0] - 2026-01-02
 
 Initial release under @oh-my-pi scope. See previous releases at [badlogic/pi-mono](https://github.com/badlogic/pi-mono).
+
+## [1.11.3] - 2026-09-23
+
+### Changed
+
+- Streaming Markdown renders ~4x faster on long replies: frozen prefix tokens and rows are reused instead of copied every frame, and a growing top-level list re-renders only its new items (56 KB reply: ~1.4 s → ~0.3 s total).
+- Typing in a large editor draft is fast again: wrap measurements for the whole draft stay cached instead of being cleared every 256 lines (2000-line draft: ~56 ms → ~1 ms per keystroke).
+- Updated status line context usage to include tool examples in token estimation
+- Mermaid flowcharts and state diagrams now re-pick layout on terminal resize: the shortest orientation that fits the width wins, and the narrowest is used only when none fit.
+- Updated model hub and oauth selector components to use namespaced `authStorage` API
+- Plan Review annotations can now be edited or deleted, span multiple lines, and be undone ([#12601](https://github.com/can1357/oh-my-pi/pull/12601) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy))
+
+### Added
+
+- Added a fullscreen annotation overlay for diffs and text, with multi-line notes, editing, deletion, and undo ([#12601](https://github.com/can1357/oh-my-pi/pull/12601) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy))
+- Added Daybreak-enabled account listing to usage dashboard overlay
+
+### Fixed
+
+- Fixed AltGr characters (such as `[`, `]`, `{`, `}` on Hungarian and other international layouts) being dropped in Windows Terminal with the kitty keyboard protocol, where they instead triggered Alt shortcuts like word movement ([#12984](https://github.com/can1357/oh-my-pi/pull/12984) by [@H4vC](https://github.com/H4vC)).
 
 ## [1.8.1] - 2026-09-08
 
