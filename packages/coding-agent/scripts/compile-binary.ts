@@ -69,6 +69,11 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			// (see `isProcessEntry` in cli.ts), so chunk resolution there stays
 			// single-chunk until it is verified on a Windows host.
 			splitting: !(options.target?.startsWith("bun-windows") ?? process.platform === "win32"),
+			// Bun's default `./chunk-[hash].[ext]` collides when several split
+			// modules hash identically (Bun 1.4.2: "Multiple files share the same
+			// output path" for the discovery providers); the source dir keeps them
+			// distinct.
+			naming: { chunk: "[dir]/[name]-[hash].[ext]" },
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,
