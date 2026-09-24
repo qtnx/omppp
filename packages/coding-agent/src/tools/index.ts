@@ -280,6 +280,8 @@ export interface BrowserAnnotationEntry {
 	title?: string;
 	text: string;
 	screenshot: { data: string; mimeType: string };
+	/** Durable copy of `screenshot` on disk, readable after the inline image leaves context. */
+	screenshotPath?: string;
 	timestamp: number;
 }
 

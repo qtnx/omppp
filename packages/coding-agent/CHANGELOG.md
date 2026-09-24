@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Browser annotations now tell the agent that a screenshot is attached and save a copy under `~/.omp/annotate/shots`. The message shows the file path so the agent can reopen the image after it drops out of context. Shots older than 7 days, or beyond the newest 200, are deleted automatically.
+
 ## [1.11.4] - 2026-09-24
 
 ### Added

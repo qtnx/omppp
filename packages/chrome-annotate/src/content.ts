@@ -173,8 +173,33 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 			extWindow.__ompxExtAnnotateFocusGuard = focusGuard;
 			for (const eventName of focusEvents) window.addEventListener(eventName, focusGuard, true);
 
-			const stopOverlayKeys = (event: Event) => event.stopPropagation();
-			for (const eventName of ["keydown", "keypress", "keyup"]) shadow.addEventListener(eventName, stopOverlayKeys);
+			// Events inside the shadow tree retarget to the host and keep bubbling to
+			// document/window, where pages hang "click outside" and shortcut handlers
+			// (closing their modals, deselecting, zooming a canvas). Stop them at the
+			// shadow root so clicks on Pick/Draw/Send or the draw layer never reach
+			// the page. Page capture listeners on window/document still run first;
+			// nothing a late-injected script registers can pre-empt those.
+			const OVERLAY_EVENTS = [
+				"keydown",
+				"keypress",
+				"keyup",
+				"pointerdown",
+				"pointerup",
+				"pointermove",
+				"mousedown",
+				"mouseup",
+				"mousemove",
+				"click",
+				"dblclick",
+				"auxclick",
+				"contextmenu",
+				"touchstart",
+				"touchmove",
+				"touchend",
+				"wheel",
+			];
+			const stopOverlayEvent = (event: Event) => event.stopPropagation();
+			for (const eventName of OVERLAY_EVENTS) shadow.addEventListener(eventName, stopOverlayEvent);
 
 			shadow.addEventListener("pointerdown", event => {
 				if (!extWindow.__ompxExtAnnotateActive) return;
@@ -801,8 +826,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 				window.removeEventListener("resize", onResize);
 				doc.removeEventListener("keydown", onKeyDown, true);
 				for (const eventName of focusEvents) window.removeEventListener(eventName, focusGuard, true);
-				for (const eventName of ["keydown", "keypress", "keyup"])
-					shadow.removeEventListener(eventName, stopOverlayKeys);
+				for (const eventName of OVERLAY_EVENTS) shadow.removeEventListener(eventName, stopOverlayEvent);
 				window.clearTimeout(toastTimer);
 				host.remove();
 			};

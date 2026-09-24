@@ -36,6 +36,7 @@ import {
 	setAnnotationListener,
 	waitForAnnotation,
 } from "./browser/tab-supervisor";
+import { saveAnnotationScreenshot } from "./browser/annotation-screenshots";
 import { renderTabCall } from "./browser/tab-call";
 import { resolveToCwd } from "./path-utils";
 import { renderCallChain, renderFunctionRun } from "./run-code";
@@ -625,7 +626,10 @@ async function annotateBrowser(
 		const text = `Annotation overlay active on tab ${JSON.stringify(name)}${launchNote}; no submission within ${Math.round(timeoutMs / 1000)}s. ${deliveryNote}`;
 		return toolResult(details).text(text).done();
 	}
-	const text = formatAnnotationSubmission(submission);
+	const screenshotPath = await saveAnnotationScreenshot(submission.screenshot, submission.ts);
+	const text = screenshotPath
+		? `${formatAnnotationSubmission(submission)}\nScreenshot (attached; re-read this path if the image leaves context): ${screenshotPath}`
+		: formatAnnotationSubmission(submission);
 	return toolResult(details)
 		.content([
 			{ type: "text", text },

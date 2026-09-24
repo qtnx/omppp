@@ -2252,7 +2252,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session?.extensionRunner?.emitBeforeSubagentSpawn(event, signal) ?? Promise.resolve(undefined),
 			queueDeferredDiagnostics: entry => session?.yieldQueue.enqueue(LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE, entry),
 			queueBrowserAnnotation: entry => {
-				if (session) deliverBrowserAnnotation(session, entry);
+				if (session) void deliverBrowserAnnotation(session, entry);
 			},
 			// Preview feedback enqueues into yieldQueue so idle agents wake and
 			// streaming turns pick it up as steering (not followUp).
