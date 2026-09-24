@@ -293,6 +293,8 @@ export interface AgentSessionConfig {
 	initialSelectedMCPToolNames?: string[];
 	/** MCP tools selected for a new session. */
 	defaultSelectedMCPToolNames?: string[];
+	/** Built-in tools activated by discovery in a restored session snapshot. */
+	initialSelectedDiscoveredToolNames?: string[];
 	/** Persist the initial MCP selection for a fresh session. */
 	persistInitialMCPToolSelection?: boolean;
 	/** MCP servers selected for a new session. */

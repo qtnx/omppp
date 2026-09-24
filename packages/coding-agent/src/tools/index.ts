@@ -750,6 +750,9 @@ export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
 	"edit",
 	"write",
 	"glob",
+	// Search is used in nearly every coding turn; hiding it forces a discovery call
+	// that changes the tool list mid-session and busts prefix prompt caches.
+	"grep",
 	"eval",
 	"task",
 	"todo",

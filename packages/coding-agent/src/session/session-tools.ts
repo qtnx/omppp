@@ -164,6 +164,8 @@ interface SessionToolsOptions {
 	defaultSelectedMCPServerNames?: string[];
 	initialSelectedMCPToolNames?: string[];
 	defaultSelectedMCPToolNames?: string[];
+	/** Built-in tools activated by discovery in a restored session snapshot. */
+	initialSelectedDiscoveredToolNames?: string[];
 }
 
 const SKILLS_AND_RULES_HEADING = "# Skills & Rules";
@@ -534,6 +536,11 @@ export class SessionTools {
 		this.#selectedMCPToolNames = new Set(
 			(options.initialSelectedMCPToolNames ?? options.defaultSelectedMCPToolNames ?? []).filter(
 				name => isMCPToolName(name) && (!hasInitialMCPToolCatalog || this.#toolRegistry.has(name)),
+			),
+		);
+		this.#selectedDiscoveredToolNames = new Set(
+			(options.initialSelectedDiscoveredToolNames ?? []).filter(
+				name => !isMCPToolName(name) && this.#toolRegistry.has(name),
 			),
 		);
 		this.#hasExplicitMCPToolSelection = options.initialSelectedMCPToolNames !== undefined;
@@ -1056,6 +1063,9 @@ export class SessionTools {
 		if (regular.length > 0) {
 			for (const name of regular) this.#selectedDiscoveredToolNames.add(name);
 			await this.applyActiveToolsByName([...this.getEnabledToolNames(), ...regular]);
+			// Persist so resume rebuilds the same provider tool list; a shrunken list
+			// on the next turn would invalidate the provider prompt cache.
+			this.#host.sessionManager.appendDiscoveredToolSelection(this.#selectedDiscoveredToolNames);
 		}
 		this.#discoverableToolSearchIndex = undefined;
 		return [...new Set([...mcp, ...regular])];

@@ -1935,6 +1935,7 @@ export class AgentSession {
 			mcpEnabled: config.mcpEnabled,
 			initialSelectedMCPToolNames: config.initialSelectedMCPToolNames,
 			defaultSelectedMCPToolNames: config.defaultSelectedMCPToolNames,
+			initialSelectedDiscoveredToolNames: config.initialSelectedDiscoveredToolNames,
 			defaultSelectedMCPServerNames: config.defaultSelectedMCPServerNames,
 		});
 		if (config.persistInitialMCPToolSelection && config.mcpDiscoveryEnabled) {

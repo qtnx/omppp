@@ -275,7 +275,7 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		});
 
 		expect(session.getActiveToolNames()).toContain("glob");
-		expect(session.getDiscoverableTools({ source: "builtin" }).map(tool => tool.name)).toContain("grep");
+		expect(session.getDiscoverableTools({ source: "builtin" }).map(tool => tool.name)).toContain("web_search");
 
 		await authStorage.credentials.set("openai", { type: "api_key", key: "test-openai-key" });
 
@@ -611,15 +611,54 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 			enableLsp: false,
 		});
 
-		expect(await session.activateDiscoveredTools(["grep"])).toEqual(["grep"]);
-		expect(session.getSelectedDiscoveredToolNames()).toContain("grep");
+		expect(await session.activateDiscoveredTools(["web_search"])).toEqual(["web_search"]);
+		expect(session.getSelectedDiscoveredToolNames()).toContain("web_search");
 
 		await session.setActiveToolsByName(["read", "search_tool_bm25"]);
 
-		expect(session.getActiveToolNames()).not.toContain("grep");
-		expect(session.getSelectedDiscoveredToolNames()).not.toContain("grep");
-		expect(await session.activateDiscoveredTools(["grep"])).toEqual(["grep"]);
-		expect(session.getActiveToolNames()).toContain("grep");
+		expect(session.getActiveToolNames()).not.toContain("web_search");
+		expect(session.getSelectedDiscoveredToolNames()).not.toContain("web_search");
+		expect(await session.activateDiscoveredTools(["web_search"])).toEqual(["web_search"]);
+		expect(session.getActiveToolNames()).toContain("web_search");
+	});
+	it("restores builtin discoveries on resume so the provider tool list is unchanged", async () => {
+		const discoveryOptions = {
+			cwd: tempDir,
+			agentDir: tempDir,
+			modelRegistry,
+			settings: Settings.isolated({ "tools.discoveryMode": "all" }),
+			model: getBundledModel("openai", "gpt-4o-mini"),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		};
+		const { session: firstSession } = await createAgentSession({
+			...discoveryOptions,
+			sessionManager: SessionManager.create(tempDir, tempDir),
+		});
+		expect(firstSession.getActiveToolNames()).not.toContain("web_search");
+		expect(await firstSession.activateDiscoveredTools(["web_search"])).toEqual(["web_search"]);
+		const toolsBeforeResume = [...firstSession.getActiveToolNames()].sort();
+		const sessionFile = firstSession.sessionFile;
+		expect(sessionFile).toBeDefined();
+		await firstSession.sessionManager.rewriteEntries();
+		await firstSession.dispose();
+
+		const { session: resumedSession } = await createAgentSession({
+			...discoveryOptions,
+			sessionManager: await SessionManager.open(sessionFile!, tempDir),
+		});
+		try {
+			// A shrunken tool list on the resumed turn would bust the provider prompt cache.
+			expect([...resumedSession.getActiveToolNames()].sort()).toEqual(toolsBeforeResume);
+			expect(resumedSession.getSelectedDiscoveredToolNames()).toContain("web_search");
+		} finally {
+			await resumedSession.dispose();
+		}
 	});
 	it("restores explicit MCP, thinking, and service-tier entries when resuming without rewriting the session file", async () => {
 		const firstManager = SessionManager.create(tempDir, tempDir);

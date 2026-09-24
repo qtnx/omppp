@@ -36,7 +36,7 @@ const LEGACY_SNAPCOMPACT_TRUNCATED_CHARS_GUARD = 1_000_000;
 const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
 const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
 
-function normalizePersistedMCPToolNames(toolNames: unknown): string[] {
+function normalizePersistedToolNames(toolNames: unknown): string[] {
 	if (!Array.isArray(toolNames)) return [];
 	return toolNames.filter((toolName): toolName is string => typeof toolName === "string");
 }
@@ -117,6 +117,8 @@ export interface SessionContext {
 	selectedMCPToolNames: string[];
 	/** Whether this branch explicitly persisted an MCP selection, including an empty one. */
 	hasPersistedMCPToolSelection: boolean;
+	/** Last persisted built-in tools activated through tool discovery on the resolved branch. */
+	selectedDiscoveredToolNames?: string[];
 	/**
 	 * Array parallel to messages, indicating which assistant turns should
 	 * have their prompt-cache misses suppressed/explained (because a model,
@@ -263,6 +265,7 @@ export function buildSessionContext(
 			thinkingLevel: "off",
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
+			selectedDiscoveredToolNames: [],
 			serviceTier: undefined,
 			models: {},
 			injectedTtsrRules: [],
@@ -281,6 +284,7 @@ export function buildSessionContext(
 		return {
 			selectedMCPToolNames: [],
 			hasPersistedMCPToolSelection: false,
+			selectedDiscoveredToolNames: [],
 			messages: [],
 			thinkingLevel: "off",
 			serviceTier: undefined,
@@ -306,6 +310,7 @@ export function buildSessionContext(
 	let thinkingLevel: string | undefined = "off";
 	let selectedMCPToolNames: string[] = [];
 	let hasPersistedMCPToolSelection = false;
+	let selectedDiscoveredToolNames: string[] = [];
 	let configuredThinkingLevel: string | undefined;
 	let serviceTier: ServiceTierByFamily | undefined;
 	const models: Record<string, string> = {};
@@ -338,8 +343,10 @@ export function buildSessionContext(
 		} else if (entry.type === "service_tier_change") {
 			serviceTier = coerceServiceTierByFamily(entry.serviceTier);
 		} else if (entry.type === "mcp_tool_selection") {
-			selectedMCPToolNames = normalizePersistedMCPToolNames(entry.toolNames);
+			selectedMCPToolNames = normalizePersistedToolNames(entry.toolNames);
 			hasPersistedMCPToolSelection = true;
+		} else if (entry.type === "tool_discovery_selection") {
+			selectedDiscoveredToolNames = normalizePersistedToolNames(entry.toolNames);
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
 			// Legacy fallback: infer default model from assistant messages only
 			// when no explicit `model_change` (role=default) entry has been
@@ -761,5 +768,6 @@ export function buildSessionContext(
 		modeData,
 		selectedMCPToolNames,
 		hasPersistedMCPToolSelection,
+		selectedDiscoveredToolNames,
 	};
 }

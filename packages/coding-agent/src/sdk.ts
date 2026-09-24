@@ -4212,9 +4212,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				loadModeOf: name => (builtInRegistryToolNames.has(name) ? toolRegistry.get(name)?.loadMode : undefined),
 				essentialNames: new Set(computeEssentialBuiltinNames(settings)),
 				explicitlyRequested: new Set(explicitlyRequestedToolNames ?? []),
-				// Back-compat: persisted activations live under selectedMCPToolNames today (built-in
-				// activation persistence is a follow-up). MCP names won't collide with built-in names.
-				restored: new Set(existingSession.selectedMCPToolNames.map(normalizeRenamedBuiltinToolName)),
+				// Keep previously discovered tools so the resumed request lists the same tools
+				// as the last turn (a changed list busts provider prompt caches). Legacy
+				// sessions only persisted MCP activations under selectedMCPToolNames.
+				restored: new Set(
+					[...existingSession.selectedMCPToolNames, ...(existingSession.selectedDiscoveredToolNames ?? [])].map(
+						normalizeRenamedBuiltinToolName,
+					),
+				),
 				forceActive,
 			});
 		}
@@ -4881,6 +4886,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					? undefined
 					: initialSelectedMCPToolNames,
 			defaultSelectedMCPToolNames,
+			initialSelectedDiscoveredToolNames: (existingSession.selectedDiscoveredToolNames ?? []).map(
+				normalizeRenamedBuiltinToolName,
+			),
 			persistInitialMCPToolSelection: !hasExistingSession,
 			defaultSelectedMCPServerNames: [...discoveryDefaultServers],
 			ttsrManager,

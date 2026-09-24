@@ -40,7 +40,7 @@ export type SessionTreeEntry = { id: string; parentId: string | null } & (
 	| { type: "mode_change"; mode: string }
 	| { type: "credential_pin"; provider: string }
 	| { type: "ttsr_injection"; injectedRules: string[] }
-	| { type: "mcp_tool_selection"; toolNames: string[] }
+	| { type: "mcp_tool_selection" | "tool_discovery_selection"; toolNames: string[] }
 	| { type: "session_init" | "reset_boundary" }
 );
 
@@ -462,6 +462,9 @@ class TreeList implements Component {
 			case "mcp_tool_selection":
 				parts.push("mcp tool selection", ...entry.toolNames);
 				break;
+			case "tool_discovery_selection":
+				parts.push("discovered tools", ...entry.toolNames);
+				break;
 			case "reset_boundary":
 				parts.push("reset boundary");
 				break;
@@ -763,6 +766,9 @@ class TreeList implements Component {
 				break;
 			case "mcp_tool_selection":
 				result = theme.fg("dim", `[mcp tools: ${entry.toolNames.join(", ") || "none"}]`);
+				break;
+			case "tool_discovery_selection":
+				result = theme.fg("dim", `[discovered tools: ${entry.toolNames.join(", ") || "none"}]`);
 				break;
 			default:
 				// Bookkeeping entries with nothing worth spelling out still get their

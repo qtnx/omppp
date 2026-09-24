@@ -123,6 +123,16 @@ export interface MCPToolSelectionEntry extends SessionEntryBase {
 	toolNames: string[];
 }
 
+/**
+ * Persisted built-in tools activated through tool discovery (`search_tool_bm25`).
+ * Restored on resume so the provider tool list stays identical to the last turn;
+ * a changed tool list invalidates prefix caches (notably OpenAI Codex).
+ */
+export interface DiscoveredToolSelectionEntry extends SessionEntryBase {
+	type: "tool_discovery_selection";
+	toolNames: string[];
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -207,6 +217,7 @@ declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
 	interface CustomCompactionSessionEntries {
 		titleChange: TitleChangeEntry;
 		mcpToolSelection: MCPToolSelectionEntry;
+		toolDiscoverySelection: DiscoveredToolSelectionEntry;
 		credentialPin: CredentialPinEntry;
 		modelUsage: ModelUsageEntry;
 	}
@@ -309,6 +320,7 @@ export type SessionEntry =
 	| ModelChangeEntry
 	| ServiceTierChangeEntry
 	| MCPToolSelectionEntry
+	| DiscoveredToolSelectionEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| CustomEntry

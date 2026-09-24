@@ -59,6 +59,7 @@ import {
 	type CustomMessageEntry,
 	type FileEntry,
 	type LabelEntry,
+	type DiscoveredToolSelectionEntry,
 	type MCPToolSelectionEntry,
 	type ModeChangeEntry,
 	type ModelChangeEntry,
@@ -2962,6 +2963,16 @@ export class SessionManager {
 	appendMCPToolSelection(toolNames: Iterable<string>): string {
 		const entry: MCPToolSelectionEntry = {
 			type: "mcp_tool_selection",
+			...this.#freshEntryFields(),
+			toolNames: [...new Set(toolNames)].sort(),
+		};
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	appendDiscoveredToolSelection(toolNames: Iterable<string>): string {
+		const entry: DiscoveredToolSelectionEntry = {
+			type: "tool_discovery_selection",
 			...this.#freshEntryFields(),
 			toolNames: [...new Set(toolNames)].sort(),
 		};

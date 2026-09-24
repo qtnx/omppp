@@ -18,6 +18,7 @@
 
 - Advisor note artifacts are now written to a temp file and renamed into place. Before, the artifact path was advertised immediately while the write was still in flight, so a read could see an empty file. A block re-rendered each turn is now written only once.
 - Exiting ompx inside a Herdr pane now clears the pane's agent status instead of leaving it stuck on idle/done.
+- Codex models keep their prompt cache across turns and resumes: `grep` is always available, and tools activated through tool search are restored when a session is resumed, so the tool list no longer changes mid-session (cache hit on a 3-turn session: ~78% → ~88%, turns after the first ~85% → ~98%, cost ~35% lower).
 
 ## [1.11.3] - 2026-09-23
 
