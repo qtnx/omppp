@@ -13,12 +13,14 @@
 - Compiled Linux and macOS binaries load rarely used code on first use instead of at startup. Each helper process (daemon broker, eval and embedding workers) now holds ~17 MB of private memory instead of ~105 MB, and an idle session ~270 MB instead of ~300 MB.
 - Product Preview's web client (mermaid, canvas app, markdown renderer) loads when a preview starts instead of staying in every session's memory.
 - Idle memory trim now also returns freed native memory to the OS (after a burst of parallel searches: ~990 MB back to ~90 MB), and when a background subagent or an unsent draft keeps the session busy at the idle deadline it tries again after another idle window instead of giving up until the next turn.
+- Browser tabs left open by the agent now close after 10 minutes idle instead of 30 (`browser.idleCloseSec`, new 5/10-minute options).
 
 ### Fixed
 
 - Advisor note artifacts are now written to a temp file and renamed into place. Before, the artifact path was advertised immediately while the write was still in flight, so a read could see an empty file. A block re-rendered each turn is now written only once.
 - Exiting ompx inside a Herdr pane now clears the pane's agent status instead of leaving it stuck on idle/done.
 - Codex models keep their prompt cache across turns and resumes: `grep` is always available, and tools activated through tool search are restored when a session is resumed, so the tool list no longer changes mid-session (cache hit on a 3-turn session: ~78% → ~88%, turns after the first ~85% → ~98%, cost ~35% lower).
+- The shared headless Chromium no longer lingers after the agent is done with the browser: once no running session holds a tab in it, it stops ~15 s later (or at exit). Before, it kept running with zero tabs, using RAM and CPU, for as long as any ompx session stayed open in the project.
 
 ## [1.11.3] - 2026-09-23
 

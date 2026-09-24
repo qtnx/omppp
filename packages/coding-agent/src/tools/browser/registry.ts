@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { isCompiledBinary, logger, withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
+import { isCompiledBinary, logger, postmortem, withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type { Browser, CDPSession } from "puppeteer-core";
 import { ToolAbortError } from "../tool-errors";
@@ -19,7 +19,7 @@ import { reapOrphanSharedTargets } from "./orphan-registry";
 import { ensureRelayDaemon, isLoopbackRelayUrl } from "./relay/daemon";
 import type { RelayKind } from "./relay/kind";
 import { waitForRelayExtension } from "./relay/probe";
-import { ensureSharedBrowser } from "./shared-daemon";
+import { ensureSharedBrowser, stopSharedBrowserIfUnused } from "./shared-daemon";
 
 export type PuppeteerBrowserKind =
 	| {
@@ -46,6 +46,15 @@ export type BrowserKindTag = BrowserKind["kind"];
  * forever (issue #5260), so we cap the wait and force-kill on timeout.
  */
 const HEADLESS_CLOSE_TIMEOUT_MS = 5_000;
+/**
+ * Grace between this process dropping its last hold on the project-shared
+ * Chromium and asking the broker to stop it (when no live omp process still
+ * owns a tab). Covers a back-to-back reopen in this process and another
+ * process's in-flight open that has not recorded its target yet.
+ */
+const SHARED_BROWSER_IDLE_STOP_MS = 15_000;
+/** Bound on the exit-time idle-stop flush so shutdown never hangs on the broker. */
+const SHARED_BROWSER_EXIT_STOP_TIMEOUT_MS = 3_000;
 
 interface BrowserHandleCommon {
 	key: string;
@@ -84,6 +93,53 @@ export interface ReleaseBrowserOptions {
 const browsers = new Map<string, BrowserHandle>();
 /** In-flight opens by browser key, so concurrent acquisitions share one launch instead of storming Chromium. */
 const pendingOpens = new Map<string, Promise<BrowserHandle>>();
+/** Pending shared-browser idle stops by browser key. */
+const idleStops = new Map<string, { timer: NodeJS.Timeout; scope: { projectDir: string; daemonName: string } }>();
+let cancelIdleStopExitHook: (() => void) | undefined;
+
+function cancelSharedIdleStop(key: string): void {
+	const pending = idleStops.get(key);
+	if (!pending) return;
+	clearTimeout(pending.timer);
+	idleStops.delete(key);
+}
+
+async function runSharedIdleStop(key: string, scope: { projectDir: string; daemonName: string }): Promise<void> {
+	idleStops.delete(key);
+	// Reacquired (or reacquiring) in this process: the browser is in use again.
+	if (browsers.has(key) || pendingOpens.has(key)) return;
+	try {
+		if (await stopSharedBrowserIfUnused(scope)) {
+			logger.debug("Stopped idle shared browser daemon", { daemon: scope.daemonName });
+		}
+	} catch (err) {
+		logger.debug("Failed to stop idle shared browser daemon", {
+			daemon: scope.daemonName,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+/**
+ * Stop the shared Chromium once nobody uses it. Deferred by a grace window;
+ * the timer is unref'd, so an exiting process flushes pending stops from a
+ * postmortem hook instead of leaving an idle Chromium behind.
+ */
+function scheduleSharedIdleStop(key: string, scope: { projectDir: string; daemonName: string }): void {
+	cancelSharedIdleStop(key);
+	const timer = setTimeout(() => void runSharedIdleStop(key, scope), SHARED_BROWSER_IDLE_STOP_MS);
+	timer.unref();
+	idleStops.set(key, { timer, scope });
+	cancelIdleStopExitHook ??= postmortem.register("browser-shared-idle-stop", async () => {
+		const pending = [...idleStops.entries()];
+		for (const [key] of pending) cancelSharedIdleStop(key);
+		await withTimeout(
+			Promise.all(pending.map(([key, { scope }]) => runSharedIdleStop(key, scope))),
+			SHARED_BROWSER_EXIT_STOP_TIMEOUT_MS,
+			"Timed out stopping idle shared browser at exit",
+		).catch(() => undefined);
+	});
+}
 
 export function browserKey(kind: BrowserKind): string {
 	switch (kind.kind) {
@@ -112,6 +168,7 @@ export interface AcquireBrowserOptions {
 export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOptions): Promise<BrowserHandle> {
 	if (kind.kind === "spawned") kind = { ...kind, args: resolveSpawnArgs(kind.path, kind.args, opts.cwd) };
 	const key = browserKey(kind);
+	cancelSharedIdleStop(key);
 	for (;;) {
 		const existing = browsers.get(key);
 		if (existing) {
@@ -351,9 +408,10 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 		if (handle.sharedDaemon) {
 			// The broker owns the Chromium; this process only drops its CDP
 			// connection. `kill` is scoped to spawned-app browsers — stopping the
-			// shared daemon here would tear down every other session's tabs. The
-			// daemon dies with the last omp client in the project (broker idle
-			// teardown), or via an explicit hub stop.
+			// shared daemon outright would tear down every other session's tabs.
+			// Instead, schedule a stop that fires only once no live omp process
+			// owns a tab in it; otherwise an idle Chromium lingers for as long as
+			// any omp runs in the project.
 			if (handle.browser.connected) {
 				try {
 					handle.browser.disconnect();
@@ -361,6 +419,10 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 					logger.debug("Failed to disconnect from shared browser", { error: (err as Error).message });
 				}
 			}
+			scheduleSharedIdleStop(handle.key, {
+				projectDir: handle.sharedDaemon.projectDir,
+				daemonName: handle.sharedDaemon.name,
+			});
 			return;
 		}
 		if (handle.browser.connected) {

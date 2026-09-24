@@ -16,6 +16,7 @@ import { describeQuietly, stopQuietly, waitReady } from "../../launch/ensure";
 import { daemonRuntimeDir } from "../../launch/paths";
 import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/hub";
 import { throwIfAborted } from "../tool-errors";
+import { hasLiveSharedTargetOwners, type SharedTargetScope } from "./orphan-registry";
 import { probeCdpStatus } from "./attach";
 import { resolveSharedBrowserLaunchSpec } from "./launch";
 
@@ -153,4 +154,17 @@ export async function ensureSharedBrowser(opts: {
 		}
 	}
 	return null;
+}
+
+/**
+ * Stop the project-shared Chromium when no live omp process owns a tab in it.
+ * The broker keeps the daemon alive for as long as ANY omp runs in the
+ * project, so without this an idle Chromium with zero tabs lingers for the
+ * whole lifetime of long-running sessions. Returns true when a stop was sent.
+ */
+export async function stopSharedBrowserIfUnused(scope: SharedTargetScope): Promise<boolean> {
+	if (await hasLiveSharedTargetOwners(scope)) return false;
+	const client = await daemonClientForProject(scope.projectDir);
+	await stopQuietly(client, scope.daemonName, "Shared browser");
+	return true;
 }
