@@ -2,6 +2,7 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import browserAnnotationTemplate from "../prompts/tools/browser-annotation.md" with { type: "text" };
 import type { BrowserAnnotationEntry } from "../tools";
+import { saveAnnotationScreenshot } from "../tools/browser/annotation-screenshots";
 import type { AgentSession } from "./agent-session";
 import { BROWSER_ANNOTATION_MESSAGE_TYPE, type CustomMessage, MAX_BACKGROUND_BROWSER_ANNOTATIONS } from "./messages";
 
@@ -33,7 +34,7 @@ export function buildBrowserAnnotationBatchMessage(
 		content.push({
 			type: "text",
 			text: prompt.render(browserAnnotationTemplate, {
-				annotation: { tab: entry.tab, text: entry.text },
+				annotation: { tab: entry.tab, text: entry.text, screenshotPath: entry.screenshotPath },
 				multiple,
 				index: index + 1,
 				count,
@@ -57,14 +58,40 @@ export function browserAnnotationChipText(entry: BrowserAnnotationEntry): string
 	return `Browser annotation — ${entry.title?.trim() || entry.url}`;
 }
 
+// Serializes deliveries so annotations reach the session in submission order even
+// though each one first awaits its screenshot write.
+let deliveryChain: Promise<void> = Promise.resolve();
+
 /**
  * Deliver one annotation submission to the session per `browser.annotateDelivery`:
  * - `queue` (default): visible follow-up user message — shows as a queued chip
  *   while a turn is streaming and is processed after it completes; starts a
  *   turn immediately when the session is idle.
  * - `steer`: legacy yieldQueue aside injected mid-run between model requests.
+ *
+ * The screenshot is first saved to disk so the message text can carry a path
+ * the agent can re-read after the inline image leaves context. `shotsDir`
+ * overrides the default `~/.omp/annotate/shots`.
  */
-export function deliverBrowserAnnotation(session: AgentSession, entry: BrowserAnnotationEntry): void {
+export function deliverBrowserAnnotation(
+	session: AgentSession,
+	entry: BrowserAnnotationEntry,
+	shotsDir?: string,
+): Promise<void> {
+	deliveryChain = deliveryChain
+		.then(async () => {
+			const screenshotPath = await saveAnnotationScreenshot(entry.screenshot, entry.timestamp, shotsDir);
+			dispatchBrowserAnnotation(session, screenshotPath ? { ...entry, screenshotPath } : entry);
+		})
+		.catch((error: unknown) => {
+			logger.warn("Browser annotation delivery failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+	return deliveryChain;
+}
+
+function dispatchBrowserAnnotation(session: AgentSession, entry: BrowserAnnotationEntry): void {
 	if (session.settings.get("browser.annotateDelivery") === "steer") {
 		session.yieldQueue.enqueue<BrowserAnnotationEntry>(BROWSER_ANNOTATION_MESSAGE_TYPE, entry, {
 			maxEntries: MAX_BACKGROUND_BROWSER_ANNOTATIONS,

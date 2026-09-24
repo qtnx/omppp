@@ -107,9 +107,28 @@
         extWindow.__ompxExtAnnotateFocusGuard = focusGuard;
         for (const eventName of focusEvents)
           window.addEventListener(eventName, focusGuard, true);
-        const stopOverlayKeys = (event) => event.stopPropagation();
-        for (const eventName of ["keydown", "keypress", "keyup"])
-          shadow.addEventListener(eventName, stopOverlayKeys);
+        const OVERLAY_EVENTS = [
+          "keydown",
+          "keypress",
+          "keyup",
+          "pointerdown",
+          "pointerup",
+          "pointermove",
+          "mousedown",
+          "mouseup",
+          "mousemove",
+          "click",
+          "dblclick",
+          "auxclick",
+          "contextmenu",
+          "touchstart",
+          "touchmove",
+          "touchend",
+          "wheel"
+        ];
+        const stopOverlayEvent = (event) => event.stopPropagation();
+        for (const eventName of OVERLAY_EVENTS)
+          shadow.addEventListener(eventName, stopOverlayEvent);
         shadow.addEventListener("pointerdown", (event) => {
           if (!extWindow.__ompxExtAnnotateActive)
             return;
@@ -710,8 +729,8 @@
           doc.removeEventListener("keydown", onKeyDown, true);
           for (const eventName of focusEvents)
             window.removeEventListener(eventName, focusGuard, true);
-          for (const eventName of ["keydown", "keypress", "keyup"])
-            shadow.removeEventListener(eventName, stopOverlayKeys);
+          for (const eventName of OVERLAY_EVENTS)
+            shadow.removeEventListener(eventName, stopOverlayEvent);
           window.clearTimeout(toastTimer);
           host.remove();
         };

@@ -651,7 +651,7 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const listener = createBrowserAnnotationListener(
 				{
 					queueBrowserAnnotation: (entry: BrowserAnnotationEntry) => {
-						deliverBrowserAnnotation(runtime.session, entry);
+						void deliverBrowserAnnotation(runtime.session, entry);
 					},
 				},
 				"chrome-extension",
