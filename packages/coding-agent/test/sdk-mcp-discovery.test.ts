@@ -174,8 +174,10 @@ describe("createAgentSession MCP discovery prompt gating", () => {
 		expect(session.getActiveToolNames()).not.toContain("find");
 		expect(session.getActiveToolNames()).not.toContain("search");
 		expect(session.getActiveToolNames()).toContain("task");
+		expect(session.getActiveToolNames()).toContain("grep");
 		expect(prompt).toContain("Discoverable native tools are hidden until activated.");
-		expect(prompt).toContain("Grep (`grep`):");
+		expect(prompt).toContain("(`web_search`):");
+		expect(prompt).not.toContain("Grep (`grep`):");
 		expect(prompt).not.toContain("Find (`find`):");
 		expect(prompt).toContain("# Agent routing — match the work to the specialist");
 		expect(prompt).toContain("call `search_tool_bm25` before concluding no such tool exists");
