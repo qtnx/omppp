@@ -840,11 +840,11 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 				"Codex error event: peer closed connection without sending complete message body (incomplete chunked read) (code=api_error)",
 			],
 		])("%s recovery", (_label, errorMessage) => {
-			it("preserves the replay veto with committed text", () => {
+			it("resumes after committed text instead of replaying it", () => {
 				const message = pythonResetMessage([{ type: "text", text: "Partial answer." }], errorMessage);
 				const recovery = recoveryForReset(message, []);
 				expect(recovery.isRetryableError(message)).toBe(false);
-				expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
+				expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBe("interrupted-text");
 			});
 
 			it("continues completed tools through preserved-turn recovery", () => {
@@ -1140,6 +1140,69 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			expect(recovery.handleMalformedFunctionCallStop(message)).toBe(false);
 			expect(messages).toHaveLength(1);
 			expect(continues).toEqual([]);
+		});
+	});
+
+	describe("stream stall after committed text without tool calls", () => {
+		const stallError = "Anthropic stream stalled while waiting for the next event";
+
+		function stalledTextTurn(): AssistantMessage {
+			const message = makeMessage([{ type: "text", text: "Here is the first half of the answer" }], model);
+			message.errorMessage = stallError;
+			return message;
+		}
+
+		function continuationHost(message: AssistantMessage) {
+			const messages: AgentMessage[] = [message];
+			const continues: string[] = [];
+			const host = createHost(model, modelRegistry, { messages });
+			host.settings.set("retry.baseDelayMs", 0);
+			host.sessionManager = { getLastModelChangeRole: () => undefined, getBranch: () => [] } as never;
+			host.agent = {
+				state: { messages },
+				appendMessage: (appended: AgentMessage) => messages.push(appended),
+				replaceMessages: (next: AgentMessage[]) => messages.splice(0, messages.length, ...next),
+			} as never;
+			host.scheduleAgentContinue = options => continues.push(options.source);
+			return { host, messages, continues };
+		}
+
+		it("resumes after the visible partial text instead of replaying or stopping", async () => {
+			const message = stalledTextTurn();
+			const { host, messages, continues } = continuationHost(message);
+			const recovery = new TurnRecovery(host);
+
+			expect(recovery.isRetryableError(message)).toBe(false);
+			expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBe("interrupted-text");
+			expect(
+				await recovery.handleRetryableError(message, { preserveFailedTurn: true, resumeInterruptedText: true }),
+			).toBe(true);
+
+			expect(messages[0]).toBe(message);
+			expect(messages[1]?.role).toBe("developer");
+			expect(continues).toEqual(["automatic-retry"]);
+		});
+
+		it("leaves no resume notice when the retry budget is exhausted", async () => {
+			const message = stalledTextTurn();
+			const { host, messages, continues } = continuationHost(message);
+			host.settings.set("retry.maxRetries", 0);
+			const recovery = new TurnRecovery(host);
+
+			expect(
+				await recovery.handleRetryableError(message, { preserveFailedTurn: true, resumeInterruptedText: true }),
+			).toBe(false);
+			expect(messages).toEqual([message]);
+			expect(continues).toEqual([]);
+		});
+
+		it("keeps a thinking-only stall on the full-replay path", () => {
+			const message = makeMessage([{ type: "thinking", thinking: "reasoning…" }], model);
+			message.errorMessage = stallError;
+			const recovery = new TurnRecovery(continuationHost(message).host);
+
+			expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
+			expect(recovery.isRetryableError(message)).toBe(true);
 		});
 	});
 });

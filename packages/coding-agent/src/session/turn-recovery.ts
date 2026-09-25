@@ -30,6 +30,7 @@ import { formatModelStringWithRouting, resolveModelOverride } from "../config/mo
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
+import interruptedStreamResumeTemplate from "../prompts/system/interrupted-stream-resume.md" with { type: "text" };
 import malformedFunctionCallRetryTemplate from "../prompts/system/malformed-function-call-retry.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
@@ -604,6 +605,7 @@ export class TurnRecovery {
 			fireworksFastFallback?: boolean;
 			hardErrorFallback?: boolean;
 			preserveFailedTurn?: boolean;
+			resumeInterruptedText?: boolean;
 		},
 	): Promise<boolean> {
 		return this.#handleRetryableError(message, options);
@@ -1393,8 +1395,14 @@ export class TurnRecovery {
 	 * assistant/tool-result pair stays in context so continuation cannot replay
 	 * completed side effects; synthetic results tell the next turn that an
 	 * unexecuted call must be reissued.
+	 *
+	 * A stall/reset/premature close with no tool calls but already-committed
+	 * output (visible text) is `"interrupted-text"`: replay would duplicate what
+	 * the user saw, so the partial turn is kept and the model resumes after it.
 	 */
-	classifyResolvedInterruptedToolTurn(message: AssistantMessage): "reasonless-abort" | "stream-stall" | undefined {
+	classifyResolvedInterruptedToolTurn(
+		message: AssistantMessage,
+	): "reasonless-abort" | "stream-stall" | "interrupted-text" | undefined {
 		const id = this.#classifyRetryMessage(message);
 		const genericAbort =
 			message.errorMessage === "Request was aborted" || message.errorMessage === "Request was aborted.";
@@ -1441,7 +1449,18 @@ export class TurnRecovery {
 			if (block.type !== "toolCall") continue;
 			resolvedToolCallIds.push(block.id);
 		}
-		if (resolvedToolCallIds.length === 0) return undefined;
+		if (resolvedToolCallIds.length === 0) {
+			if (
+				reasonlessAbort ||
+				this.#host.abortInProgress() ||
+				this.#host.isDisposed() ||
+				this.#host.streamingEditAbortTriggered() ||
+				!this.#hasReplayUnsafeOutput(message)
+			) {
+				return undefined;
+			}
+			return "interrupted-text";
+		}
 
 		const messages = this.#host.agent.state.messages;
 		let assistantIndex = -1;
@@ -2187,6 +2206,7 @@ export class TurnRecovery {
 			fireworksFastFallback?: boolean;
 			hardErrorFallback?: boolean;
 			preserveFailedTurn?: boolean;
+			resumeInterruptedText?: boolean;
 		},
 	): Promise<boolean> {
 		const retrySettings = this.#host.settings.getGroup("retry");
@@ -2620,6 +2640,18 @@ export class TurnRecovery {
 		// continue() accepts — and never once a newer prompt owns the session.
 		if (!preserveFailedTurn && this.#host.promptGeneration() === generation) {
 			this.#stripFailedAssistantTail();
+		}
+
+		// A preserved text-only interrupted turn leaves an assistant tail, which
+		// continue() rejects. Append the resume notice only now — after every
+		// bail-out above — so a declined retry never leaves an orphan notice.
+		if (preserveFailedTurn && options?.resumeInterruptedText && this.#host.promptGeneration() === generation) {
+			this.#host.agent.appendMessage({
+				role: "developer",
+				content: [{ type: "text", text: prompt.render(interruptedStreamResumeTemplate, {}) }],
+				attribution: "agent",
+				timestamp: Date.now(),
+			});
 		}
 
 		// Retry via continue() outside the agent_end event callback chain. A

@@ -4356,11 +4356,12 @@ export class AgentSession {
 					return;
 				}
 			}
-			const resumeResolvedStreamStall = resolvedInterruptedToolTurn === "stream-stall";
+			const resumeInterruptedText = resolvedInterruptedToolTurn === "interrupted-text";
+			const resumeResolvedStreamStall = resolvedInterruptedToolTurn === "stream-stall" || resumeInterruptedText;
 			if (!requestBodyTimeoutTerminal && (resumeResolvedStreamStall || this.#recovery.isRetryableError(msg))) {
 				const didRetry = await this.#recovery.handleRetryableError(
 					msg,
-					resumeResolvedStreamStall ? { preserveFailedTurn: true } : undefined,
+					resumeResolvedStreamStall ? { preserveFailedTurn: true, resumeInterruptedText } : undefined,
 				);
 				if (didRetry) {
 					await emitAgentEndNotification({ willContinue: true });

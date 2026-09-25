@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed replies that stalled or dropped mid-stream (e.g. "Anthropic stream stalled while waiting for the next event") stopping with an error after text was already shown; the agent now retries automatically and continues from where the reply was cut off.
+
 ## [1.11.5] - 2026-09-24
 
 ### Added
