@@ -61,6 +61,78 @@ describe("detectSecretsInText", () => {
 		]);
 	});
 
+	it("accepts an explicitly tagged secret of any non-empty length", () => {
+		expect(detectSecretsInText("pw <sec>test</sec> <sec>  </sec>")).toEqual([
+			{ start: 3, end: 18, value: "test", kind: "tag" },
+		]);
+	});
+
+	it("takes the env var name from a bare tag attribute or the preceding assignment", () => {
+		const bare = "<sec DB_PASS>hunter2</sec>";
+		const assigned = "API_TOKEN=<sec>abc</sec>";
+
+		expect(detectSecretsInText(bare)).toEqual([
+			{ start: 0, end: bare.length, value: "hunter2", name: "DB_PASS", kind: "tag" },
+		]);
+		expect(detectSecretsInText(assigned)).toEqual([
+			{ start: 10, end: assigned.length, value: "abc", name: "API_TOKEN", kind: "tag" },
+		]);
+	});
+
+	it("accepts the ||value|| shorthand but not shell or JS logical-or", () => {
+		const text = "login with ||hunter2|| and DB_PASS: ||s3cr3t||";
+		const detected = detectSecretsInText(text);
+
+		expect(detected).toEqual([
+			{ start: 11, end: 22, value: "hunter2", kind: "tag" },
+			{ start: 36, end: 46, value: "s3cr3t", name: "DB_PASS", kind: "tag" },
+		]);
+		for (const code of ["a || b || c", "x||y||z", "cmd || true", "a |||| b"]) {
+			expect(detectSecretsInText(code)).toEqual([]);
+		}
+	});
+
+	it("detects short keyword-assigned passwords and names them after the variable", () => {
+		const cases: Array<[string, string, string]> = [
+			["password: hunter2", "hunter2", "password"],
+			["export DB_PASSWORD=s3cr3t!", "s3cr3t!", "DB_PASSWORD"],
+			['{"userPassword": "my pass word"}', "my pass word", "userPassword"],
+			["PGPASSWORD := 'abcd'", "abcd", "PGPASSWORD"],
+		];
+		for (const [text, value, name] of cases) {
+			const detected = detectSecretsInText(text);
+			expect(detected).toEqual([expect.objectContaining({ value, name, kind: "generic" })]);
+			expect(text.slice(detected[0].start, detected[0].end)).toBe(value);
+		}
+	});
+
+	it("ignores keyword assignments that hold references, types, code, or unrelated identifiers", () => {
+		for (const text of [
+			"password: $DB_PASS",
+			"password = ${env.PW}",
+			"password: string",
+			"password: required",
+			"password = getPassword()",
+			"password = req.body.password",
+			"password: ********",
+			"if password == other",
+			"bypass=hunter2",
+			"max_tokens: 4096",
+			"token: abc123",
+		]) {
+			expect(detectSecretsInText(text)).toEqual([]);
+		}
+	});
+
+	it("detects the password inside a connection URL", () => {
+		const text = "postgres://app:pa55@db.internal:5432/app";
+		const [detected] = detectSecretsInText(text);
+
+		expect(detected).toMatchObject({ value: "pa55", kind: "url-password" });
+		expect(text.slice(detected.start, detected.end)).toBe("pa55");
+		expect(kindToName("url-password")).toBe("PASSWORD");
+	});
+
 	it("detects a hex key only when its line is keyword-gated", () => {
 		const detected = detectSecretsInText(`private wallet key: ${hexKey}\n${hexKey}`);
 

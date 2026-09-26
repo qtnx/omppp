@@ -7422,7 +7422,7 @@ export class AgentSession {
 		const entries: SecretEntry[] = [];
 		for (const span of [...detected].reverse()) {
 			const name = normalizeSecretName(span.name ?? kindToName(span.kind));
-			const finalName = await this.#secretVault.set(name, span.value, span.name ? "tag" : "detected");
+			const finalName = await this.#secretVault.set(name, span.value, span.kind === "tag" ? "tag" : "detected");
 			const mask = maskSecretValue(span.value).replaceAll("$", "•");
 			const replacement = `[secret ${finalName} (${mask}) — exported as env var ${finalName} in bash]`;
 			transformed = transformed.slice(0, span.start) + replacement + transformed.slice(span.end);

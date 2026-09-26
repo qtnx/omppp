@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Mark a secret in the prompt with `||value||`, `<sec NAME>value</sec>`, or `NAME=<sec>value</sec>`; the env var name comes from the tag or the assignment.
+- Prompts now auto-detect short keyword-assigned passwords (`password: hunter2`, `DB_PASSWORD=…`) and connection-URL passwords, naming the secret after the variable.
+
 ### Fixed
 
 - Fixed replies that stalled or dropped mid-stream (e.g. "Anthropic stream stalled while waiting for the next event") stopping with an error after text was already shown; the agent now retries automatically and continues from where the reply was cut off.
+- Fixed `<sec>…</sec>` ignoring values shorter than 12 characters, which sent short passwords to the model unmasked.
 
 ## [1.11.5] - 2026-09-24
 

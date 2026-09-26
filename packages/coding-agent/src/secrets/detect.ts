@@ -18,6 +18,68 @@ const MIN_SECRET_LENGTH = 12;
  */
 const replacementPattern = /\[secret ([A-Z_][A-Z0-9_]{0,63}) \([^)]*\) — exported as env var \1 in bash\]/g;
 
+/** Kinds that validate their own values, so the vendor-shape length floor does not apply. */
+const SELF_VALIDATED_KINDS: Record<string, true> = { tag: true, generic: true, "url-password": true };
+/** Passwords are routinely short; other keyword-assigned credentials keep a floor against prose. */
+const MIN_PASSWORD_LENGTH = 4;
+const MIN_KEYWORD_SECRET_LENGTH = 12;
+/**
+ * `IDENT = value`, `IDENT: value`, `"ident": "value"`, `export IDENT='value'`.
+ * The identifier is checked separately so `bypass=` or `max_tokens:` never qualify.
+ */
+const ASSIGNMENT_PATTERN =
+	/([A-Za-z][A-Za-z0-9_.-]*)["']?[ \t]*(?::=|[:=])[ \t]*(?:"([^"\n]+)"|'([^'\n]+)'|([^\s"'`,;)}\]]+))/g;
+/** Short `pass`/`pwd` need a boundary (`bypass`, `compass`); longer keywords also match glued (`PGPASSWORD`). */
+const LOWER_KEYWORD_SUFFIX =
+	/(?:(?:^|[_.-])(api[_-]?key|access[_-]?key|private[_-]?key|secret[_-]?key|client[_-]?secret|pwd|pass)|(apikey|passphrase|password|passwd|secret|token))$/i;
+const CAMEL_KEYWORD_SUFFIX =
+	/[a-z0-9](Api[_-]?[Kk]ey|Access[Kk]ey|Private[Kk]ey|Secret[Kk]ey|Client[Ss]ecret|Passphrase|Password|Passwd|Secret|Token|Pwd|Pass)$/;
+/** `scheme://user:password@host` — the password group only. */
+const URL_CREDENTIAL_PATTERN = /[a-z][a-z0-9+.-]*:\/\/[^\s/:@?#]+:([^\s/@?#]+)@/gi;
+const PLACEHOLDER_WORDS: Record<string, true> = {
+	none: true,
+	null: true,
+	nil: true,
+	undefined: true,
+	true: true,
+	false: true,
+	required: true,
+	optional: true,
+	string: true,
+	str: true,
+	number: true,
+	boolean: true,
+	password: true,
+	secret: true,
+	token: true,
+	redacted: true,
+	hidden: true,
+	example: true,
+	placeholder: true,
+	env: true,
+};
+
+type CredentialFamily = "password" | "token";
+
+function credentialKeyword(identifier: string): CredentialFamily | undefined {
+	const lower = LOWER_KEYWORD_SUFFIX.exec(identifier);
+	const keyword = lower ? (lower[1] ?? lower[2]) : CAMEL_KEYWORD_SUFFIX.exec(identifier)?.[1];
+	if (!keyword) return undefined;
+	return /pass|pwd/i.test(keyword) ? "password" : "token";
+}
+
+/** Rejects references, types, masks, and code expressions that sit where a secret value would. */
+function isPlaceholderValue(value: string): boolean {
+	if (PLACEHOLDER_WORDS[value.toLowerCase()]) return true;
+	// Variable/template refs, masks, operators, and ellipses: `$PASS`, `${x}`, `<pw>`, `%s`, `***`, `==`, `…`.
+	if (/^[$<{%*=&|!?]/.test(value) || /^[*•.x]+$/i.test(value) || value.includes("...") || value.includes("…")) {
+		return true;
+	}
+	// Code rather than a literal: calls and member access (`getPassword()`, `req.body.password`).
+	if (/[()]/.test(value) || /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(value)) return true;
+	return false;
+}
+
 const namesByKind: Record<string, string> = {
 	"github-token": "GITHUB_TOKEN",
 	"openai-key": "OPENAI_API_KEY",
@@ -31,6 +93,7 @@ const namesByKind: Record<string, string> = {
 	jwt: "JWT_TOKEN",
 	tag: "SECRET",
 	generic: "SECRET",
+	"url-password": "PASSWORD",
 	"hex-key": "SECRET",
 };
 
@@ -58,10 +121,14 @@ interface CandidateSpan {
 }
 
 function addSpan(candidates: Candidate[], replacements: Array<[number, number]>, span: CandidateSpan): void {
-	if (
-		(span.kind !== "aws-access-key-id" && span.value.length < MIN_SECRET_LENGTH) ||
-		isInReplacement(span.start, span.end, replacements)
-	) {
+	// An explicit `<secret>` tag is the user's declaration and keyword/URL
+	// detections run their own plausibility check, so any non-empty value counts
+	// there (short passwords included); the length floor only guards the
+	// vendor-shape regexes against false positives.
+	const tooShort = SELF_VALIDATED_KINDS[span.kind]
+		? span.value.length === 0
+		: span.kind !== "aws-access-key-id" && span.value.length < MIN_SECRET_LENGTH;
+	if (tooShort || isInReplacement(span.start, span.end, replacements)) {
 		return;
 	}
 	candidates.push({ ...span, generic: span.kind === "generic" });
@@ -108,7 +175,8 @@ function collectRegexMatches(
  */
 function collectSecretTags(text: string): Array<{ start: number; end: number; value: string; name?: string }> {
 	const tags: Array<{ start: number; end: number; value: string; name?: string }> = [];
-	const openPattern = /<sec(?:ret)?(?:\s+name\s*=\s*(?:"([^"]*)"|'([^']*)'))?\s*>/gi;
+	// `<sec>`, `<sec DB_PASS>`, `<sec name="DB_PASS">` (and the `<secret …>` spellings).
+	const openPattern = /<sec(?:ret)?(?:\s+(?:name\s*=\s*(?:"([^"]*)"|'([^']*)')|([A-Za-z_][A-Za-z0-9_]*)))?\s*>/gi;
 	const closeTag = /<\/sec(?:ret)?\s*>/gi;
 	let cursor = 0;
 	while (cursor < text.length) {
@@ -127,11 +195,27 @@ function collectSecretTags(text: string): Array<{ start: number; end: number; va
 			start: open.index,
 			end: close.index + close[0].length,
 			value: text.slice(bodyStart, close.index).trim(),
-			name: open[1] ?? open[2],
+			name: open[1] ?? open[2] ?? open[3] ?? assignedName(text, open.index),
 		});
 		cursor = close.index + close[0].length;
 	}
+	// `||value||` spoiler shorthand: no whitespace inside and not glued to a word
+	// or another `|`, so shell/JS `a || b || c` and `x||y` never qualify.
+	for (const match of text.matchAll(/(?<![|\w])\|\|([^\s|]+)\|\|(?![|\w])/g)) {
+		tags.push({
+			start: match.index,
+			end: match.index + match[0].length,
+			value: match[1],
+			name: assignedName(text, match.index),
+		});
+	}
 	return tags;
+}
+
+/** `DB_PASS=<sec>…</sec>` / `DB_PASS: ||…||` — reuse the assigned identifier as the env var name. */
+function assignedName(text: string, markerStart: number): string | undefined {
+	const before = text.slice(Math.max(0, markerStart - 80), markerStart);
+	return /([A-Za-z_][A-Za-z0-9_]*)["']?[ \t]*(?::=|[:=])[ \t]*$/.exec(before)?.[1];
 }
 
 export function detectSecretsInText(text: string): DetectedSecret[] {
@@ -178,18 +262,34 @@ export function detectSecretsInText(text: string): DetectedSecret[] {
 		}
 	}
 
-	for (const match of text.matchAll(
-		/(api[_-]?key|apikey|token|secret|password|passwd)\s*[=:]\s*["']?([^\s"']{16,})["']?/gi,
-	)) {
-		const value = match[2];
-		const separatorIndex = match[0].search(/[=:]/);
-		const valueStart = match.index + match[0].indexOf(value, separatorIndex + 1);
+	for (const match of text.matchAll(ASSIGNMENT_PATTERN)) {
+		const identifier = match[1];
+		const family = credentialKeyword(identifier);
+		if (!family) continue;
+		const value = match[2] ?? match[3] ?? match[4];
+		const minLength = family === "password" ? MIN_PASSWORD_LENGTH : MIN_KEYWORD_SECRET_LENGTH;
+		if (value.length < minLength || isPlaceholderValue(value)) continue;
+		const valueStart = match.index + match[0].length - value.length - (match[4] === undefined ? 1 : 0);
 		addSpan(candidates, replacements, {
 			start: valueStart,
 			end: valueStart + value.length,
 			value,
+			name: identifier,
 			kind: "generic",
 			priority: 13,
+		});
+	}
+
+	for (const match of text.matchAll(URL_CREDENTIAL_PATTERN)) {
+		const value = match[1];
+		if (isPlaceholderValue(value)) continue;
+		const valueStart = match.index + match[0].length - value.length - 1;
+		addSpan(candidates, replacements, {
+			start: valueStart,
+			end: valueStart + value.length,
+			value,
+			kind: "url-password",
+			priority: 14,
 		});
 	}
 

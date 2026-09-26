@@ -21,7 +21,20 @@ The encrypted secret vault creates its encryption key lazily: no keychain entry,
    - Built-in reversible regexes for common credential shapes that appear only in session content or tool results: GitHub, GitLab, OpenAI, and Anthropic tokens, AWS access keys, Google API keys, Slack tokens, npm tokens, Stripe secret and restricted keys and webhook secrets, Hugging Face tokens, SendGrid keys, JWTs, Bearer header tokens, and PEM private key blocks
    - Passwords embedded in connection-URL environment values — any variable holding a `scheme://user:password@host`-style value (for example `DATABASE_URL`) has its password registered as a secret regardless of the variable name
 
-   Prompts are additionally scanned (`secrets.autoDetect`, on by default) for credential-shaped tokens (GitHub, OpenAI, Anthropic, AWS, Slack, GitLab, npm, Stripe, JWT, PEM blocks, `key=value` pairs) and for explicit tags. Detected values are stored in the vault, replaced in the prompt with `[secret NAME (mask) — exported as env var NAME in bash]`, and exported to bash as `$NAME`. To mark a value by hand, wrap it in `<secret>…</secret>` or the short alias `<sec>…</sec>`, optionally naming the env var: `<sec name="DB_PASS">hunter2-long</sec>`. `<s>` and `<>` are not accepted so pasted HTML/JSX never becomes a secret.
+   Prompts are additionally scanned (`secrets.autoDetect`, on by default) for credential-shaped tokens (GitHub, OpenAI, Anthropic, AWS, Slack, GitLab, npm, Stripe, JWT, PEM blocks), keyword assignments (`password: hunter2`, `DB_PASSWORD=…`, `"apiKey": "…"`; passwords from 4 characters, other keys from 12), connection-URL passwords, and explicit markers. Detected values are stored in the vault, replaced in the prompt with `[secret NAME (mask) — exported as env var NAME in bash]`, and exported to bash as `$NAME`.
+
+   To mark a value by hand (any length):
+
+   | Syntax                                          | Env var name   |
+   | ----------------------------------------------- | -------------- |
+   | `\|\|hunter2\|\|` (no spaces inside)            | `SECRET`       |
+   | `DB_PASS=\|\|hunter2\|\|`                       | `DB_PASS`      |
+   | `<sec>hunter2</sec>` / `<secret>…</secret>`     | `SECRET`       |
+   | `<sec DB_PASS>hunter2</sec>`                    | `DB_PASS`      |
+   | `<sec name="DB_PASS">hunter2</sec>`             | `DB_PASS`      |
+   | `DB_PASS=<sec>hunter2</sec>`                    | `DB_PASS`      |
+
+   Values with spaces need the tag form. `<s>` and `<>` are not accepted so pasted HTML/JSX never becomes a secret, and `||` glued to a word or surrounded by spaces (`a || b`, `x||y`) is left alone. A name already taken by a different value gets a `_2`, `_3`… suffix.
 
 2. Provider-visible text has matching values replaced with deterministic placeholders such as `$$3P8W5JH1TK2Q$$`, `$$3P8W5JH1TK2Q:L$$`, or `$$GITHUBTOKEN_3P8W5JH1TK2Q:L$$`.
 
