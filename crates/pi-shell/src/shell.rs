@@ -6436,7 +6436,12 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		let (grace_tx, grace_rx) = tokio::sync::oneshot::channel();
 		let (release_tx, release_rx) = tokio::sync::oneshot::channel();
 
-		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
+		let config = ShellConfig {
+			session_env:   None,
+			snapshot_path: None,
+			minimizer:     None,
+			filesystem:    Fs::native(),
+		};
 		let mut session = create_session(&config).await.expect("create_session");
 		let cancel_token = CancellationToken::new();
 		let spawn_registry = Arc::new(process::SpawnRegistry::new());
