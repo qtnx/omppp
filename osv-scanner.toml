@@ -37,3 +37,8 @@ reason = "audiopus_sys 0.2.2 is unmaintained (transitive via maudio/audiopus); n
 id = "GHSA-vwc7-r8mq-g2x9"
 ignoreUntil = 2026-12-31
 reason = "adm-zip <=0.6.0 is transitive via onnxruntime-node and generative-bayesian-network; the advisory has no patched version (firstPatchedVersion is null) and we never extract untrusted archives through those paths. Revisit when adm-zip ships a fix."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-12-31
+reason = "paste 1.0.15 is an unmaintained compile-time proc-macro pulled in by gemm via candle-core (pi-predict, from the upstream 18.3.4 sync); the advisory is unmaintained-only with no fixed version. Revisit when candle/gemm drop paste."
