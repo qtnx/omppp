@@ -29,6 +29,9 @@ export const APP_DISPLAY_NAME: string = "OMPx";
 /** Short product tagline for top-level help and package metadata. */
 export const APP_TAGLINE: string = "an upgrade for OMP";
 
+/** Public homepage that inference gateways (OpenRouter, Vercel AI Gateway) credit omp traffic to. */
+export const APP_URL: string = "https://omp.sh/";
+
 /** Config directory name (e.g. ".omp") */
 export const CONFIG_DIR_NAME: string = ".omp";
 
@@ -615,12 +618,14 @@ export function getCrashReportsDir(): string {
 	return getLogsDir();
 }
 
+/** Local-timezone day key matching the rotating log sink's filenames. */
+export function localDay(date: Date): string {
+	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 /** Get this process's dated log path (~/.omp/logs/omp.YYYY-MM-DD.PID.log). */
 export function getLogPath(date = new Date(), pid = process.pid): string {
-	const year = date.getFullYear();
-	const month = String(date.getMonth() + 1).padStart(2, "0");
-	const day = String(date.getDate()).padStart(2, "0");
-	return path.join(getLogsDir(), `${APP_STORAGE_NAME}.${year}-${month}-${day}.${pid}.log`);
+	return path.join(getLogsDir(), `${APP_STORAGE_NAME}.${localDay(date)}.${pid}.log`);
 }
 
 /**
@@ -772,11 +777,6 @@ export function hashPath(absPath: string): string {
 /** Get the path to a single worktree directory (~/.omp/wt/<segment>). */
 export function getWorktreeDir(segment: string): string {
 	return path.join(getWorktreesDir(), segment);
-}
-
-/** Get the GPU cache path (~/.omp/gpu_cache.json). */
-export function getGpuCachePath(): string {
-	return dirs.rootSubdir("gpu_cache.json", "cache");
 }
 
 /**

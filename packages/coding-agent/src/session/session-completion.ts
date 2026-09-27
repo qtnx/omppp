@@ -7,6 +7,7 @@ import continuePrompt from "../prompts/session/completion-continue.md" with { ty
 import auditPrompt from "../prompts/session/completion-audit.md" with { type: "text" };
 import type { StopAssessment, StopAssessmentInput, TurnSignalService } from "../signals";
 import type { SessionManager } from "./session-manager";
+import { cfgAutonomyStopGate } from "../autonomy/settings";
 
 export interface SessionCompletionHost {
 	agent: Agent;
@@ -89,7 +90,7 @@ export class SessionCompletion {
 
 	async #check(final: AssistantMessage): Promise<boolean> {
 		const host = this.#host;
-		if (!host.settings.get("autonomy.stopGate") || !host.canContinue() || final.stopReason !== "stop") return false;
+		if (!cfgAutonomyStopGate.get(host.settings) || !host.canContinue() || final.stopReason !== "stop") return false;
 		if (this.#generation !== host.generation()) {
 			this.#generation = host.generation();
 			this.#sessionId = "";

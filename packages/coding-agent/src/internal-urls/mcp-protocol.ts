@@ -1,6 +1,7 @@
 import { MCPManager } from "../mcp/manager";
 import type { MCPResourceReadResult } from "../mcp/types";
-import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext } from "./types";
+import mcpDoc from "../prompts/internal-urls/mcp.md" with { type: "text" };
+import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, SchemeSpec } from "./types";
 
 function escapeRegex(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -115,7 +116,16 @@ function formatAvailableResources(mcpManager: MCPManager): string {
  */
 export class McpProtocolHandler implements ProtocolHandler {
 	readonly scheme = "mcp";
-	readonly immutable = true;
+	readonly spec: SchemeSpec = { backing: "remote", selectors: "opaque", immutable: true };
+
+	/**
+	 * Always advertised: the system prompt is built before MCP discovery settles
+	 * (`MCPManager.instance()` and its server set are populated asynchronously),
+	 * so there is no reliable synchronous "has servers" signal at prompt time.
+	 */
+	promptDoc(): string {
+		return mcpDoc.trim();
+	}
 
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
 		const mcpManager = context ? context.mcpManager : MCPManager.instance();

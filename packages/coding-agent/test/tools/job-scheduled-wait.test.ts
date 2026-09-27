@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import { AsyncJobManager } from "../../src/async";
-import type { Settings } from "../../src/config/settings";
+import { Settings } from "../../src/config/settings";
 import type { AgentProgress } from "../../src/task/types";
 import type { ToolSession } from "../../src/tools";
 import { isWaitingPollDetails, JobTool, type JobToolDetails, setJobLiveStatsProvider } from "../../src/tools/job";
@@ -30,17 +30,11 @@ function createNoopProxy<T extends object>(overrides: Record<string, unknown>): 
 }
 
 function createSettings(options: ScheduledSettingsOptions = {}): Settings {
-	return createNoopProxy<Settings>({
-		get(key: string) {
-			if (key === "advisor.enabled") return false;
-			if (key === "async.pollWaitDuration") return options.pollWaitDuration ?? "scheduled";
-			if (key === "async.stallThresholdMs") return options.stallThresholdMs;
-			if (key === "contextPromotion.enabled") return false;
-			return undefined;
-		},
-		getGroup() {
-			return {};
-		},
+	return Settings.isolated({
+		"async.pollWaitDuration": options.pollWaitDuration ?? "scheduled",
+		"async.stallThresholdMs": options.stallThresholdMs,
+		"advisor.enabled": false,
+		"contextPromotion.enabled": false,
 	});
 }
 

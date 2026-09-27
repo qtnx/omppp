@@ -6,7 +6,7 @@ import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { CustomMessage } from "../session/messages";
 import type { ToolSession } from "../tools";
-import { isIrcEnabled } from "../tools/hub";
+import { isIrcEnabled } from "../irc/messaging";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { runSubagentFollowUpTurn } from "./executor";
 import { resolveMaxRuntimeMs } from "./runtime-cap";
@@ -17,6 +17,9 @@ import {
 } from "./structured-subagent";
 import { type AgentProgress, oneLineLabel, type SingleResult, type TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 import { buildWorkPoolOutputSchema, type WorkPoolYieldItem } from "./workpool-yield";
+
+import { cfgEvalWorkpoolFreshAgents } from "../eval/settings";
+import { cfgTaskMaxConcurrency, cfgTaskMaxRuntimeMs } from "./settings";
 
 /** One user-supplied unit tracked through a workpool batch. */
 export interface WorkPoolItem {
@@ -131,7 +134,7 @@ export class WorkPool {
 		this.policy = options.policy;
 		this.context = options.context;
 		this.customTools = options.customTools ?? [];
-		this.freshAgents = session.settings.get("eval.workpool.freshAgents");
+		this.freshAgents = cfgEvalWorkpoolFreshAgents.get(session.settings);
 		if (!session.asyncJobManager) {
 			throw new ToolError("workpool() needs the session's async job manager; unavailable here");
 		}
@@ -142,7 +145,7 @@ export class WorkPool {
 
 	/** Current worker ceiling from the live `task.maxConcurrency` setting. */
 	limit(): number {
-		const configured = this.session.settings.get("task.maxConcurrency");
+		const configured = cfgTaskMaxConcurrency.get(this.session.settings);
 		return configured > 0 ? configured : Infinity;
 	}
 
@@ -411,7 +414,7 @@ export class WorkPool {
 							maxRuntimeMs: resolveMaxRuntimeMs(
 								this.policy.agent.name,
 								undefined,
-								this.session.settings.get("task.maxRuntimeMs"),
+								cfgTaskMaxRuntimeMs.get(this.session.settings),
 							),
 						});
 					}

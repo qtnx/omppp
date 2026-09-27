@@ -57,13 +57,37 @@ import {
 	sweepTombstoneTouches,
 	upsertLearning,
 } from "./storage";
+import {
+	cfgLearningClassifierModels,
+	cfgLearningClassifierTimeoutMs,
+	cfgLearningConsolidationEnabled,
+	cfgLearningConsolidationIntervalDays,
+	cfgLearningConsolidationMinEntries,
+	cfgLearningConsolidationModels,
+	cfgLearningConsolidationTimeoutMs,
+	cfgLearningEnabled,
+	cfgLearningHalfLifeDays,
+	cfgLearningMaxEntriesPerScope,
+	cfgLearningMaxInjectedPerScope,
+	cfgLearningMaxUserMessageChars,
+	cfgLearningMinConfidence,
+	cfgLearningNoveltyEnabled,
+	cfgLearningNoveltyReinforceThreshold,
+	cfgLearningNoveltyTimeoutMs,
+	cfgLearningRelevanceEnabled,
+	cfgLearningRelevanceMaxCandidates,
+	cfgLearningRelevanceThreshold,
+	cfgLearningRelevanceTimeoutMs,
+	cfgLearningWriterModels,
+	cfgLearningWriterTimeoutMs,
+} from "../learning/settings";
 
 interface LearningRuntimeConfig {
 	enabled: boolean;
 	minConfidence: number;
-	classifierModels: string[];
+	classifierModels: readonly string[];
 	classifierTimeoutMs: number;
-	writerModels: string[];
+	writerModels: readonly string[];
 	writerTimeoutMs: number;
 	maxUserMessageChars: number;
 	maxEntriesPerScope: number;
@@ -80,7 +104,7 @@ interface LearningRuntimeConfig {
 	consolidationIntervalDays: number;
 	consolidationMinEntries: number;
 	consolidationTimeoutMs: number;
-	consolidationModels: string[];
+	consolidationModels: readonly string[];
 }
 
 interface LearningDecision {
@@ -260,7 +284,7 @@ export function startLearningStartupTask(options: {
 			});
 	});
 
-	if (settings.get("learning.consolidation.enabled") !== false) {
+	if (cfgLearningConsolidationEnabled.get(settings) !== false) {
 		void consolidation
 			.maybeRunLearningConsolidation({ session, settings, modelRegistry, agentDir })
 			.then(reports => {
@@ -853,7 +877,7 @@ async function writeLearning(options: {
 		existing_learnings: renderExistingLearnings(existing),
 		user_message: userText,
 	});
-	const writerModels = config.writerModels.length > 0 ? config.writerModels : DEFAULT_WRITER_MODELS;
+	const writerModels = [...(config.writerModels.length > 0 ? config.writerModels : DEFAULT_WRITER_MODELS)];
 	const contextFile = session.sessionManager.getSessionFile() ?? undefined;
 	const contextFiles = contextFile ? [{ path: contextFile, content: "" }] : undefined;
 	await recordLearningWriterRequest(audit, input, writerModels, contextFile);
@@ -1126,30 +1150,30 @@ function redactSecrets(input: string): string {
 
 function loadLearningConfig(settings: Settings): LearningRuntimeConfig {
 	return {
-		enabled: settings.get("learning.enabled") ?? DEFAULTS.enabled,
-		minConfidence: settings.get("learning.minConfidence") ?? DEFAULTS.minConfidence,
-		classifierModels: settings.get("learning.classifierModels") ?? DEFAULTS.classifierModels,
-		classifierTimeoutMs: settings.get("learning.classifierTimeoutMs") ?? DEFAULTS.classifierTimeoutMs,
-		writerModels: settings.get("learning.writerModels") ?? DEFAULTS.writerModels,
-		writerTimeoutMs: settings.get("learning.writerTimeoutMs") ?? DEFAULTS.writerTimeoutMs,
-		maxUserMessageChars: settings.get("learning.maxUserMessageChars") ?? DEFAULTS.maxUserMessageChars,
-		maxEntriesPerScope: settings.get("learning.maxEntriesPerScope") ?? DEFAULTS.maxEntriesPerScope,
-		maxInjectedPerScope: settings.get("learning.maxInjectedPerScope") ?? DEFAULTS.maxInjectedPerScope,
-		relevanceEnabled: settings.get("learning.relevance.enabled") ?? DEFAULTS.relevanceEnabled,
-		relevanceThreshold: settings.get("learning.relevance.threshold") ?? DEFAULTS.relevanceThreshold,
-		relevanceMaxCandidates: settings.get("learning.relevance.maxCandidates") ?? DEFAULTS.relevanceMaxCandidates,
-		relevanceTimeoutMs: settings.get("learning.relevance.timeoutMs") ?? DEFAULTS.relevanceTimeoutMs,
-		noveltyEnabled: settings.get("learning.novelty.enabled") ?? DEFAULTS.noveltyEnabled,
+		enabled: cfgLearningEnabled.get(settings) ?? DEFAULTS.enabled,
+		minConfidence: cfgLearningMinConfidence.get(settings) ?? DEFAULTS.minConfidence,
+		classifierModels: cfgLearningClassifierModels.get(settings) ?? DEFAULTS.classifierModels,
+		classifierTimeoutMs: cfgLearningClassifierTimeoutMs.get(settings) ?? DEFAULTS.classifierTimeoutMs,
+		writerModels: cfgLearningWriterModels.get(settings) ?? DEFAULTS.writerModels,
+		writerTimeoutMs: cfgLearningWriterTimeoutMs.get(settings) ?? DEFAULTS.writerTimeoutMs,
+		maxUserMessageChars: cfgLearningMaxUserMessageChars.get(settings) ?? DEFAULTS.maxUserMessageChars,
+		maxEntriesPerScope: cfgLearningMaxEntriesPerScope.get(settings) ?? DEFAULTS.maxEntriesPerScope,
+		maxInjectedPerScope: cfgLearningMaxInjectedPerScope.get(settings) ?? DEFAULTS.maxInjectedPerScope,
+		relevanceEnabled: cfgLearningRelevanceEnabled.get(settings) ?? DEFAULTS.relevanceEnabled,
+		relevanceThreshold: cfgLearningRelevanceThreshold.get(settings) ?? DEFAULTS.relevanceThreshold,
+		relevanceMaxCandidates: cfgLearningRelevanceMaxCandidates.get(settings) ?? DEFAULTS.relevanceMaxCandidates,
+		relevanceTimeoutMs: cfgLearningRelevanceTimeoutMs.get(settings) ?? DEFAULTS.relevanceTimeoutMs,
+		noveltyEnabled: cfgLearningNoveltyEnabled.get(settings) ?? DEFAULTS.noveltyEnabled,
 		noveltyReinforceThreshold:
-			settings.get("learning.novelty.reinforceThreshold") ?? DEFAULTS.noveltyReinforceThreshold,
-		noveltyTimeoutMs: settings.get("learning.novelty.timeoutMs") ?? DEFAULTS.noveltyTimeoutMs,
-		halfLifeDays: settings.get("learning.halfLifeDays") ?? DEFAULTS.halfLifeDays,
-		consolidationEnabled: settings.get("learning.consolidation.enabled") ?? DEFAULTS.consolidationEnabled,
+			cfgLearningNoveltyReinforceThreshold.get(settings) ?? DEFAULTS.noveltyReinforceThreshold,
+		noveltyTimeoutMs: cfgLearningNoveltyTimeoutMs.get(settings) ?? DEFAULTS.noveltyTimeoutMs,
+		halfLifeDays: cfgLearningHalfLifeDays.get(settings) ?? DEFAULTS.halfLifeDays,
+		consolidationEnabled: cfgLearningConsolidationEnabled.get(settings) ?? DEFAULTS.consolidationEnabled,
 		consolidationIntervalDays:
-			settings.get("learning.consolidation.intervalDays") ?? DEFAULTS.consolidationIntervalDays,
-		consolidationMinEntries: settings.get("learning.consolidation.minEntries") ?? DEFAULTS.consolidationMinEntries,
-		consolidationTimeoutMs: settings.get("learning.consolidation.timeoutMs") ?? DEFAULTS.consolidationTimeoutMs,
-		consolidationModels: settings.get("learning.consolidation.models") ?? DEFAULTS.consolidationModels,
+			cfgLearningConsolidationIntervalDays.get(settings) ?? DEFAULTS.consolidationIntervalDays,
+		consolidationMinEntries: cfgLearningConsolidationMinEntries.get(settings) ?? DEFAULTS.consolidationMinEntries,
+		consolidationTimeoutMs: cfgLearningConsolidationTimeoutMs.get(settings) ?? DEFAULTS.consolidationTimeoutMs,
+		consolidationModels: cfgLearningConsolidationModels.get(settings) ?? DEFAULTS.consolidationModels,
 	};
 }
 

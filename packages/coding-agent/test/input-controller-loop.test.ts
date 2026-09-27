@@ -1,4 +1,5 @@
 import { describe, expect, it, type Mock, vi } from "bun:test";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 type Spy = Mock<(...args: unknown[]) => unknown>;
@@ -62,7 +63,7 @@ function createLoopContext(options: {
 		setLoopPrompt,
 		pauseLoop,
 		captureLoopPrompt: vi.fn(async () => {}),
-		settings: { get: () => "steer" },
+		settings: Settings.isolated(),
 		flushPendingBashComponents: vi.fn(),
 		startPendingSubmission: vi.fn((input: { text: string }) => ({ ...input, cancelled: false, started: false })),
 		withLocalSubmission: async (_text: string, fn: () => unknown) => fn(),
@@ -92,7 +93,6 @@ function createLoopContext(options: {
 		showError: ctx.showError as Spy,
 	};
 }
-
 describe("loop mode interjections", () => {
 	it("keeps the original loop prompt when steering mid-turn", async () => {
 		const { ctx, setLoopPrompt, prompt, getLoopPrompt } = createLoopContext({ isStreaming: true });

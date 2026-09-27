@@ -113,6 +113,21 @@ describe("review findings persistence", () => {
 				},
 			],
 		});
+		// Simulate a row written before priority stopped being part of identity.
+		const legacyFingerprint = Bun.hash(
+			[
+				repoA,
+				"fix stale state handling",
+				"the reviewer found stale state is reused after refresh.",
+				"src/state.ts",
+				"12",
+				"18",
+				"P1",
+			].join("\u0000"),
+		).toString(16);
+		const db = new Database(dbPath);
+		db.prepare("UPDATE review_findings SET fingerprint = ?").run(legacyFingerprint);
+		db.close();
 		const backfillRepeatCount = await recordReviewFindings({
 			agentDbPath: dbPath,
 			mode: "backfill",
@@ -133,7 +148,7 @@ describe("review findings persistence", () => {
 				{
 					title: "Fix stale state handling",
 					body: "The reviewer found stale state is reused after refresh.",
-					priority: "P1",
+					priority: "P2",
 					confidence: 0.96,
 					file_path: "src/state.ts",
 					line_start: 12,

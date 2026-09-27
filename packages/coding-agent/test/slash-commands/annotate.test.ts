@@ -1,18 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { disableAnnotateHttp } from "../../src/tools/browser/annotate-http";
 
 function createRuntimeHarness(options?: { host?: string; port?: number }) {
 	const output = vi.fn();
 	const enqueue = vi.fn();
-	const settings = {
-		get: vi.fn((path: string) => {
-			if (path === "browser.annotateHttpHost") return options?.host ?? "256.256.256.256";
-			if (path === "browser.annotateHttpPort") return options?.port ?? 65_535;
-			return undefined;
-		}),
-	};
+	const settings = Settings.isolated({
+		"browser.annotateHttpHost": options?.host ?? "256.256.256.256",
+		"browser.annotateHttpPort": options?.port ?? 65_535,
+	});
 	const setText = vi.fn();
 	const session = {
 		sessionName: "Annotate allocation test",

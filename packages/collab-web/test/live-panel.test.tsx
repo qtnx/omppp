@@ -20,6 +20,7 @@ function snapshot(overrides: Partial<GuestSnapshot> = {}): GuestSnapshot {
 		readOnly: false,
 		uiRequest: null,
 		notices: [],
+		loading: null,
 		live: { phase: null, transcript: null, ended: null },
 		...overrides,
 	};

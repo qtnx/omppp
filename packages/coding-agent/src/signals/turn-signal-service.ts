@@ -27,6 +27,13 @@ import {
 	type TopicSignals,
 	type TurnSignals,
 } from "./types";
+import {
+	cfgSignalsApiKey,
+	cfgSignalsBaseUrl,
+	cfgSignalsEnabled,
+	cfgSignalsModel,
+	cfgSignalsTimeoutMs,
+} from "./settings";
 
 /** API state cap is 32k tokens (state + longest question); keep a margin. */
 export const DEFAULT_MAX_STATE_CHARS = 80_000;
@@ -448,7 +455,7 @@ export class TurnSignalService {
 export function resolveTypeSafeApiKey(settings: Settings): string | undefined {
 	const fromEnv = $env.TYPESAFE_API_KEY?.trim();
 	if (fromEnv) return fromEnv;
-	const fromSettings = settings.get("signals.apiKey")?.trim();
+	const fromSettings = cfgSignalsApiKey.get(settings)?.trim();
 	return fromSettings || undefined;
 }
 
@@ -457,16 +464,16 @@ export function createTurnSignalService(
 	settings: Settings,
 	options: { fetch?: typeof fetch; redact?: (text: string) => string } = {},
 ): TurnSignalService | undefined {
-	if (!settings.get("signals.enabled")) return undefined;
+	if (!cfgSignalsEnabled.get(settings)) return undefined;
 	const apiKey = resolveTypeSafeApiKey(settings);
 	if ($env.TYPESAFE_SYSTEMONE_URL !== undefined && !$env.TYPESAFE_SYSTEMONE_URL.trim()) return undefined;
-	const baseUrl = ($env.TYPESAFE_SYSTEMONE_URL?.trim() || settings.get("signals.baseUrl") || "").trim();
+	const baseUrl = ($env.TYPESAFE_SYSTEMONE_URL?.trim() || cfgSignalsBaseUrl.get(settings) || "").trim();
 	if (!apiKey && !baseUrl) return undefined;
 	const client = new TypeSafeClient({
 		apiKey,
 		baseUrl: baseUrl || undefined,
-		model: settings.get("signals.model"),
-		timeoutMs: settings.get("signals.timeoutMs"),
+		model: cfgSignalsModel.get(settings),
+		timeoutMs: cfgSignalsTimeoutMs.get(settings),
 		fetch: options.fetch,
 		redact: options.redact,
 	});

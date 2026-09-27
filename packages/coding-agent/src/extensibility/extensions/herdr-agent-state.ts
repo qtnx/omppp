@@ -15,6 +15,7 @@ import {
 import { sendHerdrRequest } from "../../herdr/socket";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "../../task";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "./types";
+import { cfgHerdrMetadataEnabled } from "../../herdr/settings";
 
 export const HERDR_AGENT_STATE_LABEL = "Herdr Agent State";
 export const HERDR_NATIVE_AGENT_STATE_ENV = "OMP_NATIVE_HERDR_AGENT_STATE";
@@ -488,7 +489,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		const canPublishMetadata = (): boolean => {
 			if (metadataAllowed === undefined) {
 				try {
-					metadataAllowed = settings.get("herdr.metadata.enabled") !== false;
+					metadataAllowed = cfgHerdrMetadataEnabled.get(settings) !== false;
 				} catch {
 					metadataAllowed = false;
 				}

@@ -6,6 +6,8 @@ import { urlHyperlinkAlways, WidthAwareText } from "../render/index";
 import { formTheme } from "../chrome/form-theme";
 import { OverlayPanel } from "../chrome/overlay-box";
 import { TextFormField } from "../components/form";
+import { formatKeyHint, keyHintPlatform } from "../app-keybindings";
+import { editorKey } from "../chrome/keybinding-hints";
 
 /**
  * Tailscale login shortcut copy for surfaces whose callback server also listens
@@ -110,7 +112,7 @@ export class LoginDialogComponent extends OverlayPanel {
 			),
 		);
 
-		const clickHint = process.platform === "darwin" ? "Cmd+click to open" : "Ctrl+click to open";
+		const clickHint = `${formatKeyHint(keyHintPlatform() === "darwin" ? "super" : "ctrl")}+click to open`;
 		const hyperlink = `\x1b]8;;${url}\x07${clickHint}\x1b]8;;\x07`;
 		this.#contentContainer.addChild(new Text(theme.fg("dim", hyperlink), 0, 0));
 
@@ -150,7 +152,9 @@ export class LoginDialogComponent extends OverlayPanel {
 			this.#contentContainer.addChild(new Spacer(1));
 			this.#contentContainer.addChild(new Text(theme.fg("dim", prompt), 0, 0));
 			this.#contentContainer.addChild(this.#input);
-			this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel)"), 0, 0));
+			this.#contentContainer.addChild(
+				new Text(theme.fg("dim", `(${editorKey("tui.select.cancel")} to cancel)`), 0, 0),
+			);
 		}
 		this.#tui.requestRender();
 
@@ -193,7 +197,16 @@ export class LoginDialogComponent extends OverlayPanel {
 			this.#contentContainer.addChild(new Text(theme.fg("dim", `e.g., ${prompt.placeholder}`), 0, 0));
 		}
 		this.#contentContainer.addChild(this.#input);
-		this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel, Enter to submit)"), 0, 0));
+		this.#contentContainer.addChild(
+			new Text(
+				theme.fg(
+					"dim",
+					`(${editorKey("tui.select.cancel")} to cancel, ${editorKey("tui.input.submit")} to submit)`,
+				),
+				0,
+				0,
+			),
+		);
 
 		this.#tui.requestRender();
 
@@ -218,7 +231,7 @@ export class LoginDialogComponent extends OverlayPanel {
 	showWaiting(message: string): void {
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(theme.fg("dim", message), 0, 0));
-		this.#contentContainer.addChild(new Text(theme.fg("dim", "(Escape to cancel)"), 0, 0));
+		this.#contentContainer.addChild(new Text(theme.fg("dim", `(${editorKey("tui.select.cancel")} to cancel)`), 0, 0));
 		this.#tui.requestRender();
 	}
 

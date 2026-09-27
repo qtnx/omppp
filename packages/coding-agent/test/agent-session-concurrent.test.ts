@@ -21,7 +21,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TtsrManager } from "@oh-my-pi/pi-coding-agent/export/ttsr";
 import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
@@ -96,7 +96,7 @@ describe("AgentSession concurrent prompt guard", () => {
 	});
 
 	async function createSession(
-		settingsOverrides?: Partial<Record<SettingPath, unknown>>,
+		settingsOverrides?: Record<string, unknown>,
 		modelOverride = getBundledModel("anthropic", "claude-sonnet-4-5")!,
 	) {
 		const model = modelOverride;

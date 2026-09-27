@@ -90,11 +90,13 @@ describe("AgentSession tool-call loop guard", () => {
 			},
 		});
 		const settings = Settings.isolated({
+			"duo.mode": "off",
+			"autonomy.stopGate": false,
 			"compaction.enabled": false,
 			"todo.enabled": false,
 			"model.toolCallLoopGuard.enabled": true,
 			"model.toolCallLoopGuard.threshold": 2,
-			"model.toolCallLoopGuard.exemptTools": ["hub"],
+			"model.toolCallLoopGuard.exemptTools": ["wait"],
 		});
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
 		session = new AgentSession({

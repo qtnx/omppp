@@ -408,10 +408,9 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 		if (handle.sharedDaemon) {
 			// The broker owns the Chromium; this process only drops its CDP
 			// connection. `kill` is scoped to spawned-app browsers — stopping the
-			// shared daemon outright would tear down every other session's tabs.
-			// Instead, schedule a stop that fires only once no live omp process
-			// owns a tab in it; otherwise an idle Chromium lingers for as long as
-			// any omp runs in the project.
+			// shared daemon here would tear down every other session's tabs. The
+			// daemon dies with the last omp client in the project (broker idle
+			// teardown), or via an explicit stop (`write proc://<name>/kill`).
 			if (handle.browser.connected) {
 				try {
 					handle.browser.disconnect();
@@ -497,7 +496,7 @@ async function openSharedHeadlessHandle(
 		});
 		if (!shared) {
 			throw new ToolError(
-				"Shared browser daemon unavailable (broker start or Chromium launch failed); check `hub ps` for omp.browser.* daemons and ~/.omp/logs for details",
+				"Shared browser daemon unavailable (broker start or Chromium launch failed); check `omp ps` for omp.browser.* daemons and ~/.omp/logs for details",
 			);
 		}
 		const puppeteer = await loadPuppeteer();

@@ -12,6 +12,7 @@ import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import type { ToolSession } from "../src/tools";
+import { cfgDuoMode } from "../src/duo/settings";
 
 function makeTool(name: string): AgentTool {
 	return {
@@ -156,10 +157,10 @@ describe("AgentSession live duo/advisor tool availability", () => {
 	}
 
 	async function startExecutingDuoWithAdvisorInOrchestrator(session: AgentSession): Promise<void> {
-		session.settings.override("duo.mode", "off");
+		cfgDuoMode.override(session.settings, "off");
 		await session.setOrchestratorModeState({ enabled: true });
 		session.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md" });
-		session.settings.clearOverride("duo.mode");
+		cfgDuoMode.clearOverride(session.settings);
 		await session.setDuoEnabled(true);
 		expect(session.getDuoStatus()?.phase).toBe("planning");
 		expect(session.isAdvisorActive()).toBe(true);
@@ -225,9 +226,9 @@ describe("AgentSession live duo/advisor tool availability", () => {
 
 	it("keeps duo-driven orchestrator enables out of restorable session mode", async () => {
 		const session = createHarness({ activeToolNames: ["read"] });
-		session.settings.override("duo.mode", "off");
+		cfgDuoMode.override(session.settings, "off");
 		session.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md" });
-		session.settings.clearOverride("duo.mode");
+		cfgDuoMode.clearOverride(session.settings);
 		await session.setDuoEnabled(true);
 		expect(session.getDuoStatus()?.phase).toBe("planning");
 		const persistedOrchestratorBeforeHandoff = orchestratorModeChangeCount(session);
@@ -251,7 +252,7 @@ describe("AgentSession live duo/advisor tool availability", () => {
 
 	it("keeps duo tools available across a /duo off toggle and pins them while duo is live", async () => {
 		const session = createHarness({ activeToolNames: ["read"] });
-		session.settings.override("duo.mode", "off");
+		cfgDuoMode.override(session.settings, "off");
 		// The tool exists regardless of duo state, so a call reports the missing
 		// controller instead of the tool being unreachable.
 		expect(session.getToolByName("duo_handoff")).toBeDefined();
@@ -259,7 +260,7 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		expect(session.getAllToolNames()).toContain("duo_change_phase");
 
 		session.setPlanModeState({ enabled: true, planFilePath: "local://PLAN.md" });
-		session.settings.clearOverride("duo.mode");
+		cfgDuoMode.clearOverride(session.settings);
 		await session.setDuoEnabled(true);
 		expect(session.getDuoStatus()?.phase).toBe("planning");
 		expect(session.getActiveToolNames()).toContain("duo_handoff");
@@ -297,8 +298,8 @@ describe("AgentSession live duo/advisor tool availability", () => {
 		await session.setDuoEnabled(false);
 		expect(session.getDuoStatus()?.phase).toBe("inactive");
 
-		session.settings.clearOverride("duo.mode");
-		expect(session.settings.get("duo.mode")).toBe("auto");
+		cfgDuoMode.clearOverride(session.settings);
+		expect(cfgDuoMode.get(session.settings)).toBe("auto");
 	});
 
 	it("auto duo started outside the pair activates once the user switches onto the planner", async () => {

@@ -520,7 +520,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		// each capped at previewWindowRows() VISUAL rows. Pre-fix the long output
 		// wrapped into ~2x its line count and blew past this.
 		expect(lines.length).toBeLessThanOrEqual(previewWindowRows() + 10);
-		expect(lines.map(line => Bun.stripANSI(line)).join("\n")).toContain("ctrl+o");
+		expect(lines.map(line => Bun.stripANSI(line)).join("\n")).toMatch(/Ctrl\+O to expand/);
 	});
 
 	test("hidden todo snapshot does not clip settled rows from a later streaming response", async () => {

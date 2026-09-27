@@ -51,6 +51,7 @@ function createHarness(options: { isStreaming: boolean; withSpinner: boolean }):
 		statusContainer,
 		statusLine: { invalidate: vi.fn() },
 		editor: { getText: () => "", onEscape: undefined },
+		keybindings: { getKeys: () => ["escape"] },
 		ensureLoadingAnimation: vi.fn(),
 		flushCompactionQueue: vi.fn(async () => {}),
 		showWarning: vi.fn(),

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import type { ApiKeyResolveContext } from "@oh-my-pi/pi-ai";
-import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai";
+import type { ApiKeyResolution, ApiKeyResolveContext } from "@oh-my-pi/pi-ai";
+import { registerCustomApi, resolveApiKeyOnce, seedApiKeyResolver, unregisterCustomApis } from "@oh-my-pi/pi-ai";
 import { OAuthError, ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { classify } from "@oh-my-pi/pi-ai/error/flags";
 import { streamSimple } from "@oh-my-pi/pi-ai/stream";
@@ -56,10 +56,6 @@ function shortRetryAfter429Message(): string {
 	return '429 {"type":"error","error":{"type":"rate_limit_error","message":"Too many requests"}} retry-after-ms=1000';
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: kept for symmetry with sibling helpers
-function googleResourceExhaustedMessage(): string {
-	return "Google API error (429): Resource exhausted. Please try again later.";
-}
 const GOOGLE_CAPACITY_EXHAUSTED_MESSAGE = `Cloud Code Assist API error (429): ${JSON.stringify({
 	error: {
 		code: 429,
@@ -149,6 +145,40 @@ describe("streamSimple resolver auth retry", () => {
 		]);
 		expect(contexts[1]).toBeDefined();
 		expect((contexts[1]!.error as { status?: number }).status).toBe(401);
+	});
+
+	it("stamps the serving sibling after a 401 rotates away from the signed-in credential", async () => {
+		const attempted: Array<{ key: string | undefined; credentialId: number | undefined }> = [];
+		registerCustomApi(
+			API,
+			(_model: Model<Api>, _context: Context, options?: SimpleStreamOptions) => {
+				attempted.push({
+					key: typeof options?.apiKey === "string" ? options.apiKey : undefined,
+					credentialId: options?.credentialId,
+				});
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => (options?.apiKey === "first" ? stream.fail(authError()) : ok(stream)));
+				return stream;
+			},
+			SOURCE_ID,
+		);
+		const resolver = (ctx: ApiKeyResolveContext) =>
+			ctx.lastChance ? { apiKey: "sibling", credentialId: 2 } : { apiKey: "first", credentialId: 1 };
+		let preflight: ApiKeyResolution;
+		await resolveApiKeyOnce(resolver, undefined, resolved => {
+			preflight = resolved;
+		});
+		const stream = streamSimple(model(), context, { apiKey: seedApiKeyResolver(preflight, resolver) });
+		let doneCredentialId: number | undefined;
+		for await (const event of stream) {
+			if (event.type === "done") doneCredentialId = event.message.credentialId;
+		}
+		expect(attempted).toEqual([
+			{ key: "first", credentialId: 1 },
+			{ key: "sibling", credentialId: 2 },
+		]);
+		expect(doneCredentialId).toBe(2);
+		expect((await stream.result()).credentialId).toBe(2);
 	});
 
 	it("replays exactly once after a provider requests token refresh, then succeeds", async () => {
@@ -751,7 +781,7 @@ describe("streamSimple resolver auth retry", () => {
 		expect(keys).toEqual(["credential-A", "credential-B"]);
 	});
 
-	it("rotates before emitting content for Codex quota payloads", async () => {
+	it("rotates before emitting content for quota and billing-cap payloads", async () => {
 		const payloads: Array<{ message: string; status?: number }> = [
 			{ message: "429", status: 429 },
 			{ message: '{"error":{"code":"insufficient_quota","message":"quota exhausted"}}' },
@@ -761,6 +791,7 @@ describe("streamSimple resolver auth retry", () => {
 				message:
 					"Codex error event: Our servers are currently overloaded. Please try again later. (code=server_is_overloaded)",
 			},
+			{ message: "Upstream request failed: Insufficient account funds", status: 402 },
 		];
 		let activePayload = payloads[0]!;
 		let keys: unknown[] = [];

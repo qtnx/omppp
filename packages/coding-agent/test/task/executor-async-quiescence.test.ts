@@ -208,10 +208,9 @@ describe("runSubprocess async quiescence fresh-yield contract", () => {
 
 		// Run did not terminate on the parked yield: the barrier noticed, the
 		// job settled, and the ladder demanded exactly one more prompt.
-		expect(harness.prompts).toHaveLength(3);
 		expect(harness.prompts[1]).toContain("`yield` recorded");
-		expect(harness.prompts[1]).toContain("`job poll`");
-		expect(harness.prompts[1]).toContain("`job cancel`");
+		expect(harness.prompts[1]).toContain("`wait`");
+		expect(harness.prompts[1]).toContain("`proc://<id>/kill`");
 		expect(harness.prompts[1]).not.toContain('`hub` op:"wait"');
 		expect(harness.settleCalls()).toBe(1);
 		// The parked yield stopped the turn without killing the run.

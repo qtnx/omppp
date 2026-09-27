@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getDefault, getEnumValues, getUi } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+import { cfgMessageDelivery } from "../src/modes/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 
@@ -57,9 +57,9 @@ function makeContext(options: { messageDelivery?: "steer" | "queue"; isCompactin
 
 describe("message delivery setting", () => {
 	it("defines steer as the default interaction channel", () => {
-		expect(getDefault("messageDelivery")).toBe("steer");
-		expect(getEnumValues("messageDelivery")).toEqual(["steer", "queue"]);
-		expect(getUi("messageDelivery")).toMatchObject({
+		expect(cfgMessageDelivery.default).toBe("steer");
+		expect(cfgMessageDelivery.enumValues).toEqual(["steer", "queue"]);
+		expect(cfgMessageDelivery.ui).toMatchObject({
 			label: "Message Delivery",
 			tab: "interaction",
 		});

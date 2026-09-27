@@ -24,6 +24,7 @@ import {
 	parseUpdateArgs,
 	pruneBunInstallCache,
 	type ReleaseInfo,
+	type RenameMigrationSteps,
 	replaceBinaryForUpdate,
 	resolveBunGlobalNodeModulesDirFromLocations,
 	resolveReleaseBinaryAsset,
@@ -708,6 +709,7 @@ describe("update-cli package rename migration", () => {
 			tag: "v1.7.1",
 			version: "1.7.1",
 			packages: { pkg: "@new/ompx", natives: "@new/natives" },
+			registry: "https://registry.npmjs.org/",
 		};
 		const calls: string[] = [];
 		let verificationAttempt = 0;
@@ -746,12 +748,94 @@ describe("update-cli release binary names", () => {
 		expect(getBinaryNameForTest("win32", "x64")).toBe("ompx-windows-x64.exe");
 		expect(() => getBinaryNameForTest("win32", "arm64")).toThrow("Unsupported Windows architecture");
 	});
+});
+
+describe("migrateRenamedInstall transaction", () => {
+	const release: ReleaseInfo = {
+		tag: "v999.1.0",
+		version: "999.1.0",
+		packages: { pkg: "@new/omp", natives: "@new/natives" },
+		registry: "https://registry.npmjs.org/",
+	};
+
+	function scriptedSteps(script: { install: number[]; removeOld?: number; verify: boolean[] }): {
+		steps: RenameMigrationSteps;
+		calls: string[];
+	} {
+		const calls: string[] = [];
+		let installs = 0;
+		let verifies = 0;
+		return {
+			calls,
+			steps: {
+				async install() {
+					calls.push("install");
+					return script.install[installs++] ?? 0;
+				},
+				async removeOld() {
+					calls.push("removeOld");
+					return script.removeOld ?? 0;
+				},
+				async verify() {
+					calls.push("verify");
+					return script.verify[verifies++]
+						? { ok: true, actual: "999.1.0", path: "/bin/omp" }
+						: { ok: false, path: "/bin/omp" };
+				},
+			},
+		};
+	}
+
+	it("never touches the old install when the new install fails", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { steps, calls } = scriptedSteps({ install: [1], verify: [] });
+
+		await expect(migrateRenamedInstall(release, steps)).rejects.toThrow("left untouched");
+		expect(calls).toEqual(["install"]);
+	});
+
+	it("installs the new package before removing the old one and verifies the result", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { steps, calls } = scriptedSteps({ install: [0], verify: [true] });
+
+		await migrateRenamedInstall(release, steps);
+		expect(calls).toEqual(["install", "removeOld", "verify"]);
+	});
+
+	it("restores the bin link by reinstalling when old-package removal breaks verification", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { steps, calls } = scriptedSteps({ install: [0, 0], verify: [false, true] });
+
+		await migrateRenamedInstall(release, steps);
+		expect(calls).toEqual(["install", "removeOld", "verify", "install", "verify"]);
+	});
+
+	it("treats old-package removal failure as a warning when the new install verifies", async () => {
+		const logs: string[] = [];
+		vi.spyOn(console, "log").mockImplementation(message => {
+			logs.push(String(message));
+		});
+		const { steps, calls } = scriptedSteps({ install: [0], removeOld: 1, verify: [true] });
+
+		await migrateRenamedInstall(release, steps);
+		expect(calls).toEqual(["install", "removeOld", "verify"]);
+		expect(logs.some(line => line.includes("could not remove the old"))).toBe(true);
+	});
+
+	it("aborts with a recovery hint when verification still fails after the restore install", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { steps, calls } = scriptedSteps({ install: [0, 0], verify: [false, false] });
+
+		await expect(migrateRenamedInstall(release, steps)).rejects.toThrow("curl -fsSL https://omp.sh/install");
+		expect(calls).toEqual(["install", "removeOld", "verify", "install", "verify"]);
+	});
 
 	it("uses the platform-aware PowerShell reinstall hint on Windows", async () => {
 		const release: ReleaseInfo = {
 			tag: "v1.7.1",
 			version: "1.7.1",
 			packages: { pkg: "@new/ompx", natives: "@new/natives" },
+			registry: "https://registry.npmjs.org/",
 		};
 		let installAttempts = 0;
 		let verifyAttempts = 0;
@@ -1269,6 +1353,7 @@ describe("update-cli install script path", () => {
 				tag: "v9.9.9",
 				version: "9.9.9",
 				packages: { pkg: "@oh-my-pi/pi-coding-agent", natives: "@oh-my-pi/pi-natives" },
+				registry: "https://registry.npmjs.org/",
 			},
 			fetchScript: async url => `#!/bin/sh\n# from ${url}\n`,
 			runScript: async (scriptPath, args, installDir) => {
@@ -1298,6 +1383,7 @@ describe("update-cli install script path", () => {
 					tag: "v9.9.9",
 					version: "9.9.9",
 					packages: { pkg: "@oh-my-pi/pi-coding-agent", natives: "@oh-my-pi/pi-natives" },
+					registry: "https://registry.npmjs.org/",
 				},
 				fetchScript: async () => "#!/bin/sh\n",
 				runScript: async () => {
@@ -1326,6 +1412,7 @@ describe("update-cli install script path", () => {
 					tag: "v9.9.9",
 					version: "9.9.9",
 					packages: { pkg: "@oh-my-pi/pi-coding-agent", natives: "@oh-my-pi/pi-natives" },
+					registry: "https://registry.npmjs.org/",
 				},
 				fetchScript: async () => "#!/bin/sh\n",
 				runScript: async () => {
@@ -1862,6 +1949,7 @@ describe("update-cli manager update recovery", () => {
 		tag: "v18.0.1",
 		version: "18.0.1",
 		packages: { pkg: "@oh-my-pi/pi-coding-agent", natives: "@oh-my-pi/pi-natives" },
+		registry: "https://registry.npmjs.org/",
 	};
 	const launcherPath = "C:/Users/test/AppData/Roaming/npm/omp.cmd";
 

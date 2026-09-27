@@ -19,7 +19,7 @@ import {
  *
  * Every turn runs as an AsyncJobManager job, so a completed turn self-delivers
  * into the director's conversation exactly like an async `task` result, and
- * `vibe_wait` can block on the first settling turn with `hub`-wait semantics.
+ * `vibe_wait` can block on the first settling turn with `wait` semantics.
  */
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -27,7 +27,7 @@ import * as path from "node:path";
 import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
 import { resolveAgentModelSelection } from "../config/model-resolver";
-import type { LocalProtocolOptions } from "../internal-urls";
+import { sessionLocalProtocolOptions } from "../internal-urls/context";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
 import vibeTurnResultTemplate from "../prompts/tools/vibe-turn-result.md" with { type: "text" };
@@ -56,6 +56,8 @@ import {
 	type VibeTombstoneReason,
 } from "./lifecycle";
 import { type VibeCli } from "@oh-my-pi/pi-tui/tools/vibe";
+
+import { cfgTaskAgentModelOverrides, cfgTaskEnableLsp } from "../task/settings";
 /**
  * CLI flavor → bundled agent type. This IS the model-tier mapping: `quick_task`
  * carries `model: "@smol"` (the configured fast/low-latency role) and `task`
@@ -346,7 +348,7 @@ export class VibeSessionRegistry {
 		if (!agent) {
 			throw new ToolError(`Bundled agent "${agentName}" for vibe cli "${cli}" is unavailable.`);
 		}
-		const agentModelOverrides = session.settings.get("task.agentModelOverrides");
+		const agentModelOverrides = cfgTaskAgentModelOverrides.get(session.settings);
 		// Same contract as the task spawn path: the expansion discards the role
 		// alias (`@task`, `@smol`), so patterns and role identity come from one
 		// call — the child's inherited retry-fallback chain is keyed off the role.
@@ -917,7 +919,7 @@ export class VibeSessionRegistry {
 
 	/**
 	 * Block until one watched session's in-flight turn settles, the timeout
-	 * elapses, or `signal` aborts — `hub` wait semantics. Settled turns are
+	 * elapses, or `signal` aborts — `wait` semantics. Settled turns are
 	 * acknowledged against the job manager so their results are not delivered
 	 * a second time as async follow-ups.
 	 */
@@ -1270,10 +1272,7 @@ export class VibeSessionRegistry {
 		await fs.mkdir(artifactsDir, { recursive: true });
 		if (!sessionArtifactsDir) registerArtifactsDir(artifactsDir);
 		const contextSnapshot = await writeParentContextSnapshot(session, artifactsDir);
-		const localProtocolOptions: LocalProtocolOptions = session.localProtocolOptions ?? {
-			getArtifactsDir: session.getArtifactsDir ?? (() => null),
-			getSessionId: session.getSessionId ?? (() => null),
-		};
+		const localProtocolOptions = sessionLocalProtocolOptions(session);
 		return {
 			cwd: session.cwd,
 			agent: record.agent,
@@ -1291,7 +1290,7 @@ export class VibeSessionRegistry {
 			sessionFile,
 			persistArtifacts: Boolean(sessionFile),
 			artifactsDir,
-			enableLsp: (session.enableLsp ?? true) && session.settings.get("task.enableLsp"),
+			enableLsp: (session.enableLsp ?? true) && cfgTaskEnableLsp.get(session.settings),
 			signal,
 			eventBus: session.eventBus,
 			subagentEventBus: session.subagentEventBus,

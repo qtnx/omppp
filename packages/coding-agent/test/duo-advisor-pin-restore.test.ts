@@ -10,6 +10,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import type { DuoStateSnapshot } from "../src/duo";
+import { cfgDuoAdvisorModel, cfgDuoMode } from "../src/duo/settings";
 
 interface DuoSnapshotDetails extends DuoStateSnapshot {
 	advisorModelId?: string;
@@ -90,7 +91,7 @@ describe("AgentSession duo advisor pin restore", () => {
 			"duo.plannerModel": plannerId,
 			"duo.executorModel": executorId,
 		});
-		s.override("duo.advisorModel", "");
+		cfgDuoAdvisorModel.override(s, "");
 		s.setModelRole("advisor", standaloneAdvisorId);
 		return s;
 	}
@@ -207,7 +208,7 @@ describe("AgentSession duo advisor pin restore", () => {
 	it("leaves standalone advisor role selection unchanged when restored duo is inactive", () => {
 		const sessionManager = createSessionManager();
 		const inactiveSettings = settings();
-		inactiveSettings.override("duo.mode", "off");
+		cfgDuoMode.override(inactiveSettings, "off");
 		appendSnapshot(sessionManager, activeSnapshot("inactive", { advisorModelId: plannerId, duoOwnsAdvisor: true }));
 
 		const restored = createSession({

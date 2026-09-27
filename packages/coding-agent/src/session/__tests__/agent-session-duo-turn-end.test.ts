@@ -12,6 +12,9 @@ import { AgentSession } from "../agent-session";
 import { AuthStorage } from "../auth-storage";
 import { convertToLlm } from "../messages";
 import { SessionManager } from "../session-manager";
+import { cfgDuoAdvisorEscalationModel, cfgDuoAdvisorModel } from "../../duo/settings";
+import { cfgModelRoles } from "../../config/model-settings";
+import { cfgAdvisorEnabled } from "../../advisor/settings";
 
 type TurnEndCallback = (
 	messages: AgentMessage[],
@@ -266,10 +269,10 @@ describe("AgentSession duo turn-end maintenance", () => {
 		track(spyOn(modelRegistry, "hasConfiguredAuth").mockReturnValue(true));
 		track(spyOn(modelRegistry, "refreshSelectedModelMetadata").mockImplementation(async (model: Model) => model));
 		const settings = createSettings();
-		settings.set("advisor.enabled", true);
-		settings.set("modelRoles", { advisor: "openai/gpt-5.5" });
-		settings.set("duo.advisorModel", "openai/gpt-5.5");
-		settings.set("duo.advisorEscalationModel", "");
+		cfgAdvisorEnabled.set(settings, true);
+		cfgModelRoles.set(settings, { advisor: "openai/gpt-5.5" });
+		cfgDuoAdvisorModel.set(settings, "openai/gpt-5.5");
+		cfgDuoAdvisorEscalationModel.set(settings, "");
 		const session = new AgentSession({
 			agent,
 			sessionManager,

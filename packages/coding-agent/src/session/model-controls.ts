@@ -9,7 +9,7 @@ import { isFireworksFastModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id"
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
-import { autoThinkingCeiling, classifyDifficulty } from "../auto-thinking/classifier";
+import { classifyDifficulty } from "../auto-thinking/classifier";
 import type { ModelRegistry } from "../config/model-registry";
 import {
 	filterAvailableModelsByEnabledPatterns,
@@ -20,6 +20,8 @@ import {
 } from "../config/model-resolver";
 import { getKnownRoleIds } from "../config/model-roles";
 import type { Settings } from "../config/settings";
+import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
+import { cfgDefaultThinkingLevel, cfgProvidersAutoThinkingMaxEffort, cfgProvidersFireworksTier } from "./settings";
 import prewalkChecklistPrompt from "../prompts/system/prewalk-checklist.md" with { type: "text" };
 import prewalkContinuePrompt from "../prompts/system/prewalk-continue.md" with { type: "text" };
 import prewalkPlanPrompt from "../prompts/system/prewalk-plan.md" with { type: "text" };
@@ -176,9 +178,11 @@ export class ModelControls {
 		return this.#autoResolvedLevel;
 	}
 
-	/** Models explicitly scoped to the session's cycle command. */
+	/** Models explicitly scoped to the session's cycle command, minus currently disabled providers. */
 	get scopedModels(): ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }> {
-		return this.#scopedModels;
+		const disabledProviders = cfgDisabledProviders.get(this.#host.settings);
+		if (disabledProviders.length === 0) return this.#scopedModels;
+		return this.#scopedModels.filter(scoped => !disabledProviders.includes(scoped.model.provider));
 	}
 
 	/**
@@ -457,7 +461,7 @@ export class ModelControls {
 	 * @returns The new model info, or undefined if only one model available
 	 */
 	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
-		if (this.#scopedModels.length > 0) {
+		if (this.scopedModels.length > 0) {
 			return this.#cycleScopedModel(direction);
 		}
 		return this.#cycleAvailableModel(direction);
@@ -559,7 +563,7 @@ export class ModelControls {
 		const apiKeysByProvider = new Map<string, string | undefined>();
 		const result: Array<{ model: Model; thinkingLevel?: ThinkingLevel }> = [];
 
-		for (const scoped of this.#scopedModels) {
+		for (const scoped of this.scopedModels) {
 			const provider = scoped.model.provider;
 			let apiKey: string | undefined;
 			if (apiKeysByProvider.has(provider)) {
@@ -640,7 +644,7 @@ export class ModelControls {
 	 */
 	getAvailableModels(): Model[] {
 		const all = this.#host.modelRegistry.getAvailable();
-		const patterns = this.#host.settings.get("enabledModels");
+		const patterns = cfgEnabledModels.get(this.#host.settings);
 		if (!patterns || patterns.length === 0) return all;
 		return filterAvailableModelsByEnabledPatterns(all, patterns, this.#host.settings);
 	}
@@ -677,7 +681,7 @@ export class ModelControls {
 			}
 			this.#applyThinkingLevelToAgent(provisional);
 			if (persist) {
-				this.#host.settings.set("defaultThinkingLevel", AUTO_THINKING);
+				cfgDefaultThinkingLevel.set(this.#host.settings, AUTO_THINKING);
 			}
 			const isChanging = !wasAuto || previousLevel !== provisional;
 			if (isChanging) {
@@ -706,7 +710,7 @@ export class ModelControls {
 			this.#host.clearInheritedProviderPromptCacheKey();
 			this.#host.sessionManager.appendThinkingLevelChange(effectiveLevel, effectiveLevel);
 			if (persist && effectiveLevel !== undefined && effectiveLevel !== ThinkingLevel.Off) {
-				this.#host.settings.set("defaultThinkingLevel", effectiveLevel);
+				cfgDefaultThinkingLevel.set(this.#host.settings, effectiveLevel);
 			}
 			this.#host.emit({ type: "thinking_level_changed", thinkingLevel: effectiveLevel });
 		}
@@ -749,11 +753,13 @@ export class ModelControls {
 
 	/**
 	 * Classify the current user turn and set the effective thinking level for it.
+	 * `solutionSpace` is a delegator's open-endedness description (task-spawned turns
+	 * only); when non-blank it is classified instead of `promptText`.
 	 * Bounded by a timeout + abort; on failure it preserves the last classified
 	 * level, or uses the provisional concrete level before the first resolution.
 	 * Never throws into the turn, and never clears `#autoThinking`.
 	 */
-	async applyAutoThinkingLevel(promptText: string, generation: number): Promise<void> {
+	async applyAutoThinkingLevel(promptText: string, generation: number, solutionSpace?: string): Promise<void> {
 		const model = this.#model;
 		if (!model?.reasoning) return;
 		// Models with reasoning but no controllable effort surface (devin-agent
@@ -782,23 +788,29 @@ export class ModelControls {
 					? clampAutoThinkingEffort(
 							model,
 							JEV_THINKING_EFFORT[jevThinking],
-							autoThinkingCeiling(this.#host.settings, model),
+							cfgProvidersAutoThinkingMaxEffort.get(this.#host.settings) === Effort.Max &&
+								getSupportedEfforts(model).includes(Effort.Max)
+								? Effort.Max
+								: Effort.XHigh,
 						)
-					: await classifyDifficulty(promptText, {
-							settings: this.#host.settings,
-							registry: this.#host.modelRegistry,
-							model,
-							sessionId: this.#host.sessionId(),
-							signal: controller.signal,
-							metadataResolver: provider => this.#host.agent.metadataForProvider(provider),
-							onUsage: usage => {
-								const entryId = this.#host.sessionManager.appendModelUsage(
-									{ purpose: "auto-thinking", ...usage },
-									usageOwner,
-								);
-								if (entryId) usageOwner.parentId = entryId;
+					: await classifyDifficulty(
+							{ request: promptText, solutionSpace },
+							{
+								settings: this.#host.settings,
+								registry: this.#host.modelRegistry,
+								model,
+								sessionId: this.#host.sessionId(),
+								signal: controller.signal,
+								metadataResolver: provider => this.#host.agent.metadataForProvider(provider),
+								onUsage: usage => {
+									const entryId = this.#host.sessionManager.appendModelUsage(
+										{ purpose: "auto-thinking", ...usage },
+										usageOwner,
+									);
+									if (entryId) usageOwner.parentId = entryId;
+								},
 							},
-						});
+						);
 			} catch (error) {
 				logger.debug("auto-thinking: classification failed; using fallback level", {
 					error: error instanceof Error ? error.message : String(error),
@@ -825,7 +837,10 @@ export class ModelControls {
 		const effort = clampAutoThinkingEffort(
 			model,
 			JEV_THINKING_EFFORT[thinking],
-			autoThinkingCeiling(this.#host.settings, model),
+			cfgProvidersAutoThinkingMaxEffort.get(this.#host.settings) === Effort.Max &&
+				getSupportedEfforts(model).includes(Effort.Max)
+				? Effort.Max
+				: Effort.XHigh,
 		);
 		if (effort === this.#autoResolvedLevel) return;
 		this.#commitAutoResolvedLevel(model, effort);
@@ -887,7 +902,7 @@ export class ModelControls {
 	 */
 	effectiveServiceTier(model: Model | undefined = this.#model): ServiceTier | undefined {
 		if (model?.provider === "fireworks") {
-			return this.#host.settings.get("providers.fireworksTier") === "priority" && !isFireworksFastModelId(model.id)
+			return cfgProvidersFireworksTier.get(this.#host.settings) === "priority" && !isFireworksFastModelId(model.id)
 				? "priority"
 				: undefined;
 		}

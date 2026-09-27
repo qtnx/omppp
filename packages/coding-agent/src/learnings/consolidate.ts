@@ -27,6 +27,15 @@ import {
 	rewriteLearning,
 	tryClaimConsolidationJob,
 } from "./storage";
+import {
+	cfgLearningConsolidationIntervalDays,
+	cfgLearningConsolidationMinEntries,
+	cfgLearningConsolidationModels,
+	cfgLearningConsolidationTimeoutMs,
+	cfgLearningHalfLifeDays,
+	cfgLearningMaxEntriesPerScope,
+	cfgLearningStaleRepoDays,
+} from "../learning/settings";
 
 export interface ConsolidationRunOptions {
 	session: AgentSession;
@@ -57,7 +66,7 @@ interface ConsolidationConfig {
 	minEntries: number;
 	halfLifeDays: number;
 	staleRepoDays: number;
-	models: string[];
+	models: readonly string[];
 	timeoutMs: number;
 }
 
@@ -365,7 +374,7 @@ async function runTargetConsolidation(options: {
 		}
 
 		const snapshot = listTargetEntries(db, target, unixNow());
-		const modelOverride = config.models.length > 0 ? config.models : DEFAULT_WRITER_MODELS;
+		const modelOverride = [...(config.models.length > 0 ? config.models : DEFAULT_WRITER_MODELS)];
 		await writeAuditFile(auditDir, "request.json", {
 			target: target.target,
 			inputWatermark: claimResult.claim.inputWatermark,
@@ -793,12 +802,12 @@ async function writeAuditFile(auditDir: string, fileName: string, payload: unkno
 }
 
 function loadConsolidationConfig(settings: Settings): ConsolidationConfig {
-	const intervalDays = settings.get("learning.consolidation.intervalDays") ?? DEFAULT_INTERVAL_DAYS;
-	const maxEntriesPerScope = settings.get("learning.maxEntriesPerScope") ?? DEFAULT_MAX_ENTRIES_PER_SCOPE;
-	const minEntries = settings.get("learning.consolidation.minEntries") ?? DEFAULT_MIN_ENTRIES;
-	const timeoutMs = settings.get("learning.consolidation.timeoutMs") ?? DEFAULT_TIMEOUT_MS;
-	const halfLifeDays = settings.get("learning.halfLifeDays") ?? DEFAULT_HALF_LIFE_DAYS;
-	const staleRepoDays = settings.get("learning.staleRepoDays") ?? DEFAULT_STALE_REPO_DAYS;
+	const intervalDays = cfgLearningConsolidationIntervalDays.get(settings) ?? DEFAULT_INTERVAL_DAYS;
+	const maxEntriesPerScope = cfgLearningMaxEntriesPerScope.get(settings) ?? DEFAULT_MAX_ENTRIES_PER_SCOPE;
+	const minEntries = cfgLearningConsolidationMinEntries.get(settings) ?? DEFAULT_MIN_ENTRIES;
+	const timeoutMs = cfgLearningConsolidationTimeoutMs.get(settings) ?? DEFAULT_TIMEOUT_MS;
+	const halfLifeDays = cfgLearningHalfLifeDays.get(settings) ?? DEFAULT_HALF_LIFE_DAYS;
+	const staleRepoDays = cfgLearningStaleRepoDays.get(settings) ?? DEFAULT_STALE_REPO_DAYS;
 	return {
 		intervalDays: Number.isFinite(intervalDays) && intervalDays >= 0 ? intervalDays : DEFAULT_INTERVAL_DAYS,
 		maxEntriesPerScope:
@@ -808,7 +817,7 @@ function loadConsolidationConfig(settings: Settings): ConsolidationConfig {
 		minEntries: Number.isFinite(minEntries) && minEntries >= 0 ? Math.floor(minEntries) : DEFAULT_MIN_ENTRIES,
 		halfLifeDays: Number.isFinite(halfLifeDays) && halfLifeDays > 0 ? halfLifeDays : DEFAULT_HALF_LIFE_DAYS,
 		staleRepoDays: Number.isFinite(staleRepoDays) && staleRepoDays > 0 ? staleRepoDays : DEFAULT_STALE_REPO_DAYS,
-		models: settings.get("learning.consolidation.models") ?? [],
+		models: cfgLearningConsolidationModels.get(settings) ?? [],
 		timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS,
 	};
 }

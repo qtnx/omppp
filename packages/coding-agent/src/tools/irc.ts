@@ -33,6 +33,8 @@ import {
 	replaceTabs,
 	type ToolUIColor,
 } from "@oh-my-pi/pi-tui/render/render-utils";
+import { cfgIrcEnabled, cfgIrcTimeoutMs } from "../irc/settings";
+import { cfgTaskMaxRecursionDepth } from "../task/settings";
 
 const DEFAULT_IRC_TIMEOUT_MS = 120_000;
 // Bound each blocking wait so agents can reassess instead of sleeping forever.
@@ -45,11 +47,11 @@ const IRC_MAX_WAIT_MS = 600_000;
  * top-level session with task spawning unavailable has no peers — no irc.
  */
 export function isIrcEnabled(settings: Settings, taskDepth: number): boolean {
-	if (settings.get("irc.enabled") !== true) return false;
+	if (cfgIrcEnabled.get(settings) !== true) return false;
 	if (taskDepth > 0) return true;
 	// Top-level session: peers exist only if it can still spawn subagents — the
 	// same capacity gate the task tool uses, reused here to avoid drift.
-	const maxDepth = settings.get("task.maxRecursionDepth") ?? 2;
+	const maxDepth = cfgTaskMaxRecursionDepth.get(settings) ?? 2;
 	return canSpawnAtDepth(maxDepth, taskDepth);
 }
 
@@ -333,7 +335,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 						// Awaited sends mark the sender as blocked on an answer so a
 						// busy recipient that cannot reach a step boundary (async
 						// disabled) auto-replies instead of stranding the sender.
-						{ expectsReply: params.await || undefined, suppressRelay: suppressRelay || undefined },
+						{ suppressRelay: suppressRelay || undefined },
 					),
 				),
 			);
@@ -492,7 +494,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		if (params.timeoutMs !== undefined) {
 			return normalizeIrcTimeoutMs(params.timeoutMs);
 		}
-		return normalizeIrcTimeoutMs(this.session.settings.get("irc.timeoutMs"));
+		return normalizeIrcTimeoutMs(cfgIrcTimeoutMs.get(this.session.settings));
 	}
 }
 

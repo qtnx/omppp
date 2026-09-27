@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { isRecord, TempDir } from "@oh-my-pi/pi-utils";
 import { disposeSessionQuietly } from "../../src/main";
+import { Settings } from "../../src/config/settings";
 import { runPrintMode } from "../../src/modes/print-mode";
 import { formatPersistenceFailure } from "../../src/modes/persistence-failure";
 import { registerRpcPersistenceSurface } from "../../src/modes/rpc/rpc-mode";
@@ -82,7 +83,7 @@ function assistantSession(manager: SessionManager, dispose: () => Promise<void>)
 	return {
 		extensionRunner: undefined,
 		subscribe: () => {},
-		settings: { get: () => false },
+		settings: Settings.isolated(),
 		sessionManager: manager,
 		state: branchState(manager),
 		getLastAssistantMessage: () => assistant(""),
@@ -107,7 +108,7 @@ describe("headless persistence-failure surface", () => {
 		const session = {
 			extensionRunner: undefined,
 			subscribe: () => {},
-			settings: { get: () => false },
+			settings: Settings.isolated(),
 			sessionManager: manager,
 			state: branchState(manager),
 			getLastAssistantMessage: () => assistant(""),
@@ -155,7 +156,7 @@ describe("headless persistence-failure surface", () => {
 		const session = {
 			extensionRunner: undefined,
 			subscribe: () => {},
-			settings: { get: () => false },
+			settings: Settings.isolated(),
 			sessionManager: manager,
 			state: branchState(manager),
 			getLastAssistantMessage: () => assistant(""),
@@ -206,7 +207,7 @@ describe("headless persistence-failure surface", () => {
 		const session = {
 			extensionRunner: undefined,
 			subscribe: () => {},
-			settings: { get: () => false },
+			settings: Settings.isolated(),
 			// No persisted branch in this stub: the turn's own message is the only
 			// assistant content print mode can emit.
 			state: { messages: [] },
@@ -255,7 +256,7 @@ describe("headless persistence-failure surface", () => {
 		const session = {
 			extensionRunner: undefined,
 			subscribe: () => {},
-			settings: { get: () => false },
+			settings: Settings.isolated(),
 			sessionManager: manager,
 			state: branchState(manager),
 			getLastAssistantMessage: () => assistant(""),

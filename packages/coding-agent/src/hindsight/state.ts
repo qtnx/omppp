@@ -227,6 +227,8 @@ export class HindsightSessionState {
 	#lastRetainedPrefixKey: string = "";
 	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
+	/** True after the cached recall was delivered as a hidden conversation message. */
+	recallDeliveredVolatile = false;
 	#recallGeneration = 0;
 	/** Cached `<mental_models>` block injected into developer instructions. */
 	mentalModelsSnippet?: string;
@@ -240,12 +242,6 @@ export class HindsightSessionState {
 	mentalModelsLoadPromise?: Promise<void>;
 	#mentalModelsLoadGeneration = 0;
 	unsubscribe?: () => void;
-	/**
-	 * Releases the `onHindsightScopeChanged` subscription that drives live
-	 * rebuilds when `hindsight.bankId` / `bankIdPrefix` / `scoping` change.
-	 * Only set on primary states; aliases inherit the parent's subscription.
-	 */
-	unsubscribeScope?: () => void;
 	/** Alias states delegate persistence config to a primary parent state. */
 	aliasOf?: HindsightSessionState;
 	readonly retainQueue: HindsightRetainQueue;
@@ -290,6 +286,7 @@ export class HindsightSessionState {
 		this.lastRetainedTurn = 0;
 		this.hasRecalledForFirstTurn = false;
 		this.lastRecallSnippet = undefined;
+		this.recallDeliveredVolatile = false;
 		this.#lastRetainedMessageIndex = 0;
 		this.#cachedTranscript = "";
 		this.#lastRetainedPrefixKey = "";
@@ -462,7 +459,10 @@ export class HindsightSessionState {
 			commit: () => {
 				if (this.#recallGeneration !== generation) return false;
 				this.hasRecalledForFirstTurn = true;
-				if (context) this.lastRecallSnippet = context;
+				if (context) {
+					this.lastRecallSnippet = context;
+					this.recallDeliveredVolatile = true;
+				}
 				return true;
 			},
 		};
@@ -611,8 +611,6 @@ export class HindsightSessionState {
 		this.#mentalModelsLoadGeneration++;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		this.unsubscribeScope?.();
-		this.unsubscribeScope = undefined;
 		this.retainQueue.dispose();
 	}
 

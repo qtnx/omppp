@@ -24,6 +24,7 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { cfgTerminalShowProgress } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { CompactionProgressComponent } from "@oh-my-pi/pi-coding-agent/modes/components/compaction-progress";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -75,11 +76,12 @@ function createHarness() {
 		init: vi.fn(async () => {}),
 		updateEditorTopBorder: vi.fn(),
 		editor: { onEscape: undefined as (() => void) | undefined },
+		keybindings: { getKeys: () => ["escape"] },
 		session,
 		viewSession: session,
 		// `terminal.showProgress` must be true so `#setTerminalProgress` actually
 		// drives OSC 9;4 — the flag under test on the exit paths.
-		settings: { get: vi.fn((key: string) => (key === "terminal.showProgress" ? true : undefined)) },
+		settings: testSettings,
 		ui: { requestRender, terminal: { setProgress } },
 		statusContainer,
 		autoCompactionProgress: undefined,
@@ -136,12 +138,14 @@ function untrackedToolUpdateEvent(): Extract<AgentSessionEvent, { type: "tool_ex
 	} as unknown as Extract<AgentSessionEvent, { type: "tool_execution_update" }>;
 }
 
+let testSettings: Settings;
 describe("EventController auto-compaction progress lifecycle/races", () => {
 	beforeAll(async () => {
 		// `#handleAutoCompactionEnd` reads the process-global config used by the
 		// running application, not the harness-local `ctx.settings`.
 		resetSettingsForTest();
-		await Settings.init({ inMemory: true });
+		testSettings = await Settings.init({ inMemory: true });
+		cfgTerminalShowProgress.override(testSettings, true);
 		// Overlay pulls spinner frames + colors from the active theme.
 		await initTheme(false);
 	});

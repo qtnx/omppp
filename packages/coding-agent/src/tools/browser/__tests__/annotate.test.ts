@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { createBrowserAnnotationListener, createBrowserPrelude } from "../../browser";
+import { Settings } from "../../../config/settings";
 import type { BrowserAnnotationEntry, ToolSession } from "../../index";
 import overlayScript from "../../puppeteer/annotate-overlay.txt" with { type: "text" };
 import { validateAnnotationPayload } from "../annotate";
@@ -576,8 +577,9 @@ describe("browser prelude annotate background delivery", () => {
 		const { tab, emit } = fakeAnnotationTab("review");
 		const unregister = registerTabForTest(tab);
 		try {
+			const settings = await Settings.loadIsolated({ inMemory: true });
 			const session: Pick<ToolSession, "queueBrowserAnnotation" | "settings"> = {
-				settings: { get: () => undefined } as unknown as ToolSession["settings"],
+				settings,
 				queueBrowserAnnotation: entry => {
 					queued.push(entry);
 				},

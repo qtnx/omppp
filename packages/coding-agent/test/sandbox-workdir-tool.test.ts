@@ -6,6 +6,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { MacOSSandboxRelaunchResult } from "@oh-my-pi/pi-coding-agent/task/omp-command";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { MacOSSandboxTool } from "@oh-my-pi/pi-coding-agent/tools/macos-sandbox";
+import { cfgSandboxAllowedPaths } from "../src/sandbox/settings";
 
 function makeSession(
 	request: (dirs: string[]) => MacOSSandboxRelaunchResult,
@@ -74,7 +75,7 @@ describe("MacOSSandboxTool", () => {
 		const tool = new MacOSSandboxTool(
 			makeSession(
 				dirs => {
-					settingAtRequest = settings.getTrusted("sandbox.allowedPaths");
+					settingAtRequest = settings.getTrusted(cfgSandboxAllowedPaths);
 					requested.push(dirs);
 					return { requested: true };
 				},
@@ -95,7 +96,7 @@ describe("MacOSSandboxTool", () => {
 		expect(firstText(result)).toContain("Saved to sandbox.allowedPaths");
 		expect(requested).toEqual([["/Users/alice/project", "/Users/alice/api", resolvedPath]]);
 		expect(settingAtRequest).toEqual(expected);
-		expect(settings.getTrusted("sandbox.allowedPaths")).toEqual(expected);
+		expect(settings.getTrusted(cfgSandboxAllowedPaths)).toEqual(expected);
 	});
 
 	it("returns a manual restart command when no supervisor is available", async () => {

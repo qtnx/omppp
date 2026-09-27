@@ -73,7 +73,7 @@ describe("AgentSession queued steer delivery", () => {
 			streamFn: mock.stream,
 		});
 		const sessionManager = SessionManager.inMemory();
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		const settings = Settings.isolated({ "compaction.enabled": false, "autonomy.stopGate": false });
 
 		session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
 		return { session, sessionManager, mock };

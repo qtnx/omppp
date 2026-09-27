@@ -23,6 +23,9 @@ import { ORCHESTRATOR_MODE_ACTIVE_TOOL_NAMES, type OrchestratorModeState } from 
 import type { PlanModeState } from "../plan-mode/state";
 import { isWorkPhase, type PromptSignals, type TurnSignals, type WorkPhase } from "../signals/index";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { cfgDuoMode, cfgDuoOrchestrator, cfgDuoPhaseSwitchMinConfidence } from "../duo/settings";
+import { cfgRetryFallbackChains } from "./settings";
+import { cfgSignalsStuckThreshold } from "../signals/settings";
 
 export interface SessionDuoOrchestratorHost {
 	settings: Settings;
@@ -216,7 +219,7 @@ export class SessionDuoOrchestrator {
 		// Session-scoped: `/duo on|off` and `--duo` must not rewrite the user's
 		// persisted `duo.mode` (which would silently turn `auto` into a permanent
 		// `on`/`off`). Persistent changes go through settings/config.
-		this.#host.settings.override("duo.mode", enabled ? "on" : "off");
+		cfgDuoMode.override(this.#host.settings, enabled ? "on" : "off");
 		if (!enabled) {
 			this.#clearAdvisorRetry();
 			await this.#controller?.deactivate();
@@ -423,7 +426,7 @@ export class SessionDuoOrchestrator {
 				setPlanModeEnabled: enabled => this.#setDuoPlanModeEnabled(enabled),
 				planModeActive: () => this.#host.getPlanModeState()?.enabled === true,
 				requestAgentContinue: () => this.#host.requestAgentContinue(),
-				duoMode: () => this.#host.settings.get("duo.mode"),
+				duoMode: () => cfgDuoMode.get(this.#host.settings),
 				isSelectorSuppressed: selector => this.#host.modelRegistry.isSelectorSuppressed(selector),
 				hasUsageHeadroom: model => {
 					try {
@@ -443,14 +446,14 @@ export class SessionDuoOrchestrator {
 				},
 				installFallbackChain: (selector, chain) => {
 					const settings = this.#host.settings;
-					settings.override("retry.fallbackChains", {
-						...settings.get("retry.fallbackChains"),
+					cfgRetryFallbackChains.override(settings, {
+						...cfgRetryFallbackChains.get(settings),
 						[selector]: chain,
 					});
 				},
 				phasePolicy: () => ({
-					minConfidence: this.#host.settings.get("duo.phaseSwitch.minConfidence"),
-					stuckThreshold: this.#host.settings.get("signals.stuckThreshold"),
+					minConfidence: cfgDuoPhaseSwitchMinConfidence.get(this.#host.settings),
+					stuckThreshold: cfgSignalsStuckThreshold.get(this.#host.settings),
 				}),
 			},
 			config,
@@ -482,9 +485,9 @@ export class SessionDuoOrchestrator {
 		// Documented `auto` trigger (duo.mode description): orchestrator mode, or a
 		// Fable/Mythos-family main model. The executor model alone never
 		// auto-starts duo; the state machine only uses it to stay live.
-		const mode = this.#host.settings.get("duo.mode");
+		const mode = cfgDuoMode.get(this.#host.settings);
 		if (mode === "off") return false;
-		if (mode === "on" || this.#host.settings.get("duo.orchestrator") === "always") return true;
+		if (mode === "on" || cfgDuoOrchestrator.get(this.#host.settings) === "always") return true;
 		if (this.#orchestratorModeState?.enabled === true) return true;
 		const currentModel = this.#host.currentModel();
 		if (!currentModel) return false;

@@ -48,7 +48,13 @@ export function VoiceSession({ client, onLeave, onRejoin }: VoiceSessionProps): 
 			<p className="lv-solo-hint">
 				Voice only — the transcript stays in the full client. Drop <code>?voice=1</code> from the URL to open it.
 			</p>
-			<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
+			<Banners
+				phase={snap.phase}
+				endedReason={snap.endedReason}
+				loading={snap.loading}
+				onRejoin={onRejoin}
+				onNewLink={onLeave}
+			/>
 		</div>
 	);
 }

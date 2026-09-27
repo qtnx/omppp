@@ -201,7 +201,23 @@ function fingerprintFinding(repoRoot: string, finding: ReviewFindingRecordItem):
 		normalizeForHash(finding.file_path),
 		String(finding.line_start),
 		String(finding.line_end),
-		finding.priority,
+	];
+	return Bun.hash(parts.join("\u0000")).toString(16);
+}
+
+function legacyFingerprintFinding(
+	repoRoot: string,
+	finding: ReviewFindingRecordItem,
+	priority: ReviewFindingPriorityLabel,
+): string {
+	const parts = [
+		repoRoot,
+		normalizeForHash(finding.title),
+		normalizeForHash(finding.body),
+		normalizeForHash(finding.file_path),
+		String(finding.line_start),
+		String(finding.line_end),
+		priority,
 	];
 	return Bun.hash(parts.join("\u0000")).toString(16);
 }
@@ -413,9 +429,22 @@ INSERT INTO review_findings (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
 ${input.mode === "backfill" ? "ON CONFLICT(fingerprint) DO NOTHING" : liveConflictUpdateSql()}
 `);
+		// Older rows included mutable priority in their fingerprint. Reuse their
+		// identity so a changed verdict never duplicates a persisted finding.
+		const existing = db.prepare(
+			"SELECT fingerprint FROM review_findings WHERE fingerprint IN (?, ?, ?, ?, ?) LIMIT 1",
+		);
 		let changed = 0;
 		for (const finding of validFindings) {
-			const fingerprint = fingerprintFinding(repoRoot, finding);
+			const stableFingerprint = fingerprintFinding(repoRoot, finding);
+			const row = existing.get(
+				stableFingerprint,
+				legacyFingerprintFinding(repoRoot, finding, "P0"),
+				legacyFingerprintFinding(repoRoot, finding, "P1"),
+				legacyFingerprintFinding(repoRoot, finding, "P2"),
+				legacyFingerprintFinding(repoRoot, finding, "P3"),
+			) as { fingerprint: string } | null;
+			const fingerprint = row?.fingerprint ?? stableFingerprint;
 			const result = insert.run(
 				`review-finding-${fingerprint}`,
 				fingerprint,

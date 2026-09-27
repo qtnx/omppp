@@ -1,12 +1,17 @@
-/**
- * Native ABI version — the release version at which the native inputs last
- * changed. Bumped by `scripts/release.ts` only when native inputs change, and
- * kept in sync with the `js_name` literal in `crates/pi-natives/src/lib.rs`.
- */
-export const NATIVE_ABI_VERSION: string;
+/** Prefix of the post-link stamp slot linked into every addon. */
+export const VERSION_STAMP_MAGIC: string;
 
-/** Return the native-addon export expected for a native ABI version. */
-export function versionSentinelFor(abiVersion: string): string;
+/** Total stamp slot size in bytes: magic, version, NUL padding. */
+export const VERSION_STAMP_SIZE: number;
 
-/** Check whether addon bytes contain the exact expected version sentinel. */
-export function containsVersionSentinel(bytes: Buffer, expected: string): boolean;
+/** Check whether addon bytes carry the stamp for exactly `version`. */
+export function containsVersionStamp(bytes: Uint8Array, version: string): boolean;
+
+/** Check whether pre-stamp addon bytes export the legacy `__piNativesV*` sentinel for exactly `version`. */
+export function containsLegacyVersionSentinel(bytes: Uint8Array, version: string): boolean;
+
+/** Release a loaded addon reports (stamp, or legacy `__piNativesV*` export), or `null`. */
+export function bindingsReleaseVersion(bindings: Record<string, unknown>): string | null;
+
+/** True when the bindings identify their release at all (stamp reader or legacy sentinel). */
+export function bindingsHaveReleaseIdentity(bindings: Record<string, unknown>): boolean;

@@ -31,6 +31,8 @@ import {
 	type WorkflowToolDetails,
 	workflowSchema,
 } from "./types";
+import { cfgWorkflowMaxConcurrency, cfgWorkflowTokenBudget } from "./settings";
+import { cfgTaskAgentModelOverrides } from "../task/settings";
 
 function textResult(text: string, details: WorkflowToolDetails): AgentToolResult<WorkflowToolDetails> {
 	return { content: [{ type: "text", text }], details };
@@ -46,7 +48,7 @@ export function resolveWorkflowAgentModelOverride(args: {
 	parentActiveModelPattern?: string;
 	fallbackModelPattern?: string;
 }): string[] {
-	const agentModelOverrides = args.settings.get("task.agentModelOverrides");
+	const agentModelOverrides = cfgTaskAgentModelOverrides.get(args.settings);
 	return resolveAgentModelPatterns({
 		settingsOverride: args.explicitModel ?? agentModelOverrides[args.agent.name],
 		agentModel: args.agent.model,
@@ -187,9 +189,9 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 		artifactsDir: string | null,
 		isResume: boolean,
 	): Promise<string> {
-		const configured = this.session.settings.get("workflow.maxConcurrency") as number;
+		const configured = cfgWorkflowMaxConcurrency.get(this.session.settings) as number;
 		const concurrency = configured && configured > 0 ? configured : workflowConcurrency();
-		const budgetSetting = this.session.settings.get("workflow.tokenBudget") as number;
+		const budgetSetting = cfgWorkflowTokenBudget.get(this.session.settings) as number;
 		const budgetTotal = budgetSetting && budgetSetting > 0 ? budgetSetting : null;
 
 		const outputManager =

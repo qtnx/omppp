@@ -1,5 +1,9 @@
 **Tasks: verbatim content strings, NEVER auto-generated IDs; no "task-1"/"task-N". Pass content in `task`.**
 
+Tasks are identified by verbatim content, never generated IDs such as `task-1`; keep unique, stable task and phase names. If exact text is lost, use `view`, never guess.
+Before work, initialize for 3+ steps, requested task sets, or new instructions. List every user item separately; never omit leftovers or track them from memory.
+After mutation: with no active task, earliest pending starts in phase order; with multiple active, only earliest remains active. Blocked tasks never start automatically; `unblock` returns one to pending. Out-of-order completion may rewind pointer but never reopens completed work.
+External waits block with optional reason (suppressing stop reminder) and start next pending; unblock when actionable. For agent-actionable blockers, append clearing task.
 After each successful state-changing op: if nothing is `in_progress`, the earliest `pending` task (phase order) auto-promotes to `in_progress`; if several are `in_progress`, only the earliest stays. Blocked tasks NEVER auto-promote—`unblock` first. Out-of-order completion may move pointer back to an earlier phase—expected; completed tasks NEVER revert.
 
 ## Operations

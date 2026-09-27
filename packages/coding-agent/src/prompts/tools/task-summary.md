@@ -3,7 +3,7 @@
 {{#if evidence}}evidence: {{evidence}} — re-run its Acceptance check before accepting{{/if}}
 {{#if meta}}<meta lines="{{meta.lineCount}}" size="{{meta.charSize}}" />{{/if}}
 {{#if abortReason}}
-<abort-reason>{{abortReason}}{{#if resumable}} — the agent is still live with its full context; message it via `hub` to resume instead of redoing the work.{{/if}}</abort-reason>
+<abort-reason>{{abortReason}}{{#if resumable}} — the agent is still live with its full context; message it via `write agent://{{id}}` to resume instead of redoing the work.{{/if}}</abort-reason>
 {{/if}}
 {{#if rateLimitNotice}}
 {{rateLimitNotice}}

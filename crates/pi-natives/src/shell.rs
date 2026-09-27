@@ -1,5 +1,7 @@
 //! Brush-based shell execution exported via N-API.
 
+pub mod vfs;
+
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use napi::{
@@ -15,6 +17,7 @@ use pi_shell::{
 	execute_shell as core_execute_shell, minimizer,
 };
 
+use self::vfs::ShellFilesystem;
 use crate::task;
 
 /// N-API opt-in handle for the minimizer.
@@ -64,7 +67,7 @@ impl From<MinimizerOptions> for minimizer::MinimizerOptions {
 }
 
 /// Options for configuring a persistent shell session.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 pub struct ShellOptions {
 	/// Environment variables to apply once per session.
 	pub session_env:   Option<HashMap<String, String>>,
@@ -72,6 +75,8 @@ pub struct ShellOptions {
 	pub snapshot_path: Option<String>,
 	/// Optional per-command output minimizer configuration.
 	pub minimizer:     Option<MinimizerOptions>,
+	/// Filesystem backing every run of this session (native when absent).
+	pub filesystem:    Option<ShellFilesystem>,
 }
 
 impl From<ShellOptions> for CoreShellOptions {
@@ -80,12 +85,16 @@ impl From<ShellOptions> for CoreShellOptions {
 			session_env:   value.session_env,
 			snapshot_path: value.snapshot_path,
 			minimizer:     value.minimizer.map(Into::into),
+			filesystem:    value
+				.filesystem
+				.map(ShellFilesystem::into_fs)
+				.unwrap_or_default(),
 		}
 	}
 }
 
 /// Options for running a shell command.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 pub struct ShellRunOptions<'env> {
 	/// Command string to execute in the shell.
 	pub command:    String,
@@ -97,10 +106,13 @@ pub struct ShellRunOptions<'env> {
 	pub timeout_ms: Option<u32>,
 	/// Abort signal for cancelling the operation.
 	pub signal:     Option<Unknown<'env>>,
+	/// Filesystem for this run only, replacing the session's; the session's
+	/// filesystem applies again to later runs.
+	pub filesystem: Option<ShellFilesystem>,
 }
 
 /// Options for executing a shell command via brush-core.
-#[napi(object)]
+#[napi(object, object_to_js = false)]
 pub struct ShellExecuteOptions<'env> {
 	/// Command string to execute in the shell.
 	pub command:       String,
@@ -118,6 +130,8 @@ pub struct ShellExecuteOptions<'env> {
 	pub minimizer:     Option<MinimizerOptions>,
 	/// Abort signal for cancelling the operation.
 	pub signal:        Option<Unknown<'env>>,
+	/// Filesystem backing the command (native when absent).
+	pub filesystem:    Option<ShellFilesystem>,
 }
 
 /// Telemetry for a single minimization.
@@ -223,6 +237,7 @@ impl Shell {
 			cwd:        options.cwd,
 			env:        options.env,
 			timeout_ms: options.timeout_ms,
+			filesystem: options.filesystem.map(ShellFilesystem::into_fs),
 		};
 		task::future(env, "shell.run", async move {
 			let (chunk_tx, drain_handle) = bridge_chunks(on_chunk);
@@ -276,6 +291,10 @@ pub fn execute_shell<'env>(
 		timeout_ms:    options.timeout_ms,
 		snapshot_path: options.snapshot_path,
 		minimizer:     options.minimizer.map(Into::into),
+		filesystem:    options
+			.filesystem
+			.map(ShellFilesystem::into_fs)
+			.unwrap_or_default(),
 	};
 	task::future(env, "shell.execute", async move {
 		let (chunk_tx, drain_handle) = bridge_chunks(on_chunk);
@@ -673,6 +692,7 @@ mod tests {
 						cwd:        None,
 						env:        None,
 						timeout_ms: None,
+						filesystem: None,
 					},
 					Some(tx),
 					CancelToken::default(),
@@ -720,6 +740,7 @@ mod tests {
 						cwd:        None,
 						env:        None,
 						timeout_ms: None,
+						filesystem: None,
 					},
 					None,
 					cancel,
@@ -735,5 +756,40 @@ mod tests {
 			.expect("shell task should not panic")
 			.expect("shell run should return");
 		assert!(result.cancelled);
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn timeout_drains_pipeline_output_before_stopping_reader() {
+		let shell = CoreShell::new(None);
+		let (tx, rx) = flume::unbounded::<String>();
+		// `tail` runs as an in-process builtin, so cancellation kills only the
+		// external `yes`; tail then sees EOF and flushes its final 5 lines into
+		// the post-cancel reader grace window. The deadline must be generous
+		// enough that `yes` has demonstrably spawned and produced before the
+		// timeout fires — a 50ms budget lost that race on cold CI runners and
+		// tail flushed an empty ring buffer.
+		const TIMEOUT_MS: u32 = 750;
+		let result = shell
+			.run(
+				CoreShellRunOptions {
+					command:    "yes x | tail -5".to_string(),
+					cwd:        None,
+					env:        None,
+					timeout_ms: Some(TIMEOUT_MS),
+					filesystem: None,
+				},
+				Some(tx),
+				CancelToken::new(Some(TIMEOUT_MS)),
+			)
+			.await
+			.expect("shell run");
+
+		let mut output = String::new();
+		while let Ok(chunk) = rx.recv_async().await {
+			output.push_str(&chunk);
+		}
+
+		assert!(result.timed_out);
+		assert_eq!(output.lines().filter(|line| *line == "x").count(), 5);
 	}
 }

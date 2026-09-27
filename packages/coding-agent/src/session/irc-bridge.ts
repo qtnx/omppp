@@ -2,7 +2,7 @@ import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import { IrcBus } from "../irc/bus";
-import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
+import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
 import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
@@ -11,6 +11,8 @@ import type { AgentSessionEvent } from "./agent-session-events";
 import type { CustomMessage } from "./messages";
 import { triageChildQuestion } from "../task/jev-triage";
 import type { SessionManager } from "./session-manager";
+import { cfgTaskJevAssist } from "../task/settings";
+import { cfgAsyncEnabled } from "../tools/settings";
 
 export type IrcWakeFailureHandler = (message: IrcMessage) => void | Promise<void>;
 
@@ -27,7 +29,7 @@ export interface IrcBridgeHost {
 	runEphemeralTurn(args: { promptText: string }): Promise<{ replyText: string }>;
 }
 
-/** Owns incoming IRC queues, the session's non-interrupting aside queue, injection, and side-channel auto-replies. */
+/** Owns incoming IRC queues and the session's non-interrupting aside queue. */
 export class IrcBridge {
 	readonly #host: IrcBridgeHost;
 	#interrupts: AgentMessage[] = [];
@@ -36,7 +38,7 @@ export class IrcBridge {
 	 *  Pooled turns must not flush these (no observer would reply to the sender);
 	 *  they resume into a monitored wake once the contract clears. */
 	#deferredWakes: AgentMessage[] = [];
-	/** In-flight replies owed to peers: side-channel auto-replies and wake-turn relays. */
+	/** In-flight wake-turn relays owed to peers. */
 	readonly #pendingReplies = new Set<Promise<void>>();
 
 	constructor(host: IrcBridgeHost) {
@@ -53,12 +55,7 @@ export class IrcBridge {
 		return this.#interrupts.length > 0 || this.#asides.length > 0 || this.#deferredWakes.length > 0;
 	}
 
-	/**
-	 * Waits until every reply this session still owes a peer has settled. A
-	 * peer awaiting an answer (`send await:true`) holds its "stopped without
-	 * replying" verdict on this, so a reply produced after the terminal
-	 * `agent_end` still resolves the waiter.
-	 */
+	/** Waits until every in-flight wake-turn relay has settled. */
 	async waitForReplies(): Promise<void> {
 		while (this.#pendingReplies.size > 0) {
 			await Promise.all(this.#pendingReplies);
@@ -193,14 +190,14 @@ export class IrcBridge {
 		const streaming = this.#host.isStreaming();
 		const planModeIdle = !streaming && this.#host.planModeEnabled();
 		const autoReply =
-			(opts?.expectsReply ?? false) && ((streaming && !this.#host.settings.get("async.enabled")) || planModeIdle);
+			(opts?.expectsReply ?? false) && ((streaming && !cfgAsyncEnabled.get(this.#host.settings)) || planModeIdle);
 		// An idle subagent runs a monitored wake turn whose output is relayed
 		// back to the sender (task executor `relayWakeTurnOutput`); the main
 		// agent and mid-turn asides have no such relay.
 		const relayOnStop = !streaming && !planModeIdle && msg.to !== MAIN_AGENT_ID && msg.wakeRelay !== true;
 		const childToMain = msg.to === MAIN_AGENT_ID && AgentRegistry.global().get(msg.from)?.parentId === msg.to;
 		let triage: string | undefined;
-		if (childToMain && this.#host.settings.get("task.jevAssist")) {
+		if (childToMain && cfgTaskJevAssist.get(this.#host.settings)) {
 			try {
 				triage = (await triageChildQuestion({ message: msg.body }))?.kind;
 			} catch (error) {
@@ -212,9 +209,9 @@ export class IrcBridge {
 			customType: "irc:incoming",
 			content: prompt.render(ircIncomingTemplate, {
 				from: msg.from,
+				autoReplied: autoReply,
 				message: msg.body,
 				replyTo: msg.replyTo ?? "",
-				autoReplied: autoReply,
 				interrupting: streaming,
 				relayOnStop,
 				triage,

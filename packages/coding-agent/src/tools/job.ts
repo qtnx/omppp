@@ -31,6 +31,7 @@ import {
 	type ToolUIStatus,
 } from "@oh-my-pi/pi-tui/render/render-utils";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
+import { cfgAsyncPollWaitDuration, cfgAsyncPollWatchdogMs, cfgAsyncStallThresholdMs } from "../task/settings";
 
 const jobSchema = type({
 	"poll?": type("string[]").describe("job ids to wait for; omit to wait on all running jobs"),
@@ -247,14 +248,14 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 	}
 
 	#resolvePollWatchdogMs(): number {
-		const value = this.session.settings.get("async.pollWatchdogMs");
+		const value = cfgAsyncPollWatchdogMs.get(this.session.settings);
 		if (value === 0) return 0;
 		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return POLL_WATCHDOG_DEFAULT_MS;
 		return value;
 	}
 
 	#resolveStallThresholdMs(): number {
-		const value = this.session.settings.get("async.stallThresholdMs");
+		const value = cfgAsyncStallThresholdMs.get(this.session.settings);
 		if (value === 0) return 0;
 		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return STALL_THRESHOLD_DEFAULT_MS;
 		return value;
@@ -379,7 +380,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		// Wait until at least one running job finishes, pending agent context
 		// arrives, the call is aborted, or the configured bounded window elapses.
 		// `block` restores indefinite waiting with watchdog re-checks.
-		const pollSetting = this.session.settings.get("async.pollWaitDuration");
+		const pollSetting = cfgAsyncPollWaitDuration.get(this.session.settings);
 		const isBlockMode = pollSetting === "block";
 		const fixedWaitMs = WAIT_DURATION_MS[pollSetting];
 		const isScheduled = !isBlockMode && fixedWaitMs === undefined;

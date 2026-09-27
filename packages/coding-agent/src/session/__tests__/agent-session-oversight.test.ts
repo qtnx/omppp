@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ModelRegistry } from "../../config/model-registry";
-import type { Settings } from "../../config/settings";
+import { Settings } from "../../config/settings";
 import { AgentSession } from "../agent-session";
 import type { SessionManager } from "../session-manager";
 
@@ -41,16 +41,10 @@ function createNoopProxy<T extends object>(overrides: Record<string, unknown>): 
 }
 
 function createSettings(): Settings {
-	return createNoopProxy<Settings>({
-		get(key: string) {
-			if (key === "steering.holdDuringSubagentWaits") return true;
-			if (key === "advisor.enabled") return false;
-			if (key === "contextPromotion.enabled") return false;
-			return undefined;
-		},
-		getGroup() {
-			return {};
-		},
+	return Settings.isolated({
+		"steering.holdDuringSubagentWaits": true,
+		"advisor.enabled": false,
+		"contextPromotion.enabled": false,
 	});
 }
 
@@ -69,6 +63,7 @@ function createSessionHarness(): { session: AgentSession; steeringQueue: AgentMe
 		subscribe: () => () => undefined,
 		setOnTurnEnd: () => {},
 		peekSteeringQueue: () => steeringQueue,
+		peekLiveSteeredMessages: () => [],
 		peekFollowUpQueue: () => followUpQueue,
 		replaceQueues: (steering: AgentMessage[], followUp: AgentMessage[]) => {
 			steeringQueue.length = 0;

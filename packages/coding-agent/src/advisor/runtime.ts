@@ -320,9 +320,17 @@ interface PendingConsult {
 
 interface CatchupWaiter {
 	threshold: number;
+	/** Stay parked while a failed turn is retried or recovered via the host's fallback chain. */
+	waitThroughRecovery: boolean;
 	finish: (caughtUp: boolean) => void;
 	timer?: NodeJS.Timeout;
 }
+/**
+ * Synthetic message `AgentSession.#withEvalStateContext` appends at the tail of
+ * every display-context rebuild; its slot moves each time, so
+ * {@link AdvisorRuntime.rebaseDeliveredPrefix} does not align on it.
+ */
+const EVAL_STATE_CONTEXT_TYPE = "eval-state-context";
 
 type PendingItem = PendingDelta | PendingConsult;
 
@@ -653,7 +661,7 @@ export class AdvisorRuntime {
 			this.#seenContext.clear();
 			for (const [key, value] of seenBefore) this.#seenContext.set(key, value);
 			this.#failing = true;
-			this.#wakeAllWaiters();
+			this.#releaseFailureWaiters();
 			logger.warn("advisor delta render failed", { err: String(err) });
 		}
 	}
@@ -807,18 +815,35 @@ export class AdvisorRuntime {
 	 *
 	 * Returns `false` when the deadline, abort signal, or a runtime failure releases
 	 * the waiter before the requested backlog was drained.
+	 *
+	 * By default a failing advisor turn releases the waiter at once, so the primary
+	 * agent never parks on a broken advisor. `waitThroughRecovery` is for callers
+	 * that must observe the outcome of that failure — a headless shutdown drain
+	 * about to dispose the session: the waiter stays parked while the runtime
+	 * retries or the host switches to a fallback model, and is released only by
+	 * catch-up, the deadline, the signal, or a terminal stop (halt, quota pause,
+	 * reset, session transition, dispose).
 	 */
-	waitForCatchup(maxMs: number, threshold: number, signal?: AbortSignal): Promise<boolean> {
+	waitForCatchup(
+		maxMs: number,
+		threshold: number,
+		signal?: AbortSignal,
+		options?: { waitThroughRecovery?: boolean },
+	): Promise<boolean> {
+		const waitThroughRecovery = options?.waitThroughRecovery === true;
 		if (
 			this.disposed ||
 			signal?.aborted ||
 			this.#backlog < threshold ||
 			this.#quotaExhausted ||
 			this.#halted ||
+			// A paused runtime cannot drain until the transition resumes; release
+			// every waiter, as `pauseForSessionTransition` does for existing ones.
+			this.#sessionTransitionPaused ||
 			// An advisor mid-failure/retry must NEVER gate the primary agent:
 			// its backlog cannot drain until the retry cycle resolves, and the
 			// primary would otherwise park for the full catch-up budget.
-			this.#failing
+			(this.#failing && !waitThroughRecovery)
 		)
 			return Promise.resolve(this.#backlog < threshold);
 		const { promise, resolve } = Promise.withResolvers<boolean>();
@@ -830,8 +855,9 @@ export class AdvisorRuntime {
 			resolve(caughtUp);
 		};
 		const abort = (): void => finish(false);
-		const waiter = {
+		const waiter: CatchupWaiter = {
 			threshold,
+			waitThroughRecovery,
 			finish,
 			timer: setTimeout(abort, maxMs),
 		};
@@ -1043,6 +1069,7 @@ export class AdvisorRuntime {
 	 */
 	rebaseToCurrentTranscript(): void {
 		if (this.disposed) return;
+
 		const messages = this.host.snapshotMessages();
 		this.#latestMessages = messages;
 		const last = messages.at(-1);
@@ -1052,6 +1079,45 @@ export class AdvisorRuntime {
 		this.#deliveredPrefix = messages
 			.slice(0, effectiveEnd)
 			.map(message => ({ message, fingerprint: fingerprintMessage(message) }));
+	}
+	/**
+	 * Re-align the delivered prefix with the primary transcript after an
+	 * in-place rewrite the advisor's own context already covers (the primary's
+	 * per-turn prune). Unlike {@link reset} nothing is cleared or replayed: the
+	 * stored identities are refreshed, so the next delta's prefix check compares
+	 * against the rewritten messages instead of stale pre-rewrite fingerprints.
+	 *
+	 * Positional: delivered slot i is re-pointed at current message i when the
+	 * two render the same, or when current i is the same tool result elided in
+	 * place (`prunedAt`). Delivered `eval-state-context` messages are skipped:
+	 * every display-context rebuild re-appends a fresh one at the tail, so the
+	 * old slot moving is not a rewrite (the fresh copy is delivered as new).
+	 * All or nothing: if any slot fails to align, or the current transcript is
+	 * shorter than the delivered prefix, nothing changes and the next delta's
+	 * prefix check resets the advisor exactly as it would have without a rebase.
+	 */
+	rebaseDeliveredPrefix(reason: string): void {
+		if (this.disposed) return;
+		const all = this.host.snapshotMessages();
+		const rebased: DeliveredMessage[] = [];
+		for (const delivered of this.#deliveredPrefix) {
+			const message = delivered.message;
+			if (message.role === "custom" && message.customType === EVAL_STATE_CONTEXT_TYPE) continue;
+			const current = all[rebased.length];
+			if (current === undefined) return;
+			const fingerprint = fingerprintMessage(current);
+			const prunedInPlace =
+				current.role === "toolResult" &&
+				current.prunedAt !== undefined &&
+				message.role === "toolResult" &&
+				message.toolCallId === current.toolCallId;
+			if (fingerprint === undefined || (fingerprint !== delivered.fingerprint && !prunedInPlace)) return;
+			rebased.push({ message: current, fingerprint });
+		}
+		this.#deliveredPrefix = rebased;
+		this.#lastCount = rebased.length;
+		this.#latestMessages = all;
+		logger.debug("advisor delivered prefix rebased", { reason, lastCount: this.#lastCount });
 	}
 
 	#syncModelIdentity(): void {
@@ -1245,6 +1311,18 @@ export class AdvisorRuntime {
 	#wakeAllWaiters(): void {
 		for (const w of Array.from(this.#waiters)) {
 			w.finish(false);
+		}
+	}
+
+	/**
+	 * Release waiters that must not park on a failing advisor. Recovery-aware
+	 * waiters stay parked: the failed batch is retried or recovered, and either
+	 * outcome still reaches them through {@link #notifyWaiters} (drained or
+	 * dropped batch) or {@link #wakeAllWaiters} (terminal stop).
+	 */
+	#releaseFailureWaiters(): void {
+		for (const w of Array.from(this.#waiters)) {
+			if (!w.waitThroughRecovery) w.finish(false);
 		}
 	}
 
@@ -1758,7 +1836,7 @@ export class AdvisorRuntime {
 					// Never hold the primary at the advisor catch-up gate while recovery
 					// hooks, retry delay, or provider quota are pending.
 					this.#failing = true;
-					this.#wakeAllWaiters();
+					this.#releaseFailureWaiters();
 					const failedMessages = this.agent.state.messages.slice(messageSnapshot);
 					const terminalFailure = [...failedMessages]
 						.reverse()

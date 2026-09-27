@@ -11,6 +11,7 @@ import {
 } from "../task/omp-command";
 import type { ToolSession } from "./index";
 import { toPathList } from "@oh-my-pi/pi-tui/render/render-utils";
+import { cfgSandboxAllowedPaths } from "../sandbox/settings";
 
 const macosSandboxSchema = type({
 	path: type("string")
@@ -83,10 +84,10 @@ export class MacOSSandboxTool implements AgentTool<typeof macosSandboxSchema, Ma
 			...paths,
 		];
 		const persisted = params.remember
-			? appendSandboxAllowedPaths(this.session.settings.getTrusted("sandbox.allowedPaths"), paths)
+			? appendSandboxAllowedPaths(this.session.settings.getTrusted(cfgSandboxAllowedPaths), paths)
 			: null;
 		if (persisted) {
-			this.session.settings.set("sandbox.allowedPaths", persisted);
+			cfgSandboxAllowedPaths.set(this.session.settings, persisted);
 			await this.session.settings.flush();
 		}
 		const result = sessionId

@@ -17,7 +17,7 @@ function createContext() {
 	const updateEditorTopBorder = vi.fn();
 	const ctx = {
 		isInitialized: true,
-		settings: { get: () => false },
+		settings: Settings.isolated(),
 		statusLine,
 		updateEditorTopBorder,
 		flushPendingCommandOutput: vi.fn(),

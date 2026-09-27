@@ -7,6 +7,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { buildSystemPrompt } from "../src/system-prompt";
+import { cfgCavemanEnabled } from "../src/modes/settings";
 
 // Contract: caveman mode is part of the base system prompt, not a chat
 // message. With `cavemanEnabled` the bundled skill body is present before the
@@ -106,7 +107,7 @@ describe("AgentSession.setCavemanEnabled", () => {
 			builtInToolNames: ["read"],
 			ensureWriteRegistered: async () => false,
 			rebuildSystemPrompt: async () => {
-				const enabled = settings.get("caveman.enabled");
+				const enabled = cfgCavemanEnabled.get(settings);
 				rebuilds.push(enabled);
 				return { systemPrompt: [enabled ? `base\n${CAVEMAN_HEADER}` : "base"] };
 			},

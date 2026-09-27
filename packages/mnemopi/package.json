@@ -2,7 +2,7 @@
 	"type": "module",
 	"name": "@oh-my-pi/pi-mnemopi",
 	"version": "1.11.5",
-	"description": "Local SQLite memory engine for Oh My Pi agents",
+	"description": "Local SQLite memory engine for omp agents",
 	"homepage": "https://omp.sh",
 	"author": "Stencil Labs, Inc.",
 	"contributors": [

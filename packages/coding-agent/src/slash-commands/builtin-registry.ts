@@ -11,7 +11,17 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { COLLAB_GUEST_ALLOWED_COMMANDS } from "../collab/guest";
 import { createProductPreviewCommand } from "../commands/product";
-import type { SettingPath } from "../config/settings";
+import {
+	cfgSkillsEnabled,
+	cfgSkillsEnableSkillCommands,
+	cfgSkillsEnableCodexUser,
+	cfgSkillsEnableClaudeUser,
+	cfgSkillsEnableClaudeProject,
+	cfgSkillsEnablePiUser,
+	cfgSkillsEnablePiProject,
+	cfgSkillsIncludeSkills,
+	cfgSkillsIgnoredSkills,
+} from "../extensibility/settings";
 import type { DuoStatus } from "../duo";
 import type { Skill } from "../extensibility/skills";
 import { disableHerdrNotify, enableHerdrNotify, herdrNotifyStatus } from "../herdr/notify-optin";
@@ -25,6 +35,7 @@ import type { AgentSession } from "../session/agent-session";
 import { deliverBrowserAnnotation } from "../session/browser-annotation";
 import type { BrowserAnnotationEntry } from "../tools";
 import { createBrowserAnnotationListener } from "../tools/browser";
+import { cfgBrowserAnnotateHttpHost, cfgBrowserAnnotateHttpPort } from "../tools/browser/settings";
 import {
 	type AnnotateHttpInfo,
 	AnnotateHttpPortUnavailableError,
@@ -58,7 +69,9 @@ import type {
 	SlashCommandSpec,
 	TuiSlashCommandRuntime,
 } from "./types";
-
+import { cfgDisabledExtensions } from "../extensibility/settings";
+import { cfgCavemanEnabled, cfgPonytailEnabled } from "../modes/settings";
+import { cfgLearningHalfLifeDays, cfgLearningMaxEntriesPerScope } from "../learning/settings";
 export type { BuiltinSlashCommand, SubcommandDef } from "./types";
 
 /** TUI-specific runtime accepted by `executeBuiltinSlashCommand`. */
@@ -136,9 +149,19 @@ function formatSkillLine(skill: Skill): string {
 }
 
 function buildSkillsReportText(runtime: SlashCommandRuntime): string {
-	const skillSettings = runtime.session.skillsSettings ?? runtime.settings.getGroup("skills");
+	const skillSettings = runtime.session.skillsSettings ?? {
+		enabled: cfgSkillsEnabled.get(runtime.settings),
+		enableSkillCommands: cfgSkillsEnableSkillCommands.get(runtime.settings),
+		enableCodexUser: cfgSkillsEnableCodexUser.get(runtime.settings),
+		enableClaudeUser: cfgSkillsEnableClaudeUser.get(runtime.settings),
+		enableClaudeProject: cfgSkillsEnableClaudeProject.get(runtime.settings),
+		enablePiUser: cfgSkillsEnablePiUser.get(runtime.settings),
+		enablePiProject: cfgSkillsEnablePiProject.get(runtime.settings),
+		includeSkills: cfgSkillsIncludeSkills.get(runtime.settings),
+		ignoredSkills: cfgSkillsIgnoredSkills.get(runtime.settings),
+	};
 
-	const disabledExtensions = skillSettings.disabledExtensions ?? runtime.settings.get("disabledExtensions") ?? [];
+	const disabledExtensions = skillSettings.disabledExtensions ?? cfgDisabledExtensions.get(runtime.settings);
 	const disabledSkillNames = disabledExtensions
 		.filter(id => id.startsWith("skill:"))
 		.map(id => id.slice("skill:".length))
@@ -318,11 +341,11 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
-			`Caveman: ${runtime.ctx.session.settings.get("caveman.enabled") ? "on" : "off"}`,
+			`Caveman: ${cfgCavemanEnabled.get(runtime.ctx.session.settings) ? "on" : "off"}`,
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (!arg || arg === "status") {
-				const enabled = runtime.settings.get("caveman.enabled");
+				const enabled = cfgCavemanEnabled.get(runtime.settings);
 				const status = `Caveman mode is ${enabled ? "on" : "off"} for this session and implementer subagents.`;
 				await runtime.output(enabled ? status : [status, "Explicit /skill:caveman remains available."].join("\n"));
 				return commandConsumed();
@@ -356,11 +379,11 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
-			`Ponytail: ${runtime.ctx.session.settings.get("ponytail.enabled") ? "on" : "off"}`,
+			`Ponytail: ${cfgPonytailEnabled.get(runtime.ctx.session.settings) ? "on" : "off"}`,
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (!arg || arg === "status") {
-				const enabled = runtime.settings.get("ponytail.enabled");
+				const enabled = cfgPonytailEnabled.get(runtime.settings);
 				const status = `Ponytail mode is ${enabled ? "on" : "off"} for this session and implementer subagents.`;
 				await runtime.output(enabled ? status : [status, "Explicit /skill:ponytail remains available."].join("\n"));
 				return commandConsumed();
@@ -643,8 +666,8 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				return usage("Usage: /annotate [on|off|status]", runtime);
 			}
 
-			const configuredHost = runtime.settings.get("browser.annotateHttpHost" as SettingPath) as string | undefined;
-			const configuredPort = runtime.settings.get("browser.annotateHttpPort" as SettingPath) as number | undefined;
+			const configuredHost = cfgBrowserAnnotateHttpHost.get(runtime.settings);
+			const configuredPort = cfgBrowserAnnotateHttpPort.get(runtime.settings);
 			const host = typeof configuredHost === "string" && configuredHost.trim() ? configuredHost.trim() : "0.0.0.0";
 			const portNumber = typeof configuredPort === "number" ? configuredPort : Number(configuredPort);
 			const port = Number.isFinite(portNumber) && portNumber > 0 ? Math.trunc(portNumber) : 3848;
@@ -839,8 +862,8 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 					try {
 						const entries = learningStorage.listActiveLearnings(db, {
 							repoKey,
-							limitPerScope: runtime.settings.get("learning.maxEntriesPerScope"),
-							halfLifeDays: runtime.settings.get("learning.halfLifeDays"),
+							limitPerScope: cfgLearningMaxEntriesPerScope.get(runtime.settings),
+							halfLifeDays: cfgLearningHalfLifeDays.get(runtime.settings),
 							nowSec: Math.floor(Date.now() / 1_000),
 						});
 						const details = entries
@@ -1029,7 +1052,10 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		name: command.name,
 		aliases: command.aliases,
 		allowArgs: command.allowArgs === true,
-		description: command.description,
+		// Getter: some descriptions name keys, formatted at read time (theme/preset may change).
+		get description() {
+			return command.description;
+		},
 		icon: command.icon,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,

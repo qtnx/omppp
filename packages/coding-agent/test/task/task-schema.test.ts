@@ -13,13 +13,13 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 // test/task/task-batch.test.ts).
 
 describe("task schema (single-spawn)", () => {
-	it("accepts {agent, task}", () => {
-		const parsed = taskSchema({ agent: "scout", task: "Map the auth module." });
+	it("accepts {agent, task, solutionSpace}", () => {
+		const parsed = taskSchema({ agent: "scout", task: "Map the auth module.", solutionSpace: "c" });
 		expect(parsed instanceof type.errors).toBe(false);
 	});
 
 	it("defaults agent to `task` when omitted", () => {
-		const parsed = taskSchema({ task: "Map the auth module." });
+		const parsed = taskSchema({ task: "Map the auth module.", solutionSpace: "c" });
 		expect(parsed instanceof type.errors).toBe(false);
 		if (!(parsed instanceof type.errors)) {
 			expect(parsed.agent).toBe("task");
@@ -27,7 +27,7 @@ describe("task schema (single-spawn)", () => {
 	});
 
 	it("requires task", () => {
-		const parsed = taskSchema({ agent: "scout" });
+		const parsed = taskSchema({ agent: "scout", solutionSpace: "c" });
 		expect(parsed instanceof type.errors).toBe(true);
 	});
 
@@ -37,7 +37,12 @@ describe("task schema (single-spawn)", () => {
 			batchEnabled: false,
 			evalToolsEnabled: false,
 		});
-		const parsed = schema({ agent: "scout", task: "Map the auth module.", tools: ["word_count"] });
+		const parsed = schema({
+			agent: "scout",
+			task: "Map the auth module.",
+			solutionSpace: "c",
+			tools: ["word_count"],
+		});
 		expect(parsed instanceof type.errors).toBe(false);
 		if (parsed && typeof parsed === "object" && !(parsed instanceof type.errors)) {
 			expect("tools" in parsed).toBe(false);
@@ -50,6 +55,7 @@ describe("task schema (single-spawn)", () => {
 			agent: "scout",
 			task: "Map the auth module.",
 			model: "openai-codex/gpt-5.6-sol:high",
+			solutionSpace: "c",
 			outputSchema,
 			schemaMode: "strict",
 			tools: ["word_count"],
@@ -102,11 +108,10 @@ describe("task spawn validation", () => {
 		});
 		const tool = await TaskTool.create(session);
 
-		expect(tool.description).toContain("`hub jobs`");
-		expect(tool.description).toContain("`hub wait`");
-		expect(tool.description).toContain("`hub send`");
-		expect(tool.description).toContain("`hub`/`irc`");
-		expect(tool.description).toContain("`job poll`");
+		expect(tool.description).toContain("`read proc://<jobId>`");
+		expect(tool.description).toContain("`write proc://<jobId>/kill`");
+		expect(tool.description).toContain("`write agent://<id>`");
+		expect(tool.description).toContain("Use `wait` only when completely blocked");
 	});
 
 	it("defaults a missing agent to `task`", async () => {

@@ -8,8 +8,8 @@ import {
 	type CompactionSummaryMessage,
 	resolveTelemetry,
 	type StreamFn,
+	TERMINAL_TOOL_RESULT_ABORT_REASON,
 	ThinkingLevel,
-	type Tokenizer,
 } from "@oh-my-pi/pi-agent-core";
 import {
 	canReplayRemoteCompaction,
@@ -76,6 +76,7 @@ import {
 	UpdateAdvisorStateTool,
 	UpdateBriefTool,
 } from "../advisor";
+import { evictStaleToolResults } from "../advisor/tool-result-eviction";
 import type { ModelRegistry } from "../config/model-registry";
 import {
 	formatModelString,
@@ -137,6 +138,26 @@ import { formatRoutingHistory, formatSessionHistoryMarkdown } from "./session-hi
 import type { SessionManager } from "./session-manager";
 import { buildSessionMetadata } from "./session-metadata";
 import type { YieldQueue } from "./yield-queue";
+
+import {
+	cfgAdvisorDoneGate,
+	cfgAdvisorEnabled,
+	cfgAdvisorEvictStaleResults,
+	cfgAdvisorFallbackModel,
+	cfgAdvisorImmuneTurns,
+	cfgAdvisorMaxNotesPerUpdate,
+	cfgAdvisorSyncBacklog,
+} from "../advisor/settings";
+import { cfgCompaction, cfgContextPromotionEnabled } from "./context-settings";
+import { cfgRetry, cfgTierAdvisor } from "./settings";
+import {
+	cfgDuoAdvisorEscalationModel,
+	cfgDuoAdvisorEscalationThinking,
+	cfgDuoAdvisorModel,
+	cfgDuoAdvisorThinking,
+	cfgDuoDoneGate,
+} from "../duo/settings";
+import { cfgSignalsAdvisorGateEnabled, cfgSignalsAdvisorGateReviewThreshold } from "../signals/settings";
 
 const ADVISOR_CODEX_SSE_MAX_ATTEMPTS = 1;
 /** Classifier `doneWithoutEvidence` at or above which the done gate rejects without a consult. */
@@ -300,12 +321,30 @@ interface ActiveAdvisor {
 	agentUnsubscribe?: () => void;
 	model: Model;
 	thinkingLevel: ThinkingLevel;
+	/**
+	 * The user selected `auto` for this advisor's effort. The classifier only
+	 * runs for the primary turn, so the advisor tracks the level `auto` resolved
+	 * to there, retuned at each review boundary.
+	 */
+	autoThinking: boolean;
 	providerSessionId: string | undefined;
 	retryFallback?: AdvisorRetryFallbackState;
 	retryFallbackPendingSuccess: boolean;
 	/** Count of consecutive usage-limit block waits, bounded by retry.maxRetries; reset on turn success. */
 	usageLimitRetries: number;
 	signature: string;
+}
+/** First index whose provider usage may anchor the advisor's context estimate. */
+function advisorAnchorSearchStart(messages: readonly AgentMessage[]): number {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role !== "compactionSummary") continue;
+		// Advisor summaries created before this runtime-only boundary existed have
+		// no trustworthy way to distinguish retained from newly appended messages.
+		// Conservatively ignore every current assistant until the next compaction.
+		return (message as AdvisorCompactionSummaryMessage).advisorUsageAnchorStartIndex ?? messages.length;
+	}
+	return 0;
 }
 interface AdvisorCompactionSummaryMessage extends CompactionSummaryMessage {
 	firstKeptEntryId?: string;
@@ -326,6 +365,7 @@ interface AdvisorRuntimeDescriptor {
 	slug: string;
 	model: Model;
 	thinkingLevel: ThinkingLevel;
+	autoThinking: boolean;
 	signature: string;
 }
 
@@ -351,8 +391,8 @@ export function advisorDefaultsOffForModel(model: { id: string } | undefined): b
  * wins; only the schema default yields to the per-model opt-out.
  */
 export function resolveAdvisorEnabled(settings: Settings, model: { id: string } | undefined): boolean {
-	const configured = settings.get("advisor.enabled");
-	if (settings.isConfigured("advisor.enabled")) return configured;
+	const configured = cfgAdvisorEnabled.get(settings);
+	if (cfgAdvisorEnabled.isConfigured(settings)) return configured;
 	return configured && !advisorDefaultsOffForModel(model);
 }
 
@@ -428,15 +468,18 @@ export interface SessionAdvisorsHost {
 	settings: Settings;
 	modelRegistry: ModelRegistry;
 	yieldQueue: YieldQueue;
-	obfuscator: SecretObfuscator | undefined;
+	obfuscator(): SecretObfuscator | undefined;
 	providerSessionState: Map<string, ProviderSessionState>;
-	preferWebsockets: boolean | undefined;
+	/** Live `providers.openaiWebsockets` hint for provider calls. */
+	preferWebsockets(): boolean | undefined;
 	onPayload: SimpleStreamOptions["onPayload"] | undefined;
 	onResponse: SimpleStreamOptions["onResponse"] | undefined;
 	onSseEvent: SimpleStreamOptions["onSseEvent"] | undefined;
 	agentKind(): "main" | "sub";
 	/** Current primary model; drives the per-model advisor default. */
 	currentModel(): Model | undefined;
+	/** Effective primary thinking level, including the live auto resolution. */
+	thinkingLevel?(): ThinkingLevel | undefined;
 	isDisposed(): boolean;
 	abortInProgress(): boolean;
 	allowAgentInitiatedTurns(): boolean;
@@ -656,6 +699,7 @@ export class SessionAdvisors {
 		const terminalBoundary = willContinue !== true;
 		if (terminalBoundary) this.#terminalUnwindActive = true;
 		try {
+			this.#retuneAutoThinkingAdvisors();
 			this.#advisorPrimaryTurnsCompleted++;
 			const sharedSignals = this.#classifyPrimaryTurn(messages, willContinue, signal);
 			for (const advisor of this.#advisors) {
@@ -674,7 +718,7 @@ export class SessionAdvisors {
 				}
 			}
 			if (sharedSignals) await sharedSignals;
-			const syncBacklog = this.#host.settings.get("advisor.syncBacklog");
+			const syncBacklog = cfgAdvisorSyncBacklog.get(this.#host.settings);
 			if (this.#advisors.length === 0 || syncBacklog === "off") return;
 			const threshold = Number.parseInt(syncBacklog, 10);
 			await Promise.all(this.#advisors.map(advisor => advisor.runtime.waitForCatchup(30_000, threshold, signal)));
@@ -687,7 +731,7 @@ export class SessionAdvisors {
 	}
 
 	/** Rebuilds live advisors when role assignments alter their resolved runtime inputs. */
-	onModelRolesChanged(): void {
+	reconcileModelRoles(): void {
 		if (!this.#advisorEnabled || this.#host.isDisposed()) return;
 		if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
 		this.#buildAdvisorRuntime(true);
@@ -743,9 +787,9 @@ export class SessionAdvisors {
 		const advisor = this.#advisors[0];
 		if (this.#host.agentKind() !== "main" || this.#advisorAutoResumeSuppressed) return false;
 		const doneGateEnabled = shouldRunDuoDoneGate(
-			this.#host.settings.get("advisor.doneGate"),
+			cfgAdvisorDoneGate.get(this.#host.settings),
 			this.#host.duoStatus(),
-			this.#host.settings.get("duo.doneGate"),
+			cfgDuoDoneGate.get(this.#host.settings),
 		);
 		if (!doneGateEnabled) return false;
 		const finalText = finalMessage.content
@@ -1056,6 +1100,11 @@ export class SessionAdvisors {
 	rebaseAllRuntimes(): void {
 		for (const advisor of this.#advisors) advisor.runtime.rebaseToCurrentTranscript();
 	}
+	/** Re-aligns advisor delivered prefixes after an in-place rewrite their contexts already cover. */
+	rebaseDeliveredPrefixes(reason: string): void {
+		for (const advisor of this.#advisors) advisor.runtime.rebaseDeliveredPrefix(reason);
+	}
+
 	/** Pause all live runtimes while Duo gives the main stream to its planner. */
 	pauseAll(): void {
 		for (const advisor of this.#advisors) advisor.runtime.pause();
@@ -1104,7 +1153,7 @@ export class SessionAdvisors {
 	// Advisor runtime lifecycle
 	// -------------------------------------------------------------------------
 	#advisorImmuneTurnLimit(): number {
-		const immuneTurns = this.#host.settings.get("advisor.immuneTurns") as number;
+		const immuneTurns = cfgAdvisorImmuneTurns.get(this.#host.settings);
 		if (!Number.isFinite(immuneTurns) || immuneTurns <= 0) return 0;
 		return Math.trunc(immuneTurns);
 	}
@@ -1117,7 +1166,7 @@ export class SessionAdvisors {
 		return (
 			clamp(config?.maxNotesPerUpdate) ??
 			clamp(this.#advisorSharedMaxNotesPerUpdate) ??
-			clamp(this.#host.settings.get("advisor.maxNotesPerUpdate")) ??
+			clamp(cfgAdvisorMaxNotesPerUpdate.get(this.#host.settings)) ??
 			ADVISOR_DEFAULT_BUDGET_PER_UPDATE
 		);
 	}
@@ -1255,7 +1304,7 @@ export class SessionAdvisors {
 	}
 
 	#resolveDuoAdvisorPin(planner: Model): { model: Model; thinkingLevel?: ThinkingLevel } {
-		const configured = (this.#host.settings.get("duo.advisorModel") ?? "").trim();
+		const configured = (cfgDuoAdvisorModel.get(this.#host.settings) ?? "").trim();
 		if (!configured) return { model: planner };
 		const resolved = resolveModelRoleValue(configured, this.#availableModelsForAdvisorRuntime(), {
 			settings: this.#host.settings,
@@ -1273,7 +1322,7 @@ export class SessionAdvisors {
 	}
 
 	#resolveDuoAdvisorEscalation(planner: Model): { model: Model; thinkingLevel: ThinkingLevel } {
-		const configured = (this.#host.settings.get("duo.advisorEscalationModel") ?? "").trim();
+		const configured = (cfgDuoAdvisorEscalationModel.get(this.#host.settings) ?? "").trim();
 		const resolved = configured
 			? resolveModelRoleValue(configured, this.#availableModelsForAdvisorRuntime(), {
 					settings: this.#host.settings,
@@ -1284,7 +1333,7 @@ export class SessionAdvisors {
 			resolved?.model && this.#host.modelRegistry.hasConfiguredAuth(resolved.model) ? resolved.model : planner;
 		const configuredThinking =
 			resolved?.thinkingLevel ??
-			parseConfiguredThinkingLevel(this.#host.settings.get("duo.advisorEscalationThinking"));
+			parseConfiguredThinkingLevel(cfgDuoAdvisorEscalationThinking.get(this.#host.settings));
 		const thinkingLevel = resolveThinkingLevelForModel(
 			model,
 			concreteThinkingLevel(configuredThinking) ?? ThinkingLevel.XHigh,
@@ -1294,7 +1343,7 @@ export class SessionAdvisors {
 
 	#duoPinnedAdvisorThinkingLevel(fallback: ThinkingLevel): ThinkingLevel {
 		if (this.#duoAdvisorPinnedThinking !== undefined) return this.#duoAdvisorPinnedThinking;
-		const configured = parseConfiguredThinkingLevel(this.#host.settings.get("duo.advisorThinking"));
+		const configured = parseConfiguredThinkingLevel(cfgDuoAdvisorThinking.get(this.#host.settings));
 		if (configured === undefined || configured === AUTO_THINKING || configured === ThinkingLevel.Inherit) {
 			return fallback;
 		}
@@ -1320,17 +1369,19 @@ export class SessionAdvisors {
 				continue;
 			}
 
+			let autoThinking = false;
 			let model: Model | undefined;
 			let thinkingLevel: ThinkingLevel | undefined;
 			if (this.#duoAdvisorPinnedModel) {
 				model = this.#duoAdvisorPinnedModel;
-				const configured = parseConfiguredThinkingLevel(this.#host.settings.get("duo.advisorThinking"));
+				const configured = parseConfiguredThinkingLevel(cfgDuoAdvisorThinking.get(this.#host.settings));
 				if (configured !== AUTO_THINKING && configured !== ThinkingLevel.Inherit) {
 					thinkingLevel = resolveThinkingLevelForModel(model, configured ?? ThinkingLevel.XHigh);
 				}
 			} else if (config.model) {
 				const resolved = resolveModelOverride([config.model], this.#host.modelRegistry, this.#host.settings);
 				model = resolved.model;
+				autoThinking = resolved.thinkingLevel === AUTO_THINKING;
 				thinkingLevel = concreteThinkingLevel(resolved.thinkingLevel);
 				if (!model) {
 					this.#advisorStatuses.set(slug, { name: config.name, status: "no_model" });
@@ -1355,11 +1406,14 @@ export class SessionAdvisors {
 					continue;
 				}
 				model = sel.model;
+				autoThinking = sel.thinkingLevel === AUTO_THINKING;
 				thinkingLevel = concreteThinkingLevel(sel.thinkingLevel);
 			}
 			const requestedLevel = this.#duoAdvisorPinnedModel
 				? (thinkingLevel ?? ThinkingLevel.Inherit)
-				: (thinkingLevel ?? ThinkingLevel.Medium);
+				: autoThinking
+					? this.#autoAdvisorThinkingLevel()
+					: (thinkingLevel ?? ThinkingLevel.Medium);
 			const resolvedLevel = resolveThinkingLevelForModel(model, requestedLevel);
 			const advisorThinkingLevel: ThinkingLevel = resolvedLevel ?? ThinkingLevel.Inherit;
 			this.#advisorStatuses.set(slug, { name: config.name, status: "running" });
@@ -1369,7 +1423,16 @@ export class SessionAdvisors {
 				slug,
 				model,
 				thinkingLevel: advisorThinkingLevel,
-				signature: this.#advisorRuntimeSignature(config, slug, model, advisorThinkingLevel),
+				autoThinking,
+				// An `auto` advisor's concrete level changes every turn; signing the
+				// resolved level would make each change look like a config edit and
+				// rebuild the advisor, losing its context. Sign the selector instead.
+				signature: this.#advisorRuntimeSignature(
+					config,
+					slug,
+					model,
+					autoThinking ? AUTO_THINKING : advisorThinkingLevel,
+				),
 			});
 		}
 		return descriptors;
@@ -1388,6 +1451,7 @@ export class SessionAdvisors {
 				slug: "",
 				model: pinned,
 				thinkingLevel,
+				autoThinking: false,
 				signature: this.#advisorRuntimeSignature(config, "", pinned, thinkingLevel),
 			});
 			return descriptors;
@@ -1405,7 +1469,12 @@ export class SessionAdvisors {
 		return descriptors;
 	}
 
-	#advisorRuntimeSignature(config: AdvisorConfig, slug: string, model: Model, thinkingLevel: ThinkingLevel): string {
+	#advisorRuntimeSignature(
+		config: AdvisorConfig,
+		slug: string,
+		model: Model,
+		thinkingLevel: ThinkingLevel | typeof AUTO_THINKING,
+	): string {
 		const tools = config.tools?.length ? config.tools.join("\u001e") : "";
 		const instructions = config.instructions?.trim() ?? "";
 		const duoEscalation =
@@ -1417,6 +1486,8 @@ export class SessionAdvisors {
 					]
 				: [];
 		const budget = this.#advisorMaxNotesPerUpdate(config);
+		// The service tier is bound at build time, so a `tier.advisor` edit must rebuild.
+		const tier = cfgTierAdvisor.get(this.#host.settings);
 		return [
 			config.name,
 			slug,
@@ -1425,6 +1496,7 @@ export class SessionAdvisors {
 			tools,
 			instructions,
 			budget,
+			tier,
 			...duoEscalation,
 		].join("\u001f");
 	}
@@ -1459,7 +1531,7 @@ export class SessionAdvisors {
 		// tiers per request (like the main agent, including /fast toggles); a
 		// concrete value is broadcast across families and applied to the advisor
 		// model's family. One value for all advisors.
-		const advisorTierSetting = this.#host.settings.get("tier.advisor");
+		const advisorTierSetting = cfgTierAdvisor.get(this.#host.settings);
 		const advisorTierMap =
 			advisorTierSetting === "inherit"
 				? undefined
@@ -1469,7 +1541,7 @@ export class SessionAdvisors {
 				? this.#host.effectiveServiceTier(model)
 				: resolveModelServiceTier(advisorTierMap, model);
 
-		const fallbackSetting = this.#host.settings.get("advisor.fallbackModel");
+		const fallbackSetting = cfgAdvisorFallbackModel.get(this.#host.settings);
 		const fallbackSelection = resolveModelRoleValue(fallbackSetting, this.#availableModelsForAdvisorRuntime(), {
 			settings: this.#host.settings,
 			modelRegistry: this.#host.modelRegistry,
@@ -1489,6 +1561,7 @@ export class SessionAdvisors {
 				model: advisorModel,
 				name: advisorName,
 				thinkingLevel: advisorThinkingLevel,
+				autoThinking: advisorAutoThinking,
 				signature,
 			} = descriptor;
 
@@ -1648,7 +1721,12 @@ export class SessionAdvisors {
 				mcpResources: this.#advisorMcpResources,
 			});
 			const baseAdvisorStreamFn = this.#advisorStreamFn ?? streamSimple;
-			const advisorStreamFn: StreamFn = (requestModel, context, options) => {
+			const advisorStreamFn: StreamFn = (requestModel, context, streamOptions) => {
+				// Read per request so a mid-session `providers.openaiWebsockets` change reaches advisors.
+				const options = {
+					...streamOptions,
+					preferWebsockets: streamOptions?.preferWebsockets ?? this.#host.preferWebsockets(),
+				};
 				if (requestModel.api === "openai-codex-responses") {
 					return baseAdvisorStreamFn(requestModel, context, {
 						...options,
@@ -1681,7 +1759,6 @@ export class SessionAdvisors {
 				providerSessionState: this.#host.providerSessionState,
 				cursorExecHandlers: advisorCursorExecHandlers,
 				cwdResolver: () => this.#host.sessionManager.getCwd(),
-				preferWebsockets: this.#host.preferWebsockets,
 				getApiKey: requestModel => this.#host.modelRegistry.resolver(requestModel, advisorProviderSessionId),
 				streamFn: advisorStreamFn,
 				// Maintenance installs compactionSummary messages; the core Agent's
@@ -1697,6 +1774,27 @@ export class SessionAdvisors {
 						message,
 						buildAdvisorQuarantineSourceText(currentAdvisorInput, advisorAgent.state.messages),
 					);
+				},
+				// A turn whose only tool calls are `advise` has nothing left to do:
+				// without this the model is re-invoked over the whole prefix just to
+				// say "done" (measured at ~6% of advisor spend, zero notes). Stop the
+				// review through the same graceful terminal path the primary's
+				// `yield` tool uses — the tool batch persists and `onTurnEnd` still
+				// runs. A turn that advises and keeps investigating is untouched.
+				// Fire on the LAST advise block, not the first: the batch starts
+				// records in index order and a not-yet-started sibling would see the
+				// aborted signal and become a skipped placeholder — a lost note.
+				afterToolCall: ctx => {
+					if (ctx.toolCall.name !== adviseTool.name) return undefined;
+					if (ctx.isError) return undefined;
+					let lastAdviseId: string | undefined;
+					for (const block of ctx.assistantMessage.content) {
+						if (block.type !== "toolCall") continue;
+						if (block.name !== adviseTool.name) return undefined;
+						lastAdviseId = block.id;
+					}
+					if (ctx.toolCall.id === lastAdviseId) advisorAgent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+					return undefined;
 				},
 				telemetry: advisorTelemetry,
 				serviceTier: undefined,
@@ -1802,7 +1900,7 @@ export class SessionAdvisors {
 					snapshotMessages: () => this.#host.agent.state.messages,
 					enqueueAdvice: (note, severity) => this.#routeAdvice(advisorRef, note, severity),
 					maintainContext: (incoming, signal) => this.#maintainAdvisorContext(advisorRef, incoming, signal),
-					obfuscator: this.#host.obfuscator,
+					obfuscator: this.#host.obfuscator(),
 					getModelIdentity: () => formatModelString(advisorRef.agent.state.model),
 					beginAdvisorUpdate: (inProgress, opts) => {
 						advisorRef.recorder.beginTurn();
@@ -1864,8 +1962,8 @@ export class SessionAdvisors {
 					onTurnSignals: this.#onTurnSignals,
 					duoWorkPhase: () => this.#host.duoStatus()?.workPhase,
 					advisorGate: () => ({
-						enabled: this.#host.settings.get("signals.advisorGate.enabled"),
-						reviewThreshold: this.#host.settings.get("signals.advisorGate.reviewThreshold"),
+						enabled: cfgSignalsAdvisorGateEnabled.get(this.#host.settings),
+						reviewThreshold: cfgSignalsAdvisorGateReviewThreshold.get(this.#host.settings),
 					}),
 				},
 				1000,
@@ -1892,6 +1990,7 @@ export class SessionAdvisors {
 				recorderClosed: Promise.resolve(),
 				model: advisorModel,
 				thinkingLevel: advisorThinkingLevel,
+				autoThinking: advisorAutoThinking,
 				providerSessionId: advisorProviderSessionId,
 				retryFallbackPendingSuccess: false,
 				usageLimitRetries: 0,
@@ -2099,6 +2198,44 @@ export class SessionAdvisors {
 		return nextThinkingLevel;
 	}
 
+	/**
+	 * The level an `auto` advisor runs at: the effort the primary agent is
+	 * running at — the classifier's pick under `auto`, the pinned level
+	 * otherwise — so the advisor follows a mid-session switch in either
+	 * direction. When the primary has no effort (`off`, `inherit`, unset) it is
+	 * the `medium` default an advisor without a configured level gets. One
+	 * source for build, review-boundary retune and fallback restore, so a live
+	 * advisor always matches what a fresh build would give it.
+	 */
+	#autoAdvisorThinkingLevel(): ThinkingLevel {
+		const level = this.#host.thinkingLevel?.() ?? this.#host.agent.state.thinkingLevel;
+		return level === undefined || level === ThinkingLevel.Off || level === ThinkingLevel.Inherit
+			? ThinkingLevel.Medium
+			: level;
+	}
+
+	/**
+	 * Re-point every `auto` advisor at {@link #autoAdvisorThinkingLevel} — the
+	 * primary turn's level, or the build-time default while the primary is off.
+	 *
+	 * Deliberately not {@link #setAdvisorModel}: the model is unchanged, and that
+	 * path invalidates the append-only context, which would throw away the
+	 * advisor's cached prefix on every turn. Only the effort moves here.
+	 */
+	#retuneAutoThinkingAdvisors(): void {
+		const requested = this.#autoAdvisorThinkingLevel();
+		for (const advisor of this.#advisors) {
+			// A retry-fallback selector pinned its own effort for the fallback
+			// model; the retune resumes once the configured model is restored.
+			if (!advisor.autoThinking || advisor.runtime.disposed || advisor.retryFallback) continue;
+			const next = resolveThinkingLevelForModel(advisor.model, requested) ?? ThinkingLevel.Inherit;
+			if (next === advisor.thinkingLevel) continue;
+			advisor.agent.setThinkingLevel(toReasoningEffort(next));
+			advisor.agent.setDisableReasoning(shouldDisableReasoning(next));
+			advisor.thinkingLevel = next;
+		}
+	}
+
 	#canReplayAdvisorHistory(advisor: ActiveAdvisor, model: Model): boolean {
 		return advisor.agent.state.messages.every(
 			message =>
@@ -2140,8 +2277,11 @@ export class SessionAdvisors {
 		if (!apiKey) return;
 		signal.throwIfAborted();
 
-		const thinkingToApply =
-			advisor.thinkingLevel === fallback.lastAppliedThinkingLevel
+		// An `auto` advisor skipped the retune while on the fallback: rejoin the
+		// primary's live level now, not the level it had when it fell back.
+		const thinkingToApply = advisor.autoThinking
+			? this.#autoAdvisorThinkingLevel()
+			: advisor.thinkingLevel === fallback.lastAppliedThinkingLevel
 				? fallback.originalThinkingLevel
 				: advisor.thinkingLevel;
 		this.#setAdvisorModel(advisor, primaryModel, thinkingToApply);
@@ -2233,7 +2373,7 @@ export class SessionAdvisors {
 
 		const currentSelector = formatRetryFallbackSelector(currentModel, advisor.thinkingLevel);
 
-		const retrySettings = this.#host.settings.getGroup("retry");
+		const retrySettings = cfgRetry.get(this.#host.settings);
 		// A usage-limit error with no sibling credential and no usable model
 		// fallback is not automatically fatal: wait out a transient credential
 		// block and retry, mirroring the primary turn-recovery. Only a wait past
@@ -2367,8 +2507,7 @@ export class SessionAdvisors {
 		currentModel: Model,
 		signal: AbortSignal,
 	): Promise<boolean> {
-		const promotionSettings = this.#host.settings.getGroup("contextPromotion");
-		if (!promotionSettings.enabled) return false;
+		if (!cfgContextPromotionEnabled.get(this.#host.settings)) return false;
 		const contextWindow = currentModel.contextWindow ?? 0;
 		if (contextWindow <= 0) return false;
 		const targetModel = await this.#host.resolveContextPromotionTarget(currentModel, contextWindow, signal);
@@ -2404,9 +2543,30 @@ export class SessionAdvisors {
 	): Promise<boolean> {
 		await this.#maybeRestoreAdvisorRetryFallbackPrimary(advisor, signal);
 		const agent = advisor.agent;
+		// Prior reviews' `read`/`grep`/`glob` output is re-sent on every later
+		// request; the deltas the advisor reviews and the notes it wrote (carried
+		// in `advise` tool-call arguments) are never touched, and the latest review
+		// is kept intact. Runs before the compaction gate because it is the
+		// advisor's own context hygiene, not a compaction method; it has its own
+		// `advisor.evictStaleResults` switch.
+		//
+		// On a prefix-bound thinking model the `prunedAt` marker also drops the
+		// signed thinking of every assistant after the cut, the latest review
+		// included. What is lost is reasoning its notes and the deltas already
+		// cover.
+		if (cfgAdvisorEvictStaleResults.get(this.#host.settings)) {
+			const eviction = evictStaleToolResults(agent.state.messages, agent.tokenizer);
+			if (eviction.evicted > 0) {
+				logger.debug("advisor evicted stale tool results", {
+					advisor: advisor.name,
+					evicted: eviction.evicted,
+					tokensSaved: eviction.tokensSaved,
+				});
+			}
+		}
 		const incomingTokens = agent.tokenizer.countMessage(incoming);
 
-		const configuredCompaction = this.#host.settings.getGroup("compaction");
+		const configuredCompaction = cfgCompaction.get(this.#host.settings);
 		const methods = resolveCompactionMethodOrder(configuredCompaction.methodOrder);
 		if (!configuredCompaction.enabled || methods.length === 0) {
 			return false;
@@ -2427,7 +2587,7 @@ export class SessionAdvisors {
 		// delta to that arm. Floor it by a full local estimate — fixed advisor system
 		// prompt, tool schemas, stored messages, and incoming delta — so provider
 		// under-reporting or payload transforms cannot suppress maintenance.
-		const providerContextTokens = this.#estimateAdvisorContextTokens(messages, agent.tokenizer) + incomingTokens;
+		const providerContextTokens = this.#estimateAdvisorContextTokens(advisor) + incomingTokens;
 		const localContextTokens =
 			agent.tokenizer.countTokens(agent.state.systemPrompt) +
 			estimateToolSchemaTokens(agent.state.tools, agent.tokenizer, this.#host.settings.revision) +
@@ -2471,9 +2631,9 @@ export class SessionAdvisors {
 					id,
 					parentId,
 					// ISO like every CompactionEntry: the next round reads this
-					// back as previousSummaryTimestamp, and a millis string
-					// does not survive `new Date()` (NaN rewrite marker).
-					timestamp: new Date(message.timestamp || Date.now()).toISOString(),
+					// back as previousSummaryTimestamp (the reused rewrite marker),
+					// and a millis string does not survive `new Date()` (NaN marker).
+					timestamp: new Date(message.historyRewriteAt ?? (message.timestamp || Date.now())).toISOString(),
 					summary: message.summary,
 					shortSummary: message.shortSummary,
 					firstKeptEntryId: advisorSummary.firstKeptEntryId || `msg-${i + 1}`,
@@ -2595,7 +2755,7 @@ export class SessionAdvisors {
 						promptCacheKey: advisorProviderSessionId,
 						metadata: advisorMetadata,
 						providerSessionState: this.#host.providerSessionState,
-						preferWebsockets: this.#host.preferWebsockets,
+						preferWebsockets: this.#host.preferWebsockets(),
 						codexCompaction,
 					},
 				);
@@ -2645,20 +2805,24 @@ export class SessionAdvisors {
 		const advisorUsageAnchorStartIndex = recentMessages.length + 1;
 		const anthropicPayload = getAnthropicCompactionPayload(compactResult.preserveData);
 		// A native summary replays its block on later requests, so its rewrite
-		// marker must precede the retained tail: a fresh timestamp would make
+		// marker must precede the retained tail: the commit time would make
 		// `historyRewriteAt` newer than the tail and strip its bound thinking
 		// on the very next request. Reuse the previous compaction's marker when
 		// one exists, else sit just before the retained tail. Local summaries
-		// keep the existing fresh timestamp.
+		// use the commit time, which the summary always keeps as its timestamp.
 		const firstRetained = preparation.recentMessages[0];
-		const summaryTimestamp =
-			anthropicPayload !== undefined
-				? (preparation.previousSummaryTimestamp ??
-					(firstRetained ? new Date(firstRetained.timestamp - 1).toISOString() : new Date().toISOString()))
-				: new Date().toISOString();
+		const historyRewriteAt =
+			anthropicPayload === undefined
+				? undefined
+				: preparation.previousSummaryTimestamp !== undefined
+					? new Date(preparation.previousSummaryTimestamp).getTime()
+					: firstRetained
+						? firstRetained.timestamp - 1
+						: undefined;
 		const summaryMessage = {
-			...createCompactionSummaryMessage(summary, tokensBefore, summaryTimestamp, {
+			...createCompactionSummaryMessage(summary, tokensBefore, new Date().toISOString(), {
 				shortSummary,
+				historyRewriteAt,
 				// Carry provider-native replay state on the in-memory summary so
 				// later advisor requests replay it instead of ordinary summary text.
 				providerPayload: anthropicPayload ?? providerPayload,
@@ -2717,11 +2881,16 @@ export class SessionAdvisors {
 	/**
 	 * Wait for active advisor reviews and their emitted card events before a
 	 * headless caller disposes the session. Returns `false` and logs work disposal
-	 * will abandon when the shared deadline expires or an advisor fails.
+	 * will abandon when the shared deadline expires or an advisor stops for good
+	 * (halt, quota pause). A failing advisor releases the drain at once unless
+	 * `waitThroughRecovery` is set: then its retry and fallback-chain recovery is
+	 * waited through instead of being abandoned mid-switch.
 	 */
-	async waitForAdvisorCatchup(timeoutMs: number): Promise<boolean> {
+	async waitForAdvisorCatchup(timeoutMs: number, options?: { waitThroughRecovery?: boolean }): Promise<boolean> {
 		const deadline = Date.now() + timeoutMs;
-		const results = await Promise.all(this.#advisors.map(advisor => advisor.runtime.waitForCatchup(timeoutMs, 1)));
+		const results = await Promise.all(
+			this.#advisors.map(advisor => advisor.runtime.waitForCatchup(timeoutMs, 1, undefined, options)),
+		);
 		const cardEventsCaughtUp = await this.#waitForPendingAdvisorCardEvents(Math.max(0, deadline - Date.now()));
 		const abandoned = this.#advisors.filter(
 			(advisor, index) => results[index] === false && advisor.runtime.backlog > 0,
@@ -2746,7 +2915,9 @@ export class SessionAdvisors {
 		this.#advisorEnabled = enabled;
 		if (enabled) {
 			if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
-			return this.#buildAdvisorRuntime(true);
+			const started = this.#buildAdvisorRuntime(true);
+			this.#retuneAutoThinkingAdvisors();
+			return started;
 		}
 		this.#stopAdvisorRuntime();
 		return false;
@@ -3013,7 +3184,7 @@ export class SessionAdvisors {
 	#computeAdvisorStat(advisor: ActiveAdvisor): PerAdvisorStat {
 		const model = advisor.agent.state.model;
 		const messages = advisor.agent.state.messages;
-		const contextTokens = this.#estimateAdvisorContextTokens(messages, advisor.agent.tokenizer);
+		const contextTokens = this.#estimateAdvisorContextTokens(advisor);
 		let input = 0;
 		let output = 0;
 		let reasoning = 0;
@@ -3102,21 +3273,15 @@ export class SessionAdvisors {
 	 * generated output; only messages after that anchor are estimated. Usage from
 	 * retained pre-compaction messages is stale and must not immediately retrigger
 	 * maintenance on the newly compacted context.
+	 * Usage reported before the newest tool-result eviction is stale the same way.
 	 */
-	#estimateAdvisorContextTokens(messages: AgentMessage[], tokenizer: Tokenizer): number {
-		let usageAnchorStartIndex = 0;
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const message = messages[i];
-			if (message.role !== "compactionSummary") continue;
-			const advisorSummary = message as AdvisorCompactionSummaryMessage;
-			// Advisor summaries created before this runtime-only boundary existed have
-			// no trustworthy way to distinguish retained from newly appended messages.
-			// Conservatively ignore every current assistant until the next compaction.
-			usageAnchorStartIndex = advisorSummary.advisorUsageAnchorStartIndex ?? messages.length;
-			break;
-		}
-		return estimateTranscriptTokens(messages, tokenizer, {
-			anchorFromIndex: usageAnchorStartIndex,
+	#estimateAdvisorContextTokens(advisor: ActiveAdvisor): number {
+		const messages = advisor.agent.state.messages;
+		return estimateTranscriptTokens(messages, advisor.agent.tokenizer, {
+			anchorFromIndex: advisorAnchorSearchStart(messages),
+			// Evicted tool results were rewritten in place; usage reported before
+			// the newest eviction still counts the removed bytes.
+			skipPrunedAnchors: true,
 			excludeEncryptedReasoning: true,
 		});
 	}

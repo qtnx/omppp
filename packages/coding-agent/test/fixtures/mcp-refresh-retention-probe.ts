@@ -61,6 +61,8 @@ const host: SessionToolsHost = {
 	localProtocolOptions: () => ({}),
 	secretVault: undefined,
 	redactOutboundText: undefined,
+	evalPreludes: () => [],
+	sessionAgents: () => [],
 };
 const sessionTools = new SessionTools(host, {
 	baseSystemPrompt: [],

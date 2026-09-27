@@ -5,6 +5,7 @@ import { resolveRepoKey } from "../learnings/repo-key";
 import { closeLearningDb, findActiveByAliasPrefix, openLearningDb, recordLearningFeedback } from "../learnings/storage";
 import rateLearningDescription from "../prompts/tools/rate-learning.md" with { type: "text" };
 import type { ToolSession } from ".";
+import { cfgLearningEnabled } from "../learning/settings";
 
 const rateLearningSchema = type({
 	ratings: type({
@@ -32,7 +33,7 @@ export class RateLearningTool implements AgentTool<typeof rateLearningSchema> {
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): RateLearningTool | null {
-		if (!session.settings.get("learning.enabled") || (session.taskDepth ?? 0) !== 0) return null;
+		if (!cfgLearningEnabled.get(session.settings) || (session.taskDepth ?? 0) !== 0) return null;
 		return new RateLearningTool(session);
 	}
 

@@ -1,9 +1,8 @@
-import type { SettingValue } from "../config/settings-schema";
+export type ToolDiscoveryModeSetting = "off" | "mcp-only" | "all" | "auto";
 
 export const TOOL_DISCOVERY_AUTO_THRESHOLD = 40;
 export const TOOL_DISCOVERY_SEARCH_TOOL_NAME = "search_tool_bm25";
 
-export type ToolDiscoveryModeSetting = SettingValue<"tools.discoveryMode">;
 export type EffectiveToolDiscoveryMode = Exclude<ToolDiscoveryModeSetting, "auto">;
 
 export function countToolsForAutoDiscovery(toolNames: Iterable<string>): number {

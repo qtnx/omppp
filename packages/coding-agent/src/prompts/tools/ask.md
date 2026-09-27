@@ -6,11 +6,9 @@ Ask user for input ONLY when the task cannot be finished without it.
 </conditions>
 
 <instruction>
-- `recommended: <index>` marks default (0-indexed); " (Recommended)" added automatically.
-- Use `questions` for related questions, not one at a time.
-- Set `multi: true` on a question to allow multiple selections.
-- Short option labels; explanatory tradeoffs in `description`, not labels.
-- A custom input (`Other`) can be a clarifying question, not an answer (e.g. "what do you mean?", "explain X", "why?"). If so, answer it in response text first, then call `ask` again for the still-open question(s).
+- Batch related questions; 2–5 distinct options each; short labels, tradeoffs in `description`.
+- `recommended` auto-adds " (Recommended)"; `multi: true` permits multiple selections.
+- NEVER supply "Other": UI adds "Other (type your own)". Clarifying custom input? Answer first; re-ask unresolved questions.
 </instruction>
 
 <caution>

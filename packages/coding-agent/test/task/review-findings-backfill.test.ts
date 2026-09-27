@@ -95,7 +95,7 @@ describe("review findings backfill", () => {
 		].join("\n");
 		await Bun.write(sessionFile, `${sessionContent}\n`);
 
-		const result = await backfillReviewFindings({ sessionDir, agentDbPath });
+		const result = await backfillReviewFindings({ sessionDir, agentDbPath, jevAssist: false });
 
 		expect(result).toMatchObject({
 			sessionFilesScanned: 1,
@@ -118,7 +118,7 @@ describe("review findings backfill", () => {
 			lineEnd: 96,
 		});
 
-		const repeated = await backfillReviewFindings({ sessionDir, agentDbPath });
+		const repeated = await backfillReviewFindings({ sessionDir, agentDbPath, jevAssist: false });
 		expect(repeated.findingsDiscovered).toBe(1);
 		expect(repeated.findingsWritten).toBe(0);
 		const repeatedList = await listReviewFindings({ agentDbPath });
@@ -178,7 +178,7 @@ describe("review findings backfill", () => {
 		].join("\n");
 		await Bun.write(sessionFile, `${sessionContent}\n`);
 
-		const result = await backfillReviewFindings({ sessionDir, agentDbPath });
+		const result = await backfillReviewFindings({ sessionDir, agentDbPath, jevAssist: false });
 
 		expect(result.findingsWritten).toBe(2);
 		const list = await listReviewFindings({ agentDbPath });
@@ -282,7 +282,7 @@ describe("review findings backfill", () => {
 			].join("\n")}\n`,
 		);
 
-		const result = await backfillReviewFindings({ sessionDir, agentDbPath, repoRoot: targetRepo });
+		const result = await backfillReviewFindings({ sessionDir, agentDbPath, repoRoot: targetRepo, jevAssist: false });
 
 		expect(result).toMatchObject({
 			sessionFilesScanned: 2,
@@ -343,7 +343,7 @@ describe("review findings backfill", () => {
 		].join("\n");
 		await Bun.write(sessionFile, `${sessionContent}\n`);
 
-		const result = await backfillReviewFindings({ sessionDir, agentDbPath, dryRun: true });
+		const result = await backfillReviewFindings({ sessionDir, agentDbPath, dryRun: true, jevAssist: false });
 
 		expect(result.findingsDiscovered).toBe(1);
 		expect(result.findingsWritten).toBe(0);

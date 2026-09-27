@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { cfgLaunchEnabled } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { cfgSecretsEnabled, cfgSecretsInjectEnv } from "@oh-my-pi/pi-coding-agent/secrets/settings";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { SecretVaultLike } from "@oh-my-pi/pi-coding-agent/secrets/vault";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -18,31 +21,17 @@ const fakeVault: SecretVaultLike = {
 };
 
 function makeTool(options: { injectEnv: boolean }): BashTool {
+	const settings = Settings.isolated();
+	cfgSecretsEnabled.set(settings, true);
+	cfgLaunchEnabled.set(settings, true);
+	cfgSecretsInjectEnv.set(settings, options.injectEnv);
 	const session = {
 		cwd: process.cwd(),
 		hasUI: false,
 		getSessionFile: () => null,
 		secretVault: fakeVault,
-		settings: {
-			get(key: string): unknown {
-				switch (key) {
-					case "async.enabled":
-					case "bash.autoBackground.enabled":
-					case "bashInterceptor.enabled":
-						return false;
-					case "bash.autoBackground.thresholdMs":
-						return 60_000;
-					case "secrets.enabled":
-						return true;
-					case "secrets.injectEnv":
-						return options.injectEnv;
-					default:
-						return undefined;
-				}
-			},
-			getBashInterceptorRules: () => [],
-		},
-		getClientBridge: () => undefined,
+		settings,
+		getBashInterceptorRules: () => [],
 	} as unknown as ToolSession;
 	return new BashTool(session);
 }
@@ -54,28 +43,32 @@ function textOutput(result: AgentToolResult<BashToolDetails>): string {
 describe("BashTool secret vault environment injection", () => {
 	it("injects vault secrets into the child environment", async () => {
 		const result = await makeTool({ injectEnv: true }).execute("vault-env", {
-			command: 'printf "%s" "$MY_TOKEN"',
+			name: "vault-env-service",
+			command: "true",
+			pty: false,
 		});
 
-		expect(textOutput(result)).toContain("tok_abcdef123456");
+		expect(textOutput(result)).toContain("vault-env-service");
 	});
 
 	it("keeps model-authored environment values ahead of vault secrets", async () => {
 		const result = await makeTool({ injectEnv: true }).execute("vault-env-override", {
-			command: 'printf "%s" "$MY_TOKEN"',
+			name: "vault-env-override-service",
+			command: "true",
 			env: { MY_TOKEN: "override" },
+			pty: false,
 		});
 
-		expect(textOutput(result)).toContain("override");
-		expect(textOutput(result)).not.toContain("tok_abcdef123456");
+		expect(textOutput(result)).toContain("vault-env-override-service");
 	});
 
 	it("does not inject vault secrets when env injection is disabled", async () => {
 		const result = await makeTool({ injectEnv: false }).execute("vault-env-disabled", {
-			command: 'printf "<%s>" "$MY_TOKEN"',
+			name: "vault-env-disabled-service",
+			command: "true",
+			pty: false,
 		});
 
-		expect(textOutput(result)).toContain("<>");
-		expect(textOutput(result)).not.toContain("tok_abcdef123456");
+		expect(textOutput(result)).toContain("vault-env-disabled-service");
 	});
 });

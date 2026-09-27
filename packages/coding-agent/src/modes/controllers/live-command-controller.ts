@@ -14,6 +14,8 @@ import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../types";
 import { createAssistantMessageComponent } from "@oh-my-pi/pi-tui/prompt/interactive-context-helpers";
 
+import { cfgLiveVoice } from "../../live/settings";
+
 const ANIMATION_INTERVAL_MS = 80;
 type LiveSessionFactory = (options: LiveSessionControllerOptions) => LiveSessionController;
 
@@ -145,7 +147,7 @@ export class LiveCommandController {
 			agent: new LocalAgentEndpoint(this.#ctx.session, message => this.#ctx.extractAssistantText(message)),
 			identity: localAgentIdentity(this.#ctx.session),
 			authStorage: this.#ctx.session.modelRegistry.authStorage,
-			voice: this.#ctx.settings.get("live.voice"),
+			voice: cfgLiveVoice.get(this.#ctx.settings),
 			callbacks: {
 				onPhase: phase => {
 					if (this.#visualizer !== visualizer) return;

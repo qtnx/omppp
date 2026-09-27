@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { AsyncJobManager } from "../../src/async";
-import type { Settings } from "../../src/config/settings";
+import { Settings } from "../../src/config/settings";
 import type { ToolSession } from "../../src/tools";
 import { JobTool, type JobToolDetails } from "../../src/tools/job";
 
@@ -25,17 +25,11 @@ function createNoopProxy<T extends object>(overrides: Record<string, unknown>): 
 }
 
 function createSettings(pollWaitDuration: string, pollWatchdogMs: number): Settings {
-	return createNoopProxy<Settings>({
-		get(key: string) {
-			if (key === "advisor.enabled") return false;
-			if (key === "async.pollWaitDuration") return pollWaitDuration;
-			if (key === "async.pollWatchdogMs") return pollWatchdogMs;
-			if (key === "contextPromotion.enabled") return false;
-			return undefined;
-		},
-		getGroup() {
-			return {};
-		},
+	return Settings.isolated({
+		"async.pollWaitDuration": pollWaitDuration,
+		"async.pollWatchdogMs": pollWatchdogMs,
+		"advisor.enabled": false,
+		"contextPromotion.enabled": false,
 	});
 }
 

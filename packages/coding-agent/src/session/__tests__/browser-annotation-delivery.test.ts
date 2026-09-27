@@ -6,6 +6,8 @@ import type { BrowserAnnotationEntry } from "../../tools";
 import type { AgentSession } from "../agent-session";
 import { deliverBrowserAnnotation } from "../browser-annotation";
 import { BROWSER_ANNOTATION_MESSAGE_TYPE, type CustomMessage } from "../messages";
+import { cfgBrowserAnnotateDelivery } from "../../tools/browser/settings";
+import { Settings } from "../../config/settings";
 
 function makeEntry(): BrowserAnnotationEntry {
 	return {
@@ -22,11 +24,12 @@ interface DeliveryCalls {
 	enqueued: Array<{ kind: string; entry: unknown; options: unknown }>;
 	sent: Array<{ message: CustomMessage; options: Record<string, unknown> | undefined }>;
 }
-
-function makeSession(mode: "queue" | "steer"): { session: AgentSession; calls: DeliveryCalls } {
+async function makeSession(mode: "queue" | "steer"): Promise<{ session: AgentSession; calls: DeliveryCalls }> {
 	const calls: DeliveryCalls = { enqueued: [], sent: [] };
+	const settings = await Settings.loadIsolated({ inMemory: true });
+	cfgBrowserAnnotateDelivery.override(settings, mode);
 	const session = {
-		settings: { get: (path: string) => (path === "browser.annotateDelivery" ? mode : undefined) },
+		settings,
 		yieldQueue: {
 			enqueue: (kind: string, entry: unknown, options: unknown) => {
 				calls.enqueued.push({ kind, entry, options });
@@ -50,7 +53,7 @@ describe("deliverBrowserAnnotation", () => {
 	});
 
 	it("queue mode delivers a visible queued follow-up user message with a chip label", async () => {
-		const { session, calls } = makeSession("queue");
+		const { session, calls } = await makeSession("queue");
 		const entry = makeEntry();
 		await deliverBrowserAnnotation(session, entry, shotsDir);
 
@@ -70,7 +73,7 @@ describe("deliverBrowserAnnotation", () => {
 	});
 
 	it("saves the screenshot and puts a readable path in the message text", async () => {
-		const { session, calls } = makeSession("queue");
+		const { session, calls } = await makeSession("queue");
 		await deliverBrowserAnnotation(session, makeEntry(), shotsDir);
 
 		const text = (calls.sent[0]!.message.content as Array<{ type: string; text?: string }>).find(
@@ -85,7 +88,7 @@ describe("deliverBrowserAnnotation", () => {
 	});
 
 	it("still delivers without a path when the screenshot cannot be written", async () => {
-		const { session, calls } = makeSession("queue");
+		const { session, calls } = await makeSession("queue");
 		const blocker = path.join(shotsDir, "not-a-dir");
 		await Bun.write(blocker, "x");
 		await deliverBrowserAnnotation(session, makeEntry(), path.join(blocker, "shots"));
@@ -98,7 +101,7 @@ describe("deliverBrowserAnnotation", () => {
 	});
 
 	it("steer mode routes through the yield queue with the buffering cap", async () => {
-		const { session, calls } = makeSession("steer");
+		const { session, calls } = await makeSession("steer");
 		const entry = makeEntry();
 		await deliverBrowserAnnotation(session, entry, shotsDir);
 

@@ -114,6 +114,7 @@ function sessionHost(
 	options: { duoPhase?: "executing"; autoThinking?: boolean } = {},
 ): SessionAdvisorsHost {
 	return {
+		agent: { state: { thinkingLevel: undefined } },
 		settings,
 		duoStatus: () =>
 			options.duoPhase ? { phase: options.duoPhase, takeoverCount: 0, advisorPaused: false } : undefined,

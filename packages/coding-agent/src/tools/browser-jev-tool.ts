@@ -7,6 +7,7 @@ import { acquireBrowser } from "./browser/registry";
 import { acquireTab, releaseTab, runInTab, type TabSession } from "./browser/tab-supervisor";
 import { clampTimeout } from "./tool-timeouts";
 import { ToolAbortError, ToolError } from "./tool-errors";
+import { cfgToolsMaxTimeout } from "./settings";
 
 const VIEWPORTS: Record<string, { width: number; height: number; isMobile: boolean; hasTouch: boolean }> = {
 	desktop: { width: 1280, height: 720, isMobile: false, hasTouch: false },
@@ -226,7 +227,7 @@ export class BrowserJevTool implements AgentTool<typeof browserJevSchema, Browse
 			clampTimeout(
 				"browser_jev",
 				params.timeout ?? DEFAULT_TIMEOUT_SEC,
-				this.session.settings.get("tools.maxTimeout"),
+				cfgToolsMaxTimeout.get(this.session.settings),
 			) * 1000;
 		const profile = normalizeBrowserProfile(params.profile);
 		const tabName = profile ? `${JEV_TAB}-${profile}` : JEV_TAB;

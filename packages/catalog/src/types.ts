@@ -485,6 +485,13 @@ export interface OpenAICompat {
 	 * sent as the top-level `reasoning.effort`.
 	 */
 	supportsConfigurationUpdate?: boolean;
+	/**
+	 * Whether the Responses WebSocket accepts `response.steer`, which queues user
+	 * input into the in-flight response (GPT-6 family). Default: rule-detected.
+	 * Set `false` for proxies that reject the event; steering then waits for the
+	 * next request boundary.
+	 */
+	supportsSteering?: boolean;
 	/** Whether streamed reasoning deltas for the same field may repeat the full cumulative text snapshot. Default: false. */
 	reasoningDeltasMayBeCumulative?: boolean;
 	/** Strip leaked DeepSeek chat-template special tokens from visible content deltas. Default: auto-detected. */
@@ -526,17 +533,17 @@ export interface AnthropicCompat {
 	/** Whether thinking requests may include `context_management` and its beta header. Default: true. */
 	supportsContextManagement?: boolean;
 	/**
-	 * Whether the model lineage supports Anthropic server-side compaction
-	 * (`compact-2026-01-12`: the `compact_20260112` edit and replayed
-	 * `compaction` blocks). Rule-owned per model line; the beta covers the
-	 * adaptive-thinking generation onward and rejects older lines. Default: false.
+	 * Whether the model and host support Anthropic on-demand compaction
+	 * (`compact-2026-09-04` requests and signed replay). Enabled on Opus 4.6+,
+	 * Sonnet 4.6+, Fable/Mythos 5+ on supported hosts. Default: false.
 	 */
 	supportsServerCompaction?: boolean;
 	/**
 	 * Whether the model is served by the first-party Anthropic provider (its
 	 * default route is the official API). Rule-owned on the provider; the
 	 * compaction transport pairs it with a per-request effective-URL check
-	 * because reroutes leave it stale-true. Default: false.
+	 * because reroutes leave it stale-true. Vertex is selected by its provider
+	 * contract instead. Default: false.
 	 */
 	firstPartyProvider?: boolean;
 	/**
@@ -884,6 +891,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "strictResponsesPairing"
 			| "supportsImageDetailOriginal"
 			| "supportsConfigurationUpdate"
+			| "supportsSteering"
 			| "stripImageInput"
 			| "thinkingLoopGuard"
 			| "whenThinking"
@@ -923,6 +931,11 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	 * the item type with 400.
 	 */
 	supportsConfigurationUpdate: boolean;
+	/**
+	 * Whether the WebSocket transport may send `response.steer` to deliver user
+	 * input into the in-flight response. Rule-owned: GPT-6 family.
+	 */
+	supportsSteering: boolean;
 	/** Inject the `# Juice: 0 !important` developer item when reasoning is forced off (gpt-5.6+). */
 	requiresReasoningOffJuiceInstruction: boolean;
 	/**

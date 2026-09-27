@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { resolveThinkingDisplay, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resolveThinkingDisplay } from "../src/session/settings-stream-fn";
 
 describe("resolveThinkingDisplay", () => {
 	it("lets legacy omitThinking force omitted", () => {

@@ -5,9 +5,10 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import { resolveDuoConfig } from "../../src/config/model-resolver";
 import { Settings } from "../../src/config/settings";
-import { getDefault, type SettingPath } from "../../src/config/settings-schema";
 import { advisorDefaultsOffForModel, resolveAdvisorEnabled } from "../../src/session/session-advisors";
 import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { cfgAdvisorEnabled, cfgAdvisorFallbackModel } from "../../src/advisor/settings";
+import { cfgDuoAdvisorThinking } from "../../src/duo/settings";
 
 function model(provider: string, id: string, reasoning = false): Model {
 	return buildModel({
@@ -36,8 +37,8 @@ const registry = {
 		return true;
 	},
 } as unknown as ModelRegistry;
-function duoSettings(overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
-	const values: Partial<Record<SettingPath, unknown>> = {
+function duoSettings(overrides: Record<string, unknown> = {}): Settings {
+	const values: Record<string, unknown> = {
 		"duo.mode": "auto",
 		"duo.orchestrator": "auto",
 		"duo.plannerModel": "",
@@ -68,7 +69,7 @@ describe("duo advisor thinking", () => {
 	});
 
 	test("duo advisor thinking defaults to xhigh", () => {
-		expect(getDefault("duo.advisorThinking")).toBe("xhigh");
+		expect(cfgDuoAdvisorThinking.default).toBe("xhigh");
 	});
 
 	test("duo advisor model defaults to gpt-5.5 when available", () => {
@@ -90,12 +91,12 @@ describe("duo advisor thinking", () => {
 	});
 
 	test("advisor refusal fallback defaults to GPT-5.6 Sol", () => {
-		expect(Settings.isolated().get("advisor.fallbackModel")).toBe("gpt-5.6-sol");
+		expect(cfgAdvisorFallbackModel.get(Settings.isolated())).toBe("gpt-5.6-sol");
 	});
 
 	test("advisor is enabled by default for fresh settings", () => {
-		expect(getDefault("advisor.enabled")).toBe(true);
-		expect(Settings.isolated({}).get("advisor.enabled")).toBe(true);
+		expect(cfgAdvisorEnabled.default).toBe(true);
+		expect(cfgAdvisorEnabled.get(Settings.isolated({}))).toBe(true);
 	});
 
 	test("GPT-6 Astra opts out unless advisor is explicitly enabled", () => {
@@ -103,7 +104,7 @@ describe("duo advisor thinking", () => {
 		const model = { id: "gpt-6-astra" };
 		expect(advisorDefaultsOffForModel(model)).toBe(true);
 		expect(resolveAdvisorEnabled(settings, model)).toBe(false);
-		settings.set("advisor.enabled", true);
+		cfgAdvisorEnabled.set(settings, true);
 		expect(resolveAdvisorEnabled(settings, model)).toBe(true);
 	});
 });
