@@ -3,17 +3,19 @@
  * Release script for pi-mono
  *
  * Usage:
- *   bun scripts/release.ts <version|major|minor|patch|canary>   Full release (preflight, version, changelog, commit, push, watch)
+ *   bun scripts/release.ts <version|major|minor|patch|canary> [--skip-ci-check]
+ *                                                        Full release (preflight incl. CI-green check, version,
+ *                                                        changelog, commit, push, watch)
  *   bun scripts/release.ts watch                         Watch CI for current commit
+ *   bun scripts/release.ts deps                          Full third-party dependency refresh (bun.lock + Cargo.lock);
+ *                                                        land it via PR/main CI before the next release
  *
  * Example: bun scripts/release.ts minor
  */
 import { $, Glob } from "bun";
-import { versionSentinelFor } from "../packages/natives/native/version-sentinel.js";
 import { compareVersions } from "../packages/utils/src/version.ts";
 import { runChangelogFixer } from "./fix-changelogs";
 import { generateNixBunDeps, resolveNixBunDepsGenerator } from "./gen-nix-bun";
-import { NATIVE_INPUT_PATHS } from "./native-source-hash";
 
 const changelogGlob = new Glob("packages/*/CHANGELOG.md");
 const packageJsonGlob = new Glob("packages/*/package.json");
@@ -41,24 +43,147 @@ function git(args: readonly string[]) {
 	return $`git -c core.fsmonitor=false -c core.untrackedCache=false -c fetch.pruneTags=false ${args}`;
 }
 
-/**
- * Nearest reachable release tag (`v<major>.<minor>.<patch>`), or `null` when
- * HEAD has no such tag yet. Used to decide whether the native sources changed
- * since the previous release — `git describe` only considers tags reachable
- * from HEAD, so a merged-in upstream tag yields a non-empty diff at worst
- * (rebuild), never a missed native change.
- */
-async function previousReleaseTag(): Promise<string | null> {
-	const result = await git(["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"]).quiet().nothrow();
-	if (result.exitCode !== 0) return null;
-	const tag = result.text().trim();
-	return tag.length > 0 ? tag : null;
-}
-
 function githubRepositoryFromOriginUrl(originUrl: string): string {
 	const match = originUrl.trim().match(/github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
 	if (!match) throw new Error(`Cannot derive GitHub repository from origin URL: ${originUrl}`);
 	return `${match[1]}/${match[2]}`;
+}
+
+// =============================================================================
+// CI-green preflight
+// =============================================================================
+
+export interface CIRun {
+	databaseId: number;
+	status: string;
+	conclusion: string | null;
+	event?: string;
+	headBranch?: string;
+}
+
+export interface CommitRuns {
+	sha: string;
+	runs: readonly CIRun[];
+}
+
+export type CIGateDecision =
+	| { kind: "pass"; sha: string; runId: number; ancestor: boolean }
+	| { kind: "fail"; sha: string; runId: number; conclusion: string; ancestor: boolean }
+	| { kind: "wait"; sha: string; runId: number; ancestor: boolean }
+	| { kind: "none" };
+
+/**
+ * Only a run of `main` itself counts: a push, or a dispatch on the main ref.
+ * `pull_request` runs skip Rust validation and native builds, and a branch
+ * run tests a different ref, so neither may vouch for the commit.
+ */
+export function isMainCIRun(run: CIRun): boolean {
+	return run.headBranch === "main" && (run.event === "push" || run.event === "workflow_dispatch");
+}
+
+/**
+ * Decide the CI gate from HEAD's first-parent chain (index 0 = HEAD). The
+ * first commit that has a main CI run ({@link isMainCIRun}) is authoritative;
+ * its latest such run (highest databaseId) must have completed with
+ * `success`. Commits without one (e.g. path-filtered pushes) fall through to
+ * their first-parent ancestor.
+ */
+export function decideCIGate(chain: readonly CommitRuns[]): CIGateDecision {
+	for (let i = 0; i < chain.length; i++) {
+		const { sha } = chain[i];
+		const runs = chain[i].runs.filter(isMainCIRun);
+		if (runs.length === 0) continue;
+		const latest = runs.reduce((a, b) => (b.databaseId > a.databaseId ? b : a));
+		const ancestor = i > 0;
+		if (latest.status !== "completed") return { kind: "wait", sha, runId: latest.databaseId, ancestor };
+		if (latest.conclusion === "success") return { kind: "pass", sha, runId: latest.databaseId, ancestor };
+		return { kind: "fail", sha, runId: latest.databaseId, conclusion: latest.conclusion ?? "unknown", ancestor };
+	}
+	return { kind: "none" };
+}
+
+const CI_ANCESTOR_LIMIT = 30;
+
+async function listCIRuns(sha: string): Promise<CIRun[]> {
+	const out =
+		await $`gh run list --commit ${sha} --workflow ci.yml --json databaseId,status,conclusion,event,headBranch`.text();
+	return JSON.parse(out) as CIRun[];
+}
+
+/** Poll a run until it completes; fail fast on the first failed job. */
+async function waitForRun(runId: number): Promise<boolean> {
+	while (true) {
+		const out = await $`gh run view ${runId} --json status,conclusion,jobs`.quiet().text();
+		const run = JSON.parse(out) as {
+			status: string;
+			conclusion: string | null;
+			jobs: Array<{ name: string; databaseId: number; status: string; conclusion: string | null }>;
+		};
+		const failedJob = run.jobs.find(
+			j => j.status === "completed" && j.conclusion !== "success" && j.conclusion !== "skipped",
+		);
+		if (failedJob) {
+			console.error(`  CI job failed: ${failedJob.name} (job ${failedJob.databaseId}): ${failedJob.conclusion}`);
+			return false;
+		}
+		if (run.status === "completed") return run.conclusion === "success";
+		const done = run.jobs.filter(j => j.status === "completed").length;
+		console.log(`  Waiting for CI run ${runId}... (${done}/${run.jobs.length} jobs done)`);
+		await Bun.sleep(10000);
+	}
+}
+
+async function checkCIGreen(): Promise<void> {
+	await git(["fetch", "origin", "main"]).quiet();
+	const head = (await git(["rev-parse", "HEAD"]).text()).trim();
+	// Local-only commits are fine: the release push sends them along with the
+	// release commit. Behind or diverged is not: that push would be rejected.
+	const behind = await git(["merge-base", "--is-ancestor", "origin/main", "HEAD"]).quiet().nothrow();
+	if (behind.exitCode !== 0) {
+		const remote = (await git(["rev-parse", "origin/main"]).text()).trim();
+		console.error(
+			`Error: HEAD (${head.slice(0, 8)}) is behind or diverged from origin/main (${remote.slice(0, 8)}). Pull first.`,
+		);
+		process.exit(1);
+	}
+	const ahead = Number((await git(["rev-list", "--count", "origin/main..HEAD"]).text()).trim());
+	console.log(
+		ahead > 0
+			? `  HEAD is ${ahead} unpushed commit(s) ahead of origin/main (pushed with the release)`
+			: "  HEAD matches origin/main",
+	);
+
+	const shas = (await git(["rev-list", "--first-parent", "-n", String(CI_ANCESTOR_LIMIT), "HEAD"]).text())
+		.trim()
+		.split("\n")
+		.filter(Boolean);
+	const chain: CommitRuns[] = [];
+	let decision: CIGateDecision = { kind: "none" };
+	for (const sha of shas) {
+		chain.push({ sha, runs: await listCIRuns(sha) });
+		decision = decideCIGate(chain);
+		if (decision.kind !== "none") break;
+	}
+
+	if (decision.kind === "none") {
+		console.error(`Error: No CI run found on HEAD or its last ${CI_ANCESTOR_LIMIT} first-parent ancestors.`);
+		process.exit(1);
+	}
+	const label = decision.ancestor
+		? `ancestor ${decision.sha.slice(0, 8)} (HEAD ${head.slice(0, 8)} has no CI run)`
+		: `HEAD ${decision.sha.slice(0, 8)}`;
+	if (decision.kind === "wait") {
+		console.log(`  CI run ${decision.runId} for ${label} in progress; waiting...`);
+		if (!(await waitForRun(decision.runId))) {
+			console.error(`Error: CI run ${decision.runId} for ${label} failed. Fix main before releasing.`);
+			process.exit(1);
+		}
+	} else if (decision.kind === "fail") {
+		console.error(`Error: CI run ${decision.runId} for ${label} concluded '${decision.conclusion}'.`);
+		console.error("  Fix main (or re-run CI) before releasing, or pass --skip-ci-check to override.");
+		process.exit(1);
+	}
+	console.log(`  CI green for ${label} (run ${decision.runId})`);
 }
 
 // =============================================================================
@@ -255,7 +380,21 @@ export function bumpCanaryVersion(current: string): string {
 	return `${major}.${minor}.${patch + 1}-canary.1`;
 }
 
-async function cmdRelease(versionOrBump: string): Promise<void> {
+async function cmdDeps(): Promise<void> {
+	console.log("\n=== Full dependency refresh ===\n");
+	await $`rm -f bun.lock`;
+	await $`bun install`;
+	await $`cargo generate-lockfile`;
+	await generateNixBunDeps(resolveNixBunDepsGenerator());
+	await $`bun scripts/gen-clippy-bazelrc.ts`;
+	// Cargo.lock changed, so the crate_universe entry in MODULE.bazel.lock is
+	// stale; without a refresh every fresh CI bazel server re-splices (~4 min).
+	await $`bun scripts/gen-bazel-lock.ts`;
+	console.log("\nDependencies refreshed. Land these lockfile changes through a PR (or push to main) and");
+	console.log("let CI go green BEFORE the next release; `release` no longer refreshes third-party deps.");
+}
+
+async function cmdRelease(versionOrBump: string, skipCICheck = false): Promise<void> {
 	console.log("\n=== Release Script ===\n");
 	// Validate explicit versions before any compare: the shared compareVersions
 	// never throws, so without this guard garbage like "999.bad" would be
@@ -296,17 +435,30 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	}
 	console.log("  Working directory clean");
 
-	// The fork releases on its own 1.x line (source of truth: the public packages'
-	// package.json version). After merging upstream `oh-my-pi`, upstream's tags
-	// (v1.337+, v15.x, v16.x) are reachable from HEAD, so `git describe --tags`
-	// would resolve to an upstream tag (e.g. v16.0.6) and wrongly reject a fork
-	// version bump. Compare against the current published fork version instead
-	// (packages/coding-agent tracks the fork's release line), independent of tags.
-	const currentVersion = (
-		((await Bun.file("packages/coding-agent/package.json").json()) as { version?: string }).version ?? "0.0.0"
-	).trim();
+	if (skipCICheck) {
+		console.warn("\n  !!! WARNING: --skip-ci-check given: NOT verifying that CI is green on main. !!!\n");
+	} else {
+		await checkCIGreen();
+	}
+
+	// Fork releases follow the public coding-agent package's 1.x version,
+	// not reachable upstream tags on the merged history.
+	const manifest: unknown = await Bun.file("packages/coding-agent/package.json").json();
+	if (!manifest || typeof manifest !== "object" || !("version" in manifest) || typeof manifest.version !== "string") {
+		throw new Error("coding-agent package manifest has no version");
+	}
+	const currentVersion = manifest.version.trim();
 	const nixBunDepsGenerator = resolveNixBunDepsGenerator();
 	console.log(`  Nix dependency generator: ${nixBunDepsGenerator.kind}`);
+
+	// Step 4 refreshes MODULE.bazel.lock through bazel; fail before touching
+	// any file rather than half-way through the version rewrite.
+	const bazel = Bun.which("bazelisk") ?? Bun.which("bazel");
+	if (!bazel) {
+		console.error("Error: bazelisk (or bazel) not on PATH; needed to refresh MODULE.bazel.lock.");
+		process.exit(1);
+	}
+	console.log(`  Bazel: ${bazel}`);
 	let version = versionOrBump;
 	if (version === "major" || version === "minor" || version === "patch") {
 		version = bumpVersion(currentVersion, version);
@@ -377,62 +529,13 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	}
 	console.log();
 
-	// 3b. Native ABI sentinel. The sentinel names the *native ABI version*: the
-	// release version at which the native inputs last changed. It moves only when
-	// `NATIVE_INPUT_PATHS` differ from the previous release tag, so a release that
-	// leaves the native sources alone reuses the `.node` artifacts a main push
-	// already built for the identical sources (CI keys them on
-	// `scripts/native-source-hash.ts`). The comparison is commit-to-commit
-	// (`<prevTag> HEAD`), so the version writes above can never count as native
-	// changes. The JS loader derives the expected export from
-	// `NATIVE_ABI_VERSION` (`packages/natives/native/version-sentinel.js`), so
-	// that constant and the Rust `js_name` literal move together.
-	// `gen-enums.ts` regenerates the matching entries in
-	// `packages/natives/native/{index.d.ts,index.js}` on the next napi build, but
-	// bump them here too so the committed surface tracks the sentinel without
-	// waiting for a local rebuild on the release host.
-	const previousTag = await previousReleaseTag();
-	let nativeInputsChanged = true;
-	if (previousTag) {
-		const nativeDiff = await git(["diff", "--quiet", previousTag, "HEAD", "--", ...NATIVE_INPUT_PATHS])
-			.quiet()
-			.nothrow();
-		nativeInputsChanged = nativeDiff.exitCode !== 0;
-	}
-	if (!nativeInputsChanged) {
-		console.log(`Native inputs unchanged since ${previousTag} — keeping the pi-natives ABI sentinel\n`);
-	} else {
-		console.log(`Bumping pi-natives native ABI sentinel to v${version}…`);
-		const sentinelName = versionSentinelFor(version);
-		const sentinelFiles = [
-			"crates/pi-natives/src/lib.rs",
-			"packages/natives/native/index.d.ts",
-			"packages/natives/native/index.js",
-		];
-		const abiVersionSource = "packages/natives/native/version-sentinel.js";
-		const abiVersionDeclaration = `export const NATIVE_ABI_VERSION = "${version}"`;
-		await $`sd '__piNativesV[A-Za-z0-9_]+' ${sentinelName} ${sentinelFiles}`;
-		await $`sd 'export const NATIVE_ABI_VERSION = "[^"]+"' ${abiVersionDeclaration} ${abiVersionSource}`;
-		const libRs = await Bun.file("crates/pi-natives/src/lib.rs").text();
-		if (!libRs.includes(`js_name = "${sentinelName}"`)) {
-			console.error(
-				`Error: pi-natives version sentinel did not move to ${sentinelName} in crates/pi-natives/src/lib.rs. ` +
-					"The `__piNativesV…` literal may have been removed or renamed; restore it before releasing.",
-			);
-			process.exit(1);
-		}
-		const abiVersionJs = await Bun.file(abiVersionSource).text();
-		if (!abiVersionJs.includes(abiVersionDeclaration)) {
-			console.error(
-				`Error: NATIVE_ABI_VERSION did not move to ${version} in ${abiVersionSource}. ` +
-					"The declaration may have been removed or renamed; restore it before releasing.",
-			);
-			process.exit(1);
-		}
-		console.log(`  sentinel: ${sentinelName}\n`);
-	}
+	// Every native install stamps the new package version into the addon after
+	// linking (scripts/stamp-native-version.ts via scripts/bazel-natives.ts).
+	// No Rust source change or per-release ABI sentinel is needed.
 
 	// 4. Regenerate lockfiles and generated configs
+	// Only workspace member versions change here; third-party deps are refreshed
+	// separately via `bun scripts/release.ts deps` so they get CI before release.
 	console.log("Regenerating lockfiles...");
 	await $`bun install --lockfile-only`;
 	await $`cargo update --workspace`;
@@ -441,6 +544,12 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	// it here (like the lockfiles) so the bazel clippy policy can never drift.
 	// The release_gate CI job runs the matching `--check`.
 	await $`bun scripts/gen-clippy-bazelrc.ts`;
+	// MODULE.bazel.lock caches the crate_universe extension result keyed by
+	// Cargo.toml/Cargo.lock hashes, which the bump just rewrote. Unrefreshed,
+	// every bazel job of the release run re-splices the cargo workspace
+	// (~4 min each). One local evaluation (~1-4 min) fixes all of them. The
+	// bazel_lock CI job runs the matching `--check`.
+	await $`bun scripts/gen-bazel-lock.ts`;
 	console.log();
 
 	// 5. Update changelogs
@@ -448,9 +557,8 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 		console.log("Skipping CHANGELOGs for canary release.\n");
 	} else {
 		console.log("Updating CHANGELOGs...");
-		// Omit `since` so the fixer resolves its own baseline: the `clog` tag (last
-		// authoritative rewrite) when newer than `latestTag`, else `latestTag`. This
-		// keeps a release run from re-promoting bullets a prior `--recover` restored.
+		// Let the fixer resolve its own baseline rather than using a reachable
+		// upstream tag from the fork's merged history.
 		const fixResult = await runChangelogFixer({});
 		for (const fixed of fixResult.changedFiles) {
 			console.log(
@@ -528,17 +636,25 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 // =============================================================================
 
 if (import.meta.main) {
-	const arg = process.argv[2];
+	const args = process.argv.slice(2);
+	const skipCICheck = args.includes("--skip-ci-check");
+	const arg = args.find(a => a !== "--skip-ci-check");
+	const usage = () => {
+		console.error("Usage:");
+		console.error("  bun scripts/release.ts <version|major|minor|patch|canary> [--skip-ci-check]   Full release");
+		console.error("  bun scripts/release.ts watch                         Watch CI for current commit");
+		console.error("  bun scripts/release.ts deps                          Full third-party dependency refresh");
+	};
 
 	if (!arg) {
-		console.error("Usage:");
-		console.error("  bun scripts/release.ts <version|major|minor|patch|canary>   Full release");
-		console.error("  bun scripts/release.ts watch                         Watch CI for current commit");
+		usage();
 		process.exit(1);
 	}
 
 	if (arg === "watch") {
 		await cmdWatch();
+	} else if (arg === "deps") {
+		await cmdDeps();
 	} else if (
 		arg === "major" ||
 		arg === "minor" ||
@@ -546,12 +662,10 @@ if (import.meta.main) {
 		arg === "canary" ||
 		validateExplicitVersion(arg) !== null
 	) {
-		await cmdRelease(arg);
+		await cmdRelease(arg, skipCICheck);
 	} else {
 		console.error(`Unknown command or invalid version: ${arg}`);
-		console.error("Usage:");
-		console.error("  bun scripts/release.ts <version|major|minor|patch|canary>   Full release");
-		console.error("  bun scripts/release.ts watch                         Watch CI for current commit");
+		usage();
 		process.exit(1);
 	}
 }

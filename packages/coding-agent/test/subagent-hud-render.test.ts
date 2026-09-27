@@ -31,6 +31,8 @@ import {
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
+import { cfgTaskShowResolvedModelBadge } from "@oh-my-pi/pi-coding-agent/task/settings";
+
 function makeSession(overrides: Partial<ObservableSession> & { id: string }): ObservableSession {
 	return {
 		kind: "subagent",
@@ -141,7 +143,7 @@ describe("subagent HUD lines", () => {
 			expect(withoutAdvisor).not.toContain(theme.icon.advisor);
 		});
 
-		it("keeps metadata hidden when disabled or settings have not initialized", () => {
+		it("keeps metadata hidden when disabled and shows configured metadata after reset", () => {
 			const sessions = [
 				makeSession({
 					id: "HiddenBadge",
@@ -155,14 +157,14 @@ describe("subagent HUD lines", () => {
 					}),
 				}),
 			];
-			Settings.instance.override("task.showResolvedModelBadge", false);
+			cfgTaskShowResolvedModelBadge.override(Settings.instance, false);
 			const disabled = render(sessions);
 			expect(disabled).toContain(`${theme.status.done} HiddenBadge: Inspect rendering`);
 			expect(disabled).not.toContain("openai/gpt-5");
 			expect(disabled).not.toContain(theme.icon.advisor);
 
 			resetSettingsForTest();
-			expect(render(sessions)).toBe(disabled);
+			expect(render(sessions)).toContain("openai/gpt-5");
 		});
 
 		it("preserves model identity and the agent name while fitting descriptions and task previews", () => {
@@ -212,7 +214,7 @@ describe("subagent HUD lines", () => {
 					makeSession({ id: "ShortWorker", agent: "scout", description: "Every available column ".repeat(10) }),
 				];
 				for (const enabled of [true, false]) {
-					Settings.instance.override("task.showResolvedModelBadge", enabled);
+					cfgTaskShowResolvedModelBadge.override(Settings.instance, enabled);
 					for (const width of [40, 120, 40]) {
 						const rows = render(sessions, width).split("\n");
 						expect(rows.find(row => row.includes("LongWorker"))).toStartWith(" 界├ ");

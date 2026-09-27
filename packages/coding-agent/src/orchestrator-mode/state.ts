@@ -9,6 +9,7 @@ export const ORCHESTRATOR_MODE_SAFE_TOOL_NAMES = [
 	"todo",
 	"workflow",
 	"job",
+	"wait",
 	"irc",
 	"read",
 	"grep",

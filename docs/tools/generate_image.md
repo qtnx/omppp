@@ -7,7 +7,7 @@
 - Model-facing prompt: `packages/coding-agent/src/prompts/tools/image-gen.md`
 - Session injection: `packages/coding-agent/src/sdk.ts` (`getImageGenTools()`)
 
-The custom tool is enabled by default for every session model, including Anthropic Opus. It uses a connected OpenAI Codex subscription first unless `modelRoles.image`, `retry.fallbackChains.image`, or the per-request `model` selects another backend. Setting `generate_image.enabled=false` disables it, and an explicit session tool filter must include `generate_image`.
+The custom tool is enabled by default for every session model, including Anthropic Opus. It uses a connected OpenAI Codex subscription first unless `modelRoles.image`, `retry.fallbackChains.image`, or the per-request `model` selects another backend. Setting `generate_image.enabled=false` disables it, and an explicit session tool filter must include `generate_image`. Toggling the setting registers or removes it in the running session.
 
 ## Inputs
 

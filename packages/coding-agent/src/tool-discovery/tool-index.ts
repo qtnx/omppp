@@ -1,7 +1,10 @@
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Tool as AiTool } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import type { ScopeLike } from "../config/registry";
 import { TOOL_DISCOVERY_AUTO_THRESHOLD } from "./mode";
+import { cfgMcpDiscoveryMode } from "../mcp/settings";
+import { cfgToolsDiscoveryMode } from "../tools/settings";
 
 // ─── Generic Tool Discovery Types ────────────────────────────────────────────
 
@@ -35,9 +38,7 @@ export type ToolDiscoveryModeSetting = ToolDiscoveryMode | "auto";
 
 export const AUTO_TOOL_DISCOVERY_CONTEXT_WINDOW = 1_000_000;
 
-interface ToolDiscoverySettingsReader {
-	get(path: "tools.discoveryMode" | "mcp.discoveryMode"): unknown;
-}
+type ToolDiscoverySettingsReader = ScopeLike;
 
 function normalizeToolDiscoveryMode(value: unknown): ToolDiscoveryModeSetting {
 	return value === "off" || value === "mcp-only" || value === "all" || value === "auto" ? value : "auto";
@@ -48,9 +49,9 @@ export function resolveEffectiveToolDiscoveryMode(
 	toolCount?: number,
 	_mcpEnabled?: boolean,
 ): ToolDiscoveryMode {
-	const toolsMode = normalizeToolDiscoveryMode(settings.get("tools.discoveryMode"));
+	const toolsMode = normalizeToolDiscoveryMode(cfgToolsDiscoveryMode.get(settings));
 	if (toolsMode === "all" || toolsMode === "mcp-only" || toolsMode === "off") return toolsMode;
-	if (settings.get("mcp.discoveryMode") === true) return "mcp-only";
+	if (cfgMcpDiscoveryMode.get(settings) === true) return "mcp-only";
 	// Built-in discovery is only for sub-1M context models, where the prompt
 	// needs to stay lean. Larger models keep built-ins direct but leave MCP
 	// discovery available so MCP/custom tool catalogs do not have to be injected

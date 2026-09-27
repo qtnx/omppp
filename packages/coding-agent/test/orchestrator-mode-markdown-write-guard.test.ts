@@ -26,7 +26,7 @@ function createSession(enabled: boolean): ToolSession {
 }
 
 function contractMessage(offendingPath: string): string {
-	return `In orchestrator mode, only Markdown (.md) files may be written directly \u2014 "${offendingPath}" is not a .md file. Delegate non-Markdown changes to a subagent.`;
+	return `In orchestrator mode, only Markdown (.md) files, agent:// messages, and proc://<job>/kill may be written directly — "${offendingPath}" is not an allowed target. Delegate non-Markdown changes to a subagent.`;
 }
 
 function expectMarkdownGuardError(

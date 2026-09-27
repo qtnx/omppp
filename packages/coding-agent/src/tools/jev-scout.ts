@@ -7,6 +7,8 @@ import type { ToolSession } from "./index";
 import { formatPathRelativeToCwd, resolveToCwd } from "./path-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { clampTimeout } from "./tool-timeouts";
+import { cfgToolsMaxTimeout } from "./settings";
+import { cfgSignalsScoutSourceDetail } from "../signals/settings";
 
 const scoutSchema = type({
 	query: type("string").describe("What behavior or function to locate; include the relevant domain"),
@@ -38,7 +40,7 @@ export class JevScoutTool implements AgentTool<typeof scoutSchema, ScoutResult> 
 		if (params instanceof type.errors) throw new ToolError(`jev_scout received invalid arguments: ${params.summary}`);
 		if (signal?.aborted) throw new ToolAbortError();
 		const timeoutMs =
-			clampTimeout("jev_scout", params.timeout ?? 60, this.session.settings.get("tools.maxTimeout")) * 1000;
+			clampTimeout("jev_scout", params.timeout ?? 60, cfgToolsMaxTimeout.get(this.session.settings)) * 1000;
 		const deadline = AbortSignal.timeout(timeoutMs);
 		const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
 		try {
@@ -46,7 +48,7 @@ export class JevScoutTool implements AgentTool<typeof scoutSchema, ScoutResult> 
 				query: params.query,
 				path: resolveToCwd(params.path ?? ".", this.session.cwd),
 				maxFiles: params.max_files,
-				sourceDetail: this.session.settings.get("signals.scoutSourceDetail") as ScoutSourceDetail,
+				sourceDetail: cfgSignalsScoutSourceDetail.get(this.session.settings) as ScoutSourceDetail,
 				redact: text => this.session.redactOutboundText?.(text) ?? text,
 				signal: combined,
 			});

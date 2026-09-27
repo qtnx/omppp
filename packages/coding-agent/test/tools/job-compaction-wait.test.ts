@@ -4,8 +4,9 @@ import * as compaction from "@oh-my-pi/pi-agent-core/compaction";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { AsyncJobManager } from "../../src/async";
 import type { ModelRegistry } from "../../src/config/model-registry";
-import type { Settings } from "../../src/config/settings";
-import type { CompactionSettings as CodingCompactionSettings } from "../../src/config/settings-schema";
+import { Settings } from "../../src/config/settings";
+import { cfgCompaction } from "../../src/session/context-settings";
+import type { SettingValueOf } from "../../src/config/registry";
 import { AgentSession } from "../../src/session/agent-session";
 import type { SessionManager } from "../../src/session/session-manager";
 import type { ToolSession } from "../../src/tools";
@@ -24,7 +25,7 @@ const model = buildModel({
 	maxTokens: 8192,
 });
 
-const compactionSettings: compaction.CompactionSettings & Pick<CodingCompactionSettings, "methodOrder"> = {
+const compactionSettings: compaction.CompactionSettings & Pick<SettingValueOf<typeof cfgCompaction>, "methodOrder"> = {
 	enabled: true,
 	strategy: "context-full",
 	methodOrder: ["remote", "soft"],
@@ -77,18 +78,21 @@ function createNoopProxy<T extends object>(overrides: Record<string, unknown>): 
 }
 
 function createSettings(): Settings {
-	return createNoopProxy<Settings>({
-		get(key: string) {
-			if (key === "advisor.enabled") return false;
-			if (key === "async.pollWaitDuration") return "block";
-			if (key === "contextPromotion.enabled") return false;
-			if (key === "async.pollWatchdogMs") return 100;
-			return undefined;
-		},
-		getGroup(key: string) {
-			if (key === "compaction") return compactionSettings;
-			return {};
-		},
+	return Settings.isolated({
+		"advisor.enabled": false,
+		"async.pollWaitDuration": "block",
+		"contextPromotion.enabled": false,
+		"async.pollWatchdogMs": 100,
+		"compaction.enabled": true,
+		"compaction.strategy": "context-full",
+		"compaction.methodOrder": ["remote", "soft"],
+		"compaction.thresholdPercent": 80,
+		"compaction.thresholdTokens": 80_000,
+		"compaction.reserveTokens": 15_000,
+		"compaction.keepRecentTokens": 10_000,
+		"compaction.midTurnEnabled": true,
+		"compaction.autoContinue": false,
+		"compaction.remoteEnabled": false,
 	});
 }
 

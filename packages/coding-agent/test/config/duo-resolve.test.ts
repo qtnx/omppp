@@ -8,8 +8,8 @@ import { applyModelOverride } from "../../src/config/model-patch";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import { resolveDuoConfig } from "../../src/config/model-resolver";
 import { Settings } from "../../src/config/settings";
-import type { SettingPath } from "../../src/config/settings-schema";
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
+import { cfgCompaction } from "../../src/session/context-settings";
 
 function anthropicModel(id: string): Model {
 	const name = id
@@ -58,8 +58,8 @@ const registry = {
 	},
 } as unknown as ModelRegistry;
 
-function settings(overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
-	const values: Partial<Record<SettingPath, unknown>> = {
+function settings(overrides: Record<string, unknown> = {}): Settings {
+	const values: Record<string, unknown> = {
 		"duo.mode": "auto",
 		"duo.orchestrator": "auto",
 		"duo.plannerModel": "",
@@ -139,7 +139,7 @@ describe("resolveDuoConfig", () => {
 		if (!catalogAstra) throw new Error("Expected a bundled openai gpt-6-astra");
 		const astra = applyModelOverride(catalogAstra, { contextWindow: 272_000 });
 		const anyAuth = { hasConfiguredAuth: () => true } as unknown as ModelRegistry;
-		const compaction = Settings.isolated().getGroup("compaction");
+		const compaction = cfgCompaction.get(Settings.isolated());
 		const contextTokens = 400_000;
 
 		const capped = resolveDuoConfig(
@@ -268,12 +268,11 @@ describe("resolveDuoConfig", () => {
 		expect(resolved?.orchestrator).toBe("always");
 	});
 
-	test("orchestrator falls back to auto for absent or invalid values", () => {
+	test("orchestrator defaults to auto and rejects unsupported modes", () => {
 		const absent = resolveDuoConfig(Settings.isolated(), [fable5, opus48], registry);
-		const invalid = resolveDuoConfig(settings({ "duo.orchestrator": "sometimes" }), [fable5, opus48], registry);
 
 		expect(absent?.orchestrator).toBe("auto");
-		expect(invalid?.orchestrator).toBe("auto");
+		expect(() => settings({ "duo.orchestrator": "sometimes" })).toThrow("Invalid value for duo.orchestrator");
 	});
 
 	test("settings numbers, done gate, manual intent, and takeover signals flow through", () => {

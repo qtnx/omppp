@@ -127,6 +127,9 @@ export class SecretObfuscator {
 	/** Whether any secrets were configured */
 	#hasAny: boolean;
 
+	/** Outbound obfuscation switch (`secrets.enabled`); deobfuscation stays active either way. */
+	#obfuscating = true;
+
 	/**
 	 * Private per-install (or per-process) key for the keyed placeholder digest.
 	 * Resolved lazily when the constructor received a key PROVIDER: the first
@@ -290,9 +293,21 @@ export class SecretObfuscator {
 		}
 	}
 
+	/** Whether outbound text is currently obfuscated: secrets exist and obfuscation is switched on. */
+	obfuscates(): boolean {
+		return this.#hasAny && this.#obfuscating;
+	}
+
+	/**
+	 * Toggle outbound obfuscation. When off, {@link obfuscate} is identity, while
+	 * placeholders minted earlier keep deobfuscating so prior turns stay readable.
+	 */
+	setObfuscating(enabled: boolean): void {
+		this.#obfuscating = enabled;
+	}
 	/** Obfuscate all secrets in text. Bidirectional placeholders for obfuscate mode, one-way for replace. */
 	obfuscate(text: string, sharedRegexSecretValues?: ReadonlySet<string>): string {
-		if (!this.#hasAny) return text;
+		if (!this.obfuscates()) return text;
 		this.#currentRegexSecretValues = this.collectRegexSecretValuesForObfuscation(text);
 		for (const secretValue of sharedRegexSecretValues ?? []) {
 			this.#currentRegexSecretValues.add(secretValue);

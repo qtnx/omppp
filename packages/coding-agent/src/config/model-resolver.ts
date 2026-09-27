@@ -66,6 +66,40 @@ import {
 import { applyModelOverride } from "./model-patch";
 import type { Settings } from "./settings";
 
+import { cfgDisabledProviders, cfgEnabledModels, cfgModelProviderOrder } from "./model-settings";
+import { cfgRetryFallbackChains } from "../session/settings";
+import {
+	cfgDuoAdvisorEscalationModel,
+	cfgDuoAdvisorEscalationThinking,
+	cfgDuoAdvisorModel,
+	cfgDuoAdvisorPromptReview,
+	cfgDuoAdvisorThinking,
+	cfgDuoDoneGate,
+	cfgDuoExecutorModel,
+	cfgDuoExecutorThinking,
+	cfgDuoExtendedContext,
+	cfgDuoManualSwitchIntent,
+	cfgDuoMode,
+	cfgDuoOrchestrator,
+	cfgDuoPhaseModels,
+	cfgDuoPlannerModel,
+	cfgDuoPlannerThinking,
+	cfgDuoRoutingModels,
+	cfgDuoRoutingThinking,
+	cfgDuoTakeoverCooldownTurns,
+	cfgDuoTakeoverMaxConsecutive,
+	cfgDuoTakeoverSignalsEnabled,
+	cfgDuoTakeoverSignalsFailureThreshold,
+	cfgDuoTakeoverSignalsLoopThreshold,
+	cfgDuoTakeoverSignalsPlanningNeeded,
+	cfgDuoTakeoverSignalsSentiment,
+} from "../duo/settings";
+import {
+	cfgTaskLimitAwareModelRouting,
+	cfgTaskModelRoutingUtilizationMax,
+	cfgTaskModelRoutingWindowMode,
+} from "../task/settings";
+
 function isKnownProvider(provider: string): provider is KnownProvider {
 	return provider in DEFAULT_MODEL_PER_PROVIDER;
 }
@@ -583,12 +617,11 @@ function buildPreferenceContext(
 	return { modelUsageRank, providerUsageRank, providerPriorityRank, deprioritizedProviders, modelOrder };
 }
 
-export function getModelMatchPreferences(
-	settings?: Partial<Pick<Settings, "get" | "getStorage">>,
-): ModelMatchPreferences {
+export function getModelMatchPreferences(settings?: Settings): ModelMatchPreferences {
+	if (!settings) return { usageOrder: undefined, providerOrder: undefined };
 	return {
-		usageOrder: settings?.getStorage?.()?.getModelUsageOrder(),
-		providerOrder: settings?.get?.("modelProviderOrder"),
+		usageOrder: settings.getStorage()?.getModelUsageOrder(),
+		providerOrder: cfgModelProviderOrder.get(settings),
 	};
 }
 
@@ -904,6 +937,25 @@ function matchModel(
 	return pickPreferredModel(topCandidates, context);
 }
 
+/**
+ * Recover the effort a retired wire-tier id (e.g. `gemini-3.8-flash-high`) implied before it was
+ * collapsed into a logical model. Only a route owned by exactly one level carries intent: the
+ * model's default wire id and ids shared by several levels imply nothing, so the caller's level
+ * still applies.
+ */
+function inferWireRouteThinkingLevel(pattern: string, model: Model<Api>): ConfiguredThinkingLevel | undefined {
+	const routing = model.thinking?.effortRouting;
+	if (!routing) return undefined;
+	const normalized = pattern.trim().toLowerCase();
+	const providerPrefix = `${model.provider.toLowerCase()}/`;
+	const wireId = normalized.startsWith(providerPrefix) ? normalized.slice(providerPrefix.length) : normalized;
+	if (wireId === model.id.toLowerCase() || wireId === model.requestModelId?.toLowerCase()) return undefined;
+
+	const levels = [ThinkingLevel.Off, ...(model.thinking?.efforts ?? [])];
+	const matches = levels.filter(level => routing[level]?.toLowerCase() === wireId);
+	return matches.length === 1 ? parseConfiguredThinkingLevel(matches[0]) : undefined;
+}
+
 export interface ParsedModelResult {
 	model: Model<Api> | undefined;
 	/** Thinking level if explicitly specified in pattern, undefined otherwise */
@@ -918,12 +970,11 @@ export interface ParsedModelResult {
  * Parse a pattern to extract model and thinking level.
  * Handles models with colons in their IDs (e.g., OpenRouter's :exacto suffix).
  *
- * Algorithm:
- * 1. Try to match full pattern as a model
- * 2. If found, return it with undefined thinking level
- * 3. If not found and has colons, split on last colon:
- *    - If suffix is valid thinking level, use it and recurse on prefix
- *    - If suffix is invalid, warn and recurse on prefix
+ * 1. Try to match the full pattern as a model
+ * 2. If it names a collapsed wire route, preserve that route's thinking level
+ * 3. If not found and it has colons, split on the last colon:
+ *    - If the suffix is a valid thinking level, use it and recurse on the prefix
+ *    - If the suffix is invalid, warn and recurse on the prefix
  *
  * @internal Exported for testing
  */
@@ -937,7 +988,13 @@ function parseModelPatternWithContext(
 	// contains a colon (`coding-router:max`) wins over any suffix split.
 	const exactMatch = matchModel(pattern, availableModels, context, { ...options, exactOnly: true });
 	if (exactMatch) {
-		return { model: exactMatch, thinkingLevel: undefined, warning: undefined, explicitThinkingLevel: false };
+		const thinkingLevel = inferWireRouteThinkingLevel(pattern, exactMatch);
+		return {
+			model: exactMatch,
+			thinkingLevel,
+			warning: undefined,
+			explicitThinkingLevel: thinkingLevel !== undefined,
+		};
 	}
 
 	// Prefer a fuzzy match whose actual id ends in the suffix, preserving
@@ -1384,7 +1441,7 @@ export function selectHeadroomAwareModelPatterns(
 		patterns.length <= 1 ||
 		!deps.authStorage ||
 		!deps.registry ||
-		deps.settings.get("task.limitAwareModelRouting") === false
+		cfgTaskLimitAwareModelRouting.get(deps.settings) === false
 	) {
 		return patterns;
 	}
@@ -1395,8 +1452,8 @@ export function selectHeadroomAwareModelPatterns(
 	} catch {
 		return patterns;
 	}
-	const utilizationMax = deps.settings.get("task.modelRoutingUtilizationMax");
-	const windowMode = deps.settings.get("task.modelRoutingWindowMode");
+	const utilizationMax = cfgTaskModelRoutingUtilizationMax.get(deps.settings);
+	const windowMode = cfgTaskModelRoutingWindowMode.get(deps.settings);
 
 	const patternsWithHeadroom: string[] = [];
 	const patternsWithoutHeadroom: string[] = [];
@@ -1629,7 +1686,7 @@ export function resolveRoleChain(
 	const configuredRoles = settings.getModelRoles();
 	const configured = settings.getModelRole(role)?.trim();
 	const primarySelector = configured || formatModelRoleAlias(role);
-	const configuredFallbacks = settings.get("retry.fallbackChains")[role];
+	const configuredFallbacks = cfgRetryFallbackChains.get(settings)[role];
 	const hasConfiguredFallbackChain = Array.isArray(configuredFallbacks);
 	const fallbackSelectors = hasConfiguredFallbackChain ? configuredFallbacks : rolePriorityDefaults(role);
 	const selectors = [
@@ -1696,12 +1753,20 @@ export function resolveModelOverride(
 }
 
 /**
- * Resolve ordered override patterns to the first model with usable auth, then
- * fall back to the parent session's active model.
+ * Provider ids turned off through the `disabledProviders` setting, already
+ * resolved for the current working directory's path scopes.
  *
- * Each configured pattern is checked in order. This lets agent definitions
- * express a preferred provider plus explicit fallback providers instead of
- * skipping directly from an unavailable first choice to the parent model.
+ * A disabled provider is unreachable however a model is named — catalog
+ * listing, configured role, or an explicit `provider/id` pin — so every
+ * resolution path filters through this set.
+ */
+export function disabledProviderIds(settings?: Settings): ReadonlySet<string> {
+	return new Set(settings ? cfgDisabledProviders.get(settings) : undefined);
+}
+
+/**
+ * Resolve a list of override patterns to the first matching model, with an
+ * auth-aware fallback to the parent session's active model.
  *
  * Providers disabled through settings are removed before matching so ordered
  * overrides skip them and an all-disabled list resolves to no model.
@@ -1733,7 +1798,7 @@ export async function resolveModelOverrideWithAuthFallback(
 	authFallbackUsed: boolean;
 	warning?: string;
 }> {
-	const disabledProviders = new Set(settings?.get("disabledProviders"));
+	const disabledProviders = disabledProviderIds(settings);
 	let lookupRegistry: ModelLookupRegistry = modelRegistry;
 	if (disabledProviders.size > 0) {
 		const enabledModels = modelRegistry.getAvailable().filter(model => !disabledProviders.has(model.provider));
@@ -1879,7 +1944,7 @@ function compareAnthropicVersion(a: string | undefined, b: string | undefined): 
  * of cheap in price; long-context pricing applies above the threshold.
  */
 function withDuoContextWindow(model: Model<Api>, settings: Settings): Model<Api> {
-	if (!settings.get("duo.extendedContext") || model.contextWindow === null) return model;
+	if (!cfgDuoExtendedContext.get(settings) || model.contextWindow === null) return model;
 	// The registry's premium-tier cap rewrites `contextWindow` to the threshold,
 	// and the rewritten value is what a spec rebuild returns, so the catalog row
 	// is the only place the full window survives (openai/gpt-6-astra: 1.05M
@@ -1951,7 +2016,7 @@ function resolveDuoPhaseModels(
 	modelRegistry: CanonicalModelRegistry,
 ): Partial<Record<WorkPhase, DuoPhaseModelCandidate[]>> {
 	const phaseModels: Partial<Record<WorkPhase, DuoPhaseModelCandidate[]>> = {};
-	for (const [key, value] of Object.entries(settings.get("duo.phaseModels"))) {
+	for (const [key, value] of Object.entries(cfgDuoPhaseModels.get(settings))) {
 		if (!isWorkPhase(key)) {
 			logger.debug("Ignoring unknown duo.phaseModels phase", { phase: key });
 			continue;
@@ -1999,7 +2064,7 @@ function resolveDuoRouting(
 	availableModels: Model<Api>[],
 	modelRegistry: CanonicalModelRegistry,
 ): DuoRoutingConfig | undefined {
-	const ladder = settings.get("duo.routing.models").map(pattern => {
+	const ladder = cfgDuoRoutingModels.get(settings).map(pattern => {
 		const resolved = resolveExplicitDuoModel(pattern, availableModels, settings, modelRegistry);
 		if (!resolved) return undefined;
 		return {
@@ -2010,7 +2075,7 @@ function resolveDuoRouting(
 	});
 	if (!ladder.some(candidate => candidate !== undefined)) return undefined;
 	const thinking: Partial<Record<PromptDifficulty, ConfiguredThinkingLevel>> = {};
-	for (const [key, value] of Object.entries(settings.get("duo.routing.thinking"))) {
+	for (const [key, value] of Object.entries(cfgDuoRoutingThinking.get(settings))) {
 		if (!isPromptDifficulty(key)) {
 			logger.debug("Ignoring unknown duo.routing.thinking tier", { tier: key });
 			continue;
@@ -2053,30 +2118,30 @@ export function resolveDuoConfig(
 	if (availableModels.length === 0) return undefined;
 
 	const planner = resolveDuoSide(
-		settings.get("duo.plannerModel"),
+		cfgDuoPlannerModel.get(settings),
 		availableModels,
 		settings,
 		registry,
 		family => family === "fable" || family === "mythos",
 	);
 	const executor = resolveDuoSide(
-		settings.get("duo.executorModel"),
+		cfgDuoExecutorModel.get(settings),
 		availableModels,
 		settings,
 		registry,
 		kind => kind === "opus",
 	);
-	const advisorPattern = (settings.get("duo.advisorModel") ?? "").trim();
+	const advisorPattern = (cfgDuoAdvisorModel.get(settings) ?? "").trim();
 	const advisor = advisorPattern
 		? resolveExplicitDuoModel(advisorPattern, availableModels, settings, registry)
 		: undefined;
-	const advisorEscalationPattern = (settings.get("duo.advisorEscalationModel") ?? "").trim();
+	const advisorEscalationPattern = (cfgDuoAdvisorEscalationModel.get(settings) ?? "").trim();
 	const advisorEscalation = advisorEscalationPattern
 		? resolveExplicitDuoModel(advisorEscalationPattern, availableModels, settings, registry)
 		: undefined;
 	if (!planner || !executor) return undefined;
 
-	const orchestrator = settings.get("duo.orchestrator");
+	const orchestrator = cfgDuoOrchestrator.get(settings);
 	const phaseModels = resolveDuoPhaseModels(settings, availableModels, registry);
 	const routing = resolveDuoRouting(settings, availableModels, registry);
 
@@ -2088,39 +2153,39 @@ export function resolveDuoConfig(
 	});
 
 	return {
-		mode: settings.get("duo.mode"),
+		mode: cfgDuoMode.get(settings),
 		planner: planner.model,
 		plannerThinking:
-			planner.thinkingLevel ?? parseConfiguredThinkingLevel(settings.get("duo.plannerThinking")) ?? AUTO_THINKING,
+			planner.thinkingLevel ?? parseConfiguredThinkingLevel(cfgDuoPlannerThinking.get(settings)) ?? AUTO_THINKING,
 		executor: executor.model,
 		executorThinking:
 			executor.thinkingLevel ??
-			parseConfiguredThinkingLevel(settings.get("duo.executorThinking")) ??
+			parseConfiguredThinkingLevel(cfgDuoExecutorThinking.get(settings)) ??
 			ThinkingLevel.High,
 		advisor: advisor?.model ?? planner.model,
 		advisorThinking:
 			advisor?.thinkingLevel ??
-			parseConfiguredThinkingLevel(settings.get("duo.advisorThinking")) ??
+			parseConfiguredThinkingLevel(cfgDuoAdvisorThinking.get(settings)) ??
 			ThinkingLevel.XHigh,
 		advisorEscalation: advisorEscalation?.model ?? planner.model,
 		advisorEscalationThinking:
 			advisorEscalation?.thinkingLevel ??
-			parseConfiguredThinkingLevel(settings.get("duo.advisorEscalationThinking")) ??
+			parseConfiguredThinkingLevel(cfgDuoAdvisorEscalationThinking.get(settings)) ??
 			ThinkingLevel.XHigh,
-		advisorPromptReview: settings.get("duo.advisorPromptReview"),
-		cooldownTurns: settings.get("duo.takeover.cooldownTurns"),
-		maxConsecutive: settings.get("duo.takeover.maxConsecutive"),
-		doneGate: settings.get("duo.doneGate"),
+		advisorPromptReview: cfgDuoAdvisorPromptReview.get(settings),
+		cooldownTurns: cfgDuoTakeoverCooldownTurns.get(settings),
+		maxConsecutive: cfgDuoTakeoverMaxConsecutive.get(settings),
+		doneGate: cfgDuoDoneGate.get(settings),
 		orchestrator: orchestrator === "always" ? "always" : "auto",
-		manualSwitchIntent: settings.get("duo.manualSwitchIntent"),
+		manualSwitchIntent: cfgDuoManualSwitchIntent.get(settings),
 		phaseModels,
 		...(routing ? { routing } : {}),
 		signals: {
-			enabled: settings.get("duo.takeover.signals.enabled"),
-			sentiment: settings.get("duo.takeover.signals.sentiment"),
-			failureThreshold: settings.get("duo.takeover.signals.failureThreshold"),
-			loopThreshold: settings.get("duo.takeover.signals.loopThreshold"),
-			planningNeeded: settings.get("duo.takeover.signals.planningNeeded"),
+			enabled: cfgDuoTakeoverSignalsEnabled.get(settings),
+			sentiment: cfgDuoTakeoverSignalsSentiment.get(settings),
+			failureThreshold: cfgDuoTakeoverSignalsFailureThreshold.get(settings),
+			loopThreshold: cfgDuoTakeoverSignalsLoopThreshold.get(settings),
+			planningNeeded: cfgDuoTakeoverSignalsPlanningNeeded.get(settings),
 		},
 	};
 }
@@ -2277,7 +2342,7 @@ export async function resolveAllowedModels(
 	preferences?: ModelMatchPreferences,
 ): Promise<Model<Api>[]> {
 	const available = modelRegistry.getAvailable();
-	const patterns = settings?.get("enabledModels");
+	const patterns = settings ? cfgEnabledModels.get(settings) : undefined;
 	if (!patterns || patterns.length === 0) {
 		return available;
 	}
@@ -2421,6 +2486,32 @@ export interface ResolveCliModelResult {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	warning: string | undefined;
 	error: string | undefined;
+	/**
+	 * Provider the selector wanted but that `disabledProviders` turns off. Set
+	 * only alongside `error`, so callers can refuse the selector outright
+	 * instead of deferring it to a later resolution pass.
+	 */
+	disabledProvider?: string;
+}
+
+/** Inputs accepted by {@link resolveCliModel}. */
+interface CliModelOptions {
+	cliProvider?: string;
+	cliModel?: string;
+	modelRegistry: CliModelRegistry;
+	/** Authenticated models to prefer for unqualified selectors; defaults to the registry's authenticated set. */
+	availableModels?: Model<Api>[];
+	settings?: Settings;
+	preferences?: ModelMatchPreferences;
+}
+
+/**
+ * Catalog a CLI selector may bind to: the full set plus the preferred
+ * (authenticated, or `--models`-scoped) subset.
+ */
+interface CliModelScope {
+	all: Model<Api>[];
+	available: Model<Api>[];
 }
 
 /**
@@ -2430,23 +2521,57 @@ export interface ResolveCliModelResult {
  * over configured role names, which in turn take precedence over an
  * unauthenticated catalog-only id (so a bundled `cursor/default` never shadows a
  * configured `modelRoles.default`).
+ *
+ * Disabled providers are dropped from both halves of the scope before matching,
+ * so a selector naming one is refused rather than silently spending on it
+ * (issue #13079); an unqualified selector falls through to an enabled provider
+ * carrying the same id. The unfiltered catalog is consulted only after that
+ * failed, to report which disabled provider the selector wanted.
  */
-export function resolveCliModel(options: {
-	cliProvider?: string;
-	cliModel?: string;
-	modelRegistry: CliModelRegistry;
-	/** Authenticated models to prefer for unqualified selectors; defaults to the registry's authenticated set. */
-	availableModels?: Model<Api>[];
-	settings?: Settings;
-	preferences?: ModelMatchPreferences;
-}): ResolveCliModelResult {
-	const { cliProvider, cliModel, modelRegistry, settings, preferences, availableModels: preferredModels } = options;
+export function resolveCliModel(options: CliModelOptions): ResolveCliModelResult {
+	const { cliProvider, cliModel, modelRegistry, settings, availableModels: preferredModels } = options;
 
 	if (!cliModel) {
 		return { model: undefined, selector: undefined, warning: undefined, error: undefined };
 	}
 
-	const allModels = modelRegistry.getAll();
+	const scoped = { ...options, cliModel };
+	const scope: CliModelScope = {
+		all: modelRegistry.getAll(),
+		available: preferredModels ?? modelRegistry.getAvailable(),
+	};
+	const disabled = disabledProviderIds(settings);
+	if (disabled.size === 0) return resolveCliModelInScope(scoped, scope);
+
+	const enabled = resolveCliModelInScope(scoped, {
+		all: scope.all.filter(model => !disabled.has(model.provider)),
+		available: scope.available.filter(model => !disabled.has(model.provider)),
+	});
+	if (enabled.model) return enabled;
+
+	// Nothing enabled matched. An explicit `--provider` names its target
+	// directly; otherwise re-resolve unfiltered to see what the selector was
+	// aiming at, so the refusal names the provider instead of reading as a typo.
+	const blocked = cliProvider
+		? scope.all.find(model => model.provider.toLowerCase() === cliProvider.toLowerCase())?.provider
+		: resolveCliModelInScope(scoped, scope).model?.provider;
+	if (blocked === undefined || !disabled.has(blocked)) return enabled;
+	return {
+		model: undefined,
+		selector: undefined,
+		thinkingLevel: undefined,
+		warning: enabled.warning,
+		error: `Provider "${blocked}" is disabled. Remove "${blocked}" from disabledProviders to use "${cliModel.trim()}".`,
+		disabledProvider: blocked,
+	};
+}
+
+function resolveCliModelInScope(
+	options: CliModelOptions & { cliModel: string },
+	scope: CliModelScope,
+): ResolveCliModelResult {
+	const { cliProvider, cliModel, settings, preferences } = options;
+	const { all: allModels, available: availableModels } = scope;
 	if (allModels.length === 0) {
 		return {
 			model: undefined,
@@ -2456,7 +2581,6 @@ export function resolveCliModel(options: {
 		};
 	}
 
-	const availableModels = preferredModels ?? modelRegistry.getAvailable();
 	const providerMap = new Map<string, string>();
 	for (const model of allModels) {
 		providerMap.set(model.provider.toLowerCase(), model.provider);

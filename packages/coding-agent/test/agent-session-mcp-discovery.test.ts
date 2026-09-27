@@ -12,7 +12,7 @@ import {
 } from "@oh-my-pi/pi-agent-core";
 import { Effort, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
-import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -112,7 +112,7 @@ function createOversizedMcpTool(name: string, serverName: string, mcpToolName: s
 	} as CustomTool;
 }
 
-function mcpTestSettings(overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
+function mcpTestSettings(overrides: Record<string, unknown> = {}): Settings {
 	return Settings.isolated({
 		"advisor.consult": false,
 		"advisor.enabled": false,

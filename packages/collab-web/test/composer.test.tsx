@@ -27,6 +27,7 @@ function snapshot(uiRequest: GuestSnapshot["uiRequest"]): GuestSnapshot {
 		uiRequest,
 		notices: [],
 		live: { phase: null, transcript: null, ended: null },
+		loading: null,
 	};
 }
 

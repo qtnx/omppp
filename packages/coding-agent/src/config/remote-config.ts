@@ -24,6 +24,7 @@ import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { replaceFileAtomically } from "../utils/atomic-file";
 import { stringifyYamlConfig } from "@oh-my-pi/pi-utils/yaml-config";
 import type { Settings } from "./settings";
+import { cfgRemoteConfigEnabled, cfgRemoteConfigIntervalSec, cfgRemoteConfigUrl } from "../remote-config/settings";
 
 export const REMOTE_CONFIG_DIRNAME = "remote";
 export const REMOTE_CONFIG_FILENAME = "config.yml";
@@ -159,9 +160,9 @@ export class RemoteConfigSync {
 	}
 
 	start(): void {
-		if (this.#timer || this.#settings.getTrusted("remoteConfig.enabled") !== true) return;
+		if (this.#timer || this.#settings.getTrusted(cfgRemoteConfigEnabled) !== true) return;
 		void this.syncOnce();
-		const intervalSec = Math.max(MIN_INTERVAL_SEC, this.#settings.getTrusted("remoteConfig.intervalSec"));
+		const intervalSec = Math.max(MIN_INTERVAL_SEC, this.#settings.getTrusted(cfgRemoteConfigIntervalSec));
 		this.#timer = setInterval(() => void this.syncOnce(), intervalSec * 1000);
 		this.#timer.unref();
 	}
@@ -180,8 +181,8 @@ export class RemoteConfigSync {
 
 	async #sync(): Promise<RemoteConfigSyncResult> {
 		// Trusted layers only: a project config must not redirect this host.
-		const url = this.#settings.getTrusted("remoteConfig.url")?.trim();
-		if (this.#settings.getTrusted("remoteConfig.enabled") !== true || !url) return "disabled";
+		const url = this.#settings.getTrusted(cfgRemoteConfigUrl)?.trim();
+		if (this.#settings.getTrusted(cfgRemoteConfigEnabled) !== true || !url) return "disabled";
 
 		let response: Response;
 		try {

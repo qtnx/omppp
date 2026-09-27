@@ -11,7 +11,7 @@ import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import type { ModelRegistry } from "../../config/model-registry";
-import type { Settings } from "../../config/settings";
+import { Settings } from "../../config/settings";
 import { disableAnnotateHttp, enableAnnotateHttp } from "../../tools/browser/annotate-http";
 import { AgentSession, type AgentSessionConfig, type AgentSessionEvent } from "../agent-session";
 import type { AuthStorage } from "../auth-storage";
@@ -112,18 +112,18 @@ function methodOrderForStrategy(strategy: compaction.CompactionSettings["strateg
 }
 
 function createSettings(compactionSettings: compaction.CompactionSettings): Settings {
-	return createNoopProxy<Settings>({
-		get(key: string) {
-			if (key === "advisor.enabled") return false;
-			if (key === "contextPromotion.enabled") return false;
-			return undefined;
-		},
-		getGroup(key: string) {
-			if (key === "compaction") {
-				return { ...compactionSettings, methodOrder: methodOrderForStrategy(compactionSettings.strategy) };
-			}
-			return {};
-		},
+	return Settings.isolated({
+		"advisor.enabled": false,
+		"contextPromotion.enabled": false,
+		"compaction.enabled": compactionSettings.enabled,
+		"compaction.methodOrder": methodOrderForStrategy(compactionSettings.strategy),
+		"compaction.thresholdPercent": compactionSettings.thresholdPercent,
+		"compaction.thresholdTokens": compactionSettings.thresholdTokens,
+		"compaction.reserveTokens": compactionSettings.reserveTokens,
+		"compaction.keepRecentTokens": compactionSettings.keepRecentTokens,
+		"compaction.midTurnEnabled": compactionSettings.midTurnEnabled,
+		"compaction.autoContinue": compactionSettings.autoContinue,
+		"compaction.remoteEndpoint": compactionSettings.remoteEndpoint,
 	});
 }
 
@@ -221,6 +221,7 @@ function createAgentSessionHarness(
 			return () => agentEventHandlers.delete(handler);
 		},
 		peekSteeringQueue: () => [],
+		peekLiveSteeredMessages: () => [],
 		peekFollowUpQueue: () => [],
 		setOnTurnEnd: (fn: TurnEndCallback | undefined) => {
 			turnEnd = fn;

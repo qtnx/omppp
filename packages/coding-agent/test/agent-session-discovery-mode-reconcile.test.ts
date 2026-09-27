@@ -7,6 +7,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { cfgToolsDiscoveryMode } from "../src/tools/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -203,7 +204,7 @@ describe("AgentSession tool-discovery mode reconcile", () => {
 
 			expect(session.isToolDiscoveryEnabled()).toBe(true);
 
-			settings.override("tools.discoveryMode", "off");
+			cfgToolsDiscoveryMode.override(settings, "off");
 			await session.setModelTemporary(smallModel);
 
 			expect(session.isToolDiscoveryEnabled()).toBe(false);

@@ -3,6 +3,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { CompactToolDetails } from "@oh-my-pi/pi-tui/tools/compact";
 import { prompt } from "@oh-my-pi/pi-utils";
 import compactDescription from "../prompts/tools/compact.md" with { type: "text" };
+import { cfgCompactionMethodOrder } from "../session/context-settings";
 import type { ToolCompactionRequest, ToolSession } from ".";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -36,7 +37,7 @@ export class CompactTool implements AgentTool<typeof compactSchema, CompactToolD
 	}
 
 	static createIf(session: ToolSession): CompactTool | null {
-		if (session.settings.getGroup("compaction").methodOrder.length === 0) return null;
+		if (cfgCompactionMethodOrder.get(session.settings).length === 0) return null;
 		if (session.requestCompaction === undefined) return null;
 		return new CompactTool(session);
 	}

@@ -15,6 +15,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/turn-recovery";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createProviderErrorMessage } from "../../ai/src/providers/error-message";
+import { cfgRetryBaseDelayMs, cfgRetryMaxRetries } from "../src/session/settings";
 
 const USAGE: Usage = {
 	input: 0,
@@ -1156,7 +1157,7 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			const messages: AgentMessage[] = [message];
 			const continues: string[] = [];
 			const host = createHost(model, modelRegistry, { messages });
-			host.settings.set("retry.baseDelayMs", 0);
+			cfgRetryBaseDelayMs.set(host.settings, 0);
 			host.sessionManager = { getLastModelChangeRole: () => undefined, getBranch: () => [] } as never;
 			host.agent = {
 				state: { messages },
@@ -1186,7 +1187,7 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		it("leaves no resume notice when the retry budget is exhausted", async () => {
 			const message = stalledTextTurn();
 			const { host, messages, continues } = continuationHost(message);
-			host.settings.set("retry.maxRetries", 0);
+			cfgRetryMaxRetries.set(host.settings, 0);
 			const recovery = new TurnRecovery(host);
 
 			expect(

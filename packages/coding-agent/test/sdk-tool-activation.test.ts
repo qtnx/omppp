@@ -35,6 +35,10 @@ import { logger, removeSyncWithRetries, Snowflake, untilAborted } from "@oh-my-p
 import { SYSTEM_CONTEXT_REMINDER_LABEL } from "@oh-my-pi/system-context-reminder-plugin";
 import { getBundledAgent } from "../src/task/agents";
 
+import { cfgExternalThinking } from "@oh-my-pi/pi-coding-agent/session/settings";
+import { cfgPlanEnabled } from "@oh-my-pi/pi-coding-agent/plan-mode/settings";
+import { cfgToolsXdev } from "@oh-my-pi/pi-coding-agent/tools/settings";
+
 const toolActivationExtension: ExtensionFactory = pi => {
 	pi.registerTool({
 		name: "default_inactive_tool",
@@ -262,15 +266,19 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			expect(session.getToolByName("think")).toBeUndefined();
 			expect(session.getActiveToolNames()).not.toContain("think");
 
-			settings.set("externalThinking", true);
-			await session.setThinkToolEnabled(true);
+			// The setting watch fires on the next microtask and queues the tool-registry
+			// mutation; a prompt refresh serializes behind it.
+			cfgExternalThinking.set(settings, true);
+			await Promise.resolve();
+			await session.refreshBaseSystemPrompt();
 
 			expect(session.getToolByName("think")).toBeDefined();
 			expect(session.getActiveToolNames()).toContain("think");
 			expect(session.getXdevToolEntries().map(entry => entry.name)).not.toContain("think");
 
-			settings.set("externalThinking", false);
-			await session.setThinkToolEnabled(false);
+			cfgExternalThinking.set(settings, false);
+			await Promise.resolve();
+			await session.refreshBaseSystemPrompt();
 			expect(session.getActiveToolNames()).not.toContain("think");
 		} finally {
 			await session.dispose();
@@ -321,7 +329,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 
 	it("forces think and sends reasoning effort off for a Responses turn", async () => {
 		const tempDir = makeTempDir();
-		const settings = Settings.isolated({ externalThinking: true });
+		const settings = Settings.isolated({ externalThinking: true, "autonomy.stopGate": false });
 		const requestTexts: string[] = [];
 		const sse = (events: unknown[]): Response =>
 			new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), {
@@ -1719,7 +1727,6 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				"jev_scout",
 				"bash",
 				"web_search",
-				"irc",
 				"yield",
 			];
 			const contextGcToolNames = [
@@ -2267,7 +2274,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		const tempDir = makeTempDir();
 
 		const settings = Settings.isolated();
-		settings.set("plan.enabled", false);
+		cfgPlanEnabled.set(settings, false);
 
 		const { session } = await createAgentSession({
 			...baseOptions(tempDir),
@@ -2544,7 +2551,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			settings: configuredSettings(),
 			extensions: [toolActivationExtension, restrictedLateExtension],
 			customTools: [sdkCustomTool],
-			toolNames: ["read", "lsp", "hub"],
+			toolNames: ["read", "lsp"],
 			requireYieldTool: true,
 			restrictToolNames: true,
 			enableMCP: true,
@@ -2558,8 +2565,8 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				reportSendError: vi.fn(),
 				reportRuntimeError: vi.fn(),
 			});
-			expect(restricted.getAllToolNames()).toEqual(["read", "lsp", "hub", "yield"]);
-			expect(restricted.getActiveToolNames()).toEqual(["read", "lsp", "hub", "yield"]);
+			expect(restricted.getAllToolNames()).toEqual(["read", "lsp", "yield"]);
+			expect(restricted.getActiveToolNames()).toEqual(["read", "lsp", "yield"]);
 			for (const name of [
 				"generate_image",
 				"tts",
@@ -2997,7 +3004,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 		// because the absence of that state is precisely what is under test.
 		const tempDir = makeTempDir();
 		const settings = Settings.isolated();
-		settings.set("tools.xdev", false);
+		cfgToolsXdev.set(settings, false);
 
 		await withProviderAuth(["openai"], async () => {
 			const { session } = await createAgentSession({ ...baseOptions(tempDir), settings });

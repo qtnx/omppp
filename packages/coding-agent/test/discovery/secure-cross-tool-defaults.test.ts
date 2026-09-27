@@ -7,6 +7,7 @@ import { type Hook, hookCapability } from "@oh-my-pi/pi-coding-agent/capability/
 import { type Rule, ruleCapability } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { loadCapability } from "@oh-my-pi/pi-coding-agent/discovery";
+import { cfgHooksEnableClaudeProject, cfgRulesEnableCursorProject } from "../../src/extensibility/settings";
 
 async function writeFile(filePath: string, content: string): Promise<void> {
 	await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -73,7 +74,7 @@ describe("secure cross-tool discovery defaults", () => {
 		await writeClaudeHooks();
 		await Settings.init({ inMemory: true, cwd: project });
 
-		expect(Settings.instance.get("hooks.enableClaudeProject")).toBe(false);
+		expect(cfgHooksEnableClaudeProject.get(Settings.instance)).toBe(false);
 
 		expect(await loadClaudeHooks()).toEqual([]);
 	});
@@ -85,8 +86,8 @@ describe("secure cross-tool discovery defaults", () => {
 			JSON.stringify({ hooks: { enableClaudeProject: true } }),
 		);
 		await Settings.init({ inMemory: true, cwd: project });
-		expect(Settings.instance.get("hooks.enableClaudeProject")).toBe(true);
-		expect(Settings.instance.getTrusted("hooks.enableClaudeProject")).toBe(false);
+		expect(cfgHooksEnableClaudeProject.get(Settings.instance)).toBe(true);
+		expect(Settings.instance.getTrusted(cfgHooksEnableClaudeProject)).toBe(false);
 		expect(await loadClaudeHooks()).toEqual([]);
 	});
 
@@ -118,7 +119,7 @@ describe("secure cross-tool discovery defaults", () => {
 		await writeCursorRules();
 		await Settings.init({ inMemory: true, cwd: project });
 
-		expect(Settings.instance.get("rules.enableCursorProject")).toBe(false);
+		expect(cfgRulesEnableCursorProject.get(Settings.instance)).toBe(false);
 
 		expect(await loadCursorRules()).toEqual([]);
 	});
@@ -130,8 +131,8 @@ describe("secure cross-tool discovery defaults", () => {
 			JSON.stringify({ rules: { enableCursorProject: true } }),
 		);
 		await Settings.init({ inMemory: true, cwd: project });
-		expect(Settings.instance.get("rules.enableCursorProject")).toBe(true);
-		expect(Settings.instance.getTrusted("rules.enableCursorProject")).toBe(false);
+		expect(cfgRulesEnableCursorProject.get(Settings.instance)).toBe(true);
+		expect(Settings.instance.getTrusted(cfgRulesEnableCursorProject)).toBe(false);
 		expect(await loadCursorRules()).toEqual([]);
 	});
 

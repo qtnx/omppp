@@ -14,6 +14,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { cfgLoopMode } from "../src/modes/settings";
 
 async function flushMicrotasks(turns = 12): Promise<void> {
 	for (let i = 0; i < turns; i += 1) {
@@ -46,7 +47,7 @@ describe("InteractiveMode loop auto-submit", () => {
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@pi-loop-auto-submit-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
-		settings.set("loop.mode", "prompt");
+		cfgLoopMode.set(settings, "prompt");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
@@ -60,6 +61,10 @@ describe("InteractiveMode loop auto-submit", () => {
 		});
 		mode = new InteractiveMode(session, "test");
 		mode.ui.requestRender = vi.fn();
+	});
+
+	beforeEach(() => {
+		cfgLoopMode.set(settings, "prompt");
 		vi.spyOn(mode, "addMessageToChat").mockReturnValue([]);
 		vi.spyOn(mode, "ensureLoadingAnimation").mockImplementation(() => {});
 	});
@@ -148,7 +153,7 @@ describe("InteractiveMode loop auto-submit", () => {
 
 	it("does not recompact when a compact loop turn starts another prompt before resubmitting", async () => {
 		vi.useFakeTimers();
-		settings.set("loop.mode", "compact");
+		cfgLoopMode.set(settings, "compact");
 		let streaming = false;
 		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
 		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => streaming });
@@ -206,7 +211,7 @@ describe("InteractiveMode loop auto-submit", () => {
 
 	it("disables reset loops when vibe blocks the session transition", async () => {
 		vi.useFakeTimers();
-		settings.set("loop.mode", "reset");
+		cfgLoopMode.set(settings, "reset");
 		mode.vibeModeEnabled = true;
 		mode.loopModeEnabled = true;
 		mode.loopPrompt = "do not resubmit";
@@ -309,7 +314,7 @@ describe("InteractiveMode loop auto-submit", () => {
 	});
 
 	it("preserves the prompt file across reset-mode loop iterations", async () => {
-		settings.set("loop.mode", "reset");
+		cfgLoopMode.set(settings, "reset");
 		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
 		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
 		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
@@ -326,7 +331,7 @@ describe("InteractiveMode loop auto-submit", () => {
 	});
 
 	it("starts a clean session before each iteration when /loop clean overrides the prompt setting", async () => {
-		settings.set("loop.mode", "prompt");
+		cfgLoopMode.set(settings, "prompt");
 		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
 		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
 		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
@@ -344,7 +349,7 @@ describe("InteractiveMode loop auto-submit", () => {
 
 	it("compacts before each iteration when /loop compact overrides the prompt setting", async () => {
 		vi.useFakeTimers();
-		settings.set("loop.mode", "prompt");
+		cfgLoopMode.set(settings, "prompt");
 		Object.defineProperty(session, "isCompacting", { configurable: true, get: () => false });
 		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => false });
 		Object.defineProperty(session, "hasPostPromptWork", { configurable: true, get: () => false });
@@ -591,7 +596,7 @@ describe("InteractiveMode loop auto-submit", () => {
 
 		it("disables a reset loop when vibe is enabled while the condition is in flight", async () => {
 			vi.useFakeTimers();
-			settings.set("loop.mode", "reset");
+			cfgLoopMode.set(settings, "reset");
 			idleSession();
 			const pending = Promise.withResolvers<LoopConditionVerdict>();
 			vi.spyOn(loopCondition, "evaluateLoopCondition").mockImplementation(async () => await pending.promise);
@@ -618,7 +623,7 @@ describe("InteractiveMode loop auto-submit", () => {
 
 		it("disables a reset loop when the condition resolves during vibe activation", async () => {
 			vi.useFakeTimers();
-			settings.set("loop.mode", "reset");
+			cfgLoopMode.set(settings, "reset");
 			idleSession();
 			const pending = Promise.withResolvers<LoopConditionVerdict>();
 			vi.spyOn(loopCondition, "evaluateLoopCondition").mockImplementation(async () => await pending.promise);

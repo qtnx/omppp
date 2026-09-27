@@ -3,13 +3,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-	onAppendOnlyModeChanged,
 	resetSettingsForTest,
 	Settings,
 	type Settings as SettingsInstance,
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
+import { cfgCompactionEnabled } from "../src/session/context-settings";
+import { cfgProviderAppendOnlyContext } from "../src/session/settings";
 
 describe("Settings live reload", () => {
 	let settingsState: SettingsTestState | undefined;
@@ -45,20 +46,22 @@ describe("Settings live reload", () => {
 		activeSettings = await Settings.loadIsolated({ cwd, agentDir });
 
 		const appendOnlyEvents: string[] = [];
-		const unsubscribe = onAppendOnlyModeChanged(value => appendOnlyEvents.push(value));
+		const unsubscribe = cfgProviderAppendOnlyContext.listen(activeSettings, value => {
+			appendOnlyEvents.push(value);
+		});
 		try {
 			fs.writeFileSync(configPath, "provider:\n  appendOnlyContext: off\ncompaction:\n  enabled: true\n");
 
 			await activeSettings.reloadFromDisk();
 
-			expect(activeSettings.get("provider.appendOnlyContext")).toBe("off");
+			expect(cfgProviderAppendOnlyContext.get(activeSettings)).toBe("off");
 			expect(appendOnlyEvents).toEqual(["off"]);
 
 			appendOnlyEvents.length = 0;
 			fs.writeFileSync(configPath, "provider:\n  appendOnlyContext: off\ncompaction:\n  enabled: false\n");
 			await activeSettings.reloadFromDisk();
 
-			expect(activeSettings.get("compaction.enabled")).toBe(false);
+			expect(cfgCompactionEnabled.get(activeSettings)).toBe(false);
 			expect(appendOnlyEvents).toEqual([]);
 		} finally {
 			unsubscribe();
@@ -69,12 +72,12 @@ describe("Settings live reload", () => {
 		const configPath = path.join(agentDir, "config.yml");
 		fs.writeFileSync(configPath, "compaction:\n  enabled: true\n");
 		activeSettings = await Settings.loadIsolated({ cwd, agentDir });
-		activeSettings.override("compaction.enabled", false);
+		cfgCompactionEnabled.override(activeSettings, false);
 
 		fs.writeFileSync(configPath, "compaction:\n  enabled: true\n");
 		await activeSettings.reloadFromDisk();
 
-		expect(activeSettings.get("compaction.enabled")).toBe(false);
+		expect(cfgCompactionEnabled.get(activeSettings)).toBe(false);
 	});
 
 	it("reloads OpenCode project settings after an atomic rename through the watcher reload path", async () => {
@@ -84,14 +87,16 @@ describe("Settings live reload", () => {
 		expect(activeSettings.getProjectSettingsPaths()).toContain(path.normalize(projectSettingsPath));
 
 		const appendOnlyEvents: string[] = [];
-		const unsubscribe = onAppendOnlyModeChanged(value => appendOnlyEvents.push(value));
+		const unsubscribe = cfgProviderAppendOnlyContext.listen(activeSettings, value => {
+			appendOnlyEvents.push(value);
+		});
 		try {
 			const tempConfigPath = path.join(cwd, "opencode.json.tmp");
 			fs.writeFileSync(tempConfigPath, JSON.stringify({ provider: { appendOnlyContext: "on" } }));
 			fs.renameSync(tempConfigPath, projectSettingsPath);
 			await activeSettings.reloadFromDisk({ source: "watcher", changedPath: projectSettingsPath });
 
-			expect(activeSettings.get("provider.appendOnlyContext")).toBe("on");
+			expect(cfgProviderAppendOnlyContext.get(activeSettings)).toBe("on");
 			expect(appendOnlyEvents).toEqual(["on"]);
 		} finally {
 			unsubscribe();
@@ -105,7 +110,7 @@ describe("Settings live reload", () => {
 		activeSettings.startWatching();
 
 		const changed = Promise.withResolvers<string>();
-		const unsubscribe = onAppendOnlyModeChanged(value => {
+		const unsubscribe = cfgProviderAppendOnlyContext.listen(activeSettings, value => {
 			if (value === "on") {
 				changed.resolve(value);
 			}
@@ -114,7 +119,7 @@ describe("Settings live reload", () => {
 			fs.writeFileSync(projectSettingsPath, JSON.stringify({ provider: { appendOnlyContext: "on" } }));
 
 			expect(await changed.promise).toBe("on");
-			expect(activeSettings.get("provider.appendOnlyContext")).toBe("on");
+			expect(cfgProviderAppendOnlyContext.get(activeSettings)).toBe("on");
 			expect(activeSettings.getProjectSettingsPaths()).toContain(path.normalize(projectSettingsPath));
 		} finally {
 			unsubscribe();
@@ -128,18 +133,18 @@ describe("Settings live reload", () => {
 		activeSettings.startWatching();
 
 		const changed = Promise.withResolvers<string>();
-		const unsubscribe = onAppendOnlyModeChanged(value => {
+		const unsubscribe = cfgProviderAppendOnlyContext.listen(activeSettings, value => {
 			if (value === "on") {
 				changed.resolve(value);
 			}
 		});
 		try {
 			fs.writeFileSync(projectSettingsPath, JSON.stringify({ provider: { appendOnlyContext: "on" } }));
-			activeSettings.set("compaction.enabled", false);
+			cfgCompactionEnabled.set(activeSettings, false);
 
 			expect(await changed.promise).toBe("on");
-			expect(activeSettings.get("provider.appendOnlyContext")).toBe("on");
-			expect(activeSettings.get("compaction.enabled")).toBe(false);
+			expect(cfgProviderAppendOnlyContext.get(activeSettings)).toBe("on");
+			expect(cfgCompactionEnabled.get(activeSettings)).toBe(false);
 		} finally {
 			unsubscribe();
 		}
@@ -152,13 +157,15 @@ describe("Settings live reload", () => {
 		activeSettings.startWatching();
 
 		const appendOnlyEvents: string[] = [];
-		const unsubscribe = onAppendOnlyModeChanged(value => appendOnlyEvents.push(value));
+		const unsubscribe = cfgProviderAppendOnlyContext.listen(activeSettings, value => {
+			appendOnlyEvents.push(value);
+		});
 		try {
-			activeSettings.set("provider.appendOnlyContext", "off");
+			cfgProviderAppendOnlyContext.set(activeSettings, "off");
 			await activeSettings.flush();
 			await activeSettings.reloadFromDisk({ source: "watcher", changedPath: configPath });
 
-			expect(activeSettings.get("provider.appendOnlyContext")).toBe("off");
+			expect(cfgProviderAppendOnlyContext.get(activeSettings)).toBe("off");
 			expect(appendOnlyEvents.filter(value => value === "off")).toEqual(["off"]);
 		} finally {
 			unsubscribe();

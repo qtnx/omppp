@@ -26,11 +26,11 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { CustomTool } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
-import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
-import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { AgentRegistry } from "../src/registry/agent-registry";
+import { IrcBus } from "../src/irc/bus";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { XdevState } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -204,6 +204,8 @@ describe("AgentSession plan-mode convergence", () => {
 			agent,
 			sessionManager: SessionManager.inMemory(),
 			settings: Settings.isolated({
+				"duo.mode": "off",
+				"autonomy.stopGate": false,
 				"compaction.enabled": false,
 				"retry.enabled": false,
 			}),
@@ -305,7 +307,6 @@ describe("AgentSession plan-mode convergence", () => {
 			registry.unregister("peer");
 		}
 	}, 20_000);
-
 	it("T3a: convergence reminders are bounded by the cap, then yield to the user", async () => {
 		const harness = await createPlanSession([
 			{ content: ["planning A"] },

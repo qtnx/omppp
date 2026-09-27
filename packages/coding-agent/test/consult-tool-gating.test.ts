@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
-function makeSession(settingsOverrides: Partial<Record<SettingPath, unknown>> = {}): ToolSession {
+function makeSession(settingsOverrides: Record<string, unknown> = {}): ToolSession {
 	return {
 		cwd: "/tmp/test",
 		hasUI: false,

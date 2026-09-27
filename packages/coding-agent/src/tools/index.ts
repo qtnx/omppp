@@ -29,6 +29,7 @@ import { KanbanTool } from "../kanban/tool";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { LspTool } from "../lsp";
 import type { MCPManager } from "../mcp";
+import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { OrchestratorModeState } from "../orchestrator-mode/state";
 import type { PlanModeState } from "../plan-mode/state";
@@ -78,17 +79,18 @@ import { CompactTool } from "./compact";
 import { ConsultTool } from "./consult";
 import { ContextNotesTool, NewContextTool } from "./context-notes";
 import { DebugTool } from "./debug";
+import { cfgIdaAvailable } from "../ida/install";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
 import { GithubTool } from "./gh";
 import { GlobTool } from "./glob";
 import { GrepTool } from "./grep";
-import { HubTool, isIrcEnabled } from "./hub";
+import { IdaTool } from "./ida";
+import { isIrcEnabled } from "../irc/messaging";
 import { FindTool, isFindEnabled } from "./jfind";
 import { IrcTool } from "./irc";
 import { JobTool } from "./job";
 import { JevScoutTool } from "./jev-scout";
-import { LaunchTool } from "./launch";
 import { LearnTool } from "./learn";
 import { LoopTool } from "./loop";
 import { MacOSSandboxTool } from "./macos-sandbox";
@@ -115,10 +117,42 @@ import { supportsExternalThinking, ThinkTool } from "./think";
 import { type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TodoTool } from "./todo";
 import { WriteTool } from "./write";
-import { isMountableUnderXdev, type XdevState } from "./xdev";
+import { WaitTool } from "./wait";
+import { isMountableUnderXdev, resolveXdevTool, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
 export * from "../codegraph";
+import {
+	cfgAskEnabled,
+	cfgAstEditEnabled,
+	cfgAstGrepEnabled,
+	cfgAsyncEnabled,
+	cfgCheckpointEnabled,
+	cfgDebugEnabled,
+	cfgGithubEnabled,
+	cfgGlobEnabled,
+	cfgGrepEnabled,
+	cfgLaunchEnabled,
+	cfgSecurityEnabled,
+	cfgTodoEnabled,
+	cfgToolsEssentialOverride,
+	cfgToolsXdev,
+	cfgWebSearchEnabled,
+} from "./settings";
+import { cfgAutolearnEnabled } from "../autolearn/settings";
+import { cfgBashEnabled } from "../exec/settings";
+import { cfgCompactionExperimentalContextManagement, cfgCompactionMethodOrder } from "../session/context-settings";
+import { cfgPythonInterpreter } from "../eval/settings";
+import { cfgExternalThinking } from "../session/settings";
+import { cfgGoalEnabled } from "../goals/settings";
+import { cfgLspEnabled } from "../lsp/settings";
+import { cfgMemoryBackend } from "../memory-backend/settings";
+import { cfgTaskMaxRecursionDepth } from "../task/settings";
+import { cfgLearningEnabled } from "../learning/settings";
+import { cfgBrowserEnabled, cfgBrowserNativeComputerEnabled } from "./browser/settings";
+import { cfgAdvisorConsult, cfgAdvisorEnabled } from "../advisor/settings";
+import { cfgWorkflowEnabled } from "../workflow/settings";
+import { cfgCodegraphEnabled } from "../codegraph/settings";
 export * from "../edit";
 export * from "../goals";
 export * from "../lsp";
@@ -144,6 +178,7 @@ export * from "./computer";
 export * from "./computer/supervisor";
 export * from "./context-notes";
 export * from "./debug";
+export * from "./ida";
 export * from "./essential-tools";
 export * from "./eval";
 export * from "./eval-backends";
@@ -151,26 +186,12 @@ export * from "./file-write-fallback";
 export * from "./gh";
 export * from "./glob";
 export * from "./grep";
-export type {
-	AgentActivitySnapshot,
-	CancelOutcome,
-	CancelStatus,
-	CoordinationDetails,
-	HubDetails,
-	HubListStatus,
-	HubOp,
-	HubPeerInfo,
-	HubRenderArgs,
-	HubRosterCounts,
-	JobSnapshot,
-} from "@oh-my-pi/pi-tui/tools/hub";
-export { HubTool, hubErrorResult } from "./hub";
 export * from "./jfind";
+export type { AgentActivitySnapshot, CoordinationDetails, JobSnapshot } from "@oh-my-pi/pi-tui/tools/wait";
 export * from "./image-gen";
 export * from "./irc";
 export * from "./job";
 export * from "./jev-scout";
-export * from "./launch";
 export * from "./learn";
 export * from "./loop";
 export * from "./macos-sandbox";
@@ -202,6 +223,7 @@ export * from "./think";
 export * from "./todo";
 export * from "./tts";
 export * from "./vibe";
+export * from "./wait";
 export type { VibeToolDetails } from "@oh-my-pi/pi-tui/tools/vibe";
 export * from "./write";
 export * from "./xdev";
@@ -312,6 +334,8 @@ export interface ToolSession {
 	hasUI: boolean;
 	/** Whether `ask` can reach a human. Defaults to `hasUI`. */
 	canPromptUser?: boolean;
+	/** The user approves `cfg://` writes for this session (top-level TUI session only). */
+	settingsApproval?: boolean;
 	/** Whether this session has begun disposal. */
 	isDisposed?: () => boolean;
 	/**
@@ -436,6 +460,12 @@ export interface ToolSession {
 	getEvalKernelOwnerId?: () => string | null;
 	/** Current enabled eval prelude definitions. */
 	getEvalPreludes?: () => readonly EvalPreludeDefinition[];
+	/**
+	 * Eval preludes frozen into the system prompt and eval description at the
+	 * last base rebuild. Mid-session toggles ride a hidden notice instead of
+	 * rewriting the provider cache prefix.
+	 */
+	getAdvertisedEvalPreludes?: () => readonly EvalPreludeDefinition[];
 	/** Reject new eval work once session disposal has started. */
 	assertEvalExecutionAllowed?: () => void;
 	/** Track tool-owned eval work so session disposal can await/abort it like direct session eval runs. */
@@ -496,7 +526,7 @@ export interface ToolSession {
 	pendingFullWriteDescription?: boolean;
 	/** Agent registry for IRC routing across live sessions. */
 	agentRegistry?: AgentRegistry;
-	/** Idle→parked→revive lifecycle owner; lets the hub kill a non-job-backed agent registration. Default: AgentLifecycleManager.global(). */
+	/** Idle→parked→revive lifecycle owner; lets explicit cancellation stop a non-job-backed agent registration. Default: AgentLifecycleManager.global(). */
 	agentLifecycle?: () => AgentLifecycleManager;
 	/** Get artifacts directory for artifact:// URLs */
 	getArtifactsDir?: () => string | null;
@@ -508,6 +538,13 @@ export interface ToolSession {
 	getSessionSpawns: () => string | null;
 	/** Session-scoped agent definitions (user-tagged model pseudonyms) merged after discovered agents. */
 	getSessionAgents?: () => readonly AgentDefinition[];
+	/**
+	 * Session agents baked into the current base prompt surface. The task
+	 * description lists these instead of the live set so tagging a model
+	 * mid-session does not mutate the provider tool prefix; the delta rides a
+	 * hidden notice. Absent when the embedder has no base-prompt surface.
+	 */
+	advertisedSessionAgents?: () => readonly AgentDefinition[];
 	/** Get resolved model string if explicitly set for this session */
 	getModelString?: () => string | undefined;
 	/** Get the current session model context window, regardless of how it was chosen */
@@ -748,7 +785,7 @@ export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
 	"orchestrator_mode",
 	"read",
 	"bash",
-	"launch",
+	"wait",
 	"edit",
 	"write",
 	"glob",
@@ -769,7 +806,7 @@ export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
  * otherwise `DEFAULT_ESSENTIAL_TOOL_NAMES`.
  */
 export function computeEssentialBuiltinNames(settings: Settings): string[] {
-	const override = settings.get("tools.essentialOverride") ?? [];
+	const override = cfgToolsEssentialOverride.get(settings) ?? [];
 	const cleaned = normalizeToolNames(override.map(name => name.trim()).filter(Boolean));
 	if (cleaned.length > 0) {
 		return cleaned.filter(name => name in BUILTIN_TOOLS);
@@ -824,12 +861,12 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	read: s => new ReadTool(s),
 	security_scan: s => new SecurityScanTool(s),
 	bash: s => new BashTool(s),
-	launch: s => new LaunchTool(s),
 	edit: s => new EditTool(s),
 	ast_grep: s => new AstGrepTool(s),
 	ast_edit: s => new AstEditTool(s),
 	ask: AskTool.createIf,
 	debug: DebugTool.createIf,
+	ida: IdaTool.createIf,
 	eval: s => new EvalTool(s),
 	ssh: loadSshTool,
 	sandbox: s => new MacOSSandboxTool(s),
@@ -852,7 +889,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName | "rate_learning" | "sandbox"
 	context_notes: ContextNotesTool.createIf,
 	new_context: NewContextTool.createIf,
 	task: s => TaskTool.create(s),
-	hub: s => new HubTool(s),
+	wait: s => new WaitTool(s),
 	workflow: s => WorkflowTool.create(s),
 	job: s => new JobTool(s),
 	loop: LoopTool.createIf,
@@ -905,9 +942,35 @@ function isCodexGoalHiddenToolName(name: string): boolean {
 }
 
 /**
- * Create tools from BUILTIN_TOOLS registry.
+ * Built-ins whose registration follows live settings through the session's built-in
+ * reconcile. Memory-backend tools other than `learn` follow `memory.backend` through
+ * the memory backend's own tool replacement instead.
  */
-export async function createTools(session: ToolSession, toolNames?: string[]): Promise<Tool[]> {
+export const SETTINGS_GATED_BUILTIN_TOOL_NAMES: readonly BuiltinToolName[] = (
+	Object.keys(BUILTIN_TOOLS) as BuiltinToolName[]
+).filter(name => name === "learn" || !(MEMORY_BACKEND_TOOL_NAMES as readonly string[]).includes(name));
+
+/** Built-in tool selection {@link createTools} constructs for a session under its current settings. */
+export interface BuiltinToolPlan {
+	/** Explicit request after auto-includes; undefined selects every allowed built-in. */
+	readonly requestedTools: string[] | undefined;
+	/** Built-in and hidden tool names to construct, in construction order. */
+	readonly names: string[];
+	/** Session restriction plus settings gate shared by construction and live reconcile. */
+	isAllowed(name: string): boolean;
+}
+
+/**
+ * Resolve which built-in tools `session` gets for `toolNames` under the current
+ * settings. Shared by {@link createTools} and the live settings reconcile so both
+ * honor explicit lists, `restrictToolNames`, and task depth identically.
+ */
+export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: string[]): Promise<BuiltinToolPlan> {
+	for (const name of toolNames ?? []) {
+		if (name === "hub" || name === "launch") {
+			logger.warn("Configured tool was removed; use wait, proc://, or agent:// instead", { name });
+		}
+	}
 	const restrictToolNames = session.restrictToolNames === true;
 	const includeYield = session.requireYieldTool === true;
 	const enableLsp = session.enableLsp ?? true;
@@ -916,22 +979,13 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		: toolNames
 			? normalizeToolNames(toolNames)
 			: undefined;
-	// createTools may be called more than once for the same ToolSession. A later
-	// explicit (or full-set) write request is a real grant and must upgrade any
-	// device-only transport left by an earlier read-only call.
-	if (requestedTools === undefined || requestedTools.includes("write")) {
-		session.deviceOnlyWrite = undefined;
-		session.pendingFullWriteDescription = undefined;
-	}
-	const goalEnabled = session.settings.get("goal.enabled");
+	const goalEnabled = cfgGoalEnabled.get(session.settings);
 	const goalModeActive = !restrictToolNames && goalEnabled && session.getGoalModeState?.()?.enabled === true;
 	const externalThinkingActive =
-		session.settings.get("externalThinking") && supportsExternalThinking(session.getActiveModel?.());
+		cfgExternalThinking.get(session.settings) && supportsExternalThinking(session.getActiveModel?.());
 	if (goalModeActive && requestedTools) {
 		for (const name of GOAL_HIDDEN_TOOL_NAMES) {
-			if (!requestedTools.includes(name)) {
-				requestedTools.push(name);
-			}
+			if (!requestedTools.includes(name)) requestedTools.push(name);
 		}
 	}
 	const backends = resolveEvalBackends(session);
@@ -949,7 +1003,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 				"createTools:pythonCheck",
 				checkPythonKernelAvailability,
 				session.cwd,
-				session.settings.get("python.interpreter")?.trim() || undefined,
+				cfgPythonInterpreter.get(session.settings)?.trim() || undefined,
 			);
 			pythonAvailable = availability.ok;
 			if (!availability.ok) {
@@ -968,7 +1022,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	// the sister tool so a one-sided frontmatter `tools:` entry still works.
 	// Unlike the AST/auto-learn convenience auto-includes below, this is a
 	// safety pairing — it applies to restricted sessions too.
-	if (requestedTools && session.settings.get("checkpoint.enabled")) {
+	if (requestedTools && cfgCheckpointEnabled.get(session.settings)) {
 		if (requestedTools.includes("checkpoint") && !requestedTools.includes("rewind")) {
 			requestedTools.push("rewind");
 		} else if (requestedTools.includes("rewind") && !requestedTools.includes("checkpoint")) {
@@ -979,7 +1033,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	// Restricted callers own the active list and must not have it widened.
 	if (requestedTools && !restrictToolNames) {
 		if (
-			session.settings.get("compaction.experimentalContextManagement") &&
+			cfgCompactionExperimentalContextManagement.get(session.settings) &&
 			requestedTools.includes("read") &&
 			requestedTools.includes("grep")
 		) {
@@ -992,23 +1046,23 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (
 			requestedTools.includes("grep") &&
 			!requestedTools.includes("ast_grep") &&
-			session.settings.get("astGrep.enabled")
+			cfgAstGrepEnabled.get(session.settings)
 		) {
 			requestedTools.push("ast_grep");
 		}
 		if (
 			requestedTools.includes("edit") &&
 			!requestedTools.includes("ast_edit") &&
-			session.settings.get("astEdit.enabled")
+			cfgAstEditEnabled.get(session.settings)
 		) {
 			requestedTools.push("ast_edit");
 		}
-		if (["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "")) {
+		if (["hindsight", "mnemopi"].includes(cfgMemoryBackend.get(session.settings))) {
 			for (const name of ["recall", "retain", "reflect"]) {
 				if (!requestedTools.includes(name)) requestedTools.push(name);
 			}
 		}
-		if (session.settings.get("memory.backend") === "mnemopi" && !requestedTools.includes("memory_edit")) {
+		if (cfgMemoryBackend.get(session.settings) === "mnemopi" && !requestedTools.includes("memory_edit")) {
 			requestedTools.push("memory_edit");
 		}
 		if (externalThinkingActive && !requestedTools.includes("think")) {
@@ -1020,16 +1074,16 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		// active still exposes the tools the nudge points at. Gated to top-level
 		// (taskDepth 0): the controller only runs there, so a subagent's explicit
 		// tool whitelist must never be silently widened with write-capable tools.
-		if (session.settings.get("autolearn.enabled") && (session.taskDepth ?? 0) === 0) {
+		if (cfgAutolearnEnabled.get(session.settings) && (session.taskDepth ?? 0) === 0) {
 			if (!requestedTools.includes("manage_skill")) requestedTools.push("manage_skill");
 			if (
-				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "") &&
+				["hindsight", "mnemopi", "local"].includes(cfgMemoryBackend.get(session.settings)) &&
 				!requestedTools.includes("learn")
 			) {
 				requestedTools.push("learn");
 			}
 		}
-		if (session.settings.get("learning.enabled") && (session.taskDepth ?? 0) === 0) {
+		if (cfgLearningEnabled.get(session.settings) && (session.taskDepth ?? 0) === 0) {
 			if (!requestedTools.includes("rate_learning")) requestedTools.push("rate_learning");
 		}
 	}
@@ -1039,7 +1093,6 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		countToolsForAutoDiscovery((requestedTools ?? Object.keys(BUILTIN_TOOLS)).filter(isMCPToolName)),
 	);
 	const discoveryActive = effectiveDiscoveryMode !== "off";
-	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
 		// Never in the default set. Explicitly activatable while goal.enabled and
 		// no goal record exists yet — /guided-goal enables it so the agent can
@@ -1049,93 +1102,80 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "goal") {
 			if (!goalEnabled || restrictToolNames) return false;
 			const goalState = session.getGoalModeState?.();
-			return goalState === undefined || goalState.enabled === true || goalState.goal.status === "dropped";
+			return goalState === undefined || goalState.enabled === true || goalState.goal?.status === "dropped";
 		}
 		if (isCodexGoalHiddenToolName(name)) return goalEnabled;
-		// Duo tools ship with every normal session. Registering them by phase did
-		// not work: the registry is built before the duo controller activates, and
-		// the surface sync could only enable names the registry already held, so
-		// an activated session advertised no `duo_handoff`. A call without a live
-		// controller reports that clearly. Restricted callers (subagents, explicit
-		// whitelists) opt in by naming the tools.
 		if (isDuoToolName(name)) {
 			if (requestedTools?.includes(name)) return true;
 			return !restrictToolNames;
 		}
-		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
+		if (name === "lsp") return enableLsp && cfgLspEnabled.get(session.settings);
 		if (name === "codegraph_init" || name === "codegraph_index" || name === "codegraph_explore")
-			return session.settings.get("codegraph.enabled");
-		if (name === "bash") return session.settings.get("bash.enabled");
-		if (name === "launch") return session.settings.get("launch.enabled");
+			return cfgCodegraphEnabled.get(session.settings);
+		if (name === "bash") return cfgBashEnabled.get(session.settings);
 		if (name === "eval") return allowEval;
-		if (name === "debug") return session.settings.get("debug.enabled");
+		if (name === "debug") return cfgDebugEnabled.get(session.settings);
+		if (name === "ida") return cfgIdaAvailable.get(session.settings);
 		if (name === "todo")
-			return (!includeYield || session.prewalkArmed === true) && session.settings.get("todo.enabled");
-		if (name === "glob") return session.settings.get("glob.enabled");
-		if (name === "grep") return session.settings.get("grep.enabled");
+			return (!includeYield || session.prewalkArmed === true) && cfgTodoEnabled.get(session.settings);
+		if (name === "glob") return cfgGlobEnabled.get(session.settings);
+		if (name === "grep") return cfgGrepEnabled.get(session.settings);
 		if (name === "find") return isFindEnabled(session);
-		if (name === "github") return session.settings.get("github.enabled");
-		if (name === "ast_grep") return session.settings.get("astGrep.enabled");
-		if (name === "ast_edit") return session.settings.get("astEdit.enabled");
-		if (name === "web_search") return session.settings.get("web_search.enabled");
-		if (name === "security_scan") return session.settings.get("security.enabled");
+		if (name === "github") return cfgGithubEnabled.get(session.settings);
+		if (name === "ast_grep") return cfgAstGrepEnabled.get(session.settings);
+		if (name === "ast_edit") return cfgAstEditEnabled.get(session.settings);
+		if (name === "web_search") return cfgWebSearchEnabled.get(session.settings);
+		if (name === "security_scan") return cfgSecurityEnabled.get(session.settings);
 		if (name === "search_tool_bm25") return discoveryActive;
 		if (name === "think") return externalThinkingActive;
-		if (name === "ask") return session.settings.get("ask.enabled");
-		// Native OpenAI Computer Use rides the managed browser; the scriptable
-		// desktop path stays an eval prelude (see getEvalPreludes in sdk.ts).
+		if (name === "ask") return cfgAskEnabled.get(session.settings);
 		if (name === "browser_use")
 			return (
-				session.settings.get("browser.enabled") === true &&
-				session.settings.get("browser.nativeComputer.enabled") === true
+				cfgBrowserEnabled.get(session.settings) === true &&
+				cfgBrowserNativeComputerEnabled.get(session.settings) === true
 			);
-		// The endpoint gate lives here, not in the factory: tool metadata (loadMode,
-		// description) must resolve even when the endpoint is unset. The default
-		// endpoint is the tailnet proxy on codemc, which holds the TypeSafe key, so
-		// no local key is required — only an explicitly emptied endpoint takes the
-		// tool away.
-		if (name === "browser_jev") return session.settings.get("browser.enabled") === true && jevEndpoint() !== "";
+		if (name === "browser_jev") return cfgBrowserEnabled.get(session.settings) === true && jevEndpoint() !== "";
 		if (name === "jev_scout") return jevEndpoint() !== "";
+		if (name === "context_notes" || name === "new_context")
+			return cfgCompactionExperimentalContextManagement.get(session.settings);
 		if (name === "checkpoint" || name === "rewind")
 			return (
-				session.settings.get("checkpoint.enabled") &&
+				cfgCheckpointEnabled.get(session.settings) &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
-		if (name === "compact") return session.settings.getGroup("compaction").methodOrder.length > 0;
-		if (name === "irc") return isIrcEnabled(session.settings, session.taskDepth ?? 0);
-		if (name === "hub") {
-			// A restricted child only receives host messaging when its explicit
-			// whitelist and host both grant it. Ordinary sessions retain the
-			// user-facing IRC setting gate.
-			if (restrictToolNames) {
-				return requestedTools?.includes("hub") === true && session.enableIrc === true;
-			}
-			return session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0);
+		if (name === "compact") return cfgCompactionMethodOrder.get(session.settings).length > 0;
+		if (name === "irc") return session.enableIrc === true && isIrcEnabled(session.settings, session.taskDepth ?? 0);
+		if (name === "wait") {
+			return (
+				cfgAsyncEnabled.get(session.settings) ||
+				(session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0)) ||
+				cfgLaunchEnabled.get(session.settings)
+			);
 		}
 		if (name === "retain" || name === "recall" || name === "reflect") {
-			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
+			return ["hindsight", "mnemopi"].includes(cfgMemoryBackend.get(session.settings));
 		}
-		if (name === "memory_edit") return session.settings.get("memory.backend") === "mnemopi";
+		if (name === "memory_edit") return cfgMemoryBackend.get(session.settings) === "mnemopi";
 		if (name === "manage_skill")
 			return (
-				session.settings.get("autolearn.enabled") &&
+				cfgAutolearnEnabled.get(session.settings) &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
 			);
 		if (name === "learn") {
 			return (
-				session.settings.get("autolearn.enabled") &&
+				cfgAutolearnEnabled.get(session.settings) &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined) &&
-				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "")
+				["hindsight", "mnemopi", "local"].includes(cfgMemoryBackend.get(session.settings))
 			);
 		}
 		if (name === "rate_learning") {
-			return session.settings.get("learning.enabled") && (session.taskDepth ?? 0) === 0;
+			return cfgLearningEnabled.get(session.settings) && (session.taskDepth ?? 0) === 0;
 		}
 		if (name === "task") {
-			return canSpawnAtDepth(session.settings.get("task.maxRecursionDepth") ?? 2, session.taskDepth ?? 0);
+			return canSpawnAtDepth(cfgTaskMaxRecursionDepth.get(session.settings), session.taskDepth ?? 0);
 		}
 		if (name === "workflow") {
-			return session.settings.get("workflow.enabled") === true && (session.taskDepth ?? 0) === 0;
+			return cfgWorkflowEnabled.get(session.settings) === true && (session.taskDepth ?? 0) === 0;
 		}
 		if (name === "loop") {
 			return (session.taskDepth ?? 0) === 0 && typeof session.getLoopManager === "function";
@@ -1145,8 +1185,10 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		// Mid-session advisor enablement gets the tool at the next session build;
 		// the prompt block is `{{#has tools "consult"}}`-guarded so prompts follow.
 		if (name === "consult") {
-			const advisorOn = session.isAdvisorEnabled?.() ?? session.settings.get("advisor.enabled") === true;
-			return (advisorOn || session.isAdvisorActive?.()) && session.settings.get("advisor.consult") !== false;
+			const advisorOn = session.isAdvisorEnabled?.() ?? cfgAdvisorEnabled.get(session.settings) === true;
+			return (
+				(advisorOn || session.isAdvisorActive?.() === true) && cfgAdvisorConsult.get(session.settings) !== false
+			);
 		}
 		return true;
 	};
@@ -1154,28 +1196,56 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		requestedTools.push("yield");
 	}
 
-	const filteredRequestedTools = requestedTools?.filter(name => name in allTools && isToolAllowed(name));
-	const resolveEntry = [["resolve", HIDDEN_TOOLS.resolve] as const];
-	const baseEntries =
-		filteredRequestedTools !== undefined
-			? [
-					...filteredRequestedTools
-						.filter(name => name !== "resolve")
-						.map(name => [name, allTools[name]] as const),
-					...(!restrictToolNames ? resolveEntry : []),
-				]
-			: [
-					...Object.entries(BUILTIN_TOOLS)
-						.filter(([name]) => isToolAllowed(name))
-						.map(([name, factory]) => [name, factory] as const),
-					...(externalThinkingActive ? ([["think", HIDDEN_TOOLS.think]] as const) : []),
-					...(includeYield ? ([["yield", HIDDEN_TOOLS.yield]] as const) : []),
-					...(goalEnabled ? CODEX_GOAL_HIDDEN_TOOL_NAMES.map(name => [name, HIDDEN_TOOLS[name]] as const) : []),
-					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
-					...(!restrictToolNames ? resolveEntry : []),
-				];
+	const names = requestedTools?.filter(
+		name => (name in BUILTIN_TOOLS || name in HIDDEN_TOOLS) && isToolAllowed(name),
+	) ?? [
+		...Object.keys(BUILTIN_TOOLS).filter(isToolAllowed),
+		...(externalThinkingActive ? ["think"] : []),
+		...(includeYield ? ["yield"] : []),
+		...(goalEnabled ? CODEX_GOAL_HIDDEN_TOOL_NAMES : []),
+		...(goalModeActive ? ["goal"] : []),
+		...(!restrictToolNames ? ["resolve"] : []),
+	];
+	if (!restrictToolNames && requestedTools && !names.includes("resolve")) names.push("resolve");
+	return { requestedTools, names, isAllowed: isToolAllowed };
+}
 
-	const activeToolNames = new Set(baseEntries.map(([name]) => name));
+/** Allocates `xd://` presentation state over the session's canonical tool map. */
+export function createXdevState(
+	session: ToolSession,
+	tools: Map<string, Tool>,
+	builtInNames: Set<string>,
+	mountedNames: Set<string> = new Set(),
+): XdevState {
+	const state: XdevState = {
+		tools,
+		mountedNames,
+		builtInNames,
+		isActive: name => session.isToolActive?.(name) === true,
+		// Card rendering reads the same predicate as execution: mounted devices
+		// plus active top-level tools, which the `write` transport also accepts.
+		resolve: name => resolveXdevTool(state, name),
+	};
+	return state;
+}
+
+/**
+ * Create tools from BUILTIN_TOOLS registry.
+ */
+export async function createTools(session: ToolSession, toolNames?: string[]): Promise<Tool[]> {
+	const restrictToolNames = session.restrictToolNames === true;
+	const { requestedTools, names } = await resolveBuiltinToolPlan(session, toolNames);
+	// createTools may be called more than once for the same ToolSession. A later
+	// explicit (or full-set) write request is a real grant and must upgrade any
+	// device-only transport left by an earlier read-only call.
+	if (requestedTools === undefined || requestedTools.includes("write")) {
+		session.deviceOnlyWrite = undefined;
+		session.pendingFullWriteDescription = undefined;
+	}
+	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
+	const baseEntries = names.map(name => [name, allTools[name]] as const);
+
+	const activeToolNames = new Set(names);
 	if (session.setActiveToolNames) {
 		session.setActiveToolNames(activeToolNames);
 	} else {
@@ -1194,7 +1264,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const builtInNames = new Set(tools.map(tool => tool.name));
 	for (const tool of tools) toolRegistry.set(tool.name, tool);
 
-	const xdevRequested = !restrictToolNames && session.settings.get("tools.xdev");
+	const xdevRequested = !restrictToolNames && cfgToolsXdev.get(session.settings);
 	// xd:// mounting rides the write tool as its execution transport, so a
 	// session whose explicit tool list grants `read` but omits `write` would
 	// allocate no xd:// state and expose every later-registered MCP/extension
@@ -1237,12 +1307,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			if (mountable) mountedNames.add(tool.name);
 			else kept.push(tool);
 		}
-		session.xdev = {
-			tools: toolRegistry,
-			mountedNames,
-			builtInNames,
-			isActive: name => session.isToolActive?.(name) === true,
-		};
+		session.xdev = createXdevState(session, toolRegistry, builtInNames, mountedNames);
 		tools = kept;
 	}
 	// Staged previews from deferrable tools (e.g. ast_edit) resolve through a

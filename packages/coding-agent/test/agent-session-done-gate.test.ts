@@ -12,6 +12,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { cfgAdvisorDoneGate } from "../src/advisor/settings";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure helpers
@@ -273,7 +274,7 @@ describe("AgentSession advisor done-review gate", () => {
 	});
 
 	it("stays silent when advisor.doneGate is off", async () => {
-		session.settings.set("advisor.doneGate", false);
+		cfgAdvisorDoneGate.set(session.settings, false);
 		await enableAdvisor();
 		stubConsult();
 		seedMutationHistory();

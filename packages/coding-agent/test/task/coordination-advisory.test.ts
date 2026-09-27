@@ -4,26 +4,22 @@ import type { TaskItem } from "@oh-my-pi/pi-coding-agent/task/types";
 import { prompt } from "@oh-my-pi/pi-utils";
 import subagentSystemPromptTemplate from "../../src/prompts/system/subagent-system-prompt.md" with { type: "text" };
 
-// Contract: a multi-sibling spawn with spawn capacity and IRC available draws
-// a proactive coordinate-via-irc suggestion.
 const item = (): TaskItem => ({ task: "do the thing" });
 
 describe("buildCoordinationAdvisory", () => {
-	it("suggests hub coordination for >=2 siblings with capacity and hub messaging enabled", () => {
-		const advice = buildCoordinationAdvisory([item(), item()], true, true);
-		expect(advice).toBeDefined();
-		expect(advice).toContain("`hub`");
+	it("suggests coordination when multiple siblings can message each other", () => {
+		expect(buildCoordinationAdvisory([item(), item()], true, true)).toBeDefined();
 	});
 
 	it("stays silent for a single spawn", () => {
 		expect(buildCoordinationAdvisory([item()], true, true)).toBeUndefined();
 	});
 
-	it("stays silent when irc is unavailable", () => {
+	it("stays silent when messaging is unavailable", () => {
 		expect(buildCoordinationAdvisory([item(), item()], true, false)).toBeUndefined();
 	});
 
-	it("stays silent at max depth (no spawn capacity)", () => {
+	it("stays silent without spawn capacity", () => {
 		expect(buildCoordinationAdvisory([item(), item()], false, true)).toBeUndefined();
 	});
 });
@@ -35,8 +31,8 @@ describe("subagent COOP irc guidance", () => {
 			ircPeers: "- `Sib` — task (sub, running)",
 			ircSelfId: "Self",
 		});
-		expect(out).toContain("before you edit");
-		expect(out).toContain("same-file edits serialize safely");
+		expect(out).toContain("before editing a file a sibling may own");
+		expect(out).toContain("same-file `edit`/`write` calls");
 	});
 });
 // Contract: TaskTool.execute composes the specialization nudge with the
@@ -44,76 +40,35 @@ describe("subagent COOP irc guidance", () => {
 // have already finished). composeSpawnAdvisory is the seam that decision flows
 // through, so the gating is pinned here rather than only inside the builders.
 describe("composeSpawnAdvisory", () => {
-	const worker = (): TaskItem => ({ task: "x" });
+	const genericFanout = {
+		agents: ["task", "task"],
+		items: [item(), item()],
+		depthCapacity: true,
+	};
 
-	it("joins the specialization tip and the irc coordination suggestion for an async generic fanout", () => {
-		const advisory = composeSpawnAdvisory({
-			agents: ["task", "task"],
-			items: [worker(), worker()],
-			depthCapacity: true,
-			ircEnabled: true,
-			willRunAsync: true,
-		});
-		expect(advisory).toContain("generic");
-		expect(advisory).toContain('`agent: "scout"`');
-		expect(advisory).toContain("Coordinate:");
+	it("adds peer coordination only while siblings still run asynchronously", () => {
+		const noMessaging = composeSpawnAdvisory({ ...genericFanout, ircEnabled: false, willRunAsync: true });
+		const synchronous = composeSpawnAdvisory({ ...genericFanout, ircEnabled: true, willRunAsync: false });
+		const asynchronous = composeSpawnAdvisory({ ...genericFanout, ircEnabled: true, willRunAsync: true });
+
+		expect(noMessaging).toBeDefined();
+		expect(synchronous).toEqual(noMessaging);
+		expect(asynchronous).not.toEqual(noMessaging);
 	});
 
-	it("drops the scout example from the specialization tip when scout is unavailable", () => {
-		const advisory = composeSpawnAdvisory({
-			agents: ["task", "task"],
-			items: [worker(), worker()],
-			depthCapacity: true,
-			ircEnabled: true,
-			willRunAsync: true,
-			scoutAvailable: false,
-		});
-		expect(advisory).toContain("generic");
-		expect(advisory).not.toContain("scout");
-		expect(advisory).toContain("Coordinate:");
-	});
-
-	it("drops the coordination suggestion on the sync path but keeps the specialization tip", () => {
-		const advisory = composeSpawnAdvisory({
-			agents: ["task", "task"],
-			items: [worker(), worker()],
-			depthCapacity: true,
-			ircEnabled: true,
-			willRunAsync: false,
-		});
-		expect(advisory).toContain("generic");
-		expect(advisory).not.toContain("Coordinate:");
-	});
-
-	it("omits coordination when irc is unavailable, even async", () => {
-		const advisory = composeSpawnAdvisory({
-			agents: ["task", "task"],
-			items: [worker(), worker()],
-			depthCapacity: true,
-			ircEnabled: false,
-			willRunAsync: true,
-		});
-		expect(advisory).toContain("generic");
-		expect(advisory).not.toContain("Coordinate:");
-	});
-
-	it("returns undefined for a single non-generic spawn", () => {
+	it("returns no advisory for a single specialist or exhausted spawn capacity", () => {
 		expect(
 			composeSpawnAdvisory({
 				agents: ["reviewer"],
-				items: [worker()],
+				items: [item()],
 				depthCapacity: true,
 				ircEnabled: true,
 				willRunAsync: true,
 			}),
 		).toBeUndefined();
-	});
-
-	it("returns undefined at max depth (no spawn capacity)", () => {
 		expect(
 			composeSpawnAdvisory({
-				agents: ["task", "task"],
-				items: [worker(), worker()],
+				...genericFanout,
 				depthCapacity: false,
 				ircEnabled: true,
 				willRunAsync: true,

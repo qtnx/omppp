@@ -1,5 +1,6 @@
 import { settings } from "../config/settings";
 import { type HerdrJsonRequest, herdrSocketPath, isHerdrPane, sendHerdrRequest } from "./socket";
+import { cfgHerdrNotifyBlocked, cfgHerdrNotifyDone, cfgHerdrNotifyMinWorkMs, cfgHerdrNotifySound } from "./settings";
 
 /** A toast is one-shot; give a busy herdr server more than the state channel's 500ms before giving up. */
 const NOTIFICATION_TIMEOUT_MS = 2_000;
@@ -40,10 +41,10 @@ export function buildNotificationRequest(
 
 export function readHerdrNotifySettings(): HerdrNotifySettings {
 	return {
-		done: settings.get("herdr.notify.done"),
-		blocked: settings.get("herdr.notify.blocked"),
-		sound: settings.get("herdr.notify.sound"),
-		minWorkMs: settings.get("herdr.notify.minWorkMs"),
+		done: cfgHerdrNotifyDone.get(settings),
+		blocked: cfgHerdrNotifyBlocked.get(settings),
+		sound: cfgHerdrNotifySound.get(settings),
+		minWorkMs: cfgHerdrNotifyMinWorkMs.get(settings),
 	};
 }
 

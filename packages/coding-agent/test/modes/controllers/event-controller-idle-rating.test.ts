@@ -7,6 +7,7 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import { listSessionFeedback, recordSessionFeedback } from "@oh-my-pi/pi-coding-agent/session/session-feedback";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
+import { cfgFeedbackRatingPrompt } from "../../../src/feedback/settings";
 async function flushMicrotasks(): Promise<void> {
 	for (let i = 0; i < 10; i++) {
 		await Promise.resolve();
@@ -69,6 +70,7 @@ function createHarness(
 	};
 	const context = {
 		isInitialized: true,
+		settings: Settings.instance,
 		loadingAnimation: undefined,
 		streamingComponent: undefined,
 		streamingMessage: undefined,
@@ -181,14 +183,14 @@ describe("EventController idle rating prompt", () => {
 
 	it("stays silent when disabled, when the session is already rated, when the editor has a draft, or before any reply", async () => {
 		const disabled = createHarness({ selectorChoice: "4. Good" });
-		Settings.instance.override("feedback.ratingPrompt", false);
+		cfgFeedbackRatingPrompt.override(Settings.instance, false);
 		let controller = new EventController(disabled.context);
 		await controller.handleEvent({ type: "agent_end", messages: [createAssistantMessage()] });
 		vi.advanceTimersByTime(5_000);
 		await flushMicrotasks();
 		expect(disabled.showHookSelector).not.toHaveBeenCalled();
 		controller.dispose();
-		Settings.instance.clearOverride("feedback.ratingPrompt");
+		cfgFeedbackRatingPrompt.clearOverride(Settings.instance);
 
 		const rated = createHarness({ selectorChoice: "4. Good" });
 		recordSessionFeedback({ sessionManager: rated.manager }, { score: 3 });

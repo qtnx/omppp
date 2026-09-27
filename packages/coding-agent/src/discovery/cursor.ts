@@ -23,6 +23,7 @@ import { ruleCapability } from "../capability/rule";
 import { type Settings, settingsCapability } from "../capability/settings";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
 import { settings } from "../config/settings";
+import { cfgRulesEnableCursorUser, cfgRulesEnableCursorProject } from "../extensibility/settings";
 import {
 	discoverRuleFromMarkdown,
 	createSourceMeta,
@@ -112,8 +113,8 @@ async function loadMCPServers(ctx: LoadContext): Promise<LoadResult<MCPServer>> 
 function readCursorRuleToggles(): { enableUser: boolean; enableProject: boolean } {
 	try {
 		return {
-			enableUser: settings.getTrusted("rules.enableCursorUser") ?? false,
-			enableProject: settings.getTrusted("rules.enableCursorProject") ?? false,
+			enableUser: settings.getTrusted(cfgRulesEnableCursorUser) ?? false,
+			enableProject: settings.getTrusted(cfgRulesEnableCursorProject) ?? false,
 		};
 	} catch {
 		return { enableUser: false, enableProject: false };

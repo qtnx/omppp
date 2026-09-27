@@ -15,6 +15,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
+import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -42,18 +44,17 @@ const batchSchemaOutput = type({
 	"[string]": "unknown",
 });
 
+import { cfgTaskEnableEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
+const scoutAgent: AgentDefinition = {
+	name: "scout",
+	description: "Read-only scout agent",
+	systemPrompt: "Investigate the assigned question.",
+	source: "bundled",
+};
 const taskAgent: AgentDefinition = {
 	name: "task",
 	description: "General-purpose task agent",
 	systemPrompt: "You are a task agent.",
-	source: "bundled",
-};
-
-const scoutAgent: AgentDefinition = {
-	name: "scout",
-	description: "Read-only research agent",
-	systemPrompt: "You are a scout agent.",
-	tools: ["read"],
 	source: "bundled",
 };
 
@@ -164,9 +165,9 @@ describe("task.batch schema gating", () => {
 		mockDiscovery();
 		const tool = await TaskTool.create(createSession({ settings: { "task.batch": true } }));
 
-		expect(tool.description).toContain("Concurrent edits to the same files auto-resolve");
-		expect(tool.description).toContain("agents coordinate directly over IRC");
-		expect(tool.description).toContain("NEVER shrink or serialize a batch to avoid file overlap");
+		expect(tool.description).toContain("overlapping files one integration owner");
+		expect(tool.description).toContain("agents coordinate via `write agent://<id>`");
+		expect(tool.description).toContain("NEVER shrink or serialize a batch just to avoid overlap");
 		expect(tool.description).not.toContain("Same-file edits are not guaranteed to merge");
 	});
 
@@ -178,9 +179,8 @@ describe("task.batch schema gating", () => {
 		expect(tool.description).not.toContain("general-purpose worker");
 		expect(tool.description).not.toContain("default worker");
 		expect(tool.description).toContain("Omit `agent` when the spawn-policy default is the best fit");
-		expect(tool.description).toContain("### scout (READ-ONLY)");
+		expect(tool.description).toContain("### scout");
 	});
-
 	it("hides effort by default and exposes it when task.enableEffort is enabled", async () => {
 		mockDiscovery();
 
@@ -189,7 +189,7 @@ describe("task.batch schema gating", () => {
 		expect(getSchemaProperties(flat).effort).toBeUndefined();
 		expect(flat.description).not.toContain("`effort`");
 
-		flatSession.settings.override("task.enableEffort", true);
+		cfgTaskEnableEffort.override(flatSession.settings, true);
 		expect(getSchemaProperties(flat).effort).toBeDefined();
 		expect(flat.description).toContain("`effort`");
 
@@ -198,7 +198,7 @@ describe("task.batch schema gating", () => {
 		expect(getBatchItemProperties(batch).effort).toBeUndefined();
 		expect(batch.description).not.toContain("`effort`");
 
-		batchSession.settings.override("task.enableEffort", true);
+		cfgTaskEnableEffort.override(batchSession.settings, true);
 		expect(getBatchItemProperties(batch).effort).toBeDefined();
 		expect(batch.description).toContain("`effort`");
 	});
@@ -247,7 +247,10 @@ describe("task.batch schema gating", () => {
 		const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
 
 		for (const value of [undefined, 0, 1, 2700]) {
-			const item = value === undefined ? { task: "Work." } : { task: "Work.", max_runtime_seconds: value };
+			const item =
+				value === undefined
+					? { task: "Work.", solutionSpace: "one fix" }
+					: { task: "Work.", solutionSpace: "one fix", max_runtime_seconds: value };
 			const raw = schema({ context: "Shared.", tasks: [item] });
 			expect(raw instanceof type.errors).toBe(false);
 			if (raw instanceof type.errors) continue;
@@ -260,7 +263,10 @@ describe("task.batch schema gating", () => {
 		}
 
 		for (const value of [-1, 1.25, Number.POSITIVE_INFINITY]) {
-			const parsed = schema({ context: "Shared.", tasks: [{ task: "Work.", max_runtime_seconds: value }] });
+			const parsed = schema({
+				context: "Shared.",
+				tasks: [{ task: "Work.", solutionSpace: "one fix", max_runtime_seconds: value }],
+			});
 			expect(parsed instanceof type.errors).toBe(true);
 		}
 	});
@@ -375,6 +381,48 @@ describe("task.batch validation", () => {
 		expect(text).toContain("task.batch is disabled");
 		expect(text).not.toContain("was missing");
 	});
+
+	it("advertises solutionSpace as required but still spawns a model call that omits it", async () => {
+		mockDiscovery();
+		const spawned: Array<string | undefined> = [];
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			spawned.push(options.assignment);
+			return makeResult(options.id ?? "?");
+		});
+		const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false, "task.batch": true } }));
+		const items = getSchemaProperties(tool).tasks;
+		expect(isRecord(items) && isRecord(items.items) ? items.items.required : undefined).toContain("solutionSpace");
+
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{
+							type: "toolCall",
+							id: "tc-no-solution-space",
+							name: "task",
+							arguments: { context: "# Goal\nX", tasks: [{ name: "Alpha", task: "Do A." }] },
+						},
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: {
+				model: mock.model,
+				systemPrompt: ["Test"],
+				tools: [tool as unknown as AgentTool],
+				messages: [],
+			},
+			streamFn: mock.stream,
+		});
+		await agent.prompt("go");
+
+		expect(spawned).toEqual(["Do A."]);
+		const toolResult = agent.state.messages.find(message => message.role === "toolResult");
+		expect(toolResult?.role === "toolResult" && toolResult.isError).toBe(false);
+	});
 });
 
 describe("task.batch spawning", () => {
@@ -469,9 +517,9 @@ describe("task.batch spawning", () => {
 		expect(text).toContain("Spawned 2 background agents");
 		expect(text).toContain("- `Alpha`");
 		expect(text).toContain("- `Beta`");
-		expect(text).toContain("`job list`");
-		expect(text).toContain("`job poll`");
-		expect(text).toContain("`job cancel`");
+		expect(text).toContain("`read proc://<id>`");
+		expect(text).toContain("Call `wait`");
+		expect(text).toContain("`write proc://<id>/kill`");
 		expect(text).not.toContain("`hub wait`");
 		expect(text).not.toContain('`hub` op:"wait"');
 		expect(result.details?.progress?.map(progress => progress.id)).toEqual(["Alpha", "Beta"]);

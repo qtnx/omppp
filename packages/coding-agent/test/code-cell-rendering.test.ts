@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { resetSettingsForTest, type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { renderCodeCell } from "@oh-my-pi/pi-tui/render/code-cell";
 
@@ -13,7 +13,7 @@ function restoreDisableSyntaxHighlightEnv(): void {
 	}
 }
 
-async function initRenderTest(overrides: Partial<Record<SettingPath, unknown>> = {}): Promise<void> {
+async function initRenderTest(overrides: Record<string, unknown> = {}): Promise<void> {
 	restoreDisableSyntaxHighlightEnv();
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true, overrides });
@@ -61,9 +61,7 @@ describe("renderCodeCell", () => {
 	});
 
 	it("disables syntax highlighting for completed code previews in off mode", async () => {
-		const overrides = Object.fromEntries([["display.syntaxHighlighting", "off"]]) as Partial<
-			Record<SettingPath, unknown>
-		>;
+		const overrides = Object.fromEntries([["display.syntaxHighlighting", "off"]]) as Partial<Record<string, unknown>>;
 		await initRenderTest(overrides);
 
 		const rendered = renderCodeCell(
@@ -82,7 +80,7 @@ describe("renderCodeCell", () => {
 
 	it("uses lightweight syntax highlighting for completed code previews in basic mode", async () => {
 		const overrides = Object.fromEntries([["display.syntaxHighlighting", "basic"]]) as Partial<
-			Record<SettingPath, unknown>
+			Record<string, unknown>
 		>;
 		await initRenderTest(overrides);
 

@@ -542,6 +542,7 @@ export function streamGoogleInteractions<T extends GoogleInteractionsApi>(args: 
 				body: JSON.stringify(requestBody),
 				signal: options?.signal,
 				fetch: plan.fetch,
+				maxAttempts: 1,
 			});
 			if (!response.ok) {
 				const errorText = await response.text().catch(() => "");
@@ -645,6 +646,7 @@ export function streamGoogleInteractions<T extends GoogleInteractionsApi>(args: 
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : String(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
+			stream.end();
 		}
 	})();
 

@@ -4,6 +4,7 @@ import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Message, Model } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { cfgAutonomyStopGate } from "@oh-my-pi/pi-coding-agent/autonomy/settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -90,7 +91,7 @@ function newSession(model: Model, options: { beforeAgentStartSystemPrompt?: stri
 	const session = new AgentSession({
 		agent,
 		sessionManager: SessionManager.inMemory(),
-		settings: Settings.isolated({ "compaction.enabled": false }),
+		settings: Settings.isolated({ "compaction.enabled": false, [cfgAutonomyStopGate.id]: false }),
 		modelRegistry: { getApiKey: async () => "test-key", getAvailable: () => [] } as never,
 		toolRegistry,
 		builtInToolNames: ["read", "bash"],

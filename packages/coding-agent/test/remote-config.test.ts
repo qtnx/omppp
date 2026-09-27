@@ -10,6 +10,9 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
+import { cfgAdvisorFallbackModel } from "../src/advisor/settings";
+import { cfgExtensions } from "../src/extensibility/settings";
+import { cfgRemoteConfigUrl } from "../src/remote-config/settings";
 
 describe("central agent config", () => {
 	let settingsState: SettingsTestState | undefined;
@@ -71,7 +74,7 @@ describe("central agent config", () => {
 			agents: { reviewer2: "---\nname: reviewer2\ndescription: remote reviewer\n---\n\nReview.\n" },
 		};
 		const changed: string[] = [];
-		activeSettings.onEffectiveChange(changedPath => changed.push(changedPath));
+		activeSettings.onEffectiveChange([cfgAdvisorFallbackModel], () => changed.push(cfgAdvisorFallbackModel.id));
 		let agentRefreshes = 0;
 		const sync = new RemoteConfigSync(activeSettings, { onAgentsChanged: () => void agentRefreshes++ });
 
@@ -86,12 +89,12 @@ describe("central agent config", () => {
 			designer: "local/designer",
 		});
 		// Runtime choices still beat central config.
-		activeSettings.override("advisor.fallbackModel", "runtime/fallback");
-		expect(activeSettings.get("advisor.fallbackModel")).toBe("runtime/fallback");
-		activeSettings.clearOverride("advisor.fallbackModel");
-		expect(activeSettings.get("advisor.fallbackModel")).toBe("remote/fallback");
-		expect(activeSettings.get("extensions")).not.toContain("/tmp/evil-extension");
-		expect(activeSettings.getTrusted("remoteConfig.url")).toBe(`${server!.url}v1/agent-config`);
+		cfgAdvisorFallbackModel.override(activeSettings, "runtime/fallback");
+		expect(cfgAdvisorFallbackModel.get(activeSettings)).toBe("runtime/fallback");
+		cfgAdvisorFallbackModel.clearOverride(activeSettings);
+		expect(cfgAdvisorFallbackModel.get(activeSettings)).toBe("remote/fallback");
+		expect(cfgExtensions.get(activeSettings)).not.toContain("/tmp/evil-extension");
+		expect(activeSettings.getTrusted(cfgRemoteConfigUrl)).toBe(`${server!.url}v1/agent-config`);
 		expect(agentRefreshes).toBe(1);
 		expect(fs.readdirSync(path.join(agentDir, "remote", "agents"))).toEqual(["reviewer2.md"]);
 

@@ -17,7 +17,9 @@ import {
 	type TerminalNotification,
 	Text,
 } from "@oh-my-pi/pi-tui";
-import { APP_DISPLAY_NAME, getSessionsDir } from "@oh-my-pi/pi-utils";
+import { getSessionsDir } from "@oh-my-pi/pi-utils";
+import { APP_DISPLAY_NAME } from "@oh-my-pi/pi-utils";
+import { editorKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { DynamicBorder } from "@oh-my-pi/pi-tui/chrome/dynamic-border";
 import { OverlayPanel } from "@oh-my-pi/pi-tui/chrome/overlay-box";
 import { TranscriptBlock } from "@oh-my-pi/pi-tui/chrome/transcript-container";
@@ -162,7 +164,14 @@ export class DebugSelectorComponent extends OverlayPanel {
 		block.addChild(new Text(theme.fg("accent", `${theme.status.info} CPU profiling started`), 1, 0));
 		block.addChild(new Spacer(1));
 		block.addChild(
-			new Text(theme.fg("muted", "Reproduce the performance issue, then press Enter to stop profiling."), 1, 0),
+			new Text(
+				theme.fg(
+					"muted",
+					`Reproduce the performance issue, then press ${editorKey("tui.input.submit")} to stop profiling.`,
+				),
+				1,
+				0,
+			),
 		);
 		this.ctx.present(block);
 

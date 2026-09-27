@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { KanbanTool } from "@oh-my-pi/pi-coding-agent/kanban/tool";
+import { IdaTool } from "@oh-my-pi/pi-coding-agent/tools/ida";
 import { FindTool } from "@oh-my-pi/pi-coding-agent/tools/jfind";
 import type { BuiltinToolLoadMode, ToolLoopManager, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
@@ -19,6 +20,8 @@ import {
 	NewContextTool,
 	BrowserJevTool,
 } from "@oh-my-pi/pi-coding-agent/tools";
+import { cfgMcpDiscoveryMode } from "../../src/mcp/settings";
+import { cfgToolsDiscoveryMode } from "../../src/tools/settings";
 
 const allToolsSettings = Settings.isolated({
 	"astGrep.enabled": true,
@@ -77,6 +80,8 @@ async function getToolMetadata(): Promise<Map<string, { loadMode?: string; summa
 		new SecretsTool(toolSession),
 		// `find` is gated on a native judge (find.enabled=auto), so construct it directly.
 		new FindTool(toolSession),
+		// `ida` requires an installed IDA Pro runtime; its metadata remains discoverable.
+		new IdaTool(toolSession),
 		new ContextNotesTool(toolSession),
 		new NewContextTool(toolSession),
 		// `browser_jev` only builds with a TypeSafe key in the environment, so
@@ -93,9 +98,9 @@ describe("BUILTIN_TOOLS public factory map", () => {
 		const missing = Object.keys(BUILTIN_TOOLS).filter(name => metadata.get(name)?.loadMode === undefined);
 		expect(missing).toEqual([]);
 	});
-	it("exposes launch instead of daemon", async () => {
-		const launch = await BUILTIN_TOOLS.launch(toolSession);
-		expect(launch?.name).toBe("launch");
+	it("uses job for supervised processes instead of legacy launch and daemon", () => {
+		expect(Object.hasOwn(BUILTIN_TOOLS, "job")).toBeTrue();
+		expect(Object.hasOwn(BUILTIN_TOOLS, "launch")).toBeFalse();
 		expect(Object.hasOwn(BUILTIN_TOOLS, "daemon")).toBeFalse();
 	});
 });
@@ -196,12 +201,12 @@ describe("computeEssentialBuiltinNames", () => {
 describe("tools.discoveryMode settings schema", () => {
 	it("defaults to auto discovery mode", () => {
 		const settings = Settings.isolated({});
-		expect(settings.get("tools.discoveryMode")).toBe("auto");
+		expect(cfgToolsDiscoveryMode.get(settings)).toBe("auto");
 	});
 
 	it("back-compat: mcp.discoveryMode still accepted", () => {
 		const settings = Settings.isolated({ "mcp.discoveryMode": true });
-		expect(settings.get("mcp.discoveryMode")).toBe(true);
+		expect(cfgMcpDiscoveryMode.get(settings)).toBe(true);
 	});
 });
 

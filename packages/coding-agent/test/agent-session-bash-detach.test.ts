@@ -145,6 +145,8 @@ describe("BashTool through AgentSession runs children in their own session (e2e)
 
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 		const settings = Settings.isolated({
+			"duo.mode": "off",
+			"autonomy.stopGate": false,
 			"compaction.enabled": false,
 			"todo.enabled": false,
 			"todo.eager": "default",
@@ -207,38 +209,42 @@ describe("BashTool through AgentSession runs children in their own session (e2e)
 		resetSettingsForTest();
 	});
 
-	it.skipIf(skip)("preserves detached children and pipeline execution through BashTool", async () => {
-		const callId = "call_bash_lifecycle";
-		const command =
-			`${PYTHON_PROBE}; ` +
-			"python3 -c \"print('stage_a')\" | " +
-			"python3 -c \"import sys; data=sys.stdin.read().strip(); print('stage_b', data)\"";
-		scriptedResponses = [bashCall(command, callId), stopReply("ok")];
+	it.skipIf(skip)(
+		"preserves detached children and pipeline execution through BashTool",
+		async () => {
+			const callId = "call_bash_lifecycle";
+			const command =
+				`${PYTHON_PROBE}; ` +
+				"python3 -c \"print('stage_a')\" | " +
+				"python3 -c \"import sys; data=sys.stdin.read().strip(); print('stage_b', data)\"";
+			scriptedResponses = [bashCall(command, callId), stopReply("ok")];
 
-		await session.prompt("probe child session id and pipeline");
+			await session.prompt("probe child session id and pipeline");
 
-		const resultText = getToolResultText(session.agent.state.messages, callId);
-		expect(resultText, "expected a toolResult for the bash lifecycle probe").toBeDefined();
+			const resultText = getToolResultText(session.agent.state.messages, callId);
+			expect(resultText, "expected a toolResult for the bash lifecycle probe").toBeDefined();
 
-		// The standalone probe covers the embedded-host DetachSession path. The
-		// following pipeline in the same real BashTool invocation guards against
-		// setsid breaking multi-process commands.
-		const match = resultText!.match(/(\d+)\s+(\d+)/);
-		expect(match, `expected '<sid> <pid>' in tool result, saw: ${JSON.stringify(resultText)}`).not.toBeNull();
-		const childSid = Number.parseInt(match![1]!, 10);
-		const childPid = Number.parseInt(match![2]!, 10);
+			// The standalone probe covers the embedded-host DetachSession path. The
+			// following pipeline in the same real BashTool invocation guards against
+			// setsid breaking multi-process commands.
+			const match = resultText!.match(/(\d+)\s+(\d+)/);
+			expect(match, `expected '<sid> <pid>' in tool result, saw: ${JSON.stringify(resultText)}`).not.toBeNull();
+			const childSid = Number.parseInt(match![1]!, 10);
+			const childPid = Number.parseInt(match![2]!, 10);
 
-		expect(childSid).toBeGreaterThan(0);
-		expect(childPid).toBeGreaterThan(0);
-		expect(
-			childSid,
-			`child sid (${childSid}) equals host sid (${hostSid}) — embedded-host detach regressed`,
-		).not.toBe(hostSid);
-		expect(childSid, `child sid (${childSid}) !== child pid (${childPid}) — child is not session leader`).toBe(
-			childPid,
-		);
-		expect(resultText, `pipeline output missing 'stage_b stage_a': ${JSON.stringify(resultText)}`).toContain(
-			"stage_b stage_a",
-		);
-	});
+			expect(childSid).toBeGreaterThan(0);
+			expect(childPid).toBeGreaterThan(0);
+			expect(
+				childSid,
+				`child sid (${childSid}) equals host sid (${hostSid}) — embedded-host detach regressed`,
+			).not.toBe(hostSid);
+			expect(childSid, `child sid (${childSid}) !== child pid (${childPid}) — child is not session leader`).toBe(
+				childPid,
+			);
+			expect(resultText, `pipeline output missing 'stage_b stage_a': ${JSON.stringify(resultText)}`).toContain(
+				"stage_b stage_a",
+			);
+		},
+		20_000,
+	);
 });

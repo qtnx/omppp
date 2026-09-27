@@ -8,13 +8,20 @@ export type OrchestratorModeMarkdownWriteOptions = {
 };
 
 const MARKDOWN_FILE_EXTENSION_RE = /\.md$/i;
+const AGENT_COORDINATION_TARGET_RE = /^agent:\/\/.+$/i;
+const PROC_JOB_KILL_TARGET_RE = /^proc:\/\/[^/]+\/kill$/i;
 
 function assertMarkdownTarget(session: ToolSession, targetPath: string): void {
-	if (MARKDOWN_FILE_EXTENSION_RE.test(targetPath)) return;
+	if (
+		AGENT_COORDINATION_TARGET_RE.test(targetPath) ||
+		PROC_JOB_KILL_TARGET_RE.test(targetPath) ||
+		MARKDOWN_FILE_EXTENSION_RE.test(targetPath)
+	)
+		return;
 
 	const displayPath = formatPathRelativeToCwd(targetPath, session.cwd);
 	throw new ToolError(
-		`In orchestrator mode, only Markdown (.md) files may be written directly \u2014 "${displayPath}" is not a .md file. Delegate non-Markdown changes to a subagent.`,
+		`In orchestrator mode, only Markdown (.md) files, agent:// messages, and proc://<job>/kill may be written directly — "${displayPath}" is not an allowed target. Delegate non-Markdown changes to a subagent.`,
 	);
 }
 

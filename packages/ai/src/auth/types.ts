@@ -1,5 +1,5 @@
 import type { Api, Model } from "@oh-my-pi/pi-catalog/types";
-import type { ApiKeyResolver } from "../auth-retry";
+import type { ApiKeyResolver, ResolvedApiKey } from "../auth-retry";
 import type {
 	OAuthAuthInfo,
 	OAuthController,
@@ -302,9 +302,11 @@ export interface AuthCredentialSnapshot {
 /**
  * Event payload describing a credential that was just soft-disabled.
  *
- * Today the only call site is OAuth refresh failures with a definitive cause
- * (`invalid_grant`, `401/403` not from a network blip, etc.) — the
- * disabled_cause string is the verbatim error captured for forensics.
+ * Fired for automatic disables: a definitive OAuth refresh failure
+ * (`invalid_grant`, `401/403` not from a network blip, etc.), an upstream
+ * token invalidation, and an auth-broker disable. The disabled_cause string is
+ * the verbatim error captured for forensics. Every emission is also logged as
+ * a warning.
  *
  * Subscribers can use this to surface a notification, banner, or auto-launch
  * a re-login flow instead of letting the credential silently disappear.
@@ -312,6 +314,14 @@ export interface AuthCredentialSnapshot {
 export interface CredentialDisabledEvent {
 	provider: string;
 	disabledCause: string;
+	/** Database row id of the disabled credential (matches {@link StoredAuthCredential.id}). */
+	credentialId?: number;
+	/** Account identity recorded on the disabled OAuth credential, when the provider supplied one. */
+	email?: string;
+	accountId?: string;
+	/** Organization/workspace the credential was scoped to (Anthropic/ChatGPT multi-subscription). */
+	orgId?: string;
+	orgName?: string;
 }
 
 /** Configuration supplied when constructing credential storage. */
@@ -342,10 +352,10 @@ export type AuthStorageOptions = {
 	configValueResolver?: (config: string) => Promise<string | undefined>;
 	/**
 	 * Optional callback fired when AuthStorage automatically disables a
-	 * credential because something detected it as no longer usable — today
-	 * that's the OAuth refresh-failure path in `getApiKey`. NOT fired for
-	 * user-initiated `remove()` (the user already knows) or dedup of
-	 * duplicate credentials (uninteresting hygiene).
+	 * credential because something detected it as no longer usable (see
+	 * {@link CredentialDisabledEvent}). NOT fired for user-initiated `remove()`
+	 * (the user already knows) or dedup of duplicate credentials
+	 * (uninteresting hygiene).
 	 */
 	onCredentialDisabled?: (event: CredentialDisabledEvent) => void | Promise<void>;
 	/**
@@ -878,6 +888,12 @@ export interface KeysApi {
 	 * 6. Stored API key (e.g. a broker-migrated copy) — last resort, so an explicit env var wins
 	 */
 	get(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined>;
+	/** Resolve a bearer together with its durable stored credential row id, when known. */
+	getWithCredential(
+		provider: string,
+		sessionId?: string,
+		options?: AuthApiKeyOptions,
+	): Promise<ResolvedApiKey | undefined>;
 	/**
 	 * Resolve the API key for a provider together with the auth stratum it came
 	 * from, in one decision — the origin-bearing form of {@link KeysApi.get}.

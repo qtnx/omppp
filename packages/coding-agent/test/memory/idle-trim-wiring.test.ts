@@ -44,6 +44,7 @@ function createContext(): InteractiveModeContext {
 			markActivityEnd: vi.fn(),
 			setHookStatus: vi.fn(),
 		},
+		settings: Settings.isolated({ "compaction.idleEnabled": false }),
 		updateEditorTopBorder: vi.fn(),
 		editor: { getText: () => "" },
 		sessionManager: { getSessionName: () => undefined },

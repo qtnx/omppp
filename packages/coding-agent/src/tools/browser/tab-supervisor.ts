@@ -46,6 +46,8 @@ import type {
 	WorkerOutbound,
 } from "./tab-protocol";
 
+import { cfgBrowserScreenshotDir } from "./settings";
+
 // Coding-agent binary/bundle workers route through the CLI entrypoint with a
 // hidden argv mode, so compiled/npm builds only need one JavaScript entry.
 
@@ -1658,7 +1660,7 @@ async function waitForClosed(tab: WorkerTabSession): Promise<void> {
 }
 
 function expandBrowserScreenshotDir(session: ToolSession): string | undefined {
-	const value = session.settings.get("browser.screenshotDir") as string | undefined;
+	const value = cfgBrowserScreenshotDir.get(session.settings);
 	return value ? expandPath(value) : undefined;
 }
 

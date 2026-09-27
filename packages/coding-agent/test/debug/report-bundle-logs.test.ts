@@ -3,7 +3,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createReportBundle } from "@oh-my-pi/pi-coding-agent/debug/report-bundle";
-import { getConfigRootDir, getLogPath, getLogsDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import {
+	APP_STORAGE_NAME,
+	getConfigRootDir,
+	getLogsDir,
+	localDay,
+	removeWithRetries,
+	setAgentDir,
+} from "@oh-my-pi/pi-utils";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const originalXdgStateHome = process.env.XDG_STATE_HOME;
@@ -32,15 +39,16 @@ describe("report bundle logs", () => {
 	it("collects every same-day PID log, not only the current process", async () => {
 		cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-report-logs-"));
 		const xdgStateHome = path.join(cleanupRoot, "state");
-		await fs.mkdir(path.join(xdgStateHome, "omp"), { recursive: true });
+		await fs.mkdir(path.join(xdgStateHome, APP_STORAGE_NAME), { recursive: true });
 		process.env.XDG_STATE_HOME = xdgStateHome;
 		setAgentDir(fallbackAgentDir);
 
 		const logsDir = getLogsDir();
 		await fs.mkdir(logsDir, { recursive: true });
-		const today = path.basename(getLogPath()).split(".")[1];
-		if (!today) throw new Error("expected dated process log path");
-		const crashedName = `omp.${today}.4242.log`;
+		// Log files are named with the local day (RotatingFileSink naming); same-day
+		// collection must match them with the local day too, not the UTC key.
+		const today = localDay(new Date());
+		const crashedName = `${APP_STORAGE_NAME}.${today}.4242.log`;
 		const rotatedName = `${crashedName}.1`;
 		const currentName = `omp.${today}.${process.pid}.log`;
 		await Bun.write(path.join(logsDir, crashedName), '{"pid":4242,"message":"fatal in crashed pid"}\n');
@@ -49,6 +57,15 @@ describe("report bundle logs", () => {
 		await fs.utimes(path.join(logsDir, rotatedName), 0, 0);
 		await Bun.write(path.join(logsDir, currentName), '{"pid":0,"message":"later invocation"}\n');
 		await fs.utimes(path.join(logsDir, currentName), 2, 2);
+		// When the local and UTC days differ (00:00–08:00 in UTC+8), a log named
+		// with the stale UTC key must not be collected anymore.
+		const utcToday = new Date().toISOString().slice(0, 10);
+		let staleUtcName: string | undefined;
+		if (utcToday !== today) {
+			staleUtcName = `omp.${utcToday}.4243.log`;
+			await Bun.write(path.join(logsDir, staleUtcName), '{"pid":4243,"message":"stale utc-keyed"}\n');
+			await fs.utimes(path.join(logsDir, staleUtcName), 3, 3);
+		}
 
 		const result = await createReportBundle({ sessionFile: undefined });
 
@@ -63,5 +80,6 @@ describe("report bundle logs", () => {
 		expect(logsText).toContain(currentName);
 		expect(logsText).toContain("later invocation");
 		expect(logsText.indexOf(crashedName)).toBeLessThan(logsText.indexOf(currentName));
+		if (staleUtcName) expect(logsText).not.toContain(staleUtcName);
 	});
 });

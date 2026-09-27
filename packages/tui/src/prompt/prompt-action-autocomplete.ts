@@ -207,6 +207,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		cursorLine: number,
 		cursorCol: number,
 		signal?: AbortSignal,
+		onPartial?: (suggestions: { items: AutocompleteItem[]; prefix: string }) => void,
 	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
 		if (signal?.aborted) return null;
 		const currentLine = lines[cursorLine] || "";
@@ -222,7 +223,13 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			const commandName = commandText.slice(1, spaceIndex);
 			const command = this.#commands.find(cmd => cmd.name === commandName || cmd.aliases?.includes(commandName));
 			if (command && (!("allowArgs" in command) || command.allowArgs !== false)) {
-				const argumentSuggestions = await this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, signal);
+				const argumentSuggestions = await this.#baseProvider.getSuggestions(
+					lines,
+					cursorLine,
+					cursorCol,
+					signal,
+					onPartial,
+				);
 				if (argumentSuggestions) return argumentSuggestions;
 				const modelMentionSuggestions = getModelMentionSuggestions(textBeforeCursor, this.#modelMentions);
 				if (modelMentionSuggestions) return modelMentionSuggestions;
@@ -284,7 +291,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			if (emojiSuggestions) return emojiSuggestions;
 		}
 
-		return this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, signal);
+		return this.#baseProvider.getSuggestions(lines, cursorLine, cursorCol, signal, onPartial);
 	}
 
 	applyCompletion(

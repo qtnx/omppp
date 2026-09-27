@@ -727,6 +727,7 @@ function resolveOpenAIResponsesPolicy(
 		supportsReasoningSummary: !isXaiHost,
 		supportsAllTurnsReasoningContext: false,
 		supportsConfigurationUpdate: false,
+		supportsSteering: false,
 		requiresReasoningOffJuiceInstruction: false,
 		stripImageInput: false,
 		thinkingLoopGuard: undefined,
@@ -833,6 +834,7 @@ function pickResponsesOnly(compat: ResolvedOpenAIResponsesCompat): ResponsesOnly
 		supportsObfuscationOptOut: compat.supportsObfuscationOptOut,
 		supportsAllTurnsReasoningContext: compat.supportsAllTurnsReasoningContext,
 		supportsConfigurationUpdate: compat.supportsConfigurationUpdate,
+		supportsSteering: compat.supportsSteering,
 		officialEndpoint: compat.officialEndpoint,
 		harmonyLeakMitigation: compat.harmonyLeakMitigation,
 		cacheControlFormat: compat.cacheControlFormat,
@@ -855,7 +857,6 @@ function resolveAnthropicPolicy(
 	const isAzure = isAzureAnthropicRoute(baseUrl);
 	const signingEndpoint = official || isCopilot || isZenmux || isAnthropicSigningProxyUrl(baseUrl);
 	// biome-ignore lint/correctness/noUnusedVariables: kept for symmetry with sibling helpers
-	const supportsFable51Controls = official && facts.family("fable", "mythos") && facts.revGte("5.1");
 	const compat: ResolvedAnthropicCompat = {
 		officialEndpoint: official,
 		signingEndpoint,

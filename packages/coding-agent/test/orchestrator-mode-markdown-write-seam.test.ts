@@ -21,18 +21,18 @@ function createSession(orchestratorEnabled: boolean): ToolSession {
 }
 
 function contractMessage(offendingPath: string): string {
-	return `In orchestrator mode, only Markdown (.md) files may be written directly — "${offendingPath}" is not a .md file. Delegate non-Markdown changes to a subagent.`;
+	return `In orchestrator mode, only Markdown (.md) files, agent:// messages, and proc://<job>/kill may be written directly — "${offendingPath}" is not an allowed target. Delegate non-Markdown changes to a subagent.`;
 }
 
-function expectPlanModeSeamMarkdownError(
+async function expectPlanModeSeamMarkdownError(
 	session: ToolSession,
 	targetPath: string,
 	options: { move?: string; op?: "create" | "update" | "delete" },
 	offendingPath: string,
-): void {
+): Promise<void> {
 	let thrown: unknown;
 	try {
-		enforcePlanModeWrite(session, targetPath, options);
+		await enforcePlanModeWrite(session, targetPath, options);
 	} catch (error) {
 		thrown = error;
 	}
@@ -43,14 +43,19 @@ function expectPlanModeSeamMarkdownError(
 }
 
 describe("orchestrator mode Markdown write plan-mode seam", () => {
-	it("routes write checks through enforcePlanModeWrite before plan-mode branching", () => {
+	it("routes write checks through enforcePlanModeWrite before plan-mode branching", async () => {
 		const enabledSession = createSession(true);
 
-		expectPlanModeSeamMarkdownError(enabledSession, "app.ts", { op: "create" }, "app.ts");
-		expect(() => enforcePlanModeWrite(enabledSession, "notes.md", { op: "create" })).not.toThrow();
-		expectPlanModeSeamMarkdownError(enabledSession, "notes.md", { op: "update", move: "deploy.sh" }, "deploy.sh");
+		await expectPlanModeSeamMarkdownError(enabledSession, "app.ts", { op: "create" }, "app.ts");
+		await enforcePlanModeWrite(enabledSession, "notes.md", { op: "create" });
+		await expectPlanModeSeamMarkdownError(
+			enabledSession,
+			"notes.md",
+			{ op: "update", move: "deploy.sh" },
+			"deploy.sh",
+		);
 
 		const disabledSession = createSession(false);
-		expect(() => enforcePlanModeWrite(disabledSession, "app.ts", { op: "create" })).not.toThrow();
+		await enforcePlanModeWrite(disabledSession, "app.ts", { op: "create" });
 	});
 });

@@ -18,7 +18,7 @@ function createContext(overrides?: { thinkingLevel?: ThinkingLevel; isStreaming?
 	const setWorkingMessage = vi.fn();
 	const ctx = {
 		isInitialized: true,
-		settings: { get: () => false },
+		settings: Settings.isolated({}),
 		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn(), markActivityEnd: vi.fn() },
 		statusContainer: { clear: vi.fn() },
 		updateEditorTopBorder: vi.fn(),

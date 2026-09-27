@@ -5,6 +5,7 @@ import type { BrowserAnnotationEntry } from "../tools";
 import { saveAnnotationScreenshot } from "../tools/browser/annotation-screenshots";
 import type { AgentSession } from "./agent-session";
 import { BROWSER_ANNOTATION_MESSAGE_TYPE, type CustomMessage, MAX_BACKGROUND_BROWSER_ANNOTATIONS } from "./messages";
+import { cfgBrowserAnnotateDelivery } from "../tools/browser/settings";
 
 export type BrowserAnnotationDetails = {
 	annotations: Array<{ tab: string; url: string; title?: string; timestamp: number }>;
@@ -92,7 +93,7 @@ export function deliverBrowserAnnotation(
 }
 
 function dispatchBrowserAnnotation(session: AgentSession, entry: BrowserAnnotationEntry): void {
-	if (session.settings.get("browser.annotateDelivery") === "steer") {
+	if (cfgBrowserAnnotateDelivery.get(session.settings) === "steer") {
 		session.yieldQueue.enqueue<BrowserAnnotationEntry>(BROWSER_ANNOTATION_MESSAGE_TYPE, entry, {
 			maxEntries: MAX_BACKGROUND_BROWSER_ANNOTATIONS,
 		});

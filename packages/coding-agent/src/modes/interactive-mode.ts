@@ -37,7 +37,6 @@ import {
 	TERMINAL,
 	Text,
 	type TUI,
-	renderProgressBar,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
@@ -51,7 +50,6 @@ import {
 	formatDuration,
 	formatNumber,
 	getProjectDir,
-	hsvToRgb,
 	isEnoent,
 	listUnreadCrashArtifacts,
 	logger,
@@ -70,15 +68,10 @@ import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
 import type { CollabHost } from "../collab/host";
 import { formatKeyHint, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
+import { appKey, editorKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
 import { RemoteConfigSync } from "../config/remote-config";
-import {
-	isSettingsInitialized,
-	onModelRolesChanged,
-	onStatusLineSessionAccentChanged,
-	Settings,
-	settings,
-} from "../config/settings";
+import { isSettingsInitialized, Settings, settings } from "../config/settings";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AutocompleteProviderFactory,
@@ -96,7 +89,7 @@ import type { FileSlashCommand } from "../extensibility/slash-commands";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { Goal, GoalModeState, GoalStatus } from "../goals/state";
 import { rebindMemoryBackendForCwd } from "../hindsight/backend";
-import { copyLocalArtifacts, resolveLocalUrlToPath } from "../internal-urls";
+import { copyLocalArtifacts, resolveLocalRoot, resolveLocalUrlToPath } from "../internal-urls";
 import { type KanbanBoardOwner, setKanbanBoardForker } from "../kanban";
 import type { KanbanForkedAgent, KanbanForkRequest } from "../kanban/runtime";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
@@ -116,6 +109,8 @@ import {
 	JUDGMENT_BATCH_PROGRESS_EVENT_CHANNEL,
 	type JudgmentBatchProgress,
 } from "../eval/judgment-batch-events";
+import { onDownloadActivity } from "../downloads/activity";
+import { DownloadActivityHud, JudgmentBatchProgressHud } from "./progress-hud";
 import { autosaveApprovedPlan, planSaveFileName } from "../plan-mode/plan-autosave";
 import { resolvePlanModelTransition } from "../plan-mode/model-transition";
 import guidedGoalInterviewPrompt from "../prompts/goals/guided-goal-interview.md" with { type: "text" };
@@ -124,7 +119,6 @@ import planFilenamePrompt from "../prompts/system/plan-filename.md" with { type:
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with { type: "text" };
 import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
-import { formatCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import {
@@ -138,6 +132,8 @@ import { resolveAgentImageDataSync } from "../session/blob-store";
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import { HistoryStorage } from "../session/history-storage";
+import { syncTextPrediction, textPredictionBackend } from "../predict/client";
+import { setWordPredictionHost } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveMarkdownLinkTargets } from "../internal-urls/hyperlink-targets";
 import { modelMentionDisplayName } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
@@ -149,7 +145,8 @@ import type { ShakeMode } from "../session/shake-types";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { buildStaticInlineHint } from "../slash-commands/builtin-completions";
 import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
-import { STTController, type SttState } from "../stt";
+import { type DictationTarget, MicCursor, type SttCallbacks, STTController, type SttState } from "../stt";
+import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { loadAutoDiscoveredSystemPromptOverlay } from "../system-prompt-overrides";
@@ -164,6 +161,7 @@ import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { setJobLiveStatsProvider } from "../tools/job";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
+import { resolvePlanFilePath } from "../plan-mode/plan-files";
 import { StreamPublisher } from "../stream/publisher";
 import { newRecordingPath, SessionRecorder } from "../stream/recording";
 import { StreamRedactor } from "../stream/redactor";
@@ -179,6 +177,7 @@ import {
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui/render/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
+import { type CfgApproval, type CfgChangeRequest, setCfgApprovalHost } from "../internal-urls/cfg-protocol";
 import {
 	createTodoHudStateData,
 	getTodoHudVisibility,
@@ -222,7 +221,9 @@ import {
 } from "../vibe/runtime";
 import { WorkflowRunRegistry } from "../workflow/run-registry";
 import { WORKFLOW_PROGRESS_CHANNEL, type WorkflowProgressFrame } from "../workflow/types";
-import type { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { AttachmentChipsBand } from "@oh-my-pi/pi-tui/prompt/attachment-chips";
 import type { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "@oh-my-pi/pi-tui/chrome/chat-block";
@@ -247,7 +248,12 @@ import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import type { LspServerInfo as WelcomeLspServerInfo } from "@oh-my-pi/pi-tui/prompt/welcome";
 import { WorkflowHudComponent } from "./components/workflow-hud";
-import { Composer, PINNED_HUD_TOGGLE_ID, type ComposerStatusSnapshot } from "@oh-my-pi/pi-tui/prompt/composer";
+import {
+	Composer,
+	PINNED_HUD_TOGGLE_ID,
+	type ComposerPreferences,
+	type ComposerStatusSnapshot,
+} from "@oh-my-pi/pi-tui/prompt/composer";
 import { setMagicKeywords } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { MAGIC_KEYWORDS } from "./magic-keywords";
 import { writeComposerStatusCache, writeComposerWelcomeCache } from "@oh-my-pi/pi-tui/prompt/composer-cache";
@@ -285,6 +291,8 @@ import {
 import { describeLoopCondition, evaluateLoopCondition, type LoopConditionVerdict } from "./loop-condition";
 import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
 import { OAuthManualInputManager } from "./oauth-manual-input";
+import { resolveComposerHint } from "@oh-my-pi/pi-tui/prompt/composer-hints";
+import { hintUsage } from "../utils/usage-counter";
 import {
 	getRunningSubagentBadgeAgentIds,
 	getRunningSubagentBadgeRegistry,
@@ -324,10 +332,135 @@ import type {
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { UiHelpers } from "./utils/ui-helpers";
 
+import {
+	cfgAutocompleteMaxVisible,
+	cfgComposerShape,
+	cfgComposerTokenRate,
+	cfgDisplayCacheMissMarker,
+	cfgDisplayCollapseCompacted,
+	cfgDisplayHideToolActivity,
+	cfgDisplayPinnedAgents,
+	cfgDisplayShowTokenUsage,
+	cfgDisplayShowTurnTime,
+	cfgGitEnabled,
+	cfgLoopConditionTimeoutMs,
+	cfgLoopMode,
+	cfgMagicKeywordsEnabled,
+	cfgRecapEnabled,
+	cfgRecapIdleSeconds,
+	cfgShowHardwareCursor,
+	cfgSpellingAutocomplete,
+	cfgSpellingAutocorrect,
+	cfgSpellingTypoDetection,
+	cfgStartupChangelogMode,
+	cfgStartupQuiet,
+	cfgStatusLineCompactThinkingLevel,
+	cfgStatusLineContextLine,
+	cfgStatusLineLeftSegments,
+	cfgStatusLinePreset,
+	cfgStatusLineRightSegments,
+	cfgStatusLineSegmentOptions,
+	cfgStatusLineSeparator,
+	cfgStatusLineSessionAccent,
+	cfgStatusLineShowHookStatus,
+	cfgStatusLineTransparent,
+	cfgSymbolPreset,
+	cfgTerminalShowImages,
+	cfgTuiHyperlinks,
+	cfgTuiImeSafeCursor,
+	cfgTuiMaxInlineImages,
+	cfgTuiMouse,
+	cfgTuiRenderMermaid,
+	cfgTuiResizeScrollback,
+	cfgTuiTextSizing,
+	cfgTuiTight,
+	cfgTuiTitleSpinner,
+	cfgTuiTitleState,
+	cfgTuiVimMode,
+	cfgTuiVimModeDisplay,
+} from "./settings";
+import { cfgTasksTodoClearDelay } from "../tools/settings";
+import {
+	cfgMemoryIdleTrimEnabled,
+	cfgMemoryIdleTrimMcp,
+	cfgMemoryIdleTrimSeconds,
+	cfgProseOnlyThinking,
+} from "../session/settings";
+import { cfgHideThinkingBlock } from "../session/settings";
+import { cfgCycleOrder, cfgModelRoles } from "../config/model-settings";
+import { cfgGoalContinuationModes, cfgGoalEnabled } from "../goals/settings";
+import { cfgPlanDefaultOnStartup, cfgPlanEnabled } from "../plan-mode/settings";
+import { cfgStreamRedactPatterns } from "../stream/settings";
+import { cfgSttEnabled } from "../stt/settings";
+import { combine, type SettingValueOf } from "../config/registry";
+import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "../advisor/settings";
+import { cfgTierAdvisor } from "../session/settings";
+import {
+	cfgCompactionEnabled,
+	cfgCompactionIdleEnabled,
+	cfgCompactionIdleThresholdTokens,
+	cfgCompactionIdleTimeoutSeconds,
+	cfgCompactionMethodOrder,
+} from "../session/context-settings";
+import { cfgDisabledExtensions, cfgSkills, cfgSkillsEnableSkillCommands } from "../extensibility/settings";
+
+/**
+ * Settings with live interactive-UI side effects, keyed by id. One coalesced listener applies
+ * them (`InteractiveMode.#applyUiSettingChanges`) so a bulk reload rebuilds the transcript once.
+ */
+const cfgLiveUiSettings = combine({
+	showHardwareCursor: cfgShowHardwareCursor,
+	"tui.maxInlineImages": cfgTuiMaxInlineImages,
+	"tui.resizeScrollback": cfgTuiResizeScrollback,
+	"tui.imeSafeCursor": cfgTuiImeSafeCursor,
+	autocompleteMaxVisible: cfgAutocompleteMaxVisible,
+	"spelling.typoDetection": cfgSpellingTypoDetection,
+	"spelling.autocomplete": cfgSpellingAutocomplete,
+	"spelling.autocorrect": cfgSpellingAutocorrect,
+	"composer.shape": cfgComposerShape,
+	"tui.vimMode": cfgTuiVimMode,
+	"tui.vimModeDisplay": cfgTuiVimModeDisplay,
+	"display.pinnedAgents": cfgDisplayPinnedAgents,
+	"compaction.idleEnabled": cfgCompactionIdleEnabled,
+	"compaction.idleThresholdTokens": cfgCompactionIdleThresholdTokens,
+	"compaction.idleTimeoutSeconds": cfgCompactionIdleTimeoutSeconds,
+	"recap.enabled": cfgRecapEnabled,
+	"recap.idleSeconds": cfgRecapIdleSeconds,
+	"compaction.enabled": cfgCompactionEnabled,
+	"compaction.methodOrder": cfgCompactionMethodOrder,
+	"display.hideToolActivity": cfgDisplayHideToolActivity,
+	"terminal.showImages": cfgTerminalShowImages,
+	hideThinkingBlock: cfgHideThinkingBlock,
+	proseOnlyThinking: cfgProseOnlyThinking,
+	"display.cacheMissMarker": cfgDisplayCacheMissMarker,
+	"display.collapseCompacted": cfgDisplayCollapseCompacted,
+	"display.showTokenUsage": cfgDisplayShowTokenUsage,
+	"display.showTurnTime": cfgDisplayShowTurnTime,
+	"tui.renderMermaid": cfgTuiRenderMermaid,
+	"tui.textSizing": cfgTuiTextSizing,
+	"tui.tight": cfgTuiTight,
+	"tui.hyperlinks": cfgTuiHyperlinks,
+	"tui.titleState": cfgTuiTitleState,
+	"tui.titleSpinner": cfgTuiTitleSpinner,
+	"statusLine.preset": cfgStatusLinePreset,
+	"statusLine.leftSegments": cfgStatusLineLeftSegments,
+	"statusLine.rightSegments": cfgStatusLineRightSegments,
+	"statusLine.separator": cfgStatusLineSeparator,
+	"statusLine.showHookStatus": cfgStatusLineShowHookStatus,
+	"statusLine.sessionAccent": cfgStatusLineSessionAccent,
+	"statusLine.transparent": cfgStatusLineTransparent,
+	"statusLine.segmentOptions": cfgStatusLineSegmentOptions,
+	"statusLine.compactThinkingLevel": cfgStatusLineCompactThinkingLevel,
+	"statusLine.contextLine": cfgStatusLineContextLine,
+	"git.enabled": cfgGitEnabled,
+	"advisor.enabled": cfgAdvisorEnabled,
+	"advisor.maxNotesPerUpdate": cfgAdvisorMaxNotesPerUpdate,
+	"tier.advisor": cfgTierAdvisor,
+});
+type LiveUiSettings = SettingValueOf<typeof cfgLiveUiSettings>;
+
 const STILL_CLOSING_DELAY_MS = 3_000;
 const JUDGMENT_BATCH_PROGRESS_RETAIN_MS = 1_000;
-const JUDGMENT_BATCH_PROGRESS_BAR_WIDTH = 18;
-const JUDGMENT_BATCH_PROGRESS_MIN_BAR_WIDTH = 4;
 const DEFAULT_WORKING_MESSAGE = "Working…";
 
 const LOOP_READY_RETRY_MS = 100;
@@ -423,6 +556,12 @@ const PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT = 95;
 const PLAN_SAVE_AND_QUIT_OPTION = "Save and quit";
 const PLAN_SAVE_TITLE_LINE_LIMIT = 6;
 
+/** How long a `cfg://` approval prompt waits for an answer before the write fails as unanswered. */
+const CFG_APPROVAL_TIMEOUT_MS = 10_000;
+const CFG_APPROVE_SESSION = "Always for this session";
+const CFG_APPROVE_ONCE = "Allow once";
+const CFG_DENY = "Deny";
+
 const PLAN_FILENAME_SYSTEM_PROMPT = prompt.render(planFilenamePrompt);
 
 function planSaveTitleExcerpt(planContent: string): string {
@@ -466,15 +605,15 @@ function readPersistedToolNames(value: unknown): string[] | undefined {
 
 export function shouldEnterPlanModeOnStartup(
 	sessionManager: Pick<SessionManager, "buildSessionContext" | "getEntries">,
-	sessionSettings: Pick<Settings, "get">,
+	sessionSettings: Settings,
 ): boolean {
 	const hasConversationContext = sessionManager.buildSessionContext().messages.length > 0;
 	const hasExplicitMode = sessionManager.getEntries().some(entry => entry.type === "mode_change");
 	return (
 		!hasConversationContext &&
 		!hasExplicitMode &&
-		sessionSettings.get("plan.defaultOnStartup") &&
-		sessionSettings.get("plan.enabled")
+		cfgPlanDefaultOnStartup.get(sessionSettings) &&
+		cfgPlanEnabled.get(sessionSettings)
 	);
 }
 
@@ -531,83 +670,6 @@ class StatusHudContainer extends AnchoredLiveContainer {
 			return childLines;
 		}
 		return this.mode.renderCompactStatusLine(width, childLines);
-	}
-}
-
-/** Editor-anchored, right-aligned progress rows for concurrent judge batches. */
-class JudgmentBatchProgressHud implements Component {
-	readonly #batches = new Map<string, JudgmentBatchProgress>();
-
-	update(progress: JudgmentBatchProgress): void {
-		this.#batches.set(progress.id, progress);
-	}
-
-	delete(id: string): void {
-		this.#batches.delete(id);
-	}
-
-	clear(): void {
-		this.#batches.clear();
-	}
-
-	render(width: number): readonly string[] {
-		const rowWidth = Number.isFinite(width) ? Math.max(0, Math.trunc(width)) : 0;
-		if (rowWidth === 0) return [];
-		const rows: string[] = [];
-		for (const progress of this.#batches.values()) rows.push(this.#renderRow(progress, rowWidth));
-		return rows;
-	}
-
-	#renderRow(progress: JudgmentBatchProgress, width: number): string {
-		const countText = `${progress.done}/${progress.total}`;
-		// Zero cost means unpriced (local/native without catalog pricing), not free — omit rather than show $0.
-		const costText = progress.cost > 0 ? ` · ${formatCost(progress.cost)}` : "";
-		const failedText = progress.failed > 0 ? ` · ${progress.failed} failed` : "";
-		const compactFailedText = progress.failed > 0 ? ` +${progress.failed}!` : "";
-		let failure = failedText;
-		if (
-			failure &&
-			visibleWidth(countText) +
-				visibleWidth(costText) +
-				visibleWidth(failure) +
-				JUDGMENT_BATCH_PROGRESS_MIN_BAR_WIDTH +
-				1 >
-				width &&
-			visibleWidth(countText) + visibleWidth(costText) + visibleWidth(compactFailedText) <= width
-		) {
-			failure = compactFailedText;
-		}
-
-		const styledCount = theme.bold(theme.fg("text", countText));
-		const styledCost = costText ? theme.fg("dim", costText) : "";
-		const styledFailure = failure ? theme.fg("warning", failure) : "";
-		let tail = `${styledCount}${styledCost}${styledFailure}`;
-		let remaining = width - visibleWidth(tail);
-		if (remaining > 1) {
-			const barWidth = Math.min(JUDGMENT_BATCH_PROGRESS_BAR_WIDTH, remaining - 1);
-			const bar = renderProgressBar(progress.done, barWidth, {
-				min: 0,
-				max: Math.max(1, progress.total),
-				minWidth: barWidth,
-				maxWidth: barWidth,
-				style: {
-					filled: "━",
-					empty: "─",
-					styleFilled: text => theme.fg("accent", text),
-					styleEmpty: text => theme.fg("dim", text),
-				},
-			});
-			tail = `${bar} ${tail}`;
-			remaining = width - visibleWidth(tail);
-		}
-
-		const intent = sanitizeStatusText(progress.intent);
-		if (remaining > 1) {
-			const label = truncateToWidth(intent, remaining - 1, "");
-			if (label) tail = `${theme.fg("dim", label)} ${tail}`;
-		}
-		if (visibleWidth(tail) > width) tail = theme.bold(theme.fg("text", truncateToWidth(countText, width, "")));
-		return `${" ".repeat(Math.max(0, width - visibleWidth(tail)))}${tail}`;
 	}
 }
 
@@ -879,7 +941,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	ui: TUI;
 	chatContainer: TranscriptContainer;
 	pendingMessagesContainer: Container;
-	judgmentBatchProgressContainer: Container;
+	/** Judge-batch and automatic-download progress rows above the working line. */
+	progressHudContainer: Container;
 	statusContainer: Container;
 	/** Whether {@link statusContainer} rendered lines in the latest frame; the band composer's editor top gap collapses only then. */
 	statusRowOccupied = false;
@@ -943,6 +1006,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#todoAutoClearGeneration = 0;
 	#modelCycleClearTimer: NodeJS.Timeout | undefined;
 	readonly #judgmentBatchProgressHud = new JudgmentBatchProgressHud();
+	readonly #downloadActivityHud = new DownloadActivityHud(() => this.ui.requestRender());
 	readonly #judgmentBatchProgressClearTimers = new Map<string, NodeJS.Timeout>();
 	#nextAppearanceRequestToken = 1;
 	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
@@ -1006,7 +1070,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Band composer: the status band hides `session_name`, so the title docks
 	 * onto the working row instead — right-aligned, dim, italic. */
 	#workingTitleTrailer(): string | undefined {
-		if (settings.get("composer.shape") !== "band") return undefined;
+		if (cfgComposerShape.get(settings) !== "band") return undefined;
 		const name = this.sessionManager.getSessionName();
 		if (!name) return undefined;
 		return `\x1b[2;3m${sanitizeStatusText(name)}\x1b[23;22m`;
@@ -1020,7 +1084,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Generation tok/s: live while streaming, the last reading between
 	 * turns, blank until a run has produced enough tokens to measure. */
 	#tokenRateLabel(): string | undefined {
-		if (!settings.get("composer.tokenRate")) return undefined;
+		if (!cfgComposerTokenRate.get(settings)) return undefined;
 		const rate = this.tokenRate.rate();
 		if (rate === null) return undefined;
 		return theme.fg("dim", `${theme.icon.throughput} ${rate.toFixed(1)} tok/s`);
@@ -1184,7 +1248,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#focusController.target ?? this.session;
 	}
 	get assistantImagesVisible(): boolean {
-		return this.settings.get("terminal.showImages");
+		return cfgTerminalShowImages.get(this.settings);
 	}
 	resolveAssistantMessageLinks(texts: readonly string[]): Promise<ReadonlyMap<string, string>> {
 		const session = this.viewSession;
@@ -1226,12 +1290,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	#isMouseCaptureEnabled(): boolean {
 		try {
-			if (settings.get("tui.mouse") === true) return true;
+			if (cfgTuiMouse.get(settings) === true) return true;
 		} catch {
 			// Global singleton unavailable; try the mode's own settings below.
 		}
 		try {
-			return this.settings.get("tui.mouse") === true;
+			return cfgTuiMouse.get(this.settings) === true;
 		} catch {
 			return false;
 		}
@@ -1243,7 +1307,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Flip the pinned jump list between its collapsed few and the full list, overriding the setting. */
 	togglePinnedHudExpanded(): void {
-		const mode = settings.get("display.pinnedAgents");
+		const mode = cfgDisplayPinnedAgents.get(settings);
 		const expanded = this.#pinnedHudOverride ?? mode === "full";
 		this.#pinnedHudOverride = !expanded;
 		this.#renderSubagentList();
@@ -1301,10 +1365,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 	readonly #uiHelpers: UiHelpers;
 	#sttController: STTController | undefined;
-	#voiceAnimationInterval: NodeJS.Timeout | undefined;
-	#voiceHue = 0;
-	#voicePreviousShowHardwareCursor: boolean | null = null;
-	#voicePreviousUseTerminalCursor: boolean | null = null;
+	#micCursor: MicCursor | undefined;
 	#resizeHandler?: () => void;
 	#observerRegistry: SessionObserverRegistry;
 	/** Click override for the pinned jump-list density; undefined follows `display.pinnedAgents`. */
@@ -1314,6 +1375,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#observerUiSyncTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
+	#runningSubagentCount = 0;
 	#agentRegistryUnsubscribe?: () => void;
 	#agentRegistrySubscriptionTarget?: AgentHubRegistry;
 	#mcpStatusOrder: string[] = [];
@@ -1344,16 +1406,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
 		const preferences = {
-			quiet: settings.get("startup.quiet"),
-			composerShape: settings.get("composer.shape") ?? "band",
-			showHardwareCursor: settings.get("showHardwareCursor"),
-			maxInlineImages: settings.get("tui.maxInlineImages"),
-			resizeScrollback: settings.get("tui.resizeScrollback"),
-			imeSafeCursor: settings.get("tui.imeSafeCursor"),
-			autocompleteMaxVisible: settings.get("autocompleteMaxVisible"),
-			spellingTypoDetection: settings.get("spelling.typoDetection"),
-			spellingAutocomplete: settings.get("spelling.autocomplete"),
-			spellingAutocorrect: settings.get("spelling.autocorrect"),
+			quiet: cfgStartupQuiet.get(settings),
+			composerShape: cfgComposerShape.get(settings),
+			...this.#liveComposerPreferences(),
 		};
 		const wasStarted = composer?.started ?? false;
 		setMagicKeywords(MAGIC_KEYWORDS);
@@ -1375,7 +1430,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.composer.setPreferences(preferences);
 		this.ui = this.composer.ui;
 		this.editor = this.composer.editor;
-		this.editor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
+		this.editor.magicKeywordsEnabled = () => cfgMagicKeywordsEnabled.get(this.settings);
+		this.editor.placeholder = () => this.#composerHint();
 		this.editor.imageReferenceHyperlink = imageReferenceHyperlink;
 		this.editor.skillFilePath = name => this.skillCommands.get(`skill:${name}`)?.filePath;
 		this.editor.modelMentionLabel = selector => {
@@ -1401,7 +1457,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
-					if (this.settings.get("startup.quiet")) return;
+					if (cfgStartupQuiet.get(this.settings)) return;
 					this.#handleLspStartupEvent(data as LspStartupEvent);
 				}),
 			);
@@ -1427,16 +1483,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 		}
 
-		setTuiTight(settings.get("tui.tight"));
-		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
-		// A cold-start composer already owns the terminal. Reuse it so input
-		// buffered during startup remains in the same editor instance.
-		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
-		this.ui.setShowHardwareCursor(settings.get("showHardwareCursor"));
-		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
-		// capability (`TERMINAL.supportsTextSizing` defaults on for Kitty) so it stays off
-		// unless the user opts in, and never emits raw escapes on other terminals.
-		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.supportsTextSizing);
+		setTuiTight(cfgTuiTight.get(settings));
+		setMarkdownMermaidRendering(cfgTuiRenderMermaid.get(settings));
+		this.#applyTextSizingSetting();
 		// Keep generic pi-tui renderers aligned with the coding-agent setting.
 		applyHyperlinkSetting();
 		this.ui.setInlineMouseTrackingProvider(() => {
@@ -1455,8 +1504,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 		this.chatContainer = new TranscriptContainer();
 		this.pendingMessagesContainer = new AnchoredLiveContainer();
-		this.judgmentBatchProgressContainer = new AnchoredLiveContainer();
-		this.judgmentBatchProgressContainer.addChild(this.#judgmentBatchProgressHud);
+		this.progressHudContainer = new AnchoredLiveContainer();
+		this.progressHudContainer.addChild(this.#judgmentBatchProgressHud);
+		this.progressHudContainer.addChild(this.#downloadActivityHud);
+		this.#eventBusUnsubscribers.push(onDownloadActivity(activity => this.#downloadActivityHud.update(activity)));
 		this.statusContainer = new StatusHudContainer(this);
 		this.todoContainer = new TodoHudContainer(this);
 		this.subagentContainer = new AnchoredLiveContainer();
@@ -1467,7 +1518,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.errorBannerContainer = new AnchoredLiveContainer();
 		this.modelCycleContainer = new AnchoredLiveContainer();
 		this.deferredCommandContainer = new AnchoredLiveContainer();
-		this.editor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(JUDGMENT_BATCH_PROGRESS_EVENT_CHANNEL, data => {
@@ -1479,10 +1529,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				}),
 			);
 		}
-		this.editor.setImeSafeCursorLayout(settings.get("tui.imeSafeCursor"));
 		this.#applyVimMode(this.editor);
-		this.editor.setAutocompleteMaxVisible(settings.get("autocompleteMaxVisible"));
-		this.syncEditorSpelling();
 		this.editor.viewportRowsProvider = () => this.ui.terminal.rows;
 		this.editor.onAutocompleteCancel = () => {
 			this.ui.requestRender(true);
@@ -1498,10 +1545,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#syncEditorMaxHeight();
 		};
 		process.stdout.on("resize", this.#resizeHandler);
+		setWordPredictionHost(textPredictionBackend);
 		try {
 			this.historyStorage = HistoryStorage.open();
 			this.editor.setHistoryStorage(this.historyStorage);
 			this.historyStorage.setSessionResolver(() => this.sessionManager.getSessionId());
+			// The prediction daemon learns from history.db; nudge it once each prompt is durable.
+			this.historyStorage.setAddListener(syncTextPrediction);
 		} catch (error) {
 			logger.warn("History storage unavailable", { error: String(error) });
 		}
@@ -1536,41 +1586,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			aggregateVibeWorkerTokensPerSecond(this.session.getAgentId() ?? MAIN_AGENT_ID),
 		);
 
-		this.hideToolActivity = settings.get("display.hideToolActivity");
+		this.hideToolActivity = cfgDisplayHideToolActivity.get(settings);
 		this.chatContainer.setToolActivityVisible(!this.hideToolActivity);
-		this.hideThinkingBlock = settings.get("hideThinkingBlock");
-		this.proseOnlyThinking = settings.get("proseOnlyThinking");
+		this.hideThinkingBlock = cfgHideThinkingBlock.get(settings);
+		this.proseOnlyThinking = cfgProseOnlyThinking.get(settings);
 
-		const hookCommands: SlashCommand[] = (
-			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
-		).map(cmd => ({
-			name: cmd.name,
-			description: cmd.description ?? "(hook command)",
-			icon: getSlashCommandTypeIcon("extension"),
-			getArgumentCompletions: cmd.getArgumentCompletions,
-		}));
-
-		// Convert custom commands (TypeScript) to SlashCommand format
-		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => {
-			const complete = loaded.command.getArgumentCompletions?.bind(loaded.command);
-			return {
-				name: loaded.command.name,
-				description: `${loaded.command.description} (${loaded.source})`,
-				icon: getSlashCommandTypeIcon(loaded.path.startsWith("mcp:") ? "mcp" : "prompt"),
-				getArgumentCompletions: complete && (prefix => complete(prefix, this.sessionManager.getCwd())),
-			};
-		});
-
-		const skillCommandList = this.#rebuildSkillCommandsFromSession();
-
-		const builtinCommands: SlashCommand[] = buildTuiBuiltinSlashCommands({
-			ctx: this,
-		}).map(cmd => ({
-			...cmd,
-			icon: getSlashCommandTypeIcon(cmd.icon ?? "action"),
-		}));
 		// Store pending commands for init() where file commands are loaded async
-		this.#pendingSlashCommands = [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
+		this.#pendingSlashCommands = this.#buildPendingSlashCommands();
 
 		this.#uiHelpers = new UiHelpers(this);
 		this.#btwController = new BtwController(this);
@@ -1586,9 +1608,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// accessor idle compaction uses (editor.getText().trim()).
 		const idleMemoryTrim = new IdleMemoryTrim({
 			config: {
-				enabled: () => this.settings.get("memory.idleTrimEnabled"),
-				idleSeconds: () => this.settings.get("memory.idleTrimSeconds"),
-				trimMcp: () => this.settings.get("memory.idleTrimMcp"),
+				enabled: () => cfgMemoryIdleTrimEnabled.get(this.settings),
+				idleSeconds: () => cfgMemoryIdleTrimSeconds.get(this.settings),
+				trimMcp: () => cfgMemoryIdleTrimMcp.get(this.settings),
 			},
 			lifecycle: AgentLifecycleManager.global(),
 			mcp: this.mcpManager ?? null,
@@ -1615,7 +1637,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
 		this.collabController = new CollabController(this);
-		this.session.setTitleGenerationStart?.(() => this.#inputController.notifyTitleGenerationStart());
 		this.session.setPromptDropped?.(prompt => this.#restoreDroppedPrompt(prompt));
 		this.#observerRegistry = new SessionObserverRegistry();
 		// Register once: task job ids are subagent ids, so job snapshots can
@@ -1654,7 +1675,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#handleMcpConnectionStatusEvent(event: McpConnectionStatusEvent): void {
-		if (this.settings.get("startup.quiet")) return;
+		if (cfgStartupQuiet.get(this.settings)) return;
 		if (event.type === "connecting") {
 			this.#mcpStatusOrder = [];
 			this.#mcpPendingServers.clear();
@@ -1717,6 +1738,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.isInitialized) return;
 
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
+		// Before first paint, so hints the user already learned never flash on.
+		await logger.time("InteractiveMode.init:hintUsage", () => hintUsage.load());
 
 		// Route SIGINT/SIGTERM/SIGHUP/uncaughtException through the same teardown
 		// the TUI Ctrl+C keypress path performs: persist the in-progress editor
@@ -1754,6 +1777,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		// guarantees the decision persists even when the prompt is triggered
 		// from a subagent whose own `Settings` is an in-memory snapshot.
 		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), Settings.instance);
+		// Same wiring for cfg:// writes: every settings change the agent makes is
+		// confirmed here, and `/save` persists to disk. Subagents and headless
+		// sessions are refused by the handler before reaching this host. Changes
+		// to this session's settings get the settings panel's in-process side
+		// effects (a `defaultThinkingLevel` change also switches the live session).
+		setCfgApprovalHost({
+			approve: request => this.#promptCfgChange(request),
+			applied: change => {
+				if (change.settings !== this.session.settings) return;
+				this.#selectorController.handleSettingChange(change.path, change.value);
+			},
+			persistentSettings: Settings.instance,
+		});
 
 		await logger.time(
 			"InteractiveMode.init:slashCommands",
@@ -1775,7 +1811,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const sessions = await getRecentSessions(this.sessionManager.getSessionDir());
 			return sessions.map(s => ({ name: s.name, timeAgo: s.timeAgo }));
 		});
-		const startupQuiet = settings.get("startup.quiet");
+		const startupQuiet = cfgStartupQuiet.get(settings);
 		this.composer.setPreferences({ quiet: startupQuiet });
 		this.composer.updateWelcome({
 			version: this.#version,
@@ -1787,13 +1823,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#persistComposerWelcome(modelName, providerName);
 		const headerBefore = this.#buildConfigWarningComponents();
 		const headerAfter: Component[] = [];
-		if (!startupQuiet && this.#startupChangelog && settings.get("startup.changelogMode") !== "hidden") {
+		if (!startupQuiet && this.#startupChangelog && cfgStartupChangelogMode.get(settings) !== "hidden") {
 			headerAfter.push(
 				new DynamicBorder(),
 				new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0),
 				new Spacer(1),
 			);
-			if (settings.get("startup.changelogMode") === "summary") {
+			if (cfgStartupChangelogMode.get(settings) === "summary") {
 				const summary = formatStartupChangelogSummary(this.#startupChangelog).replace(
 					/\/changelog(?: full)?/g,
 					command => theme.bold(command),
@@ -1824,9 +1860,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.errorBannerContainer,
 			this.modelCycleContainer,
 			this.deferredCommandContainer,
-			// Judge batches stay editor-anchored and update independently of eval
-			// transcript output, directly above the working/throughput/title row.
-			this.judgmentBatchProgressContainer,
+			this.progressHudContainer,
 			// Working loader / transient status sits below the sticky todo + subagent
 			// HUDs, just above the editor's hook-widget top margin — so it reads next to
 			// the prompt while keeping the one-line gap above the editor (the band
@@ -1895,8 +1929,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		// that releases the teardown latch, so a late async `setSessionTerminalTitle`
 		// after shutdown can never write into the parent shell's tab.
 		initTerminalTitleState();
-		setTerminalTitleStateEnabled(this.settings.get("tui.titleState"));
-		setTerminalTitleSpinnerStyle(this.settings.get("tui.titleSpinner"));
+		setTerminalTitleStateEnabled(cfgTuiTitleState.get(this.settings));
+		setTerminalTitleSpinnerStyle(cfgTuiTitleSpinner.get(this.settings));
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		// Seeds the border, the status-line `vim` segment, and the cursor shape in one call.
 		// Deliberately here rather than beside #applyVimMode in the constructor: that runs before
@@ -1936,7 +1970,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				sessionId: this.sessionManager.getSessionId(),
 				title: path.basename(streamCwd),
 				tui: this.ui,
-				loadRedactor: () => StreamRedactor.load(streamCwd, this.settings.get("stream.redactPatterns")),
+				loadRedactor: () => StreamRedactor.load(streamCwd, cfgStreamRedactPatterns.get(this.settings)),
 				onStatus: status => {
 					this.statusLine.setStreamStatus(status);
 					this.ui.requestRender();
@@ -1949,7 +1983,19 @@ export class InteractiveMode implements InteractiveModeContext {
 					this.showStatus(chat);
 				},
 			})) ?? undefined;
-		if (this.#streamPublisher) this.ui.renderNow();
+		if (this.#streamPublisher) {
+			this.ui.renderNow();
+			// Live stream redaction follows `stream.redactPatterns` edits; only the
+			// newest edit's load applies, however the async loads interleave.
+			let redactorLoads = 0;
+			this.#eventBusUnsubscribers.push(
+				cfgStreamRedactPatterns.listen(this.settings, async patterns => {
+					const load = ++redactorLoads;
+					const redactor = await StreamRedactor.load(streamCwd, patterns);
+					if (load === redactorLoads) this.#streamPublisher?.setRedactor(redactor);
+				}),
+			);
+		}
 
 		// Prewarm the local tiny-title worker off the submit hot path: spawn it
 		// now, idle and unref'd, so the first submit reuses a live subprocess
@@ -2033,10 +2079,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				}
 				void this.#handleGoalSessionEvent(event);
 			}),
-			onStatusLineSessionAccentChanged(() => {
-				this.#syncStatusLineSettings();
-				this.#handleSessionAccentInputsChanged();
-			}),
+			cfgLiveUiSettings.listen(this.settings, (next, previous) => this.#applyUiSettingChanges(next, previous)),
 		);
 		settings.startWatching();
 		this.#remoteConfigSync = new RemoteConfigSync(settings, { onAgentsChanged: refreshAllAgentDiscovery });
@@ -2050,15 +2093,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		// event is not replayed, so rebuild from the live array once here too.
 		this.#syncConfigWarningHeader();
 		this.#eventBusUnsubscribers.push(
-			onModelRolesChanged(() => {
-				void this.#reapplyPlanModeModelOnRoleChange();
-			}),
+			cfgModelRoles.listen(this.settings, () => this.#reapplyPlanModeModelOnRoleChange()),
 		);
 		this.#eventBusUnsubscribers.push(
 			this.session.subscribeCommandMetadataChanged(() => {
-				const retainedCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
-				const skillCommands = this.#rebuildSkillCommandsFromSession();
-				this.#pendingSlashCommands = [...retainedCommands, ...skillCommands];
+				// Skills/commands rediscovery (live `skills.*`/`commands.*`/extension edits,
+				// `/move`, manage_skill, MCP prompts) lands here; rebuild the picker from session state.
+				this.#pendingSlashCommands = this.#buildPendingSlashCommands();
+				void this.#rebuildSlashCommandAutocomplete(this.sessionManager.getCwd()).catch(error => {
+					logger.warn("Failed to rebuild slash-command autocomplete", { error: String(error) });
+				});
+				this.ui.requestRender();
 			}),
 		);
 		// Set up theme file watcher
@@ -2067,6 +2112,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.#clearWorkingMessageAccentCache();
 				clearRenderCache();
 				clearMermaidCache();
+				this.statusLine.invalidate();
 				this.ui.invalidate();
 				this.updateEditorBorderColor();
 				if (event.ephemeral || isInsideTerminalMultiplexer()) {
@@ -2086,7 +2132,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// alone: it travels to terminals (ssh, tmux) where the upgrade would
 		// show tofu. Explicit `ascii`/`nerd` choices are never touched.
 		this.ui.terminal.onGlyphProtocolReport?.(supported => {
-			if (!supported || settings.get("symbolPreset") !== "unicode" || theme.getSymbolPreset() !== "unicode") return;
+			if (!supported || cfgSymbolPreset.get(settings) !== "unicode" || theme.getSymbolPreset() !== "unicode") return;
 			void setSymbolPreset("nerd").then(() => {
 				this.statusLine.invalidate();
 				this.ui.invalidate();
@@ -2231,22 +2277,51 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.session.setTitleSystemPrompt(resolved);
 	}
 
-	#rebuildSkillCommandsFromSession(): SlashCommand[] {
-		const commands: SlashCommand[] = [];
+	/** Builtin, extension, custom, and `/skill:<name>` commands derived from live session state. */
+	#buildPendingSlashCommands(): SlashCommand[] {
+		const builtinCommands: SlashCommand[] = buildTuiBuiltinSlashCommands({
+			ctx: this,
+		}).map(cmd => ({
+			...cmd,
+			icon: getSlashCommandTypeIcon(cmd.icon ?? "action"),
+		}));
+
+		const hookCommands: SlashCommand[] = (
+			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
+		).map(cmd => ({
+			name: cmd.name,
+			description: cmd.description ?? "(hook command)",
+			icon: getSlashCommandTypeIcon("extension"),
+			getArgumentCompletions: cmd.getArgumentCompletions,
+		}));
+
+		// Convert custom commands (TypeScript) to SlashCommand format
+		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => {
+			const complete = loaded.command.getArgumentCompletions?.bind(loaded.command);
+			return {
+				name: loaded.command.name,
+				description: `${loaded.command.description} (${loaded.source})`,
+				icon: getSlashCommandTypeIcon(loaded.path.startsWith("mcp:") ? "mcp" : "prompt"),
+				getArgumentCompletions: complete && (prefix => complete(prefix, this.sessionManager.getCwd())),
+			};
+		});
+
+		const skillCommandList: SlashCommand[] = [];
 		this.skillCommands.clear();
 		if (this.session.skillsSettings?.enableSkillCommands !== false) {
 			const icon = getSlashCommandTypeIcon("skill");
 			for (const skill of this.session.skills) {
 				const commandName = `skill:${skill.name}`;
 				this.skillCommands.set(commandName, skill);
-				commands.push({
+				skillCommandList.push({
 					name: commandName,
 					description: skill.description,
 					icon,
 				});
 			}
 		}
-		return commands;
+
+		return [...builtinCommands, ...hookCommands, ...customCommands, ...skillCommandList];
 	}
 
 	/** Reload session skills and the `/skill:<name>` command list. */
@@ -2264,6 +2339,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					cwd: basePath,
 					extensionRoots: this.session.effectiveExtensionRoots,
 				});
+		this.session.setSlashCommands(fileCommands);
 		const { agents } = await discoverAgents(basePath);
 		this.fileSlashCommands = new Set(fileCommands.map(cmd => cmd.name));
 		const promptIcon = getSlashCommandTypeIcon("prompt");
@@ -2306,14 +2382,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			agents,
 		);
 		this.#applyAutocompleteProvider();
-		this.session.setSlashCommands(fileCommands);
 	}
 
 	async #refreshSkillState(cwd?: string): Promise<void> {
 		const basePath = cwd ?? this.sessionManager.getCwd();
 		const skillSettings = {
-			...settings.getGroup("skills"),
-			disabledExtensions: settings.get("disabledExtensions") ?? [],
+			...cfgSkills.get(settings),
+			disabledExtensions: cfgDisabledExtensions.get(settings) ?? [],
 		};
 		const result = await loadSkills({ ...skillSettings, cwd: basePath });
 		this.session.setSkills(result.skills, result.warnings, skillSettings);
@@ -2321,7 +2396,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.skillCommands.clear();
 		this.#pendingSlashCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
-		if (settings.get("skills.enableSkillCommands")) {
+		if (cfgSkillsEnableSkillCommands.get(settings)) {
 			for (const skill of result.skills) {
 				const commandName = `skill:${skill.name}`;
 				this.skillCommands.set(commandName, skill);
@@ -2350,11 +2425,47 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
-	 * Rebuild the editor's autocomplete provider: the built-in provider wrapped
-	 * by every extension-registered factory, in registration order. A factory
-	 * that throws or returns a malformed provider is skipped so one broken
-	 * extension cannot take down core autocomplete.
+	 * Rebuild editor slash-command autocomplete from current session metadata.
 	 */
+	async #rebuildSlashCommandAutocomplete(basePath: string): Promise<void> {
+		const fileCommands = this.session.slashCommands;
+		const { agents } = await discoverAgents(basePath);
+		this.fileSlashCommands = new Set(fileCommands.map(cmd => cmd.name));
+		const promptIcon = getSlashCommandTypeIcon("prompt");
+		const fileSlashCommands: SlashCommand[] = fileCommands.map(cmd => {
+			const argumentHint = cmd.argumentHint ? replaceTabs(cmd.argumentHint).replace(/[\r\n]+/g, " ") : undefined;
+			return {
+				name: cmd.name,
+				description: cmd.description,
+				icon: promptIcon,
+				argumentHint,
+				getInlineHint: argumentHint ? buildStaticInlineHint(argumentHint) : undefined,
+			};
+		});
+		const reservedNames = new Set<string>();
+		for (const command of this.#pendingSlashCommands) {
+			reservedNames.add(command.name);
+			for (const alias of command.aliases ?? []) reservedNames.add(alias);
+		}
+		for (const command of fileSlashCommands) {
+			reservedNames.add(command.name);
+			for (const alias of command.aliases ?? []) reservedNames.add(alias);
+		}
+		const promptTemplateCommands: SlashCommand[] = this.session.promptTemplates
+			.filter(template => !reservedNames.has(template.name))
+			.map(template => ({
+				name: template.name,
+				description: template.description,
+				icon: promptIcon,
+			}));
+		this.#baseAutocompleteProvider = this.#inputController.createAutocompleteProvider(
+			[...this.#pendingSlashCommands, ...fileSlashCommands, ...promptTemplateCommands],
+			basePath,
+			agents,
+		);
+		this.#applyAutocompleteProvider();
+	}
+
 	#applyAutocompleteProvider(): void {
 		const base = this.#baseAutocompleteProvider;
 		if (!base) return;
@@ -2418,9 +2529,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// the next prompt sees everything scoped to the new project directory.
 			clearClaudePluginRootsCache();
 			await this.refreshTitleSystemPrompt(newCwd);
-			resetCapabilities();
-			await this.refreshSkillState();
-			await this.refreshSlashCommandState(newCwd);
+			await this.session.refreshSkillsAndCommands();
 		} catch (error) {
 			// Undo the whole transition: the process cwd, Settings scope, and
 			// cwd-derived caches (provider globals, plugin roots, capabilities,
@@ -2435,9 +2544,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				}
 				clearClaudePluginRootsCache();
 				await this.refreshTitleSystemPrompt(previousCwd);
-				resetCapabilities();
-				await this.refreshSkillState();
-				await this.refreshSlashCommandState(previousCwd);
+				await this.session.refreshSkillsAndCommands();
 			} catch (restoreError) {
 				const actual = this.sessionManager.getCwd();
 				try {
@@ -2448,9 +2555,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					}
 					clearClaudePluginRootsCache();
 					await this.refreshTitleSystemPrompt(actual);
-					resetCapabilities();
-					await this.refreshSkillState();
-					await this.refreshSlashCommandState(actual);
+					await this.session.refreshSkillsAndCommands();
 				} catch {}
 				this.showError(
 					`Failed to switch to ${newCwd} (${error instanceof Error ? error.message : String(error)}), and restoring the previous workspace failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
@@ -2498,7 +2603,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.loopModeEnabled) return;
 		const source = this.#currentLoopPromptSource();
 		if (!source) return;
-		const loopAction = this.loopRuntime?.context ?? settings.get("loop.mode");
+		const loopAction = this.loopRuntime?.context ?? cfgLoopMode.get(settings);
 		this.#deferLoopAutoSubmit(() => {
 			void this.#runLoopIteration(loopAction, source);
 		});
@@ -2723,7 +2828,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelGoalContinuation();
 		if (this.loopModeEnabled) return;
 		if (!this.onInputCallback) return;
-		if (!this.session.settings.get("goal.continuationModes").includes("interactive")) return;
+		if (!cfgGoalContinuationModes.get(this.session.settings).includes("interactive")) return;
 		if (this.planModeEnabled || this.planModePaused) return;
 		if (!this.goalModeEnabled || this.goalModePaused) return;
 		if (this.#goalSuppressNextContinuation) return;
@@ -2909,7 +3014,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			verdict = await evaluateLoopCondition(condition, {
 				cwd: this.sessionManager.getCwd(),
-				timeoutMs: settings.get("loop.conditionTimeoutMs"),
+				timeoutMs: cfgLoopConditionTimeoutMs.get(settings),
 				signal: controller.signal,
 				sessionId: this.sessionManager.getSessionId(),
 			});
@@ -3348,30 +3453,192 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.setMaxHeight(this.#computeEditorMaxHeight());
 	}
 
-	syncEditorSpelling(): void {
-		this.editor.setSpellingFeatures({
-			typoDetection: this.settings.get("spelling.typoDetection"),
-			autocomplete: this.settings.get("spelling.autocomplete"),
-			autocorrect: this.settings.get("spelling.autocorrect"),
-		});
+	/** Live-setting composer preferences; `quiet` is startup-only and `composerShape` flows through {@link syncComposerShape}. */
+	#liveComposerPreferences(): Omit<ComposerPreferences, "quiet" | "composerShape"> {
+		return {
+			showHardwareCursor: cfgShowHardwareCursor.get(this.settings),
+			maxInlineImages: cfgTuiMaxInlineImages.get(this.settings),
+			resizeScrollback: cfgTuiResizeScrollback.get(this.settings),
+			imeSafeCursor: cfgTuiImeSafeCursor.get(this.settings),
+			autocompleteMaxVisible: cfgAutocompleteMaxVisible.get(this.settings),
+			spellingTypoDetection: cfgSpellingTypoDetection.get(this.settings),
+			spellingAutocomplete: cfgSpellingAutocomplete.get(this.settings),
+			spellingAutocorrect: cfgSpellingAutocorrect.get(this.settings),
+		};
+	}
+
+	/**
+	 * OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
+	 * capability (`TERMINAL.supportsTextSizing` defaults on for Kitty) so it stays off
+	 * unless the user opts in, and never emits raw escapes on other terminals.
+	 */
+	#applyTextSizingSetting(): void {
+		setTerminalTextSizing(cfgTuiTextSizing.get(this.settings) && TERMINAL.supportsTextSizing);
+	}
+
+	/**
+	 * Apply live UI side effects for settings changed through any path (`/settings`,
+	 * `cfg://`, `settings.set()`, on-disk reload). One coalesced {@link cfgLiveUiSettings}
+	 * listener, so a bulk reload rebuilds the transcript at most once.
+	 */
+	#applyUiSettingChanges(next: LiveUiSettings, previous: LiveUiSettings): void {
+		const any = (...ids: (keyof LiveUiSettings)[]) => ids.some(id => !Bun.deepEquals(next[id], previous[id]));
+		let rebuildChat = false;
+		let resetDisplay = false;
+
+		if (
+			any(
+				"showHardwareCursor",
+				"tui.maxInlineImages",
+				"tui.resizeScrollback",
+				"tui.imeSafeCursor",
+				"autocompleteMaxVisible",
+				"spelling.typoDetection",
+				"spelling.autocomplete",
+				"spelling.autocorrect",
+			)
+		) {
+			this.composer.setPreferences(this.#liveComposerPreferences());
+			// setPreferences re-themes the editor, which resets its mode-tinted border.
+			this.updateEditorBorderColor();
+		}
+		if (any("composer.shape")) this.syncComposerShape();
+		if (any("tui.vimMode", "tui.vimModeDisplay")) this.applyVimModeSetting();
+		if (any("display.pinnedAgents")) this.applyPinnedAgentsSetting();
+		if (any("compaction.idleEnabled", "compaction.idleThresholdTokens", "compaction.idleTimeoutSeconds")) {
+			this.#eventController.refreshIdleCompactionTimer();
+		}
+		if (any("recap.enabled", "recap.idleSeconds")) this.#eventController.refreshIdleRecapTimer();
+		if (any("compaction.enabled", "compaction.methodOrder")) {
+			this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+			this.ui.requestRender();
+		}
+
+		// Field comparisons skip effects the keybinding toggles already applied.
+		const hideToolActivity = cfgDisplayHideToolActivity.get(this.settings);
+		if (any("display.hideToolActivity") && hideToolActivity !== this.hideToolActivity) {
+			this.hideToolActivity = hideToolActivity;
+			if (!hideToolActivity) this.toolOutputExpanded = false;
+			for (const child of this.chatContainer.children) {
+				if (
+					!hideToolActivity &&
+					(child instanceof ToolExecutionComponent || child instanceof ReadToolGroupComponent)
+				) {
+					child.setExpanded(false);
+				} else if (child instanceof AssistantMessageComponent) {
+					child.setToolResultImagesVisible(!hideToolActivity);
+				}
+			}
+			this.chatContainer.setToolActivityVisible(!hideToolActivity);
+			if (hideToolActivity) this.ui.clearInlineImages();
+			// Visibility changes must rebuild retired terminal history.
+			resetDisplay = true;
+		}
+		if (any("terminal.showImages")) {
+			const visible = cfgTerminalShowImages.get(this.settings);
+			for (const child of this.chatContainer.children) {
+				if (child instanceof ToolExecutionComponent) {
+					child.setShowImages(visible);
+				} else if (child instanceof AssistantMessageComponent) {
+					child.setImagesVisible(visible);
+				}
+			}
+			if (!visible) this.ui.clearInlineImages();
+			this.ui.requestRender(true);
+		}
+		const hideThinkingBlock = cfgHideThinkingBlock.get(this.settings);
+		if (any("hideThinkingBlock") && hideThinkingBlock !== this.hideThinkingBlock) {
+			this.hideThinkingBlock = hideThinkingBlock;
+			for (const child of this.chatContainer.children) {
+				if (child instanceof AssistantMessageComponent) child.setHideThinkingBlock(this.effectiveHideThinkingBlock);
+			}
+			this.ui.requestRender(true);
+		}
+		const proseOnlyThinking = cfgProseOnlyThinking.get(this.settings);
+		if (any("proseOnlyThinking") && proseOnlyThinking !== this.proseOnlyThinking) {
+			this.proseOnlyThinking = proseOnlyThinking;
+			for (const child of this.chatContainer.children) {
+				if (child instanceof AssistantMessageComponent) child.setProseOnlyThinking(proseOnlyThinking);
+			}
+			this.ui.requestRender(true);
+		}
+
+		// Usage-row detection, compacted-history collapse, and markdown render
+		// options are baked in at build time: rebuild, then retire rows already
+		// committed to native scrollback.
+		if (
+			any("display.cacheMissMarker", "display.collapseCompacted", "display.showTokenUsage", "display.showTurnTime")
+		) {
+			rebuildChat = true;
+		}
+		if (any("tui.renderMermaid")) {
+			setMarkdownMermaidRendering(cfgTuiRenderMermaid.get(this.settings));
+			rebuildChat = true;
+		}
+		if (any("tui.textSizing")) {
+			this.#applyTextSizingSetting();
+			this.ui.invalidate();
+			resetDisplay = true;
+		}
+		if (any("tui.tight")) {
+			setTuiTight(cfgTuiTight.get(this.settings));
+			this.ui.invalidate();
+			this.ui.requestRender();
+		}
+		if (any("tui.hyperlinks")) {
+			// The tui.hyperlinks effect already re-applied the flag; repaint cached rows.
+			this.statusLine.invalidate();
+			this.ui.invalidate();
+			this.ui.requestRender();
+		}
+		if (any("tui.titleState")) setTerminalTitleStateEnabled(cfgTuiTitleState.get(this.settings));
+		if (any("tui.titleSpinner")) setTerminalTitleSpinnerStyle(cfgTuiTitleSpinner.get(this.settings));
+
+		if (
+			any(
+				"statusLine.preset",
+				"statusLine.leftSegments",
+				"statusLine.rightSegments",
+				"statusLine.separator",
+				"statusLine.showHookStatus",
+				"statusLine.sessionAccent",
+				"statusLine.transparent",
+				"statusLine.segmentOptions",
+				"statusLine.compactThinkingLevel",
+				"statusLine.contextLine",
+				"git.enabled",
+			)
+		) {
+			this.#syncStatusLineSettings();
+			this.ui.requestRender();
+		}
+		if (any("statusLine.sessionAccent")) this.#handleSessionAccentInputsChanged();
+		// Advisor runtime start/stop has no session event; repaint its status segment.
+		if (any("advisor.enabled", "advisor.maxNotesPerUpdate", "tier.advisor")) {
+			this.statusLine.invalidate();
+			this.ui.requestRender();
+		}
+
+		if (rebuildChat) this.rebuildChatFromMessages();
+		if (rebuildChat || resetDisplay) this.ui.resetDisplay();
 	}
 
 	#syncStatusLineSettings(): void {
 		this.statusLine.updateSettings({
-			preset: settings.get("statusLine.preset"),
-			leftSegments: settings.get("statusLine.leftSegments"),
-			rightSegments: settings.get("statusLine.rightSegments"),
-			separator: settings.get("statusLine.separator"),
-			showHookStatus: settings.get("statusLine.showHookStatus"),
-			sessionAccent: settings.get("statusLine.sessionAccent"),
-			transparent: settings.get("statusLine.transparent"),
-			segmentOptions: settings.get("statusLine.segmentOptions"),
-			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
-			contextLine: settings.get("statusLine.contextLine"),
+			preset: cfgStatusLinePreset.get(settings),
+			leftSegments: cfgStatusLineLeftSegments.get(settings),
+			rightSegments: cfgStatusLineRightSegments.get(settings),
+			separator: cfgStatusLineSeparator.get(settings),
+			showHookStatus: cfgStatusLineShowHookStatus.get(settings),
+			sessionAccent: cfgStatusLineSessionAccent.get(settings),
+			transparent: cfgStatusLineTransparent.get(settings),
+			segmentOptions: cfgStatusLineSegmentOptions.get(settings),
+			compactThinkingLevel: cfgStatusLineCompactThinkingLevel.get(settings),
+			contextLine: cfgStatusLineContextLine.get(settings),
 		});
 	}
 	syncComposerShape(): void {
-		const shape = settings.get("composer.shape") ?? "band";
+		const shape = cfgComposerShape.get(settings);
 		const style = getComposerStyle(shape);
 		this.composer.setPreferences({ composerShape: shape });
 		this.statusLine.setAutocompleteActiveProbe(() => this.editor.isAutocompleteActive());
@@ -3402,7 +3669,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	#persistComposerStatus(): void {
 		if (!this.sessionManager.getSessionFile()) return;
-		const shape = settings.get("composer.shape") ?? "band";
+		const shape = cfgComposerShape.get(settings);
 		const style = getComposerStyle(shape);
 		const terminalWidth = this.ui.terminal.columns;
 		const availableWidth = this.editor.getTopBorderAvailableWidth(terminalWidth);
@@ -3470,7 +3737,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			// Matches the `vim` status-line segment, which uses the same three colours.
 			this.editor.borderColor = (str: string) => theme.fg("success", str);
 		} else {
-			const accentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
+			const accentEnabled = !isSettingsInitialized() || cfgStatusLineSessionAccent.get(settings) !== false;
 			const sessionName = accentEnabled ? this.sessionManager.getSessionName() : undefined;
 			const hex = sessionName ? getSessionAccentHex(sessionName, theme.sessionAccentInputs) : undefined;
 			const ansi = getSessionAccentAnsi(hex);
@@ -3508,8 +3775,20 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 		}
 		const agentIds = getRunningSubagentBadgeAgentIds(registry);
+		this.#runningSubagentCount = agentIds.length;
 		this.statusLine.setRunningSubagents(agentIds);
 		if (options.requestRender !== false) this.ui.requestRender();
+	}
+
+	/** Placeholder for the empty composer; see `COMPOSER_HINTS` for the registered hints. */
+	#composerHint(): string | undefined {
+		return resolveComposerHint({
+			runningAgents: this.#runningSubagentCount,
+			focusedOnAgent: this.focusedAgentId !== undefined,
+			conversationStarted: this.viewSession.messages.length > 0,
+			keybindings: this.keybindings,
+			uses: id => hintUsage.get(id),
+		});
 	}
 
 	rebuildChatFromMessages(options: { reuseSettledComponents?: boolean } = {}): void {
@@ -3543,7 +3822,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// user opted into the full inline history; export/resume callers choose
 		// their own mode.
 		const context = this.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings),
 		});
 		const preservedLiveToolCallIds = new Set<string>();
 		// A preserved pending-tool component whose result has already landed in
@@ -3754,7 +4033,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (persisted || phases.length === 0) return;
 		const tasks = phases.flatMap(phase => phase.tasks);
 		if (tasks.length === 0 || tasks.some(task => !isClosedTodo(task))) return;
-		const delaySeconds = owner.settings.get("tasks.todoClearDelay");
+		const delaySeconds = cfgTasksTodoClearDelay.get(owner.settings);
 		if (!Number.isFinite(delaySeconds) || delaySeconds < 0) return;
 		const generation = this.#todoAutoClearGeneration;
 		const snapshotKey = JSON.stringify(phases);
@@ -4063,14 +4342,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#resolvePlanFilePath(planFilePath: string): string {
-		if (planFilePath.startsWith("local:")) {
-			const normalized = normalizeLocalScheme(planFilePath);
-			return resolveLocalUrlToPath(normalized, {
+		return resolvePlanFilePath(planFilePath, {
+			localProtocolOptions: {
 				getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
 				getSessionId: () => this.sessionManager.getSessionId(),
-			});
-		}
-		return path.resolve(this.sessionManager.getCwd(), planFilePath);
+			},
+			cwd: this.sessionManager.getCwd(),
+		});
 	}
 
 	#updatePlanModeStatus(): void {
@@ -4098,7 +4376,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	#renderSubagentList(): void {
 		this.subagentContainer.clear();
-		const mode = settings.get("display.pinnedAgents");
+		const mode = cfgDisplayPinnedAgents.get(settings);
 		if (mode === "off") return;
 		const sessions = this.#observerRegistry.getSessions();
 		const running = sessions.filter(isHudSubagent);
@@ -4481,7 +4759,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			vibeScopeAlreadySuspended,
 		});
 		await VibeSessionRegistry.global().rehydrate(vibeSession);
-		const goalEnabled = this.session.settings.get("goal.enabled");
+		const goalEnabled = cfgGoalEnabled.get(this.session.settings);
 		if (!goalEnabled && (sessionContext.mode === "goal" || sessionContext.mode === "goal_paused")) {
 			this.session.goalRuntime.clearAccounting();
 			this.sessionManager.appendModeChange("none");
@@ -4561,7 +4839,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 			return;
 		}
-		if (!this.session.settings.get("plan.enabled")) {
+		if (!cfgPlanEnabled.get(this.session.settings)) {
 			// Clear stale plan/plan_paused mode so re-enabling the setting
 			// later doesn't unexpectedly restore an old plan session.
 			if (sessionContext.mode === "plan" || sessionContext.mode === "plan_paused") {
@@ -4980,7 +5258,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				helpText: dialogOptions?.helpText,
 				initialIndex: dialogOptions?.initialIndex,
 				slider: extra?.slider,
-				externalEditorLabel: this.keybindings.getDisplayString("app.editor.external") || undefined,
+				externalEditorLabel: appKey(this.keybindings, "app.editor.external") || undefined,
 				annotationState: dialogOptions?.annotationState,
 			},
 			{
@@ -5049,7 +5327,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Apply the `tui.vimMode` setting to an editor and route Visual-mode yanks to the clipboard. */
 	#applyVimMode(editor: CustomEditor): void {
-		editor.setVimMode(settings.get("tui.vimMode"));
+		editor.setVimMode(cfgTuiVimMode.get(settings));
 		editor.onYank = text => {
 			void this.#copyYankToClipboard(text);
 		};
@@ -5082,7 +5360,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						mode: editor.vimMode,
 						pending: editor.vimPending,
 						selectedLines: editor.vimSelectedLines,
-						display: settings.get("tui.vimModeDisplay"),
+						display: cfgTuiVimModeDisplay.get(settings),
 					}
 				: undefined,
 		);
@@ -5270,10 +5548,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#resolveLocalRoot(): string {
-		return resolveLocalUrlToPath("local://", {
-			getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
-			getSessionId: () => this.sessionManager.getSessionId(),
-		});
+		return path.resolve(
+			resolveLocalRoot({
+				getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
+				getSessionId: () => this.sessionManager.getSessionId(),
+			}),
+		);
 	}
 
 	async #approvePlan(
@@ -5313,10 +5593,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.handleClearCommand();
 				const newLocalRoot = this.#resolveLocalRoot();
 				await copyLocalArtifacts(oldLocalRoot, newLocalRoot);
-				const newLocalPath = resolveLocalUrlToPath(options.planFilePath, {
-					getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
-					getSessionId: () => this.sessionManager.getSessionId(),
-				});
+				const newLocalPath = this.#resolvePlanFilePath(options.planFilePath);
 				await fs.mkdir(path.dirname(newLocalPath), { recursive: true });
 				await fs.writeFile(newLocalPath, planContent);
 			} else if (options.compactBeforeExecute) {
@@ -5539,7 +5816,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showStatus("Plan mode disabled.");
 			return false;
 		}
-		if (!this.session.settings.get("plan.enabled")) {
+		if (!cfgPlanEnabled.get(this.session.settings)) {
 			this.showWarning("Plan mode is disabled. Enable it in settings (plan.enabled).");
 			return false;
 		}
@@ -5830,7 +6107,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit vibe mode first.");
 			return false;
 		}
-		if (!this.session.settings.get("goal.enabled")) {
+		if (!cfgGoalEnabled.get(this.session.settings)) {
 			this.showWarning("Goal mode is disabled. Enable it in settings (goal.enabled).");
 			return false;
 		}
@@ -5875,7 +6152,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.showWarning("Exit vibe mode first.");
 				return false;
 			}
-			if (!this.session.settings.get("goal.enabled")) {
+			if (!cfgGoalEnabled.get(this.session.settings)) {
 				this.showWarning("Goal mode is disabled. Enable it in settings (goal.enabled).");
 				return false;
 			}
@@ -6201,7 +6478,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// which model drove the planning conversation. Left/right move it from there;
 		// hidden when fewer than two role models resolve — a lone tier is no choice.
 		// `selectedTierIndex` tracks the live slider position.
-		const cycle = this.session.getRoleModelCycle(this.session.settings.get("cycleOrder"));
+		const cycle = this.session.getRoleModelCycle(cfgCycleOrder.get(this.session.settings));
 		const defaultTierIndex = cycle ? cycle.models.findIndex(entry => entry.role === "default") : -1;
 		const startTierIndex = defaultTierIndex >= 0 ? defaultTierIndex : (cycle?.currentIndex ?? 0);
 		let selectedTierIndex = startTierIndex;
@@ -6221,7 +6498,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				: undefined;
 		// The overlay now owns the dynamic, focus-aware help line; the caller only
 		// supplies the trailing cancel hint.
-		const helpText = "esc cancel";
+		const helpText = `${editorKey("tui.select.cancel")} cancel`;
 		// In-overlay edits (section deletes/undo) and section annotations. Deletes
 		// update `editedContent` (and mirror to disk); annotations build `feedback`
 		// that the Refine branch re-prompts the model with.
@@ -6372,36 +6649,41 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	static #AUTOQA_CONSENT_PROMPTS: ReadonlyArray<readonly [string, string]> = [
 		[
-			"😤 Your agent is fuming about a tool.",
-			"Wanna let it vent to the devs? Just the tool name + what set it off, nothing personal.",
+			"🧾 Your agent drafted a strongly worded letter to one of its tools.",
+			"Mail it to the devs? Just the tool name + the grievance, nothing personal.",
 		],
 		[
-			"😵‍💫 Your agent is having an existential crisis over a tool.",
-			"Forward the dread to the devs? Tool + what broke its little mind, no personal info.",
+			"🕵️ Your agent caught a tool acting suspicious.",
+			"Tip off the devs? Tool name + the evidence, no personal info.",
 		],
 		[
-			"😭 Your agent wants to cry about a misbehaving tool.",
-			"Let it cry to the devs? Tool + the tears, never anything personal.",
+			"👻 Your agent swears one of its tools is haunted.",
+			"Call in the devs for an exorcism? Tool name + the spooky bit, nothing personal.",
+		],
+		["🫖 Your agent has tea about a tool.", "Spill it to the devs? Tool name + the tea, never anything personal."],
+		[
+			"🦆 Your agent explained a tool to its rubber duck. The duck is also confused.",
+			"Escalate past the duck to the devs? Tool name + the confusion, no personal info.",
 		],
 		[
-			"🤬 Your agent is BIG MAD at one of the tools.",
-			"Pass the rant along? Just the tool name and what enraged it, nothing personal.",
+			"📟 Your agent is asking to speak to a tool's manager.",
+			"Put the call through to the devs? Tool name + the complaint, nothing personal.",
 		],
 		[
-			"🫠 Your agent is melting down over a tool.",
-			"Mop up by alerting the devs? Tool + what melted it, no personal info.",
+			"🧂 Your agent is extremely salty about a tool.",
+			"Let it salt the devs' inbox? Tool name + what soured it, no personal info.",
 		],
 		[
-			"🤯 Your agent's brain broke at a tool's nonsense.",
-			"Ship the pieces to the devs? Tool name + the confusion, never anything personal.",
+			"🐛 Your agent found a bug. A real one. In a tool.",
+			"Hand the specimen to the devs? Tool name + where it crawled out, nothing personal.",
 		],
 		[
-			"😩 Your agent is begging to file a complaint about a tool.",
-			"Hand it the form? Tool + what wronged it, nothing personal.",
+			"🍿 Your agent just watched a tool pull a plot twist nobody asked for.",
+			"Send the devs a spoiler? Tool name + what happened, never anything personal.",
 		],
 		[
-			"🥲 Your agent put on a brave face but a tool did it dirty.",
-			"Let it tell the devs the truth? Tool name + the dirt, no personal info.",
+			"📉 Your agent's opinion of a tool just crashed.",
+			"Send the post-mortem to the devs? Tool name + what tanked it, no personal info.",
 		],
 	];
 
@@ -6417,6 +6699,38 @@ export class InteractiveMode implements InteractiveModeContext {
 		return choice === "Yes";
 	}
 
+	/**
+	 * Ask the user to approve one `cfg://` settings change. Dismissing the dialog denies it;
+	 * leaving it unanswered for {@link CFG_APPROVAL_TIMEOUT_MS} (any keypress restarts the
+	 * countdown) drops it as `timeout`.
+	 */
+	async #promptCfgChange(request: CfgChangeRequest): Promise<CfgApproval> {
+		const headline = request.save
+			? `💾 Your agent wants to save \`${request.path}\` to your config.`
+			: `⚙️ Your agent wants to change \`${request.path}\` for this session.`;
+		const warning = request.shadowedBy
+			? `\n⚠️ Overridden by your ${request.shadowedBy}: the saved value won't take effect here.`
+			: "";
+		let timedOut = false;
+		const choice = await this.showHookSelector(
+			`${headline}\n${request.previous} → ${request.value}${warning}`,
+			[CFG_APPROVE_SESSION, CFG_APPROVE_ONCE, CFG_DENY],
+			{
+				// A reflexive Enter approves this change only, never the whole session.
+				initialIndex: 1,
+				timeout: CFG_APPROVAL_TIMEOUT_MS,
+				// The selector auto-picks the highlighted option on expiry; an unanswered prompt approves nothing.
+				onTimeout: () => {
+					timedOut = true;
+				},
+			},
+		);
+		if (timedOut) return "timeout";
+		if (choice === CFG_APPROVE_SESSION) return "session";
+		if (choice === CFG_APPROVE_ONCE) return "once";
+		return "deny";
+	}
+
 	stop(): void {
 		this.#appearanceRefreshRequest = undefined;
 		this.#streamPublisher?.dispose();
@@ -6428,13 +6742,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(false);
 		}
-		this.#cleanupMicAnimation();
+		this.#micCursor?.dispose();
+		this.#micCursor = undefined;
 		// Stop the shared tool-spinner ticker: a live block missed by per-component
 		// stopAnimation would otherwise keep an 80ms interval pinning the process.
 		stopSharedSpinnerTicker();
 		this.#liveCommandController.dispose();
 		this.#telegramCommandController.dispose();
 		this.#clearJudgmentBatchProgress();
+		this.#downloadActivityHud.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
 		this.#cancelGoalContinuation();
@@ -6480,6 +6796,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Clear the process-global consent handler so it doesn't outlive this
 		// InteractiveMode instance (e.g. test harnesses, headless re-init).
 		setAutoQaConsentHandler(null, null);
+		setCfgApprovalHost(null);
 		this.#hideSessionInfo();
 		if (this.#ownsStartedUi) {
 			this.ui.stop();
@@ -6535,7 +6852,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#teardownFailed = this.session.isDisposed;
 		this.showError(
 			this.#teardownFailed
-				? `Could not ${action} session: ${detail}\nPress Ctrl+C again to exit without saving the session log.`
+				? `Could not ${action} session: ${detail}\nPress ${appKey(this.keybindings, "app.clear")} again to exit without saving the session log.`
 				: `Could not ${action} session: ${detail}`,
 		);
 	}
@@ -6738,16 +7055,17 @@ export class InteractiveMode implements InteractiveModeContext {
 			? factory(this.ui, getEditorTheme(), this.keybindings)
 			: new CustomEditor(getEditorTheme());
 		nextEditor.setUseTerminalCursor(this.ui.getShowHardwareCursor());
-		nextEditor.setImeSafeCursorLayout(this.settings.get("tui.imeSafeCursor"));
+		nextEditor.setImeSafeCursorLayout(cfgTuiImeSafeCursor.get(this.settings));
 		this.#applyVimMode(nextEditor);
-		nextEditor.setAutocompleteMaxVisible(this.settings.get("autocompleteMaxVisible"));
+		nextEditor.setAutocompleteMaxVisible(cfgAutocompleteMaxVisible.get(this.settings));
 		nextEditor.setSpellingFeatures({
-			typoDetection: this.settings.get("spelling.typoDetection"),
-			autocomplete: this.settings.get("spelling.autocomplete"),
-			autocorrect: this.settings.get("spelling.autocorrect"),
+			typoDetection: cfgSpellingTypoDetection.get(this.settings),
+			autocomplete: cfgSpellingAutocomplete.get(this.settings),
+			autocorrect: cfgSpellingAutocorrect.get(this.settings),
 		});
 		nextEditor.viewportRowsProvider = () => this.ui.terminal.rows;
-		nextEditor.magicKeywordsEnabled = () => this.settings.get("magicKeywords.enabled");
+		nextEditor.magicKeywordsEnabled = () => cfgMagicKeywordsEnabled.get(this.settings);
+		nextEditor.placeholder = () => this.#composerHint();
 		nextEditor.imageReferenceHyperlink = imageReferenceHyperlink;
 		nextEditor.skillFilePath = name => this.skillCommands.get(`skill:${name}`)?.filePath;
 		nextEditor.modelMentionLabel = selector => {
@@ -7022,7 +7340,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#buildWorkingMessageAccentCacheKey(): WorkingMessageAccentCacheKey {
-		const sessionAccentEnabled = !isSettingsInitialized() || settings.get("statusLine.sessionAccent") !== false;
+		const sessionAccentEnabled = !isSettingsInitialized() || cfgStatusLineSessionAccent.get(settings) !== false;
 		return {
 			sessionAccentEnabled,
 			sessionName: sessionAccentEnabled ? this.sessionManager.getSessionName() : undefined,
@@ -7091,7 +7409,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				// leads with the interrupt affordance instead of a second spinner.
 				// The leading space nudges the row one column right of the flush-left
 				// status rows so the interrupt glyph reads as indented.
-				[` ${theme.icon.esc}`],
+				[` ${appKey(this.keybindings, "app.interrupt")}`],
 			);
 			this.loadingAnimation.setTrailer(() => this.#workingRowTrailer());
 			this.statusContainer.addChild(this.loadingAnimation);
@@ -7393,22 +7711,40 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async handleSTTToggle(): Promise<void> {
+		await this.#readySTTController()?.toggle(this.editor, this.#dictationCallbacks(this.editor));
+	}
+
+	dictationSpaceHold(target: DictationTarget): SpaceHoldHandler {
+		return {
+			enabled: () => cfgSttEnabled.get(settings),
+			onStart: () => void this.#readySTTController()?.start(target, this.#dictationCallbacks(target)),
+			onEnd: () => void this.#sttController?.stop(),
+		};
+	}
+
+	/** The speech-to-text controller, created on first use; undefined (after a warning) while live mode
+	 *  or a disabled STT rules dictation out. */
+	#readySTTController(): STTController | undefined {
 		if (this.#liveCommandController.active) {
 			this.showWarning("End live mode before using push-to-talk speech input.");
-			return;
+			return undefined;
 		}
-		if (!settings.get("stt.enabled")) {
+		if (!cfgSttEnabled.get(settings)) {
 			this.showWarning("Speech-to-text is disabled. Enable it in settings: stt.enabled");
-			return;
+			return undefined;
 		}
-		if (!this.#sttController) {
-			this.#sttController = new STTController({
-				settings: this.settings,
-				registry: this.session.modelRegistry,
-				getSessionId: () => this.session.sessionId,
-			});
-		}
-		await this.#sttController.toggle(this.editor, {
+		this.#sttController ??= new STTController({
+			settings: this.settings,
+			registry: this.session.modelRegistry,
+			getSessionId: () => this.session.sessionId,
+		});
+		return this.#sttController;
+	}
+
+	/** Callbacks for a capture dictating into `target`: the mic glyph replaces its cursor while the
+	 *  capture runs. */
+	#dictationCallbacks(target: DictationTarget): SttCallbacks {
+		return {
 			showWarning: (msg: string) => this.showWarning(msg),
 			showStatus: (msg: string) => this.showStatus(msg),
 			onStateChange: (state: SttState) => {
@@ -7416,20 +7752,17 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (state === "recording") vocalizer.duck();
 				else vocalizer.unduck();
 				if (state === "recording") {
-					this.#voicePreviousShowHardwareCursor = this.ui.getShowHardwareCursor();
-					this.#voicePreviousUseTerminalCursor = this.editor.getUseTerminalCursor();
-					this.ui.setShowHardwareCursor(false);
-					this.editor.setUseTerminalCursor(false);
-					this.#startMicAnimation();
+					this.#micCursor?.dispose();
+					this.#micCursor = new MicCursor(this.ui, target);
 				} else if (state === "transcribing") {
-					this.#stopMicAnimation();
-					this.#setMicCursor({ r: 200, g: 200, b: 200 });
+					this.#micCursor?.showTranscribing();
 				} else {
-					this.#cleanupMicAnimation();
+					this.#micCursor?.dispose();
+					this.#micCursor = undefined;
 				}
 				this.ui.requestRender();
 			},
-		});
+		};
 	}
 
 	/** Start a `/record` screen capture, or stop the running one and report where it was saved. */
@@ -7451,7 +7784,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			this.#recorder = await SessionRecorder.start({
 				tui: this.ui,
-				redactor: await StreamRedactor.load(cwd, this.settings.get("stream.redactPatterns")),
+				redactor: await StreamRedactor.load(cwd, cfgStreamRedactPatterns.get(this.settings)),
 				title: this.sessionManager.getSessionName() || path.basename(cwd),
 				path: newRecordingPath(this.sessionManager.getSessionId()),
 			});
@@ -7476,54 +7809,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async handleTelegramCommand(action: string): Promise<void> {
 		await this.#telegramCommandController.handleCommand(action);
-	}
-
-	#setMicCursor(color: { r: number; g: number; b: number }): void {
-		this.editor.cursorOverride = `\x1b[38;2;${color.r};${color.g};${color.b}m${theme.icon.mic}\x1b[0m`;
-		// Theme symbols can be wide (for example, 🎤), so measure the rendered override.
-		this.editor.cursorOverrideWidth = visibleWidth(this.editor.cursorOverride);
-	}
-
-	#updateMicIcon(): void {
-		const { r, g, b } = hsvToRgb({ h: this.#voiceHue, s: 0.9, v: 1.0 });
-		this.#setMicCursor({ r, g, b });
-	}
-
-	#startMicAnimation(): void {
-		if (this.#voiceAnimationInterval) return;
-		this.#voiceHue = 0;
-		this.#updateMicIcon();
-		this.#voiceAnimationInterval = setInterval(() => {
-			this.#voiceHue = (this.#voiceHue + 8) % 360;
-			this.#updateMicIcon();
-			// Component-scoped: the hue sweep only recolors the editor's cursor
-			// glyph, so the transcript subtree is reused per animation frame.
-			this.ui.requestComponentRender(this.editor);
-		}, 60);
-	}
-
-	#stopMicAnimation(): void {
-		if (this.#voiceAnimationInterval) {
-			clearInterval(this.#voiceAnimationInterval);
-			this.#voiceAnimationInterval = undefined;
-		}
-	}
-
-	#cleanupMicAnimation(): void {
-		if (this.#voiceAnimationInterval) {
-			clearInterval(this.#voiceAnimationInterval);
-			this.#voiceAnimationInterval = undefined;
-		}
-		this.editor.cursorOverride = undefined;
-		this.editor.cursorOverrideWidth = undefined;
-		if (this.#voicePreviousShowHardwareCursor !== null) {
-			this.ui.setShowHardwareCursor(this.#voicePreviousShowHardwareCursor);
-			this.#voicePreviousShowHardwareCursor = null;
-		}
-		if (this.#voicePreviousUseTerminalCursor !== null) {
-			this.editor.setUseTerminalCursor(this.#voicePreviousUseTerminalCursor);
-			this.#voicePreviousUseTerminalCursor = null;
-		}
 	}
 
 	async showDebugSelector(): Promise<void> {

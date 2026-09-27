@@ -124,7 +124,8 @@ async function resolveRequestApiKey(options: SimpleStreamOptions): Promise<strin
 	const resolver = options.apiKey;
 	if (typeof resolver !== "function")
 		throw new Error("expected instrumentedCompleteSimple apiKey option to be a resolver");
-	return await resolver({ lastChance: false, error: undefined });
+	const resolved = await resolver({ lastChance: false, error: undefined });
+	return typeof resolved === "string" ? resolved : resolved?.apiKey;
 }
 
 function resultText(result: AgentToolResult<unknown>): string {

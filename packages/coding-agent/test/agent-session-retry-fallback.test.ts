@@ -5,6 +5,7 @@ import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createCompactionSummaryMessage } from "@oh-my-pi/pi-agent-core/compaction";
 import {
+	type AnthropicFallbackCreditHandle,
 	type Api,
 	type AssistantMessage,
 	Effort,
@@ -24,7 +25,8 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import { parseModelPattern } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
-import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { editVariantForModel } from "@oh-my-pi/pi-coding-agent/utils/edit-mode";
 import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -41,10 +43,17 @@ import * as piUtils from "@oh-my-pi/pi-utils";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 
+import { cfgRetryUsageReservePolicy } from "@oh-my-pi/pi-coding-agent/session/settings";
+
 type AutoRetryStartEvent = Extract<AgentSessionEvent, { type: "auto_retry_start" }>;
 type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
 
 const FALLBACK_TEST_RETRY_AFTER_MS = 60_000;
+
+/** Keep fallback tests on one model; duo routing and the stop gate have separate contracts. */
+function isolatedRetrySettings(overrides: Readonly<Record<string, unknown>>): Settings {
+	return Settings.isolated({ "duo.mode": "off", "autonomy.stopGate": false, ...overrides });
+}
 
 function trackRetryEvents(session: AgentSession): {
 	retryStartEvents: AutoRetryStartEvent[];
@@ -319,7 +328,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -425,20 +434,20 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
 				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
 			},
 			"edit.modelVariants": { [fallbackModel.id]: "replace" },
-		} as Partial<Record<SettingPath, unknown>>);
+		});
 		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
 
 		const renderEditMode = (): string => {
 			const active = session?.model;
 			const selector = active ? `${active.provider}/${active.id}` : "";
-			return settings.getEditVariantForModel(selector) ?? "hashline";
+			return editVariantForModel(settings, selector) ?? "hashline";
 		};
 
 		session = new AgentSession({
@@ -501,7 +510,7 @@ describe("AgentSession retry fallback", () => {
 		// Two chains, joined only by their shared entry: the role chain ends at
 		// the first fallback, which is itself a chain key. Reaching the second
 		// fallback requires re-resolving the chain for the active model.
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -571,7 +580,7 @@ describe("AgentSession retry fallback", () => {
 			firstError: "429 rate_limit_error retry-after-ms=11180001",
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxDelayMs": 100,
@@ -630,7 +639,7 @@ describe("AgentSession retry fallback", () => {
 				kind: "empty-body",
 			}),
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -666,7 +675,7 @@ describe("AgentSession retry fallback", () => {
 		const requestedModels: string[] = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels);
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -740,7 +749,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePct": 10,
@@ -804,7 +813,7 @@ describe("AgentSession retry fallback", () => {
 			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
 			streamFn: mock.stream,
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePolicy": "confirm",
@@ -839,8 +848,8 @@ describe("AgentSession retry fallback", () => {
 
 		await session.prompt("Stay on the primary");
 		await session.waitForIdle();
-		settings.override("retry.usageReservePolicy", "fail-closed");
-		expect(settings.get("retry.usageReservePolicy")).toBe("fail-closed");
+		cfgRetryUsageReservePolicy.override(settings, "fail-closed");
+		expect(cfgRetryUsageReservePolicy.get(settings)).toBe("fail-closed");
 
 		await expect(session.prompt("Do not spend reserve")).rejects.toThrow("reserve policy is fail-closed");
 		expect(confirmFallback).toHaveBeenCalledTimes(1);
@@ -860,7 +869,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.fallbackChains": {
@@ -911,7 +920,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePolicy": "auto",
@@ -980,7 +989,7 @@ describe("AgentSession retry fallback", () => {
 				return createMockModel().stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 		});
@@ -1023,7 +1032,7 @@ describe("AgentSession retry fallback", () => {
 				return createMockModel().stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.fallbackChains": {
@@ -1094,7 +1103,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePolicy": "auto",
@@ -1169,7 +1178,7 @@ describe("AgentSession retry fallback", () => {
 				return createMockModel().stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.fallbackChains": {
@@ -1225,7 +1234,7 @@ describe("AgentSession retry fallback", () => {
 				return createMockModel().stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		const settings = isolatedRetrySettings({ "compaction.enabled": false });
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
@@ -1257,7 +1266,7 @@ describe("AgentSession retry fallback", () => {
 			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
 			streamFn: createMockModel().stream,
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.modelFallback": false,
 			"retry.usageAwareFallback": true,
@@ -1308,7 +1317,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePolicy": "fail-closed",
@@ -1386,7 +1395,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePolicy": "fail-closed",
@@ -1461,7 +1470,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePolicy": "fail-closed",
@@ -1520,7 +1529,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePolicy": "fail-closed",
@@ -1584,7 +1593,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePolicy": "fail-closed",
@@ -1634,7 +1643,7 @@ describe("AgentSession retry fallback", () => {
 		const agent = new Agent({
 			initialState: { model: undefined, systemPrompt: ["Test"], tools: [], messages: [] },
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 		});
@@ -1683,7 +1692,7 @@ describe("AgentSession retry fallback", () => {
 		});
 
 		const primarySelector = "missing-provider/missing-model";
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -1792,7 +1801,7 @@ describe("AgentSession retry fallback", () => {
 			},
 			streamFn: mainMock.stream,
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -1912,7 +1921,7 @@ describe("AgentSession retry fallback", () => {
 			const advisorMock = createMockModel();
 			const requestedModels: Model[] = [];
 			const recovered = Promise.withResolvers<void>();
-			const settings = Settings.isolated({
+			const settings = isolatedRetrySettings({
 				"compaction.enabled": false,
 				"compaction.methodOrder": policy === "remote-disabled" ? ["soft"] : ["remote", "soft"],
 				"retry.baseDelayMs": 5,
@@ -1995,7 +2004,7 @@ describe("AgentSession retry fallback", () => {
 			const advisorMock = createMockModel();
 			const requestedModels: string[] = [];
 			const recovered = Promise.withResolvers<void>();
-			const settings = Settings.isolated({
+			const settings = isolatedRetrySettings({
 				"compaction.enabled": false,
 				"compaction.methodOrder": policy === "remote-disabled" ? ["soft"] : ["remote", "soft"],
 				"retry.baseDelayMs": 5,
@@ -2086,7 +2095,7 @@ describe("AgentSession retry fallback", () => {
 			},
 			streamFn: mainMock.stream,
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -2167,7 +2176,7 @@ describe("AgentSession retry fallback", () => {
 			},
 			streamFn: mainMock.stream,
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -2249,7 +2258,7 @@ describe("AgentSession retry fallback", () => {
 		});
 		// The advisor role chain ends at the first fallback, which owns a chain of
 		// its own. Reaching the second requires re-resolving from the live model.
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -2338,7 +2347,7 @@ describe("AgentSession retry fallback", () => {
 		});
 		const advisorPrimarySelector = `${advisorPrimary.provider}/${advisorPrimary.id}`;
 		const advisorFallbackSelector = `${advisorFallback.provider}/${advisorFallback.id}`;
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"advisor.syncBacklog": "1",
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
@@ -2396,7 +2405,7 @@ describe("AgentSession retry fallback", () => {
 		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels);
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.maxRetries": 1,
 			"retry.fallbackChains": {
@@ -2449,7 +2458,7 @@ describe("AgentSession retry fallback", () => {
 		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels);
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.maxRetries": 1,
 			"retry.fallbackChains": {
@@ -2523,7 +2532,7 @@ describe("AgentSession retry fallback", () => {
 		// subsequent request keeps failing on the same capped account.
 		vi.spyOn(modelRegistry.authStorage.limits, "markReached").mockResolvedValue({ switched: true });
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 2,
@@ -2600,7 +2609,7 @@ describe("AgentSession retry fallback", () => {
 			retryAtMs: Date.now() + 2_000,
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -2667,7 +2676,7 @@ describe("AgentSession retry fallback", () => {
 				return { switched: true };
 			});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 1,
 			"retry.maxRetries": 2,
@@ -2746,7 +2755,7 @@ describe("AgentSession retry fallback", () => {
 					return { switched: true };
 				});
 
-			const settings = Settings.isolated({
+			const settings = isolatedRetrySettings({
 				"compaction.enabled": false,
 				"retry.baseDelayMs": 1,
 				"retry.maxRetries": 2,
@@ -2813,7 +2822,7 @@ describe("AgentSession retry fallback", () => {
 
 		vi.spyOn(modelRegistry.authStorage.limits, "markReached").mockResolvedValue({ switched: false });
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 1,
 			"retry.maxRetries": 1,
@@ -2854,7 +2863,7 @@ describe("AgentSession retry fallback", () => {
 
 		// No exact key for this model and no role assignment: only the
 		// `anthropic/*` wildcard can match, proving provider-level coverage.
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.maxRetries": 1,
 			"retry.fallbackChains": {
@@ -2926,7 +2935,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -3006,7 +3015,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.fallbackChains": {
 				"anthropic/*": [`${fallbackModel.provider}/${fallbackModel.id}`],
@@ -3082,7 +3091,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 1,
 			"retry.maxRetries": 1,
@@ -3164,7 +3173,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 1,
 			"retry.maxRetries": 1,
@@ -3225,7 +3234,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -3269,7 +3278,7 @@ describe("AgentSession retry fallback", () => {
 
 		// `google-vertex/*` is not a fixed target: it must adopt the failing
 		// model's id (google/gemini-2.5-flash -> google-vertex/gemini-2.5-flash).
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.maxRetries": 1,
 			"retry.fallbackChains": {
@@ -3324,7 +3333,7 @@ describe("AgentSession retry fallback", () => {
 		// `openrouter/google/*` splits into provider `openrouter` + id prefix
 		// `google`: the failing bare id is re-prefixed into the aggregator's
 		// namespace (google/gemini-2.5-flash -> openrouter/google/gemini-2.5-flash).
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.maxRetries": 1,
 			"retry.fallbackChains": {
@@ -3379,7 +3388,7 @@ describe("AgentSession retry fallback", () => {
 		// Key `openrouter/google/*` covers only openrouter's google-namespaced
 		// ids; the plain `google-vertex/*` target drops the aggregator's vendor
 		// prefix because vertex only knows the bare id.
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.maxRetries": 1,
 			"retry.fallbackChains": {
@@ -3432,7 +3441,7 @@ describe("AgentSession retry fallback", () => {
 		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels);
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.maxRetries": 1,
 			"retry.fallbackChains": {
@@ -3520,7 +3529,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -3585,6 +3594,126 @@ describe("AgentSession retry fallback", () => {
 		]);
 	});
 
+	it("transfers Anthropic fallback credit redemption across same-provider refusal fallback even with signed thinking", async () => {
+		// Fable → Opus 4.8 is a catalog-permitted fallback-credit target pair.
+		const primaryModel = getBundledModel("anthropic", "claude-fable-5");
+		const fallbackModel = getBundledModel("anthropic", "claude-opus-4-8");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+		const mock = createMockModel({ provider: "anthropic", id: primaryModel.id });
+		const refusalDetails = {
+			type: "refusal",
+			category: "cyber",
+			explanation: "Classifier declined this turn.",
+			fallback_credit_token: "fct_signed_test",
+			fallback_has_prefill_claim: true,
+		};
+		let requestCount = 0;
+		let fallbackTurnRedemption: AnthropicFallbackCreditHandle | undefined;
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: {
+				model: primaryModel,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (model, context, options) => {
+				requestCount++;
+				requestedModels.push(`${model.provider}/${model.id}`);
+				if (requestCount === 1) {
+					mock.push({
+						content: [
+							{ type: "thinking", thinking: "Signed Sonnet reasoning.", thinkingSignature: "sonnet-signature" },
+							"Seeded turn",
+						],
+					});
+				} else if (requestCount === 2) {
+					mock.push({
+						content: [
+							{
+								type: "thinking",
+								thinking: "Fable thinking before refusal.",
+								thinkingSignature: "sig_fable_opaque_signature_12345",
+							},
+						],
+						stopReason: "error",
+						stopDetails: refusalDetails,
+						errorMessage: "Refusal (cyber): Classifier declined this turn.",
+						fallbackCreditHandle: {
+							token: "fct_signed_test",
+							prefillClaim: true,
+							params: { model: primaryModel.id, messages: [{ role: "user", content: "Test prompt" }] },
+							betas: ["fallback-credit-2026-06-01"],
+							expiresAt: Date.now() + 60000,
+						},
+					});
+				} else if (requestCount === 3) {
+					fallbackTurnRedemption = session?.consumeActiveFallbackCreditRedemption(model);
+					mock.push({ content: ["Recovered on Opus with credit"] });
+				} else {
+					throw new Error(
+						`Unexpected model requested during refusal fallback test: ${model.provider}/${model.id}`,
+					);
+				}
+				return mock.stream(model, context, options);
+			},
+		});
+
+		const settings = isolatedRetrySettings({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+			"retry.fallbackRevertPolicy": "cooldown-expiry",
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		session.subscribe(event => {
+			if (event.type === "retry_fallback_applied") {
+				fallbackAppliedEvents.push(event);
+			}
+		});
+
+		await session.prompt("Seed signed thinking");
+		await session.waitForIdle();
+		const seededAssistant = agent.state.messages.findLast(
+			(message): message is AssistantMessage => message.role === "assistant",
+		);
+		if (!seededAssistant) throw new Error("Expected seeded assistant message");
+		seededAssistant.api = primaryModel.api;
+		seededAssistant.provider = primaryModel.provider;
+		seededAssistant.model = primaryModel.id;
+
+		await session.prompt("Recover from classifier refusal with signed thinking");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
+		expect(fallbackAppliedEvents).toHaveLength(1);
+		expect(fallbackAppliedEvents[0].to).toBe(`${fallbackModel.provider}/${fallbackModel.id}`);
+		expect(session.model?.id).toBe(fallbackModel.id);
+		expect(fallbackTurnRedemption).toBeDefined();
+		expect(fallbackTurnRedemption?.token).toBe("fct_signed_test");
+		expect(session.consumeActiveFallbackCreditRedemption(fallbackModel)).toBeUndefined();
+		expect(session.consumeActiveFallbackCreditRedemption()).toBeUndefined();
+	});
+
 	it("drops classifier refusal messages before later prompts", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!primaryModel) {
@@ -3627,7 +3756,7 @@ describe("AgentSession retry fallback", () => {
 			streamFn: (model, context, options) => mock.stream(model, context, options),
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -3709,7 +3838,7 @@ describe("AgentSession retry fallback", () => {
 			streamFn: (model, context, options) => mock.stream(model, context, options),
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -3788,7 +3917,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -3897,7 +4026,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 2,
@@ -3957,7 +4086,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4018,7 +4147,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4101,7 +4230,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4118,7 +4247,6 @@ describe("AgentSession retry fallback", () => {
 			settings,
 			modelRegistry,
 		});
-		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const sleepLongSpy = vi.spyOn(piUtils, "sleepLong").mockResolvedValue(undefined);
 		const { retryStartEvents, retryEndEvents } = trackRetryEvents(session);
 		session.subscribe(event => {
@@ -4182,7 +4310,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4240,7 +4368,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4299,7 +4427,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4361,7 +4489,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4442,7 +4570,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4515,7 +4643,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4573,7 +4701,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4635,7 +4763,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4709,7 +4837,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(requestedModel, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4761,7 +4889,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -4842,7 +4970,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -4898,7 +5026,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -4933,7 +5061,7 @@ describe("AgentSession retry fallback", () => {
 		const requestedModels: string[] = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -5018,7 +5146,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 2,
@@ -5088,7 +5216,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({ "compaction.enabled": false, "retry.baseDelayMs": 5 });
+		const settings = isolatedRetrySettings({ "compaction.enabled": false, "retry.baseDelayMs": 5 });
 		settings.setModelRole("default", `${fastModel.provider}/${fastModel.id}`);
 		session = new AgentSession({
 			agent,
@@ -5188,7 +5316,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": true,
 			"compaction.methodOrder": ["soft"],
 			"compaction.thresholdPercent": 80,
@@ -5302,7 +5430,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": true,
 			"compaction.methodOrder": ["soft"],
 			"compaction.thresholdPercent": 80,
@@ -5387,7 +5515,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": true,
 			"compaction.thresholdPercent": 80,
 			"compaction.thresholdTokens": -1,
@@ -5475,7 +5603,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 1,
 			"retry.maxRetries": 1,
@@ -5546,7 +5674,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -5596,7 +5724,7 @@ describe("AgentSession retry fallback", () => {
 		const requestedModels: string[] = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels, { retryAfterMs: 200 });
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -5650,7 +5778,7 @@ describe("AgentSession retry fallback", () => {
 		const requestedModels: string[] = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels);
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": {
@@ -5694,7 +5822,7 @@ describe("AgentSession retry fallback", () => {
 		const requestedModels: string[] = [];
 		const usageChecks: string[] = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels);
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.usageReservePolicy": "auto",
@@ -5752,7 +5880,7 @@ describe("AgentSession retry fallback", () => {
 		writeModelCache("ollama-cloud", Date.now(), [cachedModel], true, "", path.join(tempDir.path(), "models.db"));
 		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.json"));
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.fallbackChains": { default: ["ollama-cloud/deepseek-v4-pro"] },
 		});
@@ -5802,7 +5930,7 @@ describe("AgentSession retry fallback", () => {
 		expect(coldRegistry.isProviderDiscoveryPending("litellm")).toBe(true);
 		expect(coldRegistry.find("litellm", "Qwen3.8-27B")).toBeUndefined();
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.fallbackChains": {
 				"litellm/Qwen3.8-27B": ["litellm/Qwen3.8-27B-hetzner"],
@@ -5857,7 +5985,7 @@ describe("AgentSession retry fallback", () => {
 			expect(coldRegistry.find("litellm", "Qwen3.8-27B")).toBeUndefined();
 			expect(coldRegistry.isProviderDiscoveryPending("litellm")).toBe(true);
 
-			const settings = Settings.isolated({
+			const settings = isolatedRetrySettings({
 				"compaction.enabled": false,
 				"retry.fallbackChains": {
 					"litellm/Qwen3.8-27B": ["litellm/Qwen3.8-27B-hetzner"],
@@ -5896,7 +6024,7 @@ describe("AgentSession retry fallback", () => {
 	});
 
 	it("defers fallback warnings while a selector's provider discovery is pending, then surfaces them once settled", () => {
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.fallbackChains": {
 				"litellm/Qwen3.8-27B": ["litellm/Qwen3.8-27B-hetzner"],
@@ -5990,7 +6118,7 @@ describe("AgentSession retry fallback", () => {
 		// selector with the full long-context window — what buildSessionOptions
 		// pins as options.model before discovery runs.
 		const staleModel = buildTieredModel(1_050_000, ["text", "image"]);
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		const settings = isolatedRetrySettings({ "compaction.enabled": false });
 		const agent = new Agent({
 			getApiKey: model => `${model.provider}-test-key`,
 			initialState: { model: staleModel, systemPrompt: ["Test"], tools: [], messages: [] },
@@ -6042,7 +6170,7 @@ describe("AgentSession retry fallback", () => {
 		if (!primaryModel) {
 			throw new Error("Expected bundled OpenAI test model to exist");
 		}
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.fallbackChains": {
 				"nonexistent-provider/nonexistent-model": [`${primaryModel.provider}/${primaryModel.id}`],
@@ -6142,7 +6270,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -6215,7 +6343,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -6281,7 +6409,7 @@ describe("AgentSession retry fallback", () => {
 			streamFn: (requestedModel, context, options) => mock.stream(requestedModel, context, options),
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -6347,7 +6475,7 @@ describe("AgentSession retry fallback", () => {
 			streamFn: (requestedModel, context, options) => mock.stream(requestedModel, context, options),
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -6414,7 +6542,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -6475,7 +6603,7 @@ describe("AgentSession retry fallback", () => {
 
 		const requestedModels: string[] = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels);
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
@@ -6516,7 +6644,7 @@ describe("AgentSession retry fallback", () => {
 
 		const requestedModels: string[] = [];
 		const agent = createFallbackAgent(primaryModel, requestedModels);
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
@@ -6572,7 +6700,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 5,
 			"retry.maxRetries": 1,
@@ -6648,7 +6776,7 @@ describe("AgentSession retry fallback", () => {
 				return mock.stream(model, context, options);
 			},
 		});
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.usageAwareFallback": true,
 			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
@@ -6722,7 +6850,7 @@ describe("AgentSession retry fallback", () => {
 			},
 		});
 
-		const settings = Settings.isolated({
+		const settings = isolatedRetrySettings({
 			"compaction.enabled": false,
 			"retry.baseDelayMs": 0,
 			"retry.maxRetries": 2,
@@ -6763,5 +6891,150 @@ describe("AgentSession retry fallback", () => {
 		expect(modelRegistry.isSelectorSuppressed(primarySelector)).toBe(false);
 		const finalAssistant = getLastAssistantMessage(session);
 		expect(finalAssistant.content).toEqual([{ type: "text", text: "Recovered on the same model." }]);
+	});
+
+	it("does not reset the retry budget for a chain entry that resolves to the failing model", async () => {
+		const primaryModel = getBundledModel("openrouter", "z-ai/glm-5.2");
+		if (!primaryModel) {
+			throw new Error("Expected bundled test model to exist");
+		}
+		const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+
+		const mock = createMockModel();
+		const requestedModels: string[] = [];
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				// A permanent route failure: retrying it can never succeed.
+				mock.push({ throw: "500 upstream is unwell" });
+				return mock.stream(model, context, options);
+			},
+		});
+
+		// The chain entry is a DIFFERENT selector string that resolves to the
+		// model already active. `findRetryFallbackCandidates` filters by string,
+		// so it survives the filter and the swap lands on the failing model.
+		const settings = isolatedRetrySettings({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 2,
+			"retry.fallbackChains": { [primarySelector]: ["openrouter/glm-5.2"] },
+		});
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		mockSchedulerWaitWithClock();
+
+		await session.prompt("Fail on a route that cannot recover");
+		await session.waitForIdle();
+
+		// A "switch" onto the model that just failed is not a switch: the retry
+		// budget must still bound the attempts. Before the guard this reset the
+		// budget on every failure and the turn retried without limit.
+		expect(requestedModels.length).toBeLessThanOrEqual(1 + 2);
+		expect(requestedModels.every(selector => selector === primarySelector)).toBe(true);
+		expect(getLastAssistantMessage(session).stopReason).toBe("error");
+	});
+
+	it("treats a chain entry clamped back to the current effort as no switch", async () => {
+		const primaryModel = getBundledModel("openrouter", "z-ai/glm-5.2");
+		if (!primaryModel) {
+			throw new Error("Expected bundled test model to exist");
+		}
+		const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+
+		const mock = createMockModel();
+		const requestedModels: string[] = [];
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				mock.push({ throw: "500 upstream is unwell" });
+				return mock.stream(model, context, options);
+			},
+		});
+
+		// The entry asks for `:high`, but the session ceiling is `low`, so applying
+		// it would clamp straight back to the level already in use: the same
+		// request, and still not a switch.
+		const settings = isolatedRetrySettings({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 2,
+			"retry.fallbackChains": { [primarySelector]: ["openrouter/glm-5.2:high"] },
+		});
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			thinkingLevel: Effort.Low,
+			thinkingLevelCeiling: Effort.Low,
+		});
+		mockSchedulerWaitWithClock();
+
+		await session.prompt("Fail on a route that cannot recover");
+		await session.waitForIdle();
+
+		expect(requestedModels.length).toBeLessThanOrEqual(1 + 2);
+		expect(getLastAssistantMessage(session).stopReason).toBe("error");
+	});
+
+	it("still switches to the same model on a different upstream route", async () => {
+		const openRouterModel = getBundledModel("openrouter", "z-ai/glm-4.7");
+		if (!openRouterModel) {
+			throw new Error("Expected bundled OpenRouter test model to exist");
+		}
+		const routedPrimary = parseModelPattern("openrouter/z-ai/glm-4.7@cerebras", [openRouterModel]).model;
+		if (!routedPrimary) {
+			throw new Error("Expected routed OpenRouter primary to resolve");
+		}
+
+		const mock = createMockModel();
+		const requestedModels: string[] = [];
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: { model: routedPrimary, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (requestedModel, context, options) => {
+				const route = (requestedModel.compat as { openRouterRouting?: { only?: string[] } } | undefined)
+					?.openRouterRouting?.only?.[0];
+				const requested = `${requestedModel.provider}/${requestedModel.id}${route ? `@${route}` : ""}`;
+				requestedModels.push(requested);
+				if (requested === "openrouter/z-ai/glm-4.7@cerebras") mock.push({ throw: "500 upstream is unwell" });
+				else mock.push({ content: [`ok:${requested}`] });
+				return mock.stream(requestedModel, context, options);
+			},
+		});
+
+		// Same provider and id, different endpoint: a real change of request.
+		const settings = isolatedRetrySettings({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 2,
+			"retry.fallbackChains": { default: ["openrouter/z-ai/glm-4.7@chutes"] },
+		});
+		settings.setModelRole("default", "openrouter/z-ai/glm-4.7@cerebras");
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		mockSchedulerWaitWithClock();
+
+		await session.prompt("Fail over to another route of the same model");
+		await session.waitForIdle();
+
+		expect(requestedModels).toContain("openrouter/z-ai/glm-4.7@chutes");
+		expect(getLastAssistantMessage(session).stopReason).not.toBe("error");
 	});
 });

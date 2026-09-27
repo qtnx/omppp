@@ -1,7 +1,7 @@
 /**
  * A workspace tree that pulls a release newer than its last
  * `bun run build:native` keeps loading the previous addon: the loader tolerates
- * the sentinel mismatch by design, so every symbol added after that build is
+ * the release mismatch by design, so every symbol added after that build is
  * absent. The contract pinned here is how that absence surfaces — a bare
  * `undefined` export turned into `<symbol> is not a function` inside whichever
  * tool used it first (every `write` call, after the read-projection guard
@@ -17,15 +17,13 @@ import { describe, expect, it } from "bun:test";
 import "../native";
 import type { NativeAddonStatus } from "../native/loader-state.js";
 import { missingNativeExport, missingNativeExportMessage, nativeAddonStatus } from "../native/loader-state.js";
-import { NATIVE_ABI_VERSION, versionSentinelFor } from "../native/version-sentinel.js";
 
 const addonPath = "/w/packages/natives/native/pi_natives.linux-x64-modern.node";
 
 function status(overrides: Partial<NativeAddonStatus> = {}): NativeAddonStatus {
 	return {
 		path: addonPath,
-		sentinel: "__piNativesV18_1_18",
-		expectedSentinel: "__piNativesV18_2_6",
+		version: "18.1.18",
 		packageVersion: "18.2.6",
 		stale: true,
 		...overrides,
@@ -41,21 +39,20 @@ describe("native exports missing from a stale addon", () => {
 			addonPath,
 			"18.1.18",
 			"18.2.6",
-			"__piNativesV18_2_6",
 			"bun run build:native",
 		]) {
 			expect(() => stub?.()).toThrow(expected);
 		}
 	});
 
-	it("reports a pre-sentinel addon without inventing a version", () => {
-		const message = missingNativeExportMessage("search", status({ sentinel: null }));
-		expect(message).toContain("built before version sentinels existed");
+	it("reports an unidentified addon without inventing a version", () => {
+		const message = missingNativeExportMessage("search", status({ version: null }));
+		expect(message).toContain("an addon without a release stamp");
 		expect(message).toContain("bun run build:native");
 	});
 
 	it("keeps the absence a plain undefined on a current addon", () => {
-		const current = status({ sentinel: "__piNativesV18_2_6", stale: false });
+		const current = status({ version: "18.2.6", stale: false });
 		expect(missingNativeExport("macOSSpellCheckerAvailable", current)).toBeUndefined();
 		expect(missingNativeExportMessage("macOSSpellCheckerAvailable", current)).toContain(addonPath);
 	});
@@ -64,10 +61,9 @@ describe("native exports missing from a stale addon", () => {
 		const loaded = nativeAddonStatus();
 		expect(loaded).not.toBeNull();
 		expect(loaded?.path.endsWith(".node")).toBe(true);
-		// OMPx keys the sentinel on the native ABI version, not the package version.
-		expect(loaded?.expectedSentinel).toBe(versionSentinelFor(NATIVE_ABI_VERSION));
+
 		// Whatever the tree's build state, the flag the stubs branch on must be
-		// the one the sentinels imply.
-		expect(loaded?.stale).toBe(loaded?.sentinel !== loaded?.expectedSentinel);
+		// the one the reported release implies.
+		expect(loaded?.stale).toBe(loaded?.version !== loaded?.packageVersion);
 	});
 });

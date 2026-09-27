@@ -178,7 +178,7 @@ describe("SelectorController workflow transcript opening", () => {
 				.join("\n");
 
 			expect(rendered).toContain("Agent Hub");
-			expect(rendered).not.toContain("Enter:send");
+			expect(rendered).not.toMatch(/⏎:send/);
 
 			transcript.handleInput("\u001B");
 			hub.handleInput("\r");
@@ -187,7 +187,7 @@ describe("SelectorController workflow transcript opening", () => {
 				.render(100)
 				.map(line => Bun.stripANSI(line))
 				.join("\n");
-			expect(reopenedRendered).not.toContain("Enter:send");
+			expect(reopenedRendered).not.toMatch(/⏎:send/);
 
 			AgentRegistry.global().register({
 				id: "workflow-agent-provisional",
@@ -203,7 +203,7 @@ describe("SelectorController workflow transcript opening", () => {
 				.render(100)
 				.map(line => Bun.stripANSI(line))
 				.join("\n");
-			expect(liveRendered).toContain("Enter:send");
+			expect(liveRendered).toMatch(/⏎:send/);
 		} finally {
 			hub.handleInput("\u001B");
 			vi.useRealTimers();
@@ -283,7 +283,10 @@ describe("SelectorController workflow transcript opening", () => {
 			status: "parked",
 		});
 		const lifecycle = AgentLifecycleManager.global();
-		lifecycle.setPersistedSubagentReviverFactory(async () => async () => ({ prompt }) as never, 0);
+		lifecycle.setPersistedSubagentReviverFactory(
+			async () => async () => ({ prompt }) as never,
+			() => 0,
+		);
 		const ensureLive = vi.spyOn(lifecycle, "ensureLive");
 		const workflows = new WorkflowRunRegistry();
 		workflows.ingest({
@@ -314,7 +317,7 @@ describe("SelectorController workflow transcript opening", () => {
 					.render(100)
 					.map(line => Bun.stripANSI(line))
 					.join("\n"),
-			).toContain("Enter:send");
+			).toMatch(/⏎:send/);
 
 			transcript.handleInput("continue the workflow");
 			transcript.handleInput("\r");
@@ -365,7 +368,7 @@ describe("AgentTranscriptViewer workflow transcript submission", () => {
 					.render(100)
 					.map(line => Bun.stripANSI(line))
 					.join("\n"),
-			).toContain("Enter:send");
+			).toMatch(/⏎:send/);
 
 			viewer.handleInput("continue the workflow");
 			viewer.handleInput("\r");

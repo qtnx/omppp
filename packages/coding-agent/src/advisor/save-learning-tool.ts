@@ -7,6 +7,7 @@ import saveLearningDescription from "../prompts/tools/advisor-save-learning.md" 
 import type { TurnSignalService } from "../signals/index";
 import type { ToolSession } from "../tools";
 import { ToolError } from "../tools/tool-errors";
+import { cfgLearningEnabled } from "../learning/settings";
 
 const MAX_LEARNING_CHARS = 400;
 const MIN_LEARNING_CHARS = 20;
@@ -47,7 +48,7 @@ export class SaveLearningTool implements AgentTool<typeof saveLearningSchema> {
 	) {}
 
 	static createIf(session: ToolSession, turnSignals?: TurnSignalService): SaveLearningTool | null {
-		return session.settings.get("learning.enabled") ? new SaveLearningTool(session, turnSignals) : null;
+		return cfgLearningEnabled.get(session.settings) ? new SaveLearningTool(session, turnSignals) : null;
 	}
 
 	async execute(_id: string, params: SaveLearningParams): Promise<AgentToolResult> {

@@ -1,1 +1,10 @@
-Results auto-deliver; a settled `job list`/`job poll` snapshot consumes its delivery, so no duplicate `async-result` follows. NEVER busy-poll: the parent uses `job list` for snapshots and exact-ID `job poll` only when completely blocked, and `job cancel` for stuck or unneeded tasks. `hub`/`irc` are only for peer messaging and explicit reply waits, NEVER subagent completion. Job IDs are process-local: an ID whose result was delivered or recovered by a snapshot expires shortly (~30s) after, while unconsumed rows stay inspectable for up to five minutes after settlement; afterward, use the agent ID with `hub send`, `agent://<id>`, or `history://<id>`. `completed` means the subagent yielded successfully, not that claimed artifacts were verified.
+Results auto-deliver; `read proc://` snapshots do not consume delivery. NEVER busy-poll.{{#if waitTool}} Completely blocked? Call `wait` to receive the first settled job{{#if ircEnabled}} or peer message{{/if}}.{{/if}}
+{{#if ircEnabled}}Coordinate while peers run via `write agent://<id>` (or `agent://all` to broadcast); peer messaging is never subagent completion.{{/if}}
+
+`read proc://<id>` inspects job status/output without consuming delivery. `write proc://<id>/kill` cancels; omit `content`.
+
+Job IDs are process-local; delivered results expire shortly (~30s), unconsumed results within ~5min. Agent output/transcripts remain readable at `agent://<id>` / `history://<id>`.
+`read proc://` lists jobs/services; `read proc://<id>` inspects status/output without consuming delivery. `write proc://<id>/kill` cancels/stops; omit `content`.
+Job IDs are process-local; after delivery expiry use `agent://<id>` or `history://<id>`. `completed` means yielded successfully, not verified artifacts.
+
+`completed`: subagent yielded successfully; claimed artifacts unverified.

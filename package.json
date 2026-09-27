@@ -208,7 +208,9 @@
     "gen:bundle": "bun --cwd=packages/coding-agent run gen:bundle",
     "gen:native": "bun --cwd=packages/natives run gen:native",
     "gen:native:reset": "bun --cwd=packages/natives run gen:native:reset",
-    "check-spoofed-versions": "bun scripts/check-spoofed-versions.ts"
+    "check-spoofed-versions": "bun scripts/check-spoofed-versions.ts",
+    "gen:bazel-lock": "bun scripts/gen-bazel-lock.ts",
+    "gen:glyphs": "bun --cwd=packages/tui run gen:glyphs"
   },
   "devDependencies": {
     "@oh-my-pi/pi-catalog": "1.11.5",

@@ -15,6 +15,7 @@ import { createEvalCustomTools, describeEvalTools } from "@oh-my-pi/pi-coding-ag
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+import { cfgEvalToolsEnabled } from "../../src/eval/settings";
 
 // JS eval cold-starts a Bun worker; under --isolate + high CI concurrency that startup
 // can exceed Bun's 5s default per-test timeout, flaking the suite. Give the worker-backed
@@ -257,7 +258,7 @@ describe("executeJs", () => {
 		});
 		expect(alive.output.trim()).toBe("still here");
 
-		evalSession.settings.set("eval.tools.enabled", false);
+		cfgEvalToolsEnabled.set(evalSession.settings, false);
 		await expect(describeEvalTools(evalSession, ["dbl"])).rejects.toThrow("Eval-defined tools are disabled");
 	});
 

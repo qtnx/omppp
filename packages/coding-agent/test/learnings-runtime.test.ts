@@ -26,6 +26,14 @@ import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import type { SingleResult } from "@oh-my-pi/pi-coding-agent/task";
 import * as taskExecutor from "@oh-my-pi/pi-coding-agent/task/executor";
 import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
+import {
+	cfgLearningConsolidationEnabled,
+	cfgLearningConsolidationIntervalDays,
+	cfgLearningConsolidationMinEntries,
+	cfgLearningConsolidationModels,
+	cfgLearningConsolidationTimeoutMs,
+	cfgLearningHalfLifeDays,
+} from "../src/learning/settings";
 
 interface LearningFixture {
 	agentDir: string;
@@ -1323,12 +1331,12 @@ describe("live learnings runtime", () => {
 		const fx = await createFixture();
 		const consolidationSpy = vi.spyOn(consolidation, "maybeRunLearningConsolidation").mockResolvedValueOnce([]);
 
-		expect(fx.settings.get("learning.halfLifeDays")).toBe(45);
-		expect(fx.settings.get("learning.consolidation.enabled")).toBe(true);
-		expect(fx.settings.get("learning.consolidation.intervalDays")).toBe(1);
-		expect(fx.settings.get("learning.consolidation.minEntries")).toBe(15);
-		expect(fx.settings.get("learning.consolidation.timeoutMs")).toBe(240_000);
-		expect(fx.settings.get("learning.consolidation.models")).toEqual([]);
+		expect(cfgLearningHalfLifeDays.get(fx.settings)).toBe(45);
+		expect(cfgLearningConsolidationEnabled.get(fx.settings)).toBe(true);
+		expect(cfgLearningConsolidationIntervalDays.get(fx.settings)).toBe(1);
+		expect(cfgLearningConsolidationMinEntries.get(fx.settings)).toBe(15);
+		expect(cfgLearningConsolidationTimeoutMs.get(fx.settings)).toBe(240_000);
+		expect(cfgLearningConsolidationModels.get(fx.settings)).toEqual([]);
 		startLearningStartupTask({
 			session: fx.session,
 			settings: fx.settings,

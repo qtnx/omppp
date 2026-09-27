@@ -254,6 +254,7 @@ describe("subagent resource profile", () => {
 			"web_search",
 			"irc",
 			"yield",
+			"wait",
 		]);
 		expect(capturedOptions?.toolNames).not.toContain("context_debug");
 		expect(capturedOptions?.minimalExtensionRuntime).toBe(true);

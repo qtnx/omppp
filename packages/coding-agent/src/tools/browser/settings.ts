@@ -1,0 +1,199 @@
+/**
+ * Settings declared by this domain (see `config/registry.ts`). Declaration order is the
+ * settings-panel order; `config/all-settings.ts` registers every domain.
+ */
+import { register } from "../../config/registry";
+
+export const cfgBrowserEnabled = register({
+	id: "browser.enabled",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "tools",
+		group: "Available Tools",
+		label: "Browser",
+		description: "Enable the browser eval prelude for scripted Chromium automation (Puppeteer)",
+	},
+});
+
+export const cfgBrowserCdpUrl = register({
+	id: "browser.cdpUrl",
+	type: "string",
+	default: undefined,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Browser CDP URL",
+		description:
+			"Default HTTP CDP discovery endpoint (for example http://127.0.0.1:9222) to attach to instead of launching a browser. Explicit app.cdp_url or app.path on the tool call take precedence.",
+	},
+});
+
+export const cfgBrowserRelay = register({
+	id: "browser.relay",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Browser Relay",
+		description:
+			"Drive your own Chrome tabs through the omp browser relay. Install the extension once (`omp browser-relay install`); the relay server auto-starts when the browser prelude needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.",
+	},
+});
+
+export const cfgBrowserRelayUrl = register({
+	id: "browser.relayUrl",
+	type: "string",
+	default: undefined,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Browser Relay URL",
+		description: "omp browser relay endpoint (default http://127.0.0.1:9224).",
+	},
+});
+
+export const cfgBrowserHeadless = register({
+	id: "browser.headless",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Headless Browser",
+		description: "Launch browser in headless mode (disable to show browser UI)",
+	},
+});
+
+export const cfgBrowserCmux = register({
+	id: "browser.cmux",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "cmux Browser",
+		description:
+			"Use cmux WKWebView surfaces for browser automation when a cmux socket is available. Set PI_BROWSER_CMUX=0 or PI_BROWSER_CMUX=1 to override.",
+	},
+});
+
+export const cfgBrowserFreezeOnTurnEnd = register({
+	id: "browser.freezeOnTurnEnd",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Freeze Browser Tabs On Turn End",
+		description:
+			"Freeze OMP-owned headless browser tabs when a turn settles so animated pages stop burning CPU/GPU while idle. Tabs unfreeze automatically on next use; pass persist:true on open to opt a tab out.",
+	},
+});
+
+export const cfgBrowserIdleCloseSec = register({
+	id: "browser.idleCloseSec",
+	type: "number",
+	default: 600,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Browser Idle Close Timeout",
+		description:
+			"Close OMP-owned headless browser tabs idle longer than this many seconds (0 = never; session dispose still reaps). Applies only to OMP-launched headless tabs, never relay/CDP/spawned browsers or other sessions' tabs.",
+		options: [
+			{ value: "0", label: "Never" },
+			{ value: "300", label: "5 minutes" },
+			{ value: "600", label: "10 minutes" },
+			{ value: "900", label: "15 minutes" },
+			{ value: "1800", label: "30 minutes" },
+			{ value: "3600", label: "1 hour" },
+		],
+	},
+});
+
+export const cfgBrowserScreenshotDir = register({
+	id: "browser.screenshotDir",
+	type: "string",
+	default: undefined,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Screenshot Directory",
+		description:
+			"Directory to save screenshots. If unset, screenshots go to a temp file. Supports ~. Examples: ~/Downloads, ~/Desktop, /sdcard/Download (Android)",
+	},
+});
+
+export const cfgBrowserNativeComputerEnabled = register({
+	id: "browser.nativeComputer.enabled",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "tools",
+		group: "Available Tools",
+		label: "OpenAI Browser Computer Use",
+		description:
+			"Expose browser_use: screenshot-driven Computer Use actions in a managed browser for games and graphic UI",
+	},
+});
+
+export const cfgBrowserAnnotateHttpHost = register({
+	id: "browser.annotateHttpHost",
+	type: "string",
+	default: "0.0.0.0",
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Annotate HTTP Host",
+		description:
+			"Bind host for the Chrome-extension annotate intake server (default 0.0.0.0 binds all interfaces so Tailscale/LAN devices can connect; set to 127.0.0.1 to restrict to loopback).",
+	},
+});
+
+export const cfgBrowserAnnotateHttpPort = register({
+	id: "browser.annotateHttpPort",
+	type: "number",
+	default: 3848,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Annotate HTTP Port",
+		description: "Preferred port for the annotate intake server (tries 256 ports starting here when ports are busy).",
+	},
+});
+
+export const cfgBrowserAnnotateDelivery = register({
+	id: "browser.annotateDelivery",
+	type: "enum",
+	values: ["queue", "steer"] as const,
+	default: "queue",
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Annotate Delivery",
+		description: "How browser annotation submissions reach the agent",
+		options: [
+			{
+				value: "queue",
+				label: "Queue",
+				description: "Visible follow-up message processed after the current turn (queued chip in the UI)",
+			},
+			{ value: "steer", label: "Steer", description: "Inject mid-turn between model requests (legacy)" },
+		],
+	},
+});
+
+export const cfgBrowserGpu = register({
+	id: "browser.gpu",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "tools",
+		group: "Grep & Browser",
+		label: "Browser GPU",
+		description:
+			"Use the hardware GPU for WebGL in the headless browser (Vulkan on Linux, Metal on macOS); disable to force software rendering.",
+	},
+});

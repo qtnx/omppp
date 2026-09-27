@@ -9,7 +9,13 @@ import type {
 	ResetCreditTarget,
 	UsageReport,
 } from "@oh-my-pi/pi-ai";
-import { Settings, type SkillsSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import {
+	cfgDisabledExtensions,
+	cfgSkills,
+	cfgSkillsIgnoredSkills,
+	type SkillsSettings,
+} from "../src/extensibility/settings";
 import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { MarketplaceManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
 import type { Skill, SkillWarning } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
@@ -32,6 +38,12 @@ import { type ContextGcStore, openContextGcStore } from "../../context-gc-plugin
 import * as kanban from "../src/kanban";
 import { ensureLinearMcpConfig } from "../src/linear/config";
 import * as linearRuntime from "../src/linear/runtime";
+
+import { cfgBrowserEnabled, cfgBrowserHeadless } from "@oh-my-pi/pi-coding-agent/tools/browser/settings";
+import { cfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
+import { cfgMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/settings";
+import { cfgWorktreeCleanSource } from "@oh-my-pi/pi-coding-agent/task/settings";
+import { cfgCavemanEnabled, cfgPonytailEnabled } from "../src/modes/settings";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -69,7 +81,7 @@ interface FakeAcpBuiltinSession {
 	effectiveExtensionRoots: unknown;
 	setTitleSystemPrompt(prompt: string | undefined): void;
 	setSlashCommands(commands: unknown[]): void;
-	refreshSkills(): Promise<void>;
+	refreshSkillsAndCommands(): Promise<void>;
 	getTodoPhases(): Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
 	setTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	refreshBaseSystemPrompt(): Promise<void>;
@@ -87,7 +99,7 @@ interface FakeAcpBuiltinSession {
 	};
 	setModel(model: unknown): Promise<void>;
 	skills: Skill[];
-	skillsSettings?: SkillsSettings;
+	skillsSettings?: SkillsSettings & { disabledExtensions?: readonly string[] };
 	skillWarnings?: SkillWarning[];
 	workspaceRoots: WorkspaceRoot[];
 	setModelTemporary(model: unknown, thinkingLevel?: string): Promise<void>;
@@ -101,31 +113,6 @@ interface FakeSessionEntry {
 	data?: unknown;
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: kept for symmetry with sibling helpers
-interface FakeAcpBuiltinSessionManager {
-	_sessionFile: string | undefined;
-	_cwd: string;
-	_entries: FakeSessionEntry[];
-	_customEntries: Array<{ customType: string; data: unknown }>;
-	_movedTo: string | undefined;
-	_flushed: boolean;
-	_droppedSessions: string[];
-	_sessionName: string | undefined;
-	getSessionId(): string;
-	getSessionFile(): string | undefined;
-	getEntries(): FakeSessionEntry[];
-	getBranch(): FakeSessionEntry[];
-	appendCustomEntry(customType: string, data?: unknown): string;
-	flush(): Promise<void>;
-	moveTo(newCwd: string): Promise<void>;
-	captureState(): { cwd: string; sessionDir: string };
-	restoreState(snapshot: { cwd: string }): void;
-	rollbackMove(snapshot: { cwd: string; sessionDir: string }): Promise<void>;
-	setSessionFile(sessionFile: string): Promise<void>;
-	dropSession(sessionPath: string): Promise<void>;
-	getCwd(): string;
-	setSessionName(name: string, source: string): Promise<boolean>;
-}
 function createRuntime() {
 	const settings = Settings.isolated();
 	const output: string[] = [];
@@ -146,7 +133,7 @@ function createRuntime() {
 		effectiveExtensionRoots: undefined,
 		setTitleSystemPrompt: (_prompt: string | undefined) => {},
 		setSlashCommands: (_commands: unknown[]) => {},
-		refreshSkills: async () => {},
+		refreshSkillsAndCommands: async () => {},
 		toggleFastMode() {
 			this.fastMode = !this.fastMode;
 			return this.fastMode;
@@ -202,10 +189,10 @@ function createRuntime() {
 		},
 		async refreshBaseSystemPrompt() {},
 		async setCavemanEnabled(enabled: boolean) {
-			settings.override("caveman.enabled", enabled);
+			cfgCavemanEnabled.override(settings, enabled);
 		},
 		async setPonytailEnabled(enabled: boolean) {
-			settings.override("ponytail.enabled", enabled);
+			cfgPonytailEnabled.override(settings, enabled);
 		},
 		// Headless `/move` and `/wt` rebind memory for the destination project.
 		getHindsightSessionState: () => undefined,
@@ -497,11 +484,11 @@ describe("ACP builtin slash commands", () => {
 		const { output, runtime } = createRuntime();
 
 		expect(await executeAcpBuiltinSlashCommand("/extended-context off", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("extendedContext")).toBe(false);
+		expect(cfgExtendedContext.get(runtime.settings)).toBe(false);
 		expect(await executeAcpBuiltinSlashCommand("/extended-context on", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("extendedContext")).toBe(true);
+		expect(cfgExtendedContext.get(runtime.settings)).toBe(true);
 		expect(await executeAcpBuiltinSlashCommand("/extended-context", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("extendedContext")).toBe(false);
+		expect(cfgExtendedContext.get(runtime.settings)).toBe(false);
 		expect(await executeAcpBuiltinSlashCommand("/extended-context status", runtime)).toEqual({ consumed: true });
 		expect(output).toEqual([
 			"Extended context disabled.",
@@ -523,19 +510,19 @@ describe("ACP builtin slash commands", () => {
 		expect(output).toEqual([statusOn]);
 
 		expect(await executeAcpBuiltinSlashCommand("/caveman off", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("caveman.enabled")).toBe(false);
+		expect(cfgCavemanEnabled.get(runtime.settings)).toBe(false);
 		expect(output.at(-1)).toBe([turnedOff, explicitSkill].join("\n"));
 
 		expect(await executeAcpBuiltinSlashCommand("/caveman status", runtime)).toEqual({ consumed: true });
 		expect(output.at(-1)).toBe([statusOff, explicitSkill].join("\n"));
 
 		expect(await executeAcpBuiltinSlashCommand("/caveman on", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("caveman.enabled")).toBe(true);
+		expect(cfgCavemanEnabled.get(runtime.settings)).toBe(true);
 		expect(output.at(-1)).toBe(turnedOn);
 
 		expect(await executeAcpBuiltinSlashCommand("/caveman nope", runtime)).toEqual({ consumed: true });
 		expect(output.at(-1)).toBe("Usage: /caveman [on|off|status]");
-		expect(Settings.isolated().get("caveman.enabled")).toBe(true);
+		expect(cfgCavemanEnabled.get(Settings.isolated())).toBe(true);
 	});
 
 	it("toggles Ponytail mode for this runtime without persisting the setting", async () => {
@@ -546,7 +533,7 @@ describe("ACP builtin slash commands", () => {
 		expect(output).toEqual(["Ponytail mode is on for this session and implementer subagents."]);
 
 		expect(await executeAcpBuiltinSlashCommand("/ponytail off", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("ponytail.enabled")).toBe(false);
+		expect(cfgPonytailEnabled.get(runtime.settings)).toBe(false);
 		expect(output.at(-1)).toBe(
 			["Ponytail mode is off: skill removed from this session and implementer subagents.", explicitSkill].join("\n"),
 		);
@@ -557,12 +544,12 @@ describe("ACP builtin slash commands", () => {
 		);
 
 		expect(await executeAcpBuiltinSlashCommand("/ponytail on", runtime)).toEqual({ consumed: true });
-		expect(runtime.settings.get("ponytail.enabled")).toBe(true);
+		expect(cfgPonytailEnabled.get(runtime.settings)).toBe(true);
 		expect(output.at(-1)).toBe("Ponytail mode is on: skill loaded for this session and implementer subagents.");
 
 		expect(await executeAcpBuiltinSlashCommand("/ponytail nope", runtime)).toEqual({ consumed: true });
 		expect(output.at(-1)).toBe("Usage: /ponytail [on|off|status]");
-		expect(Settings.isolated().get("ponytail.enabled")).toBe(true);
+		expect(cfgPonytailEnabled.get(Settings.isolated())).toBe(true);
 	});
 
 	it("forces a tool and returns remaining prompt text", async () => {
@@ -775,8 +762,8 @@ describe("ACP builtin slash commands", () => {
 			fakeSkill("alpha", "claude:user", "Handles alpha work"),
 			fakeSkill("beta", "native:project", "Handles beta work"),
 		];
-		runtime.settings.set("disabledExtensions" as never, ["skill:disabled-one"] as never);
-		runtime.settings.set("skills.ignoredSkills" as never, ["legacy-*"] as never);
+		cfgDisabledExtensions.set(runtime.settings, ["skill:disabled-one"]);
+		cfgSkillsIgnoredSkills.set(runtime.settings, ["legacy-*"]);
 
 		const result = await executeAcpBuiltinSlashCommand("/skills", runtime);
 
@@ -838,8 +825,8 @@ describe("ACP builtin slash commands", () => {
 	});
 	it("/skills: reports disabled extensions from the session skill snapshot", async () => {
 		const { output, runtime, session } = createRuntime();
-		session.skillsSettings = { disabledExtensions: ["skill:snapshot-disabled"] };
-		runtime.settings.set("disabledExtensions" as never, ["skill:current-disabled"] as never);
+		session.skillsSettings = { ...cfgSkills.get(runtime.settings), disabledExtensions: ["skill:snapshot-disabled"] };
+		cfgDisabledExtensions.set(runtime.settings, ["skill:current-disabled"]);
 
 		const result = await executeAcpBuiltinSlashCommand("/skills", runtime);
 
@@ -1461,7 +1448,7 @@ describe("wave 3 commands", () => {
 
 	it("/wt: with worktree.cleanSource=true, cleans the source checkout while preserving the worktree", async () => {
 		const { output, runtime, fakeSessionManager } = createRuntime();
-		runtime.settings.override("worktree.cleanSource", true);
+		cfgWorktreeCleanSource.override(runtime.settings, true);
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-wt-clean-"));
 		const repoDir = path.join(root, "repo");
 		const worktreeBase = path.join(root, "wt");
@@ -1585,7 +1572,7 @@ describe("wave 3 commands", () => {
 
 	it("/memory stats: still names the backend when a real backend simply has no stats hook", async () => {
 		const { output, runtime } = createRuntime();
-		runtime.settings.set("memory.backend" as never, "local" as never);
+		cfgMemoryBackend.set(runtime.settings, "local");
 		const result = await executeAcpBuiltinSlashCommand("/memory stats", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toBe("Memory stats is not available for the local backend.");
@@ -1604,25 +1591,25 @@ describe("wave 3 commands", () => {
 	// /browser
 	it("/browser visible: sets headless=false; second call is idempotent", async () => {
 		const { runtime } = createRuntime();
-		runtime.settings.set("browser.enabled" as never, true as never);
-		runtime.settings.set("browser.headless" as never, true as never);
+		cfgBrowserEnabled.set(runtime.settings, true);
+		cfgBrowserHeadless.set(runtime.settings, true);
 		const r1 = await executeAcpBuiltinSlashCommand("/browser visible", runtime);
 		expect(r1).toEqual({ consumed: true });
-		expect(runtime.settings.get("browser.headless" as never)).toBe(false);
+		expect(cfgBrowserHeadless.get(runtime.settings)).toBe(false);
 		const r2 = await executeAcpBuiltinSlashCommand("/browser visible", runtime);
 		expect(r2).toEqual({ consumed: true });
-		expect(runtime.settings.get("browser.headless" as never)).toBe(false);
+		expect(cfgBrowserHeadless.get(runtime.settings)).toBe(false);
 	});
 
 	it("/browser no-arg after /browser visible toggles to headless", async () => {
 		const { output, runtime } = createRuntime();
-		runtime.settings.set("browser.enabled" as never, true as never);
-		runtime.settings.set("browser.headless" as never, true as never);
+		cfgBrowserEnabled.set(runtime.settings, true);
+		cfgBrowserHeadless.set(runtime.settings, true);
 		await executeAcpBuiltinSlashCommand("/browser visible", runtime);
 		const r = await executeAcpBuiltinSlashCommand("/browser", runtime);
 		expect(r).toEqual({ consumed: true });
 		expect(output[output.length - 1]).toContain("headless");
-		expect(runtime.settings.get("browser.headless" as never)).toBe(true);
+		expect(cfgBrowserHeadless.get(runtime.settings)).toBe(true);
 	});
 
 	// /compact

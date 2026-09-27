@@ -12,7 +12,7 @@
  * as an error from `drain()`.
  *
  * Each batch registers as an async job under its id so completion auto-delivers
- * a summary to the agent and `hub wait ids:[id]` / `hub cancel` address it. The
+ * a summary to the agent and `wait ids:[id]` / `proc://<id>/kill` address it. The
  * batch survives kernel resets (`attach(id)`) until `close()` or its owner
  * session releases it.
  */
@@ -196,7 +196,7 @@ export class JudgmentBatch {
 	/**
 	 * Kick off the fan-out and register the async job; returns once registered,
 	 * not once done. Without a job manager (or at the running-job limit) the run
-	 * still proceeds — only auto-delivery and `hub` addressing are lost.
+	 * still proceeds — only auto-delivery and `wait` addressing are lost.
 	 */
 	start(): void {
 		this.#emitProgressEvent();

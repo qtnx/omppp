@@ -776,7 +776,7 @@ describe("AgentSession aside delivery", () => {
 		const host: IrcBridgeHost = {
 			agent: {} as Agent,
 			sessionManager: {} as SessionManager,
-			settings: {} as Settings,
+			settings: Settings.isolated(),
 			isDisposed: () => false,
 			isStreaming: () => false,
 			planModeEnabled: () => false,
@@ -820,7 +820,7 @@ describe("AgentSession aside delivery", () => {
 		const host: IrcBridgeHost = {
 			agent: {} as Agent,
 			sessionManager: {} as SessionManager,
-			settings: {} as Settings,
+			settings: Settings.isolated(),
 			isDisposed: () => false,
 			isStreaming: () => false,
 			planModeEnabled: () => false,
@@ -856,7 +856,7 @@ describe("AgentSession aside delivery", () => {
 				emitExternalEvent: (event: { message: AgentMessage }) => emitted.push(event.message),
 			} as unknown as Agent,
 			sessionManager: {} as SessionManager,
-			settings: {} as Settings,
+			settings: Settings.isolated(),
 			isDisposed: () => false,
 			isStreaming: () => false,
 			planModeEnabled: () => false,

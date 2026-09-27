@@ -217,7 +217,13 @@ function Session({ client, onLeave, onRejoin }: SessionProps): ReactNode {
 					/>
 				</>
 			)}
-			<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
+			<Banners
+				phase={snap.phase}
+				endedReason={snap.endedReason}
+				loading={snap.loading}
+				onRejoin={onRejoin}
+				onNewLink={onLeave}
+			/>
 			<Toasts notices={snap.notices} />
 		</div>
 	);

@@ -215,6 +215,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.promptHelp,
 	},
 	{
+		name: "predict",
+		load: () => import("./commands/predict").then(m => m.default),
+		help: commandHelp.predictHelp,
+	},
+	{
 		name: "ps",
 		load: () => import("./commands/ps").then(m => m.default),
 		help: commandHelp.psHelp,

@@ -3,6 +3,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { Settings } from "../src/config/settings";
 import { collectTurnSummaryContext, generateTurnSummary } from "../src/utils/turn-summary-generator";
 
 function getModelOrThrow(id: string): Model<Api> {
@@ -11,15 +12,8 @@ function getModelOrThrow(id: string): Model<Api> {
 	return model;
 }
 
-function createSettings(model: Model<Api>) {
-	return {
-		getModelRole(role: string) {
-			return role === "smol" ? `${model.provider}/${model.id}` : undefined;
-		},
-		getStorage() {
-			return undefined;
-		},
-	} as never;
+function createSettings(model: Model<Api>): Settings {
+	return Settings.isolated({ modelRoles: { smol: `${model.provider}/${model.id}` } });
 }
 
 function createRegistry(model: Model<Api>) {
