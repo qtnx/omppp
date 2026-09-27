@@ -2802,6 +2802,7 @@ describe("AgentSession message pipeline", () => {
 			settings: Settings.isolated({
 				"duo.mode": "off",
 				"autonomy.stopGate": false,
+				"advisor.enabled": false,
 				"compaction.enabled": false,
 				"bash.autoBackground.enabled": false,
 				"bashInterceptor.enabled": false,
