@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Herdr showing `ompx` panes as unknown instead of working/idle on Linux; no `ompx herdr install` symlink is needed anymore.
+
 ## [18.3.4] - 2026-09-27
 
 - Mark a secret in the prompt with `||value||`, `<sec NAME>value</sec>`, or `NAME=<sec>value</sec>`; the env var name comes from the tag or the assignment.

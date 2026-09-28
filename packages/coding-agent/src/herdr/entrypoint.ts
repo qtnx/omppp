@@ -13,9 +13,17 @@
  * symlink beside the real executable makes `comm` read `omp` and herdr keeps
  * ownership of the named agent — with no change on the herdr side.
  *
- * This is opt-in (`ompx herdr install`) because the name is shared with
- * upstream `omp`: silently claiming it would hijack a real installation.
+ * On Linux the same identity check also gates lifecycle reports: herdr drops
+ * every `pane.report_agent` for kind `omp` while the pane's foreground process
+ * is not named `omp`, so an `ompx` pane stays `unknown` forever. There the
+ * kernel lets a process rename itself through `/proc/self/comm`, which
+ * {@link claimHerdrOmpProcessName} does at reporter startup — no install step.
+ *
+ * The symlink stays opt-in (`ompx herdr install`) because the name is shared
+ * with upstream `omp`: silently claiming a PATH entry would hijack a real
+ * installation. It remains the route on platforms without `/proc/self/comm`.
  */
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -23,6 +31,24 @@ import { $which, isEnoent, logger } from "@oh-my-pi/pi-utils";
 
 /** The name herdr's `omp` kind expects in the pane's process table. */
 export const HERDR_OMP_ENTRYPOINT_NAME = "omp";
+
+/**
+ * Rename this process (its `comm`) to `omp` so herdr attributes the pane to
+ * its `omp` agent kind and accepts our lifecycle reports. Linux-only; returns
+ * false where `/proc/self/comm` is absent or not writable (macOS, sandboxes),
+ * leaving `ompx herdr install` as the fallback.
+ */
+export function claimHerdrOmpProcessName(): boolean {
+	if (process.platform !== "linux") return false;
+	try {
+		if (fsSync.readFileSync("/proc/self/comm", "utf8").trim() === HERDR_OMP_ENTRYPOINT_NAME) return true;
+		fsSync.writeFileSync("/proc/self/comm", HERDR_OMP_ENTRYPOINT_NAME);
+		return true;
+	} catch (error) {
+		logger.debug("herdr-entrypoint: process rename failed", { error: String(error) });
+		return false;
+	}
+}
 
 /** Shell rc files that commonly define an `alias omp=…` shadowing the link. */
 const SHELL_RC_FILES = [".zshrc", ".bashrc", ".bash_profile", ".profile"];
