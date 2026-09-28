@@ -32,8 +32,22 @@ export const cfgSecretsAutoDetect = register({
 	ui: {
 		tab: "providers",
 		group: "Privacy",
-		label: "Auto-detect Prompt Secrets",
-		description: "Detect credential-shaped tokens and secret tags in prompts before sending to AI providers",
+		label: "Auto-detect Secrets",
+		description:
+			"Detect secrets in prompts and bash output, store them in the vault, and show the model only their env var names",
+	},
+});
+
+export const cfgSecretsSentinelUrl = register({
+	id: "secrets.sentinelUrl",
+	type: "string",
+	default: "http://codemc:8795",
+	ui: {
+		tab: "providers",
+		group: "Privacy",
+		label: "Secrets Sentinel Server",
+		description:
+			"Secrets Sentinel classifier server that catches passwords and keys regex detection misses. Defaults to codemc on the tailnet; when it is unreachable, detection uses regex only. Leave empty to disable. SECRETS_SENTINEL_URL overrides this.",
 	},
 });
 

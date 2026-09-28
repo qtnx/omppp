@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Secrets in prompts and bash output are now also caught by the Secrets Sentinel classifier (`hypn05/secrets-sentinel`), vaulted, and shown to the model and transcript only as their env var names. Sessions use the shared server at `secrets.sentinelUrl` (default `http://codemc:8795`, override with `SECRETS_SENTINEL_URL`, empty to disable) and fall back to regex detection when it is unreachable; run it with `scripts/secrets-sentinel/server.py`.
+
 ## [18.3.4] - 2026-09-27
 
 - Mark a secret in the prompt with `||value||`, `<sec NAME>value</sec>`, or `NAME=<sec>value</sec>`; the env var name comes from the tag or the assignment.
