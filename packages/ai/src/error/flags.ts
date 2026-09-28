@@ -455,9 +455,17 @@ export function isStreamEnvelopeErrorText(text: string): boolean {
 	return text.includes(STREAM_ENVELOPE_ERROR_PREFIX);
 }
 
+/**
+ * Node/undici surface a peer-reset response body as a bare `Error: aborted`
+ * (no `AbortError` name, no status). A caller-initiated abort reads
+ * "Request was aborted" instead, so the bare form is a dropped connection.
+ */
+const CONNECTION_ABORTED_PATTERN = /^(?:error:\s*)?(?:request failed:\s*)?aborted\.?$/i;
+
 function isTransientErrorText(text: string): boolean {
 	return (
 		isUnexpectedSocketCloseMessage(text) ||
+		CONNECTION_ABORTED_PATTERN.test(text.trim()) ||
 		isStreamReadErrorText(text) ||
 		PYTHON_HTTP2_STREAM_RESET_PATTERN.test(text) ||
 		PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(text) ||

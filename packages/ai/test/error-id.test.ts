@@ -44,11 +44,21 @@ describe("error-id classification", () => {
 	});
 
 	it("classifies provider connection failures as transient", () => {
-		for (const errorMessage of ["Unable to connect. Is the computer able to access the url?", "Socket is closed"]) {
+		for (const errorMessage of [
+			"Unable to connect. Is the computer able to access the url?",
+			"Socket is closed",
+			"aborted",
+			"Request failed: aborted",
+		]) {
 			const id = AIError.classifyMessage(message({ errorMessage }));
 			expect(AIError.is(id, AIError.Flag.Transient)).toBe(true);
 			expect(AIError.retriable(id)).toBe(true);
 		}
+	});
+
+	it("keeps a caller-initiated abort out of the transient class", () => {
+		const id = AIError.classifyMessage(message({ errorMessage: "Request was aborted" }));
+		expect(AIError.retriable(id)).toBe(false);
 	});
 
 	it.each([

@@ -1180,8 +1180,9 @@ describe("AgentSession payload-rejection 413 handling", () => {
 		await session.prompt("work on the goal");
 		await session.waitForIdle();
 
-		expect(requestedModels.slice(0, 2)).toEqual([
-			"anthropic/claude-sonnet-4-5",
+		// Same ladder as non-goal turns: five same-model backoff retries, then the chain.
+		expect(requestedModels.slice(0, 7)).toEqual([
+			...Array(6).fill("anthropic/claude-sonnet-4-5"),
 			`${fallbackModel.provider}/${fallbackModel.id}`,
 		]);
 		expect(session.model?.provider).toBe(fallbackModel.provider);

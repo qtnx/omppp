@@ -1513,6 +1513,7 @@ describe("AgentSession retry delay cap", () => {
 			"retry.maxDelayMs": 300_000,
 			"retry.maxRetries": 3,
 			"retry.modelFallback": true,
+			"retry.retriesBeforeFallback": 0,
 			"retry.fallbackChains": {
 				default: [
 					`${alternateOpenCodeModel.provider}/${alternateOpenCodeModel.id}`,

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Dropped connections, server errors, and overloads now retry the same model up to 5 times with backoff before switching to a fallback model (`retry.retriesBeforeFallback`); rate-limit and quota errors still switch immediately
+
+### Fixed
+
+- A connection that drops with a bare `aborted` error is now retried instead of immediately falling back to another model
+
 ## [18.3.4] - 2026-09-27
 
 - Mark a secret in the prompt with `||value||`, `<sec NAME>value</sec>`, or `NAME=<sec>value</sec>`; the env var name comes from the tag or the assignment.

@@ -726,6 +726,25 @@ export const cfgRetryModelFallback = register({
 	},
 });
 
+export const cfgRetryRetriesBeforeFallback = register({
+	id: "retry.retriesBeforeFallback",
+	type: "number",
+	default: 5,
+	ui: {
+		tab: "model",
+		group: "Retry & Fallback",
+		label: "Retries Before Fallback",
+		description:
+			"Backoff retries on the same model before switching to a fallback model. Rate-limit and quota errors switch immediately.",
+		options: [
+			{ value: "0", label: "Switch immediately" },
+			{ value: "1", label: "1 retry" },
+			{ value: "3", label: "3 retries" },
+			{ value: "5", label: "5 retries" },
+		],
+	},
+});
+
 export const cfgRetryUsageAwareFallback = register({
 	id: "retry.usageAwareFallback",
 	type: "boolean",
@@ -833,6 +852,7 @@ export const cfgRetry = combine({
 	maxDelayMs: cfgRetryMaxDelayMs,
 	waitForUsageReset: cfgRetryWaitForUsageReset,
 	modelFallback: cfgRetryModelFallback,
+	retriesBeforeFallback: cfgRetryRetriesBeforeFallback,
 	usageAwareFallback: cfgRetryUsageAwareFallback,
 	usageReservePct: cfgRetryUsageReservePct,
 	usageReservePolicy: cfgRetryUsageReservePolicy,
