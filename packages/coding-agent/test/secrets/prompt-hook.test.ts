@@ -258,4 +258,32 @@ describe("AgentSession prompt secret detection", () => {
 		expect(persistedJson).not.toContain(secret);
 		expect(persistedJson).toMatch(/\$\$POSTMERGETOKEN_[A-Z0-9]+:[A-Z]\$\$/);
 	});
+
+	it("vaults secrets found in bash output and shows the model only the env var name", async () => {
+		const vault = new FakeSecretVault();
+		const session = createSession(true, vault);
+		sessions.push(session);
+		const output = "DB_PASSWORD=hunter2-prod-2024\nready";
+		const runHook = (toolName: string) =>
+			session.agent.afterToolCall?.({
+				toolCall: { type: "toolCall", id: `call-${toolName}`, name: toolName, arguments: {} },
+				result: { content: [{ type: "text", text: output }], details: {} },
+				isError: false,
+				args: {},
+			} as never);
+
+		const bash = await runHook("bash");
+		const read = await runHook("read");
+
+		expect(vault.calls).toEqual([{ name: "DB_PASSWORD", value: "hunter2-prod-2024", source: "detected" }]);
+		expect(bash?.content).toEqual([
+			{
+				type: "text",
+				text: expect.stringMatching(
+					/^DB_PASSWORD=\[secret DB_PASSWORD \([^)]*\) — exported as env var DB_PASSWORD in bash\]\nready$/,
+				),
+			},
+		]);
+		expect(read?.content).toBeUndefined();
+	});
 });
