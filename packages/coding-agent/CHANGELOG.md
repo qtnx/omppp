@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Claude Opus 5.5 and later now get their own system-prompt notes: decide routing and rules once, stop re-checking settled facts, write plans and docs to disk early instead of composing them in reasoning, and list every case (other places reading the same data, variants, pending/failed/reloaded states) once before editing. In local A/B runs at xhigh thinking, plan requests finished in every run (median about 10 minutes) instead of hitting the 20-minute cap in 3 of 5, and bug fixes covered more cases.
+- Bug-fix guidance no longer stops the sibling search after one lookup; it follows every place that reads the faulty data.
 - Fixed Herdr showing `ompx` panes as unknown instead of working/idle on Linux; no `ompx herdr install` symlink is needed anymore.
 
 ## [18.3.4] - 2026-09-27
