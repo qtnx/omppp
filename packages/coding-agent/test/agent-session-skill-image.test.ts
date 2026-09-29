@@ -120,7 +120,8 @@ it("describes a pasted image in an idle user-invoked skill before the main model
 it("describes a queued user-invoked skill image before delivery", async () => {
 	const { session, mock, visionCalls } = setup();
 	await session.promptCustomMessage(skill, { streamingBehavior: "followUp", queueOnly: true });
-	await session.prompt("kickoff");
+	// OMPx drains a queued follow-up as the opening turn of an empty session, so the
+	// queued skill starts its own turn instead of waiting for a kickoff prompt.
 	await session.waitForIdle();
 	expect(visionCalls()).toBe(1);
 	const skillRequest = mock.calls.find(call =>
