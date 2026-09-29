@@ -149,27 +149,6 @@ describe("system prompt model identifier", () => {
 		expect(await render("anthropic/claude-opus-5")).not.toContain("# OpenAI GPT model notes");
 	});
 
-	it("adds the Claude Opus model notes for Opus 5.5 and later only", async () => {
-		const render = async (model: string) => {
-			const { systemPrompt } = await buildSystemPrompt({
-				cwd: tempDir,
-				contextFiles: [],
-				skills: [],
-				rules: [],
-				toolNames: [],
-				workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
-				model,
-			});
-			return systemPrompt.join("\n\n");
-		};
-		const opus55 = await render("anthropic/claude-opus-5-5");
-		expect(opus55).toContain("# Claude Opus model notes");
-		expect(opus55).not.toContain("# OpenAI GPT model notes");
-		expect(await render("anthropic/claude-opus-5")).not.toContain("# Claude Opus model notes");
-		expect(await render("anthropic/claude-sonnet-4-5")).not.toContain("# Claude Opus model notes");
-		expect(await render("openai-codex/gpt-6-astra")).not.toContain("# Claude Opus model notes");
-	});
-
 	it("preserves project rules and tool context for codex-family model ids", async () => {
 		const tools = new Map<string, SystemPromptToolMetadata>([
 			["read", { label: "Read", description: "Read files", wireName: "read" }],

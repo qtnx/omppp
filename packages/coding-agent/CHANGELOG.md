@@ -15,7 +15,7 @@
 
 ### Fixed
 
-- Claude Opus 5.5 and later now get their own system-prompt notes: decide routing and rules once, stop re-checking settled facts, write plans and docs to disk early instead of composing them in reasoning, and list every case (other places reading the same data, variants, pending/failed/reloaded states) once before editing. In local A/B runs at xhigh thinking, plan requests finished in every run (median about 10 minutes) instead of hitting the 20-minute cap in 3 of 5, and bug fixes covered more cases.
+- The convergence and case-coverage guidance is now part of the shared system prompt for every model instead of a Claude Opus-only block: decide routing and rules once, stop re-checking settled facts, write plans and docs to disk early instead of composing them in reasoning, and list every case (other places reading the same data, variants, pending/failed/reloaded states) once before editing. In local A/B runs at xhigh thinking, Claude Opus 5.5 plan requests finished in every run instead of hitting the 20-minute cap in 3 of 5, and GPT-6 Astra plan requests finished about 17% faster (median 785s vs 950s) with the same coverage.
 - Bug-fix guidance no longer stops the sibling search after one lookup; it follows every place that reads the faulty data.
 - Fixed Herdr showing `ompx` panes as unknown instead of working/idle on Linux; no `ompx herdr install` symlink is needed anymore.
 
