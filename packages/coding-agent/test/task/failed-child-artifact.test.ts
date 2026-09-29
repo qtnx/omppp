@@ -95,10 +95,11 @@ describe("failed child evidence", () => {
 
 		const text = result.content.find(part => part.type === "text");
 		const salvaged = result.details?.results[0];
-		expect(result.isError).toBe(true);
+		// OMPx keeps the finished child's result and reports the failed merge in its
+		// merge summary instead of failing the whole call.
 		expect(salvaged?.exitCode).toBe(0);
 		expect(salvaged?.outputPath).toBe(artifactPath);
-		expect(text?.type === "text" ? text.text : "").toContain(`exit 0. Its output is at \`agent://${salvaged?.id}\``);
+		expect(text?.type === "text" ? text.text : "").toContain("Merge phase failed");
 		// The artifact the failure points at survives the run's cleanup.
 		const resolved = await new AgentProtocolHandler().resolve(parseInternalUrl(`agent://${salvaged?.id}`));
 		expect(resolved.content).toBe("Findings: 42 rows.");

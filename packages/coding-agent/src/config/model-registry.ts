@@ -3037,6 +3037,9 @@ export class ModelRegistry {
 		options?: { signal?: AbortSignal },
 	): Promise<string | undefined> {
 		if (this.#isProviderDisabled(model.provider)) return undefined;
+		if (model.provider === "tnx" && this.authStorage.keys.source(model.provider) === undefined) {
+			return TNX_DEFAULT_API_KEY;
+		}
 		if (this.#isKeylessProvider(model.provider)) {
 			return kNoAuth;
 		}
@@ -3084,6 +3087,9 @@ export class ModelRegistry {
 	): Promise<ResolvedApiKey | undefined> {
 		if (this.#isProviderDisabled(provider)) return undefined;
 		if (options?.forceRefresh) this.#invalidateProviderCommandConfigs(provider);
+		if (provider === "tnx" && this.authStorage.keys.source(provider) === undefined) {
+			return { apiKey: TNX_DEFAULT_API_KEY };
+		}
 		if (this.#isKeylessProvider(provider)) {
 			return { apiKey: kNoAuth };
 		}

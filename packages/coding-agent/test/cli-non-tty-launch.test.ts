@@ -27,6 +27,9 @@ async function launchWithoutTerminal(
 ): Promise<LaunchRun> {
 	const home = tempDir.join("home");
 	fs.mkdirSync(home, { recursive: true });
+	// OMPx bundles a keyed TNX fallback provider; disable it so the isolated home
+	// really has no usable model.
+	await Bun.write(path.join(home, ".omp", "agent", "config.yml"), "disabledProviders:\n  - tnx\n");
 	// Isolated home and no credentials: print mode can only end at the headless
 	// "No models available" exit, which the interactive path never reaches.
 	const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, NO_COLOR: "1" };

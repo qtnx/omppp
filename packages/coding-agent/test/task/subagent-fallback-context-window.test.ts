@@ -45,7 +45,9 @@ describe("subagent context window after a model swap", () => {
 
 	it("follows the serving model's window", async () => {
 		const primary = model("sub-omp", "k3-256k", 256_000);
+		// Catalog policy may clamp the declared window; the swap must report the built model's window.
 		const fallback = model("openai-codex", "gpt-6-sol", 500_000);
+		expect(fallback.contextWindow).not.toBe(primary.contextWindow);
 		const snapshots: AgentProgress[] = [];
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async () => {
 			let activeModel = primary;
@@ -122,10 +124,10 @@ describe("subagent context window after a model swap", () => {
 		});
 
 		expect(result.resolvedModelIdentity).toBe("openai-codex/gpt-6-sol");
-		expect(result.contextWindow).toBe(500_000);
+		expect(result.contextWindow).toBe(fallback.contextWindow ?? undefined);
 		// The hub polls streamed progress, not just the settled result.
 		expect(
 			snapshots.findLast(snapshot => snapshot.resolvedModelIdentity === "openai-codex/gpt-6-sol")?.contextWindow,
-		).toBe(500_000);
+		).toBe(fallback.contextWindow ?? undefined);
 	});
 });

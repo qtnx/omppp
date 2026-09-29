@@ -453,14 +453,16 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
  * `isolated` (batch form) wins over the top-level flag (flat form).
  */
 function spawnParamsFor(params: TaskParams, item: TaskItem, defaultAgent: string): TaskParams {
-	const spawn: TaskParams = {
-		agent: item.agent?.trim() || params.agent?.trim() || defaultAgent,
-		name: item.name ?? item.id,
-		task: item.task ?? item.assignment,
-		description: item.description,
-		role: item.role,
-		model: item.model ?? params.model,
-	};
+	// Undefined fields stay absent: speculative launches compare spawns as canonical JSON.
+	const spawn: TaskParams = { agent: item.agent?.trim() || params.agent?.trim() || defaultAgent };
+	const name = item.name ?? item.id;
+	if (name !== undefined) spawn.name = name;
+	const task = item.task ?? item.assignment;
+	if (task !== undefined) spawn.task = task;
+	if (item.description !== undefined) spawn.description = item.description;
+	if (item.role !== undefined) spawn.role = item.role;
+	const model = item.model ?? params.model;
+	if (model !== undefined) spawn.model = model;
 	if (item.max_runtime_seconds !== undefined) {
 		spawn.max_runtime_seconds = item.max_runtime_seconds;
 	} else if (params.max_runtime_seconds !== undefined) {
@@ -498,19 +500,9 @@ interface SpawnPlan {
  * by dispatch and the speculative launcher so both derive identical spawns.
  */
 function planSpawns(rawParams: unknown, batchEnabled: boolean, defaultAgent: string): SpawnPlan | string {
-	const repaired = repairTaskParams(rawParams as TaskParams);
-	const error = validateShapeParams(batchEnabled, repaired) ?? validateSpawnParams(repaired, batchEnabled);
+	const params = repairTaskParams(rawParams as TaskParams);
+	const error = validateShapeParams(batchEnabled, params) ?? validateSpawnParams(params, batchEnabled);
 	if (error) return error;
-	const params: TaskParams = {
-		...repaired,
-		name: repaired.name ?? repaired.id,
-		task: repaired.task ?? repaired.assignment,
-		tasks: repaired.tasks?.map(item => ({
-			...item,
-			name: item.name ?? item.id,
-			task: item.task ?? item.assignment,
-		})),
-	};
 	const items = resolveSpawnItems(params);
 	return { params, items, spawns: items.map(item => spawnParamsFor(params, item, defaultAgent)) };
 }

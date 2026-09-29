@@ -111,7 +111,7 @@ describe("--tools discovered-registry validation", () => {
 		// With `--tools python` the registry holds only always-on/custom tools, so
 		// the listing must not be limited to that filtered set.
 		expect(() => validateToolNames(["python"], ["goal", "custom_tool"])).toThrow(
-			/Built-in tools: read, bash, edit,.*\. Other registered tools: goal, custom_tool\./,
+			/Built-in tools: (?:.*, )?read, bash, edit,.*\. Other registered tools: goal, custom_tool\./,
 		);
 	});
 

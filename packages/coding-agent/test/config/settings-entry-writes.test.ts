@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type RawSettings, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { type RawSettings, SETUP_CONFIG_VERSION, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { cfgTaskDisabledAgents } from "@oh-my-pi/pi-coding-agent/task/settings";
@@ -37,10 +37,15 @@ describe("Settings entry-level writes", () => {
 	});
 
 	const configPath = () => path.join(agentDir, "config.yml");
-	const readConfig = async (): Promise<RawSettings> => YAML.parse(await Bun.file(configPath()).text()) as RawSettings;
+	// OMPx runs its setup-config migration on any config without the current setupVersion; seed it
+	// so these tests observe only their own entry writes, and hide it from the asserted file shape.
+	const readConfig = async (): Promise<RawSettings> => {
+		const { setupVersion: _setupVersion, ...config } = YAML.parse(await Bun.file(configPath()).text()) as RawSettings;
+		return config;
+	};
 
 	async function load(config: RawSettings, overlay: RawSettings): Promise<Settings> {
-		await Bun.write(configPath(), YAML.stringify(config));
+		await Bun.write(configPath(), YAML.stringify({ setupVersion: SETUP_CONFIG_VERSION, ...config }));
 		await Bun.write(overlayPath, YAML.stringify(overlay));
 		return Settings.loadIsolated({ agentDir, cwd, configFiles: [overlayPath] });
 	}
