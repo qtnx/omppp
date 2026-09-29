@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Dropped connections, server errors, and overloads now retry the same model up to 5 times with backoff before switching to a fallback model (`retry.retriesBeforeFallback`); rate-limit and quota errors still switch immediately
+
+### Fixed
+
+- A connection that drops with a bare `aborted` error is now retried instead of immediately falling back to another model
 ### Added
 
 - Secrets in prompts and bash output are now also caught by the Secrets Sentinel classifier (`hypn05/secrets-sentinel`), vaulted, and shown to the model and transcript only as their env var names. Sessions use the shared server at `secrets.sentinelUrl` (default `http://codemc:8795`, override with `SECRETS_SENTINEL_URL`, empty to disable) and fall back to regex detection when it is unreachable; run it with `scripts/secrets-sentinel/server.py`.

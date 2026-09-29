@@ -50,9 +50,17 @@ type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
 
 const FALLBACK_TEST_RETRY_AFTER_MS = 60_000;
 
-/** Keep fallback tests on one model; duo routing and the stop gate have separate contracts. */
+/**
+ * Keep fallback tests on one model; duo routing and the stop gate have separate contracts.
+ * Chain-walk tests fail over on the first error; the same-model retry gate has its own tests.
+ */
 function isolatedRetrySettings(overrides: Readonly<Record<string, unknown>>): Settings {
-	return Settings.isolated({ "duo.mode": "off", "autonomy.stopGate": false, ...overrides });
+	return Settings.isolated({
+		"duo.mode": "off",
+		"autonomy.stopGate": false,
+		"retry.retriesBeforeFallback": 0,
+		...overrides,
+	});
 }
 
 function trackRetryEvents(session: AgentSession): {
@@ -733,6 +741,74 @@ describe("AgentSession retry fallback", () => {
 		]);
 		expect(appliedFromExtension).toEqual(appliedFromSubscribe.map(({ from, to, role }) => ({ from, to, role })));
 		expect(succeededFromExtension).toEqual(succeededFromSubscribe.map(({ model, role }) => ({ model, role })));
+	});
+
+	it("retries a dropped connection on the same model before consulting the fallback chain", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const mock = createMockModel();
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				// Bare `aborted` is how a peer-reset response body surfaces; it never clears here.
+				if (model.id === primaryModel.id) mock.push({ throw: "aborted" });
+				else mock.push({ content: ["Recovered on fallback"] });
+				return mock.stream(model, context, options);
+			},
+		});
+
+		const settings = isolatedRetrySettings({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 1,
+			"retry.retriesBeforeFallback": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+		const { retryStartEvents } = trackRetryEvents(session);
+
+		await session.prompt("Recover from a dropped connection");
+		await session.waitForIdle();
+
+		const primary = `${primaryModel.provider}/${primaryModel.id}`;
+		expect(requestedModels).toEqual([...Array(6).fill(primary), `${fallbackModel.provider}/${fallbackModel.id}`]);
+		// Five backoff retries on the primary; the sixth failure switches without waiting.
+		expect(retryStartEvents.map(event => event.delayMs > 0)).toEqual([true, true, true, true, true, false]);
+		expect(session.model?.id).toBe(fallbackModel.id);
+	});
+
+	it("fails over on a rate limit without spending same-model retries", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) {
+			throw new Error("Expected bundled test models to exist");
+		}
+
+		const requestedModels: string[] = [];
+		const agent = createFallbackAgent(primaryModel, requestedModels);
+		const settings = isolatedRetrySettings({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 1,
+			"retry.retriesBeforeFallback": 5,
+			"retry.fallbackChains": { default: [`${fallbackModel.provider}/${fallbackModel.id}`] },
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+
+		await session.prompt("Recover from a rate limit");
+		await session.waitForIdle();
+
+		expect(requestedModels).toEqual([
+			`${primaryModel.provider}/${primaryModel.id}`,
+			`${fallbackModel.provider}/${fallbackModel.id}`,
+		]);
 	});
 
 	it("confirms before crossing models when every pooled account is inside reserve", async () => {

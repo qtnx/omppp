@@ -291,6 +291,8 @@ export class TurnRecovery {
 	readonly #host: TurnRecoveryHost;
 	#retryAbortController: AbortController | undefined;
 	#retryAttempt = 0;
+	/** `#retryAttempt` value when the current retry saga last switched models. */
+	#retryAttemptAtModelSwitch = 0;
 	#requestBodyReadTimeoutRecoveryPromptSequence: number | undefined;
 	#retryPromise: Promise<void> | undefined;
 	#retryResolve: (() => void) | undefined;
@@ -2305,6 +2307,7 @@ export class TurnRecovery {
 
 		const generation = this.#host.promptGeneration();
 		this.#retryAttempt++;
+		if (this.#retryAttempt === 1) this.#retryAttemptAtModelSwitch = 0;
 
 		// Create retry promise on first attempt so waitForRetry() can await it
 		// Ensure only one promise exists (avoid orphaned promises from concurrent calls)
@@ -2332,6 +2335,24 @@ export class TurnRecovery {
 			((classifierRefusal || AIError.is(id, AIError.Flag.MalformedFunctionCall) || AIError.retriable(id)) &&
 				this.#unexecutedToolCallsReplaySafe(message));
 		const rateLimitReason = parseRateLimitReason(errorMessage);
+		// Transient failures (dropped streams, aborted sockets, 5xx, overload)
+		// usually clear on the same model: back off and retry it before
+		// consulting the chain. Rate-limit and quota failures fail over at once.
+		const rateOrQuotaLimited =
+			AIError.is(id, AIError.Flag.UsageLimit) ||
+			message.errorStatus === 429 ||
+			message.errorStatus === 402 ||
+			rateLimitReason === "RATE_LIMIT_EXCEEDED" ||
+			rateLimitReason === "CONCURRENT_LIMIT" ||
+			rateLimitReason === "QUOTA_EXHAUSTED" ||
+			rateLimitReason === "INSUFFICIENT_G1_CREDITS_BALANCE";
+		const sameModelRetriesPending =
+			!options?.hardErrorFallback &&
+			!classifierRefusal &&
+			!rateOrQuotaLimited &&
+			!retryBudgetExhausted &&
+			this.#retryAttempt - this.#retryAttemptAtModelSwitch <=
+				Math.min(retrySettings.retriesBeforeFallback, maxRetries);
 		const staleOpenAIResponsesReplayError = AIError.is(id, AIError.Flag.StaleResponsesItem);
 		const accountPolicyDenial = AIError.is(id, AIError.Flag.AccountPolicy);
 		const recordedUsageLimitOutcome = await this.#usageLimitOutcomes.get(message);
@@ -2511,7 +2532,8 @@ export class TurnRecovery {
 				retrySettings.modelFallback &&
 				!thinkingLoop &&
 				(!waitForSiblingCredential || usageLimitChainBypass) &&
-				!(retryBudgetExhausted && classifierRefusal)
+				!(retryBudgetExhausted && classifierRefusal) &&
+				!sameModelRetriesPending
 			) {
 				if (!classifierRefusal) {
 					this.noteRetryFallbackCooldown(currentSelector, parsedRetryAfterMs, errorMessage);
@@ -2532,6 +2554,7 @@ export class TurnRecovery {
 			}
 			if (switchedModel) {
 				delayMs = 0;
+				this.#retryAttemptAtModelSwitch = this.#retryAttempt;
 			} else if (usageLimitWaitMs === undefined && parsedRetryAfterMs && parsedRetryAfterMs > delayMs) {
 				delayMs = parsedRetryAfterMs;
 			}
@@ -2558,7 +2581,10 @@ export class TurnRecovery {
 			// A fallback model gets a fresh retry budget. Credential rotation
 			// instead keeps the cumulative attempt count while bypassing the
 			// same-route budget: every distinct account must be tried first.
-			if (switchedModel) this.#retryAttempt = 1;
+			if (switchedModel) {
+				this.#retryAttempt = 1;
+				this.#retryAttemptAtModelSwitch = 1;
+			}
 		}
 		// `server_is_overloaded` is classified `AccountPolicy | Transient`: rotate
 		// to a sibling account first (the throttle is per-account), but when no
