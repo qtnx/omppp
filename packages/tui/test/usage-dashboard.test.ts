@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import { beforeAll, describe, expect, it } from "bun:test";
-import type { DailyActivityPoint } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
+import type { DailyActivityPoint, UnavailableUsageAccount } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import {
 	buildCacheSummary,
@@ -10,7 +10,7 @@ import {
 	renderCacheSummaryLines,
 	UsageDashboardComponent,
 } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 
 function day(day: string, cost: number, requests = 1): DailyActivityPoint {
@@ -326,9 +326,13 @@ describe("UsageDashboardComponent", () => {
 	beforeAll(async () => {
 		await initTheme(false);
 	});
-	function dashboard(reports: UsageReport[]): UsageDashboardComponent {
+	function dashboard(
+		reports: UsageReport[],
+		unavailableAccounts: UnavailableUsageAccount[] = [],
+	): UsageDashboardComponent {
 		return new UsageDashboardComponent({
 			reports,
+			unavailableAccounts,
 			renderDetail: () => "",
 			loadActivity: async push => {
 				push([]);
@@ -514,6 +518,19 @@ describe("UsageDashboardComponent", () => {
 		}
 	});
 
+	it("keeps the error icon on an exhausted card when another account's lookup fails", () => {
+		const component = dashboard(
+			[report("anthropic", "a@test", [limit("anthropic", "a", "7d", "Claude 7 Day", 1, "exhausted")])],
+			[{ provider: "anthropic", label: "b@test" }],
+		);
+		try {
+			const output = Bun.stripANSI(component.render(100).join("\n"));
+			const title = output.split("\n").find(line => line.includes("2 accts"));
+			expect(title?.replace(/^[│\s]+/, "")).toStartWith(`${theme.status.error} Anthropic`);
+		} finally {
+			component.dispose();
+		}
+	});
 	it("renders specific error reason when activity loading fails instead of generic DB read error", async () => {
 		const { promise: rendered, resolve: markRendered } = Promise.withResolvers<void>();
 		const component = new UsageDashboardComponent({

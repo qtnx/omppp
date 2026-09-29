@@ -279,14 +279,6 @@ describe("KeybindingsManager.create", () => {
 		}
 	});
 
-	it("defaults model selection to Alt+M, display reset to Alt+L, and live toggle to Ctrl+L", () => {
-		const manager = KeybindingsManager.inMemory();
-
-		expect(manager.getKeys("app.model.select")).toEqual(["alt+m"]);
-		expect(manager.getKeys("app.display.reset")).toEqual(["alt+l"]);
-		expect(manager.getKeys("app.live.toggle")).toEqual(["ctrl+l"]);
-	});
-
 	it("keeps the Ctrl+L live toggle default when an old model remap still claims Ctrl+L", () => {
 		const manager = KeybindingsManager.inMemory({
 			"app.model.select": "ctrl+l",

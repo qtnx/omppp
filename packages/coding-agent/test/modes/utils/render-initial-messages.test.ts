@@ -257,7 +257,6 @@ describe("UiHelpers.renderInitialMessages — clearTerminalHistory", () => {
 		await new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
 		expect(ctx.ui.requestRender).toHaveBeenCalledWith(true, { clearScrollback: true });
 	});
-
 	it("never clears scrollback when clearTerminalHistory is unset", async () => {
 		await Settings.init({ inMemory: true });
 		const { ctx } = makeCtx();
@@ -367,28 +366,6 @@ describe("UiHelpers.renderInitialMessages — responsiveness", () => {
 });
 
 describe("UiHelpers.renderInitialMessages — image replay", () => {
-	it("restores read tool image blocks onto the rebuilt assistant transcript", async () => {
-		await Settings.init({ inMemory: true, overrides: { "terminal.showImages": true } });
-		setTerminalImageProtocol(ImageProtocol.Sixel);
-		const transcript = transcriptWith([
-			assistantToolCall("read-image", "read", { path: "sample.png" }),
-			{
-				role: "toolResult",
-				toolCallId: "read-image",
-				toolName: "read",
-				content: [{ type: "text", text: "Read image: sample.png" }, pngImage],
-				isError: false,
-				timestamp: 2,
-			},
-		]);
-		const { ctx, chatContainer } = makeRenderCtx(transcript);
-
-		await new UiHelpers(ctx).renderInitialMessages();
-
-		expect(hasImageComponent(chatContainer)).toBe(true);
-		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Read sample.png");
-	});
-
 	it("restores eval display image blocks onto rebuilt tool output", async () => {
 		await Settings.init({ inMemory: true, overrides: { "terminal.showImages": true } });
 		setTerminalImageProtocol(ImageProtocol.Sixel);

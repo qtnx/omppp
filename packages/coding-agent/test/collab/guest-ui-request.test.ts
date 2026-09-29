@@ -565,7 +565,6 @@ describe("collab proto handshake (#4049)", () => {
 			await host.stop("test done");
 		}
 	});
-
 	it("CollabGuestLink.join fails fast with the host's rejection message instead of hanging for the welcome", async () => {
 		// Scripted host that rejects every hello the way CollabHost does for a
 		// proto mismatch. The real guest must surface that message from join().

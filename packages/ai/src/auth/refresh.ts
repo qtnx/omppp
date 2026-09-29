@@ -13,6 +13,8 @@ import {
 	type AuthCredentialSnapshotEntry,
 	type AuthStorageOptions,
 	type OAuthCredential,
+	type OAuthRefreshByIdOptions,
+	type OAuthRefreshReason,
 	type StoredOAuthRefreshOptions,
 	type StoredOAuthRefreshResult,
 } from "./types";
@@ -30,6 +32,12 @@ import {
  * the rotation cadence by <4%.
  */
 export const OAUTH_REFRESH_SKEW_MS = 60_000;
+/**
+ * How long auth recovery may reuse a token this refresher actually minted.
+ * Re-minting a token that a provider rejected moments ago only rotates the
+ * refresh token and churns broker snapshots during provider-wide outages.
+ */
+const OAUTH_REMINT_COOLDOWN_MS = 5 * 60_000;
 const OAUTH_REFRESH_LEASE_TTL_MS = 15_000;
 /** Default cap on how long a caller waits for a peer-held refresh lease. */
 const OAUTH_REFRESH_LEASE_WAIT_TIMEOUT_MS = OAUTH_REFRESH_LEASE_TTL_MS + 15_000;
@@ -81,9 +89,43 @@ export class OAuthRefresher {
 	readonly #deps: OAuthRefresherDeps;
 	#oauthRefreshInFlight: Map<number, Promise<AuthCredentialSnapshotEntry>> = new Map();
 	#oauthCredentialRefreshInFlight: Map<number, Promise<OAuthCredentials>> = new Map();
+	/** Access token this process last minted per credential id. */
+	#recentMints = new Map<number, { provider: string; access: string; at: number }>();
 
 	constructor(deps: OAuthRefresherDeps) {
 		this.#deps = deps;
+	}
+
+	/**
+	 * Return the stored row while it still holds a usable token this refresher
+	 * minted within {@link OAUTH_REMINT_COOLDOWN_MS}.
+	 */
+	#recentMint(id: number): { provider: string; credential: OAuthCredential } | undefined {
+		const mint = this.#recentMints.get(id);
+		if (!mint) return undefined;
+		const now = Date.now();
+		if (now - mint.at >= OAUTH_REMINT_COOLDOWN_MS) {
+			this.#recentMints.delete(id);
+			return undefined;
+		}
+		const credential = this.#deps.pool.entries(mint.provider).find(entry => entry.id === id)?.credential;
+		if (
+			credential?.type !== "oauth" ||
+			credential.access !== mint.access ||
+			credential.expires <= now + OAUTH_REFRESH_SKEW_MS
+		) {
+			this.#recentMints.delete(id);
+			return undefined;
+		}
+		return { provider: mint.provider, credential };
+	}
+
+	#rememberMint(provider: string, id: number, credential: OAuthCredentials): void {
+		const now = Date.now();
+		for (const [cachedId, mint] of this.#recentMints) {
+			if (now - mint.at >= OAUTH_REMINT_COOLDOWN_MS) this.#recentMints.delete(cachedId);
+		}
+		this.#recentMints.set(id, { provider, access: credential.access, at: now });
 	}
 
 	/**
@@ -304,6 +346,9 @@ export class OAuthRefresher {
 			} else {
 				this.#deps.store.updateAuthCredential(row.id, merged);
 			}
+			if (this.#deps.override === undefined && this.#deps.store.refreshOAuthCredential === undefined) {
+				this.#rememberMint(provider, row.id, merged);
+			}
 			this.#deps.pool.replace(
 				provider,
 				rows.map(entry => ({
@@ -388,6 +433,24 @@ export class OAuthRefresher {
 		credentialId: number | undefined,
 		signal?: AbortSignal,
 		options?: RefreshOptions,
+		reason?: OAuthRefreshReason,
+	): Promise<OAuthCredentials> {
+		const authRecovery = reason === "auth-recovery";
+		if (authRecovery && credentialId !== undefined && !this.#oauthCredentialRefreshInFlight.has(credentialId)) {
+			const recent = this.#recentMint(credentialId);
+			if (recent) return recent.credential;
+		}
+		return this.#refreshSingleFlight(provider, credential, credentialId, signal, options, reason);
+	}
+
+	/** Refresh without recent-mint reuse; still shares the per-credential in-flight request. */
+	async #refreshSingleFlight(
+		provider: Provider,
+		credential: OAuthCredential,
+		credentialId: number | undefined,
+		signal?: AbortSignal,
+		options?: RefreshOptions,
+		reason?: OAuthRefreshReason,
 	): Promise<OAuthCredentials> {
 		credential = normalizeOAuthCredentialExpiry(provider, credential);
 		if (credentialId !== undefined) {
@@ -396,7 +459,7 @@ export class OAuthRefresher {
 		}
 		if (Date.now() + OAUTH_REFRESH_SKEW_MS < credential.expires) return credential;
 		if (credentialId === undefined) {
-			return this.#refreshOAuthCredentialUnshared(provider, credential, undefined, signal, options);
+			return this.#refreshOAuthCredentialUnshared(provider, credential, undefined, signal, options, reason);
 		}
 		const promise = this.#refreshOAuthCredentialUnshared(
 			provider,
@@ -404,9 +467,23 @@ export class OAuthRefresher {
 			credentialId,
 			undefined,
 			options,
-		).finally(() => {
-			this.#oauthCredentialRefreshInFlight.delete(credentialId);
-		});
+			reason,
+		)
+			.then(refreshed => {
+				// A delegated refresh may have returned a broker-cached token rather
+				// than minting one. Only direct local requests can establish mint time.
+				if (
+					!hasRefreshLeases(this.#deps.store) &&
+					this.#deps.override === undefined &&
+					this.#deps.store.refreshOAuthCredential === undefined
+				) {
+					this.#rememberMint(provider, credentialId, refreshed);
+				}
+				return refreshed;
+			})
+			.finally(() => {
+				this.#oauthCredentialRefreshInFlight.delete(credentialId);
+			});
 		this.#oauthCredentialRefreshInFlight.set(credentialId, promise);
 		return raceSignal(promise, signal, "credential refresh aborted");
 	}
@@ -417,6 +494,7 @@ export class OAuthRefresher {
 		credentialId: number | undefined,
 		signal?: AbortSignal,
 		options?: RefreshOptions,
+		reason?: OAuthRefreshReason,
 	): Promise<OAuthCredentials> {
 		if (credentialId !== undefined && hasRefreshLeases(this.#deps.store)) {
 			const forceRefresh = credential.expires === 0;
@@ -432,6 +510,7 @@ export class OAuthRefresher {
 						current,
 						credentialId,
 						signal && refreshSignal ? AbortSignal.any([signal, refreshSignal]) : (signal ?? refreshSignal),
+						reason,
 					),
 				// Callers that own the fallback (bearer-matched refresh) keep the row so
 				// they can rotate instead of losing the credential to one failure.
@@ -473,7 +552,7 @@ export class OAuthRefresher {
 				provider,
 			});
 		}
-		return this.#requestOAuthCredentialRefresh(provider, credential, credentialId, signal);
+		return this.#requestOAuthCredentialRefresh(provider, credential, credentialId, signal, reason);
 	}
 
 	async #requestOAuthCredentialRefresh(
@@ -481,6 +560,7 @@ export class OAuthRefresher {
 		credential: OAuthCredential,
 		credentialId: number | undefined,
 		signal?: AbortSignal,
+		reason?: OAuthRefreshReason,
 	): Promise<OAuthCredentials> {
 		let refreshPromise: Promise<OAuthCredentials>;
 		// Caller override > store-level hook > local per-provider refresh.
@@ -489,7 +569,7 @@ export class OAuthRefresher {
 		const storeRefresh = this.#deps.store.refreshOAuthCredential?.bind(this.#deps.store);
 		const overrideRefresh = this.#deps.override ?? storeRefresh;
 		if (overrideRefresh && credentialId !== undefined) {
-			refreshPromise = overrideRefresh(provider, credentialId, credential, signal);
+			refreshPromise = overrideRefresh(provider, credentialId, credential, signal, reason);
 		} else {
 			const customProvider = getOAuthProvider(provider);
 			if (customProvider) {
@@ -541,9 +621,15 @@ export class OAuthRefresher {
 	 * refresh attempt, which is required for providers that rotate refresh tokens
 	 * on every successful refresh.
 	 */
-	async refreshById(id: number, signal?: AbortSignal): Promise<AuthCredentialSnapshotEntry> {
+	async refreshById(
+		id: number,
+		signal?: AbortSignal,
+		options?: OAuthRefreshByIdOptions,
+	): Promise<AuthCredentialSnapshotEntry> {
 		const existing = this.#oauthRefreshInFlight.get(id);
 		if (existing) return raceSignal(existing, signal, "credential refresh aborted");
+		const recent = options?.reuseRecentMint ? this.#recentMint(id) : undefined;
+		if (recent) return snapshotEntry(id, recent.provider, recent.credential);
 
 		const promise = (async () => {
 			this.#deps.pool.bump("credential-refresh-start");
@@ -575,12 +661,12 @@ export class OAuthRefresher {
 			// await so a definitive failure can CAS-disable the row against the
 			// value we actually attempted (NOT the expires:0 clone below).
 			const attempted = target.credential;
-			// Pass a clone with expires=0 so the cached not-yet-expired short-circuit
-			// in refresh doesn't suppress the requested refresh.
+			// Pass a clone with expires=0 and bypass recent-mint reuse so scheduled
+			// refreshes and direct force-refresh callers always mint.
 			const stale: OAuthCredential = { ...attempted, expires: 0 };
 			let refreshed: OAuthCredentials;
 			try {
-				refreshed = await this.refresh(provider as Provider, stale, id, signal);
+				refreshed = await this.#refreshSingleFlight(provider as Provider, stale, id, signal);
 			} catch (error) {
 				// A definitively-dead grant tears the row down here, where the
 				// attempted credential is known. CAS on the persisted credential so a
@@ -607,13 +693,18 @@ export class OAuthRefresher {
 			if (this.#deps.pool.replaceById(provider, id, updated) === -1) {
 				throw new AIError.ValidationError(`No credential with id=${id}`);
 			}
-			return {
-				id,
-				provider,
-				credential: { ...updated, refresh: REMOTE_REFRESH_SENTINEL },
-				identityKey: resolveCredentialIdentityKey(provider, updated),
-			};
+			return snapshotEntry(id, provider, updated);
 		}
 		throw new AIError.ValidationError(`No credential with id=${id}`);
 	}
+}
+
+/** Broker-facing snapshot entry for a refreshed row; the real refresh token never leaves the store. */
+function snapshotEntry(id: number, provider: string, credential: OAuthCredential): AuthCredentialSnapshotEntry {
+	return {
+		id,
+		provider,
+		credential: { ...credential, refresh: REMOTE_REFRESH_SENTINEL },
+		identityKey: resolveCredentialIdentityKey(provider, credential),
+	};
 }

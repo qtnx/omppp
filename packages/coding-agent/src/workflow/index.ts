@@ -254,7 +254,6 @@ export class WorkflowTool implements AgentTool<typeof workflowSchema, WorkflowTo
 					},
 					parentArtifactManager: this.session.getArtifactManager?.() ?? undefined,
 					parentHindsightSessionState: this.session.getHindsightSessionState?.(),
-					parentEvalSessionId: this.session.getEvalSessionId?.() ?? undefined,
 				});
 			},
 		});

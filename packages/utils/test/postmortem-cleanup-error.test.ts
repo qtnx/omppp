@@ -194,7 +194,6 @@ describe("postmortem expected cleanup errors", () => {
 		expect(result.stderr).toContain("[Unhandled Rejection] Error: unexpected cleanup rejection");
 		expect(result.stderr).toContain(path.join(result.stateHome, "omp", "logs", "crash-unhandled_rejection-"));
 	});
-
 	it("prints registered recovery commands before fatal cleanup", async () => {
 		const result = await runPostmortemProbe(`
 			import { postmortem } from "${postmortemModuleUrl}";

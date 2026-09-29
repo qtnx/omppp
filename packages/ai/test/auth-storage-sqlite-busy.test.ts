@@ -300,7 +300,6 @@ db.close();`,
 
 	test("exhausts retries and surfaces an error that includes the DB path", async () => {
 		const dbPath = path.join(tempDir, "stuck.db");
-		const realRun = Database.prototype.run;
 		vi.spyOn(Database.prototype, "run").mockImplementation(function (this: Database) {
 			// Always-busy: every attempt fails until the retry budget runs out.
 			throw makeBusyError("SQLITE_BUSY_RECOVERY", 261);
@@ -312,8 +311,5 @@ db.close();`,
 		// open uses `maxAttempts = 4`, so the loop sleeps between attempts 0..2
 		// (three times) then throws after attempt 3 without sleeping again.
 		expect(sleepSpy).toHaveBeenCalledTimes(3);
-		// Reference realRun so the TS unused-binding lint stays quiet without
-		// suppressing the actual error path above.
-		expect(typeof realRun).toBe("function");
 	});
 });

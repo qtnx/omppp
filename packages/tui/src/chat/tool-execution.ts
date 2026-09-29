@@ -1,3 +1,4 @@
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Box } from "../components/box";
 import { SPINNER_ADVANCE_MS } from "../components/loader";
@@ -27,7 +28,7 @@ import { isWaitingPollDetails } from "../tools/wait";
 import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../render/render-utils";
 import type { XdevMountedState } from "../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../render/index";
-import { convertImageToPng } from "./image-loading";
+import { cachedPngConversion, convertImageToPngShared, imagePayloadKey } from "./image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import { renderDiff } from "../chrome/diff";
 import { type AnimationFrame, trimBlankEdges } from "../chrome/transcript-container";
@@ -314,6 +315,14 @@ export class ToolExecutionComponent extends Container {
 	// so a terminal resize re-shapes image-bearing results to rescale them without
 	// forcing the common image-free result to re-shape on every resize tick.
 	#renderedImageCount = 0;
+	// `stateBgKey|themeEpoch` of the tint last handed to #contentText. Re-tinting
+	// drops its wrap cache, so a rebuild whose tint is unchanged skips it and the
+	// inner Text re-wraps only when the reformatted card text actually differs.
+	#contentTextBgKey: string | undefined;
+	// Memoized #getTextOutput(), keyed by every input it reads: the result
+	// (versioned by #resultVersion), #showImages, and the image protocol.
+	#textOutput = "";
+	#textOutputKey: string | undefined;
 	#tool?: AgentTool;
 	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
@@ -326,24 +335,14 @@ export class ToolExecutionComponent extends Container {
 	#editMode?: EditMode;
 	#editDiffPreview?: PerFileDiffPreview[];
 	#previewReady?: PromiseWithResolvers<void>;
-	// Cached converted images for Kitty protocol (which requires PNG), keyed by index
-	#convertedImages: Map<number, { data: string; mimeType: string }> = new Map();
 	#imageConversionDeferred = false;
 	#toolImagePayloadsReleased = false;
-	// Probe into the owning transcript (absent outside the interactive
-	// transcript, e.g. in tests): whether this block is still repaintable.
+	// Probe into the owning transcript (absent outside interactive mode).
 	#liveRegion?: TranscriptLiveRegionProbe;
-	// One-way latch for a detached (`async.state === "running"`) task block
-	// whose rows became native-scrollback history — it left the transcript
-	// live region, or its head rows were committed while it was still the
-	// live tail. Further partial snapshots are dropped so committed rows are
-	// never mutated (see #maybeFreezeBackgroundTask).
 	#backgroundTaskFrozen = false;
-	// Whether the freeze may restyle the progress rows static gray. Set only
-	// when the latch fired while no row was committed: a recolor of rows
-	// already on the tape would itself diverge immutable history and force an
-	// erase-replay (or, with scrollback rebuild off, a duplicate slab).
 	#backgroundTaskFrozenStyled = false;
+	#kittyConversionsAwaited = new Set<string>();
+	#kittyConverted = new Map<string, ImageContent>();
 	// Spinner animation for partial task results
 	#spinnerFrame?: number;
 	#spinnerActive = false;
@@ -603,28 +602,30 @@ export class ToolExecutionComponent extends Container {
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
 		if (!this.#result) return;
 
-		const imageBlocks = this.#getAllImageBlocks();
-
-		for (let i = 0; i < imageBlocks.length; i++) {
-			const img = imageBlocks[i];
-			if (
-				!img.data ||
-				!img.mimeType ||
-				isBlobRef(img.data) ||
-				img.mimeType === "image/png" ||
-				this.#convertedImages.has(i)
-			)
+		for (const img of this.#getAllImageBlocks()) {
+			if (!img.data || !img.mimeType || isBlobRef(img.data) || isSealedToolImageData(img.data)) continue;
+			if (img.mimeType === "image/png") continue;
+			const image: ImageContent = { type: "image", data: img.data, mimeType: img.mimeType };
+			const key = imagePayloadKey(image);
+			if (this.#kittyConverted.has(key)) continue;
+			const cached = cachedPngConversion(image);
+			if (cached) {
+				this.#kittyConverted.set(key, cached);
 				continue;
-			const index = i;
-			convertImageToPng({ type: "image", data: img.data, mimeType: img.mimeType })
+			}
+			if (this.#kittyConversionsAwaited.has(key)) continue;
+			this.#kittyConversionsAwaited.add(key);
+			convertImageToPngShared(image)
 				.then(converted => {
 					if (this.#toolImagePayloadsReleased) return;
-					this.#convertedImages.set(index, converted);
+					this.#kittyConverted.set(key, converted);
 					this.#displayInputVersion++;
 					this.#updateDisplay();
 					this.#ui.requestRender();
 				})
-				.catch(() => {});
+				.catch(() => {
+					this.#kittyConversionsAwaited.delete(key);
+				});
 		}
 	}
 
@@ -955,7 +956,8 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		if (!this.#toolActivityVisible || this.#allocation === 0) return [];
+		if (!this.#toolActivityVisible || this.#allocation === 0 || (this.#toolName === "wait" && this.#isBenignSkip()))
+			return [];
 		try {
 			let lines = super.render(width);
 			if (this.#allocation < 3) {
@@ -967,11 +969,7 @@ export class ToolExecutionComponent extends Container {
 			this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
 			return lines;
 		} catch (error) {
-			reportSoftCrash({
-				label: "tool-render",
-				error,
-				context: { tool: this.#toolName, label: this.#toolLabel },
-			});
+			reportSoftCrash({ label: "tool-render", error, context: { tool: this.#toolName, label: this.#toolLabel } });
 			logger.warn("Tool component render failed", { tool: this.#toolName, error: String(error) });
 			return [
 				truncateToWidth(sanitizeText(`Tool display failed: ${this.#toolLabel}`).replace(/\s+/g, " ").trim(), width),
@@ -1050,6 +1048,12 @@ export class ToolExecutionComponent extends Container {
 		this.#renderState.argsComplete = this.#argsComplete;
 		this.#renderState.executionStarted = this.#executionStarted;
 		this.#renderState.spinnerFrame = this.#spinnerFrame;
+
+		// Interrupted waits carry only model-facing retry guidance, not user-facing output.
+		if (this.#toolName === "wait" && this.#isBenignSkip()) {
+			this.#contentBox.clear();
+			return;
+		}
 
 		// Non-self-framing tools (custom/extension renderers and the generic
 		// fallback) get a padded, state-tinted block — built-ins that draw their
@@ -1302,8 +1306,7 @@ export class ToolExecutionComponent extends Container {
 			// Generic fallback (no custom/built-in renderer). WidthAwareText
 			// reformats at render time so output fills the actual terminal width
 			// instead of a fixed column cap.
-			this.#contentText.setCustomBgFn(stateBgFn);
-			this.#contentText.invalidate();
+			this.#refreshContentText(stateBgKey, stateBgFn);
 		}
 
 		// Handle images (same for both custom and built-in)
@@ -1323,7 +1326,11 @@ export class ToolExecutionComponent extends Container {
 				const img = imageBlocks[i];
 				if (!img.data || !img.mimeType || isSealedToolImageData(img.data)) continue;
 				if (TERMINAL.imageProtocol && this.#showImages) {
-					const converted = this.#convertedImages.get(i);
+					const source: ImageContent = { type: "image", data: img.data, mimeType: img.mimeType };
+					const converted =
+						TERMINAL.imageProtocol === ImageProtocol.Kitty && img.mimeType !== "image/png"
+							? (this.#kittyConverted.get(imagePayloadKey(source)) ?? cachedPngConversion(source))
+							: undefined;
 					const imageData = converted?.data ?? img.data;
 					const imageMimeType = converted?.mimeType ?? img.mimeType;
 					if (isSealedToolImageData(imageData)) continue;
@@ -1466,7 +1473,8 @@ export class ToolExecutionComponent extends Container {
 				},
 			};
 		}
-		this.#convertedImages.clear();
+		this.#kittyConversionsAwaited.clear();
+		this.#kittyConverted.clear();
 		if (!preserveDisplay) {
 			this.#imageComponents = [];
 			this.#imageSpacers = [];
@@ -1477,6 +1485,8 @@ export class ToolExecutionComponent extends Container {
 
 	#getTextOutput(): string {
 		if (!this.#result) return "";
+		const key = `${this.#resultVersion}|${this.#showImages}|${TERMINAL.imageProtocol ?? "-"}`;
+		if (key === this.#textOutputKey) return this.#textOutput;
 
 		const textBlocks = this.#result.content.filter(c => c.type === "text");
 		const imageBlocks = this.#getAllImageBlocks();
@@ -1500,7 +1510,19 @@ export class ToolExecutionComponent extends Container {
 			output = output ? `${output}\n${imageIndicators}` : imageIndicators;
 		}
 
+		this.#textOutputKey = key;
+		this.#textOutput = output;
 		return output;
+	}
+
+	/** Re-tint (only when the tint changed) and reformat the generic #contentText card. */
+	#refreshContentText(stateBgKey: string, stateBgFn: (text: string) => string): void {
+		const bgKey = `${stateBgKey}|${getThemeEpoch()}`;
+		if (bgKey !== this.#contentTextBgKey) {
+			this.#contentTextBgKey = bgKey;
+			this.#contentText.setCustomBgFn(stateBgFn);
+		}
+		this.#contentText.reformat();
 	}
 
 	/**
@@ -1546,8 +1568,7 @@ export class ToolExecutionComponent extends Container {
 	 */
 	#renderBenignSkipCard(stateBgFn: (text: string) => string): void {
 		if (!this.#usesContentBox) {
-			this.#contentText.setCustomBgFn(stateBgFn);
-			this.#contentText.invalidate();
+			this.#refreshContentText("toolPendingBg", stateBgFn);
 			return;
 		}
 		for (const box of this.#multiFileBoxes) {

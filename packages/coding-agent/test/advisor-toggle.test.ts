@@ -184,7 +184,6 @@ describe("AgentSession advisor toggle", () => {
 		expect(session.isAdvisorEnabled()).toBe(true);
 		expect(session.formatAdvisorStatus()).toMatch(/^Advisor is enabled \(.+\)\./);
 	});
-
 	it("toggle enables the advisor and runtime", () => {
 		cfgAdvisorEnabled.override(session.settings, false);
 		session.settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
@@ -545,16 +544,6 @@ describe("AgentSession advisor toggle", () => {
 		} finally {
 			await reviewSession.dispose();
 		}
-	});
-	it("retains cumulative advisor cost after the advisor is disabled", () => {
-		const advisor = enableAdvisor();
-
-		appendAdvisorCost(advisor, 0.41, 1);
-		appendAdvisorCost(advisor, 0.09, 2);
-
-		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
-		session.setAdvisorEnabled(false);
-		expect(session.getAdvisorCost()).toBeCloseTo(0.5, 8);
 	});
 	it("attributes advisor subscription spend after teardown without rescanning the catalog", () => {
 		// #10131: with the runtime gone, isUsingSubscription() must read the

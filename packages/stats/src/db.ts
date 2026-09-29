@@ -10,40 +10,40 @@ import {
 import type { ModelCost } from "@oh-my-pi/pi-catalog/types";
 import { getConfigRootDir, getStatsDbPath } from "@oh-my-pi/pi-utils";
 import { classifyAgentType, type ParseSessionResult, type SessionParserState } from "./parser";
+import { ensureRollupSchema } from "./rollup";
 import type {
 	AgentType,
-	AgentTypeStats,
-	AggregatedStats,
-	BehaviorModelStats,
-	BehaviorOverallStats,
-	BehaviorTimeSeriesPoint,
-	CostTimeSeriesPoint,
 	DailyActivityPoint,
 	DelegationReminderStats,
-	FolderStats,
+	FrustrationCounts,
 	MessageStats,
 	MessageStatsInput,
+	ReminderStats,
+	SubagentPerformanceStats,
+	SubagentRunStats,
+	TimeBudgetDashboardStats,
+	TimeBudgetEntryStats,
+	ToolCallStats,
+	ToolResultLink,
+	UserMessageLink,
+	UserMessageStats,
+} from "./types";
+import type { SessionStatsAggregate } from "./shared-types";
+import type {
+	AggregatedStats,
+	AgentTypeStats,
+	CostTimeSeriesPoint,
+	FolderStats,
 	ModelPerformancePoint,
 	ModelStats,
 	ModelTimeSeriesPoint,
 	ProviderAggregate,
 	ProviderHourlyPoint,
 	ProviderTimeSeriesPoint,
-	ReminderStats,
-	SessionStatsAggregate,
-	SubagentPerformanceStats,
-	SubagentRunStats,
-	TimeBudgetDashboardStats,
-	TimeBudgetEntryStats,
 	TimeSeriesPoint,
-	ToolCallStats,
-	ToolModelStats,
-	ToolResultLink,
-	ToolTimeSeriesPoint,
-	ToolUsageStats,
-	UserMessageLink,
-	UserMessageStats,
 } from "./types";
+const UNPRICED_REQUEST_SQL = unpricedRequestSql();
+let db: Database | null = null;
 
 type UsageCost = Usage["cost"];
 type CostTokens = Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite" | "orchestration" | "cttl">;
@@ -73,12 +73,10 @@ const ZERO_USAGE_COST: UsageCost = {
  * parser's timestamp sentinel, because their zero is a real price.
  * `prefix` qualifies the columns for queries that alias `messages`.
  */
-function unpricedRequestSql(prefix = ""): string {
+export function unpricedRequestSql(prefix = ""): string {
 	return `CASE WHEN ${prefix}total_tokens > 0 AND ${prefix}cost_total = 0
 		AND (${prefix}provider = 'xai-oauth' OR ${prefix}cost_unpriced = 1) THEN 1 ELSE 0 END`;
 }
-
-const UNPRICED_REQUEST_SQL = unpricedRequestSql();
 
 interface CostBackfillRow {
 	id: number;
@@ -132,6 +130,12 @@ interface FolderStatsRow extends AggregatedStatsRow {
 	folder: string;
 }
 
+/** The open stats database, or null before {@link initDb}. Used by the rollup query layer. */
+export function currentDb(): Database | null {
+	return db;
+}
+
+const BACKFILL_COMPLETE = "complete";
 interface CostTimeSeriesRow {
 	bucket: number;
 	model: string;
@@ -144,12 +148,8 @@ interface CostTimeSeriesRow {
 	cost_cache_write: number | null;
 	requests: number;
 }
-
-let db: Database | null = null;
-
-const BACKFILL_COMPLETE = "complete";
 const BACKFILL_PENDING = "pending";
-const USER_MESSAGES_BACKFILL_KEY = "user_messages_v8";
+const USER_MESSAGES_BACKFILL_KEY = "user_messages_v9";
 const USER_MESSAGE_LINKS_REPAIR_KEY = "user_message_links_v1";
 const PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY = "premium_requests_priority_v1";
 const SYSTEM_CONTEXT_REMINDERS_BACKFILL_KEY = "system_context_reminders_v1";
@@ -297,12 +297,25 @@ export async function initDb(): Promise<Database> {
 			negation INTEGER NOT NULL DEFAULT 0,
 			repetition INTEGER NOT NULL DEFAULT 0,
 			blame INTEGER NOT NULL DEFAULT 0,
+			prose TEXT NOT NULL DEFAULT '',
+			prose_hash TEXT NOT NULL DEFAULT '',
 			UNIQUE(session_file, entry_id)
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_user_messages_timestamp ON user_messages(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_user_messages_entry_timestamp ON user_messages(entry_id, timestamp);
 		CREATE INDEX IF NOT EXISTS idx_user_messages_timestamp_model ON user_messages(timestamp, model, provider);
+
+		-- Judge verdicts keyed by prose hash: identical messages share one verdict,
+		-- and verdicts outlive user_messages re-parses. No backfill wipes this table.
+		CREATE TABLE IF NOT EXISTS frustration_verdicts (
+			prose_hash TEXT PRIMARY KEY,
+			p_annoyed REAL NOT NULL,
+			p_angry REAL NOT NULL,
+			target TEXT NOT NULL,
+			judge TEXT NOT NULL,
+			judged_at INTEGER NOT NULL
+		);
 
 		CREATE TABLE IF NOT EXISTS tool_calls (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -463,14 +476,22 @@ export async function initDb(): Promise<Database> {
 				negation INTEGER NOT NULL DEFAULT 0,
 				repetition INTEGER NOT NULL DEFAULT 0,
 				blame INTEGER NOT NULL DEFAULT 0,
+				prose TEXT NOT NULL DEFAULT '',
+				prose_hash TEXT NOT NULL DEFAULT '',
 				UNIQUE(session_file, entry_id)
 			);
 			CREATE INDEX IF NOT EXISTS idx_user_messages_timestamp ON user_messages(timestamp);
 			CREATE INDEX IF NOT EXISTS idx_user_messages_timestamp_model ON user_messages(timestamp, model, provider);
 		`);
+	} else if (!userMessageColumns.some(column => column.name === "prose")) {
+		// v9 judge prose: the backfill below clears the rows, so defaults are
+		// only placeholders until the re-parse repopulates them.
+		db.run("ALTER TABLE user_messages ADD COLUMN prose TEXT NOT NULL DEFAULT ''");
+		db.run("ALTER TABLE user_messages ADD COLUMN prose_hash TEXT NOT NULL DEFAULT ''");
 	}
 	const hadTrackedSessionOffsets =
 		fileOffsetsTableExisted && db.prepare("SELECT 1 FROM file_offsets LIMIT 1").get() !== undefined;
+	db.run("CREATE INDEX IF NOT EXISTS idx_user_messages_prose_hash ON user_messages(prose_hash)");
 	backfillUserMessages(db);
 	backfillToolCalls(db);
 	backfillReingestCosts(db);
@@ -487,6 +508,7 @@ export async function initDb(): Promise<Database> {
 	backfillForkDuplicates(db);
 	db.run("DROP INDEX IF EXISTS idx_subagent_runs_run_id");
 	db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_subagent_runs_lineage ON subagent_runs(entry_id, started_at)");
+	ensureRollupSchema(db);
 	return db;
 }
 
@@ -702,29 +724,56 @@ function backfillNoCacheInputCosts(database: Database): void {
 	applyBackfill();
 }
 
-/**
- * Get the stored offset for a session file.
- */
-export function getFileOffset(
-	sessionFile: string,
-): { offset: number; lastModified: number; parserState?: SessionParserState } | null {
-	if (!db) return null;
+/** Persisted transcript identity and parser cursor used to resume stats ingestion. */
+export interface FileOffset {
+	offset: number;
+	lastModified: number;
+	parserState?: SessionParserState;
+}
 
-	const stmt = db.prepare("SELECT offset, last_modified, parser_state FROM file_offsets WHERE session_file = ?");
-	const row = stmt.get(sessionFile) as
-		| { offset: number; last_modified: number; parser_state: string | null }
-		| undefined;
-	if (!row) return null;
+interface FileOffsetRow {
+	session_file: string;
+	offset: number;
+	last_modified: number;
+	parser_state: string | null;
+}
+
+function decodeFileOffset(row: FileOffsetRow): FileOffset {
 	let parserState: SessionParserState | undefined;
 	if (row.parser_state) {
 		try {
-			const state = JSON.parse(row.parser_state) as SessionParserState;
+			const state: SessionParserState = JSON.parse(row.parser_state);
 			if (state?.version === 1 && state.offset === row.offset) parserState = state;
 		} catch {
 			/* A missing cursor is reconstructed from the transcript. */
 		}
 	}
 	return { offset: row.offset, lastModified: row.last_modified, parserState };
+}
+
+/** Read one persisted cursor for callers inspecting an individual transcript. */
+export function getFileOffset(sessionFile: string): FileOffset | null {
+	if (!db) return null;
+	const row = db
+		.query<FileOffsetRow, [string]>(
+			"SELECT session_file, offset, last_modified, parser_state FROM file_offsets WHERE session_file = ?",
+		)
+		.get(sessionFile);
+	return row ? decodeFileOffset(row) : null;
+}
+
+/** Read a bounded sync work set's cursors with one SQLite snapshot instead of one lookup per file. */
+export function getFileOffsets(sessionFiles: string[]): Map<string, FileOffset> {
+	const offsets = new Map<string, FileOffset>();
+	if (!db || sessionFiles.length === 0) return offsets;
+	const placeholders = sessionFiles.map(() => "?").join(",");
+	const rows = db
+		.query<FileOffsetRow, string[]>(
+			`SELECT session_file, offset, last_modified, parser_state FROM file_offsets WHERE session_file IN (${placeholders})`,
+		)
+		.all(...sessionFiles);
+	for (const row of rows) offsets.set(row.session_file, decodeFileOffset(row));
+	return offsets;
 }
 
 /**
@@ -738,92 +787,186 @@ export function setFileOffset(
 ): void {
 	if (!db) return;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		INSERT OR REPLACE INTO file_offsets (session_file, offset, last_modified, parser_state)
 		VALUES (?, ?, ?, ?)
 	`);
 	stmt.run(sessionFile, offset, lastModified, parserState ? JSON.stringify(parserState) : null);
 }
 
-/**
- * Apply one parsed session to the database. Every derived table — including the
- * OMPx-only reminder, subagent-run, and time-budget tables — is written by this
- * one transaction, so the single SQLite handle owns the whole rebuild and the
- * caller never writes rows itself.
- */
-export function applySessionParseResult(
-	sessionFile: string,
-	result: ParseSessionResult,
-	rebuild = false,
-): { processed: number; reconcile: boolean } {
-	const parserState = result.parserState;
-	if (!db || !parserState) return { processed: 0, reconcile: false };
+/** Parsed transcript queued by the sync loop for an atomic database batch. */
+export interface ParsedSession {
+	sessionFile: string;
+	result: ParseSessionResult;
+	rebuild: boolean;
+	/** Recover missing rows from a full-history scan without rewriting unchanged records. */
+	replay: boolean;
+}
+
+function* parsedRows<T>(
+	results: ParseSessionResult[],
+	select: (result: ParseSessionResult) => Iterable<T>,
+): Generator<T> {
+	for (const result of results) yield* select(result);
+}
+
+/** Commit distinct transcripts' rows, reconciliation state, and cursors together; failure rolls back the batch. */
+export function applySessionParseResults(sessions: ParsedSession[]): {
+	processed: number;
+	files: number;
+	reconcile: boolean;
+} {
+	if (!db) return { processed: 0, files: 0, reconcile: false };
 	const database = db;
 	return database.transaction(() => {
-		let reconcile = result.reset ?? false;
-		if (result.reset || rebuild) {
-			const retainedMessages = new Set(result.stats.map(row => JSON.stringify([row.entryId, row.timestamp])));
-			const retainedUsers = new Set(result.userStats.map(row => JSON.stringify([row.entryId, row.timestamp])));
-			const retainedTools = new Set(
-				result.toolCalls.map(row => JSON.stringify([row.entryId, row.timestamp, row.toolCallId])),
-			);
-			const messages = database
-				.prepare("SELECT entry_id, timestamp FROM messages WHERE session_file = ?")
-				.all(sessionFile) as {
-				entry_id: string;
-				timestamp: number;
-			}[];
-			const users = database
-				.prepare("SELECT entry_id, timestamp FROM user_messages WHERE session_file = ?")
-				.all(sessionFile) as { entry_id: string; timestamp: number }[];
-			const tools = database
-				.prepare("SELECT entry_id, timestamp, tool_call_id FROM tool_calls WHERE session_file = ?")
-				.all(sessionFile) as { entry_id: string; timestamp: number; tool_call_id: string }[];
-			// A removed owner may have surviving fork copies skipped earlier in this pass.
-			reconcile ||=
-				messages.some(row => !retainedMessages.has(JSON.stringify([row.entry_id, row.timestamp]))) ||
-				users.some(row => !retainedUsers.has(JSON.stringify([row.entry_id, row.timestamp]))) ||
-				tools.some(row => !retainedTools.has(JSON.stringify([row.entry_id, row.timestamp, row.tool_call_id])));
-			database.prepare("DELETE FROM messages WHERE session_file = ?").run(sessionFile);
-			database.prepare("DELETE FROM user_messages WHERE session_file = ?").run(sessionFile);
-			database.prepare("DELETE FROM tool_calls WHERE session_file = ?").run(sessionFile);
-			// The fork's derived tables rebuild from the same transcript in this
-			// transaction; without the delete a truncated or replaced JSONL keeps
-			// stale reminder, subagent, and time-budget rows.
-			for (const table of [
-				"system_context_reminders",
-				"delegation_reminders",
-				"subagent_runs",
-				"time_budget_runs",
-			]) {
-				database.prepare(`DELETE FROM ${table} WHERE session_file = ?`).run(sessionFile);
+		let processed = 0;
+		let files = 0;
+		let reconcile = false;
+		const writes: ParseSessionResult[] = [];
+		for (const { sessionFile, result, rebuild, replay } of sessions) {
+			const parserState = result.parserState;
+			if (!parserState) continue;
+			let rows = result;
+			if (result.reset || rebuild || replay) {
+				const messages = database
+					.query<{ entry_id: string; timestamp: number }, [string]>(
+						"SELECT entry_id, timestamp FROM messages WHERE session_file = ?",
+					)
+					.all(sessionFile);
+				const users = database
+					.query<{ entry_id: string; timestamp: number; model: string | null }, [string]>(
+						"SELECT entry_id, timestamp, model FROM user_messages WHERE session_file = ?",
+					)
+					.all(sessionFile);
+				const tools = database
+					.query<
+						{ entry_id: string; timestamp: number; tool_call_id: string; result_chars: number | null },
+						[string]
+					>("SELECT entry_id, timestamp, tool_call_id, result_chars FROM tool_calls WHERE session_file = ?")
+					.all(sessionFile);
+				const replace = result.reset || rebuild;
+				if (replace) {
+					// Only removed owners require another full replay, not an identity-only file replacement.
+					if (!reconcile && (messages.length > 0 || users.length > 0 || tools.length > 0)) {
+						const retainedMessages = new Set(
+							result.stats.map(row => JSON.stringify([row.entryId, row.timestamp])),
+						);
+						const retainedUsers = new Set(
+							result.userStats.map(row => JSON.stringify([row.entryId, row.timestamp])),
+						);
+						const retainedTools = new Set(
+							result.toolCalls.map(row => JSON.stringify([row.entryId, row.timestamp, row.toolCallId])),
+						);
+						reconcile =
+							messages.some(row => !retainedMessages.has(JSON.stringify([row.entry_id, row.timestamp]))) ||
+							users.some(row => !retainedUsers.has(JSON.stringify([row.entry_id, row.timestamp]))) ||
+							tools.some(
+								row => !retainedTools.has(JSON.stringify([row.entry_id, row.timestamp, row.tool_call_id])),
+							);
+					}
+				} else {
+					// A reconciliation replay only needs missing rows and unfinished links. Keep stable request
+					// IDs and avoid rewriting every table/index for transcripts whose contents did not change.
+					const messageById = new Map(messages.map(row => [row.entry_id, row.timestamp]));
+					const userById = new Map(users.map(row => [row.entry_id, row]));
+					const toolById = new Map(tools.map(row => [row.tool_call_id, row]));
+					const absentMessages = new Set(messageById.keys());
+					const absentUsers = new Set(userById.keys());
+					const absentTools = new Set(toolById.keys());
+					const stats = result.stats.filter(row => {
+						if (messageById.get(row.entryId) !== row.timestamp) return true;
+						absentMessages.delete(row.entryId);
+						return false;
+					});
+					const userStats = result.userStats.filter(row => {
+						if (userById.get(row.entryId)?.timestamp !== row.timestamp) return true;
+						absentUsers.delete(row.entryId);
+						return false;
+					});
+					const toolCalls = result.toolCalls.filter(row => {
+						const stored = toolById.get(row.toolCallId);
+						if (stored?.entry_id !== row.entryId || stored.timestamp !== row.timestamp) return true;
+						absentTools.delete(row.toolCallId);
+						return false;
+					});
+					rows = {
+						...result,
+						stats,
+						userStats,
+						toolCalls,
+						// A reused ID needs fresh linkage after its old identity is removed.
+						userLinks: result.userLinks.filter(
+							row => absentUsers.has(row.entryId) || userById.get(row.entryId)?.model == null,
+						),
+						toolResults: result.toolResults.filter(
+							row => absentTools.has(row.toolCallId) || toolById.get(row.toolCallId)?.result_chars == null,
+						),
+					};
+					// Repair stale owners without invalidating IDs of records still present in the transcript.
+					if (absentMessages.size > 0 || absentUsers.size > 0 || absentTools.size > 0) {
+						reconcile = true;
+						for (const id of absentMessages) {
+							database
+								.query("DELETE FROM messages WHERE session_file = ? AND entry_id = ?")
+								.run(sessionFile, id);
+						}
+						for (const id of absentUsers) {
+							database
+								.query("DELETE FROM user_messages WHERE session_file = ? AND entry_id = ?")
+								.run(sessionFile, id);
+						}
+						for (const id of absentTools) {
+							database
+								.query("DELETE FROM tool_calls WHERE session_file = ? AND tool_call_id = ?")
+								.run(sessionFile, id);
+						}
+					}
+				}
+				if (replace) {
+					if (messages.length > 0) database.query("DELETE FROM messages WHERE session_file = ?").run(sessionFile);
+					if (users.length > 0)
+						database.query("DELETE FROM user_messages WHERE session_file = ?").run(sessionFile);
+					if (tools.length > 0) database.query("DELETE FROM tool_calls WHERE session_file = ?").run(sessionFile);
+					if (result.reminderStats.length > 0 || result.delegationReminderStats.length > 0) {
+						database.query("DELETE FROM system_context_reminders WHERE session_file = ?").run(sessionFile);
+						database.query("DELETE FROM delegation_reminders WHERE session_file = ?").run(sessionFile);
+					}
+					if (result.subagentRuns.length > 0)
+						database.query("DELETE FROM subagent_runs WHERE session_file = ?").run(sessionFile);
+					if (result.timeBudgetEntries.length > 0)
+						database.query("DELETE FROM time_budget_runs WHERE session_file = ?").run(sessionFile);
+				}
+			}
+			writes.push(rows);
+			const count =
+				rows.stats.length +
+				rows.userStats.length +
+				rows.reminderStats.length +
+				rows.delegationReminderStats.length +
+				rows.subagentRuns.length +
+				rows.timeBudgetEntries.length;
+			processed += count;
+			if (count > 0) files++;
+		}
+		// Remove replaced rows before choosing new fork owners, then write each table once per batch.
+		insertMessageStats(parsedRows(writes, result => result.stats));
+		insertReminderStats(Array.from(parsedRows(writes, result => result.reminderStats)));
+		insertDelegationReminderStats(Array.from(parsedRows(writes, result => result.delegationReminderStats)));
+		insertSubagentRuns(Array.from(parsedRows(writes, result => result.subagentRuns)));
+		insertTimeBudgetEntries(Array.from(parsedRows(writes, result => result.timeBudgetEntries)));
+		insertUserMessageStats(parsedRows(writes, result => result.userStats));
+		updateUserMessageLinks(parsedRows(writes, result => result.userLinks));
+		insertToolCalls(parsedRows(writes, result => result.toolCalls));
+		updateToolResults(parsedRows(writes, result => result.toolResults));
+		for (const { sessionFile, result } of sessions) {
+			if (result.parserState) {
+				setFileOffset(sessionFile, result.newOffset, result.parserState.mtimeMs, result.parserState);
 			}
 		}
 		if (reconcile) {
-			database
-				.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('session_reconciliation', 'pending')")
-				.run();
+			database.query("INSERT OR REPLACE INTO meta (key, value) VALUES ('session_reconciliation', 'pending')").run();
 		}
-		if (result.stats.length > 0) insertMessageStats(result.stats);
-		if (result.userStats.length > 0) insertUserMessageStats(result.userStats);
-		if (result.reminderStats.length > 0) insertReminderStats(result.reminderStats);
-		if (result.delegationReminderStats.length > 0) insertDelegationReminderStats(result.delegationReminderStats);
-		if (result.userLinks.length > 0) updateUserMessageLinks(result.userLinks);
-		if (result.toolCalls.length > 0) insertToolCalls(result.toolCalls);
-		if (result.toolResults.length > 0) updateToolResults(result.toolResults);
-		if (result.subagentRuns.length > 0) insertSubagentRuns(result.subagentRuns);
-		if (result.timeBudgetEntries.length > 0) insertTimeBudgetEntries(result.timeBudgetEntries);
-		setFileOffset(sessionFile, result.newOffset, parserState.mtimeMs, parserState);
-		return {
-			processed:
-				result.stats.length +
-				result.userStats.length +
-				result.reminderStats.length +
-				result.delegationReminderStats.length +
-				result.subagentRuns.length +
-				result.timeBudgetEntries.length,
-			reconcile,
-		};
+		return { processed, files, reconcile };
 	})();
 }
 
@@ -942,10 +1085,10 @@ export function insertTimeBudgetEntries(entries: TimeBudgetEntryStats[]): number
  * stored cost (orchestration-aware) and keeps `premium_requests` monotonic, so
  * a forced re-parse repairs historical `premium_requests` and cost fix-ups.
  */
-export function insertMessageStats(stats: MessageStatsInput[]): number {
-	if (!db || stats.length === 0) return 0;
+export function insertMessageStats(stats: Iterable<MessageStatsInput>): number {
+	if (!db) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		INSERT INTO messages (
 			session_file, entry_id, folder, model, provider, api, timestamp,
 			duration, ttft, stop_reason, error_message,
@@ -2027,7 +2170,6 @@ export function getCostTimeSeries(days = 90, cutoff?: number | null): CostTimeSe
 		requests: row.requests,
 	}));
 }
-
 /**
  * Enroll only databases that had already advanced session offsets before
  * subagent telemetry existed. New databases have no historical JSONL to
@@ -2133,6 +2275,9 @@ export async function getDailyActivity(days = 371): Promise<DailyActivityPoint[]
  *   you` scores blame, `makes (no|zero) sense` scores negation. v7
  *   shipped briefly without these, so any database that completed the v7
  *   backfill needs one more re-derive.
+ * - v9: stored judge prose (`prose` / `prose_hash`) for the frustration
+ *   judge, so every session re-parses once to populate it. Verdicts live in
+ *   `frustration_verdicts`, keyed by prose hash, which this reset never touches.
  *
  * Existing `messages` rows are unaffected - `INSERT OR IGNORE` keeps them.
  */
@@ -2421,16 +2566,16 @@ export function markSessionBackfillsComplete(): void {
  * copy user entries verbatim into the child JSONL, so the same
  * `(entry_id, timestamp)` must not land twice across different session files.
  */
-export function insertUserMessageStats(stats: UserMessageStats[]): number {
-	if (!db || stats.length === 0) return 0;
+export function insertUserMessageStats(stats: Iterable<UserMessageStats>): number {
+	if (!db) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		INSERT OR IGNORE INTO user_messages (
 			session_file, entry_id, folder, timestamp, model, provider,
 			chars, words, yelling, profanity, anguish,
-			negation, repetition, blame
+			negation, repetition, blame, prose, prose_hash
 		)
-		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE NOT EXISTS (
 			SELECT 1 FROM user_messages
 			WHERE entry_id = ? AND timestamp = ? AND session_file <> ?
@@ -2455,6 +2600,8 @@ export function insertUserMessageStats(stats: UserMessageStats[]): number {
 				s.negation,
 				s.repetition,
 				s.blame,
+				s.prose,
+				s.proseHash,
 				// `WHERE NOT EXISTS` binds: skip when a different session_file
 				// already holds this (entry_id, timestamp).
 				s.entryId,
@@ -2470,17 +2617,16 @@ export function insertUserMessageStats(stats: UserMessageStats[]): number {
 
 /**
  * Backfill the responding `model`/`provider` on user-message rows that were
- * persisted before their assistant reply was parsed (a side effect of
- * incremental `fromOffset` syncing: the `userByEntryId` map in
- * `parseSessionFile` only spans a single pass). Each row is updated at most
- * once because the `model IS NULL` guard short-circuits subsequent passes.
+ * persisted before their assistant reply was parsed by an incremental tail
+ * read. Each row is updated at most once because the `model IS NULL` guard
+ * short-circuits subsequent passes.
  *
  * Returns the number of rows actually updated.
  */
-export function updateUserMessageLinks(links: UserMessageLink[]): number {
-	if (!db || links.length === 0) return 0;
+export function updateUserMessageLinks(links: Iterable<UserMessageLink>): number {
+	if (!db) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		UPDATE user_messages
 		   SET model = ?, provider = ?
 		 WHERE session_file = ? AND entry_id = ? AND model IS NULL
@@ -2497,181 +2643,162 @@ export function updateUserMessageLinks(links: UserMessageLink[]): number {
 	return updated;
 }
 
-const UNKNOWN_MODEL = "unknown";
-
-interface BehaviorSeriesRow {
-	bucket: number;
+/** Frustration tallies of one responding (model, provider) pair, before identity merging. */
+export interface FrustrationModelRow extends FrustrationCounts {
 	model: string;
-	provider: string;
+	provider: string | null;
+	/** Earliest message timestamp (ms) in range. */
+	firstSeen: number;
+}
+
+/** One unique unjudged prose text: identical messages share a hash and one verdict. */
+export interface PendingProse {
+	hash: string;
+	prose: string;
+}
+
+/** Cached judge verdict for one prose hash. */
+export interface FrustrationVerdict {
+	proseHash: string;
+	/** P(clearly annoyed) + P(angry) on the `annoyed` score question. */
+	pAnnoyed: number;
+	/** P(angry, hostile, or swearing). */
+	pAngry: number;
+	/** Most likely `target` choice: `assistant`, `other`, or `none`. */
+	target: string;
+	/** `provider/model` that produced the verdict. */
+	judge: string;
+	judgedAt: number;
+}
+
+interface FrustrationCountsRow {
 	messages: number;
-	yelling: number | null;
-	profanity: number | null;
-	anguish: number | null;
-	negation: number | null;
-	repetition: number | null;
-	blame: number | null;
-	chars: number | null;
+	judged: number;
+	annoyed: number;
+	at_assistant: number;
+	angry: number;
 }
 
-/**
- * Daily behavioral time series, grouped by responding model+provider.
- */
-export function getBehaviorTimeSeries(cutoff?: number | null): BehaviorTimeSeriesPoint[] {
-	if (!db) return [];
-	const hasCutoff = cutoff !== null && cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
-		SELECT
-			(timestamp / 86400000) * 86400000 as bucket,
-			COALESCE(model, ?) as model,
-			COALESCE(provider, ?) as provider,
-			COUNT(*) as messages,
-			SUM(yelling) as yelling,
-			SUM(profanity) as profanity,
-			SUM(anguish) as anguish,
-			SUM(negation) as negation,
-			SUM(repetition) as repetition,
-			SUM(blame) as blame,
-			SUM(chars) as chars
-		FROM user_messages
-		${hasCutoff ? "WHERE timestamp >= ?" : ""}
-		GROUP BY bucket, model, provider
-		ORDER BY bucket ASC
-	`);
-	const rows = (
-		hasCutoff ? stmt.all(UNKNOWN_MODEL, UNKNOWN_MODEL, cutoff) : stmt.all(UNKNOWN_MODEL, UNKNOWN_MODEL)
-	) as BehaviorSeriesRow[];
-	return rows.map(row => ({
-		timestamp: row.bucket,
-		model: row.model,
-		provider: row.provider,
-		messages: row.messages,
-		yelling: row.yelling ?? 0,
-		profanity: row.profanity ?? 0,
-		anguish: row.anguish ?? 0,
-		negation: row.negation ?? 0,
-		repetition: row.repetition ?? 0,
-		blame: row.blame ?? 0,
-		chars: row.chars ?? 0,
-	}));
-}
-
-interface BehaviorOverallRow {
-	total_messages: number;
-	total_yelling: number | null;
-	total_profanity: number | null;
-	total_anguish: number | null;
-	total_negation: number | null;
-	total_repetition: number | null;
-	total_blame: number | null;
-	total_chars: number | null;
-	first_timestamp: number | null;
-	last_timestamp: number | null;
-}
-
-/**
- * Overall behavioral totals across the cutoff window.
- */
-export function getBehaviorOverall(cutoff?: number | null): BehaviorOverallStats {
-	const empty: BehaviorOverallStats = {
-		totalMessages: 0,
-		totalYelling: 0,
-		totalProfanity: 0,
-		totalAnguish: 0,
-		totalNegation: 0,
-		totalRepetition: 0,
-		totalBlame: 0,
-		totalChars: 0,
-		firstTimestamp: 0,
-		lastTimestamp: 0,
-	};
-	if (!db) return empty;
-	const hasCutoff = cutoff !== null && cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
-		SELECT
-			COUNT(*) as total_messages,
-			SUM(yelling) as total_yelling,
-			SUM(profanity) as total_profanity,
-			SUM(anguish) as total_anguish,
-			SUM(negation) as total_negation,
-			SUM(repetition) as total_repetition,
-			SUM(blame) as total_blame,
-			SUM(chars) as total_chars,
-			MIN(timestamp) as first_timestamp,
-			MAX(timestamp) as last_timestamp
-		FROM user_messages
-		${hasCutoff ? "WHERE timestamp >= ?" : ""}
-	`);
-	const row = (hasCutoff ? stmt.get(cutoff) : stmt.get()) as BehaviorOverallRow | undefined;
-	if (!row?.total_messages) return empty;
-	return {
-		totalMessages: row.total_messages,
-		totalYelling: row.total_yelling ?? 0,
-		totalProfanity: row.total_profanity ?? 0,
-		totalAnguish: row.total_anguish ?? 0,
-		totalNegation: row.total_negation ?? 0,
-		totalRepetition: row.total_repetition ?? 0,
-		totalBlame: row.total_blame ?? 0,
-		totalChars: row.total_chars ?? 0,
-		firstTimestamp: row.first_timestamp ?? 0,
-		lastTimestamp: row.last_timestamp ?? 0,
-	};
-}
-
-interface BehaviorByModelRow {
+interface FrustrationModelSqlRow extends FrustrationCountsRow {
 	model: string;
-	provider: string;
-	total_messages: number;
-	total_yelling: number | null;
-	total_profanity: number | null;
-	total_anguish: number | null;
-	total_negation: number | null;
-	total_repetition: number | null;
-	total_blame: number | null;
-	total_chars: number | null;
-	last_timestamp: number | null;
+	provider: string | null;
+	first_seen: number;
+}
+
+// Each message is classified once: by its cached verdict when `v` joined,
+// else by the regex signals stored at ingest. Keep in sync with the rules
+// documented on `FrustrationCounts` / `frustration.ts`.
+const JUDGED_SQL = "v.prose_hash IS NOT NULL";
+const JUDGED_ANNOYED_SQL = "v.p_annoyed >= 0.5";
+const JUDGED_AT_ASSISTANT_SQL = `${JUDGED_ANNOYED_SQL} AND v.target = 'assistant'`;
+const REGEX_AT_ASSISTANT_SQL = "u.negation + u.repetition + u.blame > 0";
+const FRUSTRATION_COUNTS_SQL = `
+	COUNT(*) AS messages,
+	COALESCE(SUM(${JUDGED_SQL}), 0) AS judged,
+	COALESCE(SUM(CASE WHEN ${JUDGED_SQL} THEN ${JUDGED_ANNOYED_SQL}
+		ELSE u.yelling + u.profanity + u.anguish + u.negation + u.repetition + u.blame > 0 END), 0) AS annoyed,
+	COALESCE(SUM(CASE WHEN ${JUDGED_SQL} THEN ${JUDGED_AT_ASSISTANT_SQL}
+		ELSE ${REGEX_AT_ASSISTANT_SQL} END), 0) AS at_assistant,
+	COALESCE(SUM(CASE WHEN ${JUDGED_SQL} THEN ${JUDGED_AT_ASSISTANT_SQL} AND v.p_angry >= 0.5
+		ELSE ${REGEX_AT_ASSISTANT_SQL} AND (u.profanity > 0 OR u.yelling > 0) END), 0) AS angry
+`;
+
+function hasRangeCutoff(cutoff: number | null | undefined): cutoff is number {
+	return cutoff !== null && cutoff !== undefined && cutoff > 0;
+}
+
+function toFrustrationCounts(row: FrustrationCountsRow | undefined): FrustrationCounts {
+	return {
+		messages: row?.messages ?? 0,
+		judged: row?.judged ?? 0,
+		annoyed: row?.annoyed ?? 0,
+		atAssistant: row?.at_assistant ?? 0,
+		angry: row?.angry ?? 0,
+	};
+}
+
+/** Frustration tallies over every user message with prose in range, linked to a model or not. */
+export function getFrustrationOverall(cutoff?: number | null): FrustrationCounts {
+	if (!db) return toFrustrationCounts(undefined);
+	const hasCutoff = hasRangeCutoff(cutoff);
+	const stmt = db.prepare(`
+		SELECT ${FRUSTRATION_COUNTS_SQL}
+		FROM user_messages u
+		LEFT JOIN frustration_verdicts v ON v.prose_hash = u.prose_hash
+		WHERE u.prose != ''${hasCutoff ? " AND u.timestamp >= ?" : ""}
+	`);
+	const row = (hasCutoff ? stmt.get(cutoff) : stmt.get()) as FrustrationCountsRow | undefined;
+	return toFrustrationCounts(row);
 }
 
 /**
- * Per-model behavioral totals over the cutoff window. "Unknown" represents
- * user messages that never received an assistant reply.
+ * Frustration tallies per responding (model, provider) over the range. User
+ * messages that never got a reply (null model) are only in the overall tally.
  */
-export function getBehaviorByModel(cutoff?: number | null): BehaviorModelStats[] {
+export function getFrustrationByModel(cutoff?: number | null): FrustrationModelRow[] {
 	if (!db) return [];
-	const hasCutoff = cutoff !== null && cutoff !== undefined && cutoff > 0;
+	const hasCutoff = hasRangeCutoff(cutoff);
 	const stmt = db.prepare(`
-		SELECT
-			COALESCE(model, ?) as model,
-			COALESCE(provider, ?) as provider,
-			COUNT(*) as total_messages,
-			SUM(yelling) as total_yelling,
-			SUM(profanity) as total_profanity,
-			SUM(anguish) as total_anguish,
-			SUM(negation) as total_negation,
-			SUM(repetition) as total_repetition,
-			SUM(blame) as total_blame,
-			SUM(chars) as total_chars,
-			MAX(timestamp) as last_timestamp
-		FROM user_messages
-		${hasCutoff ? "WHERE timestamp >= ?" : ""}
-		GROUP BY model, provider
-		ORDER BY total_messages DESC
+		SELECT u.model AS model, u.provider AS provider, MIN(u.timestamp) AS first_seen, ${FRUSTRATION_COUNTS_SQL}
+		FROM user_messages u
+		LEFT JOIN frustration_verdicts v ON v.prose_hash = u.prose_hash
+		WHERE u.prose != '' AND u.model IS NOT NULL${hasCutoff ? " AND u.timestamp >= ?" : ""}
+		GROUP BY u.model, u.provider
 	`);
-	const rows = (
-		hasCutoff ? stmt.all(UNKNOWN_MODEL, UNKNOWN_MODEL, cutoff) : stmt.all(UNKNOWN_MODEL, UNKNOWN_MODEL)
-	) as BehaviorByModelRow[];
+	const rows = (hasCutoff ? stmt.all(cutoff) : stmt.all()) as FrustrationModelSqlRow[];
 	return rows.map(row => ({
 		model: row.model,
 		provider: row.provider,
-		totalMessages: row.total_messages,
-		totalYelling: row.total_yelling ?? 0,
-		totalProfanity: row.total_profanity ?? 0,
-		totalAnguish: row.total_anguish ?? 0,
-		totalNegation: row.total_negation ?? 0,
-		totalRepetition: row.total_repetition ?? 0,
-		totalBlame: row.total_blame ?? 0,
-		totalChars: row.total_chars ?? 0,
-		lastTimestamp: row.last_timestamp ?? 0,
+		firstSeen: row.first_seen,
+		...toFrustrationCounts(row),
 	}));
+}
+
+/** Unique unjudged prose in range, one row per prose hash. */
+function pendingProseSql(hasCutoff: boolean): string {
+	return `
+		SELECT u.prose_hash AS hash, MIN(u.prose) AS prose
+		FROM user_messages u
+		WHERE u.prose != ''${hasCutoff ? " AND u.timestamp >= ?" : ""}
+		  AND NOT EXISTS (SELECT 1 FROM frustration_verdicts v WHERE v.prose_hash = u.prose_hash)
+		GROUP BY u.prose_hash
+	`;
+}
+
+/** Unique prose texts in range that have no cached verdict yet. */
+export function getPendingFrustrationProse(cutoff?: number | null): PendingProse[] {
+	if (!db) return [];
+	const hasCutoff = hasRangeCutoff(cutoff);
+	const stmt = db.prepare(pendingProseSql(hasCutoff));
+	return (hasCutoff ? stmt.all(cutoff) : stmt.all()) as PendingProse[];
+}
+
+/** Count and total characters of {@link getPendingFrustrationProse} without loading the text. */
+export function getPendingFrustrationTotals(cutoff?: number | null): { messages: number; chars: number } {
+	if (!db) return { messages: 0, chars: 0 };
+	const hasCutoff = hasRangeCutoff(cutoff);
+	const stmt = db.prepare(
+		`SELECT COUNT(*) AS messages, COALESCE(SUM(LENGTH(prose)), 0) AS chars FROM (${pendingProseSql(hasCutoff)})`,
+	);
+	const row = (hasCutoff ? stmt.get(cutoff) : stmt.get()) as { messages: number; chars: number } | undefined;
+	return { messages: row?.messages ?? 0, chars: row?.chars ?? 0 };
+}
+
+/**
+ * Cache (or replace) verdicts, all in one transaction: a judge run lands
+ * dozens per second, and a commit per verdict would contend with ingest for
+ * the write lock every time.
+ */
+export function upsertFrustrationVerdicts(verdicts: readonly FrustrationVerdict[]): void {
+	if (!db || verdicts.length === 0) return;
+	const database = db;
+	const stmt = database.query(
+		`INSERT OR REPLACE INTO frustration_verdicts (prose_hash, p_annoyed, p_angry, target, judge, judged_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+	);
+	database.transaction(() => {
+		for (const v of verdicts) stmt.run(v.proseHash, v.pAnnoyed, v.pAngry, v.target, v.judge, v.judgedAt);
+	})();
 }
 
 /**
@@ -2683,10 +2810,10 @@ export function getBehaviorByModel(cutoff?: number | null): BehaviorModelStats[]
  * identity, not the call id alone — provider call ids are not a global
  * namespace across unrelated sessions.
  */
-export function insertToolCalls(calls: ToolCallStats[]): number {
-	if (!db || calls.length === 0) return 0;
+export function insertToolCalls(calls: Iterable<ToolCallStats>): number {
+	if (!db) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		INSERT OR IGNORE INTO tool_calls (
 			session_file, entry_id, tool_call_id, folder, tool_name,
 			model, provider, timestamp, agent_type, calls_in_turn, args_chars
@@ -2734,10 +2861,10 @@ export function insertToolCalls(calls: ToolCallStats[]): number {
  * guard makes re-syncs idempotent; rows skipped by the fork guard simply
  * never match.
  */
-export function updateToolResults(links: ToolResultLink[]): number {
-	if (!db || links.length === 0) return 0;
+export function updateToolResults(links: Iterable<ToolResultLink>): number {
+	if (!db) return 0;
 
-	const stmt = db.prepare(`
+	const stmt = db.query(`
 		UPDATE tool_calls
 		SET result_chars = ?, is_error = ?
 		WHERE session_file = ? AND tool_call_id = ? AND result_chars IS NULL
@@ -2752,132 +2879,4 @@ export function updateToolResults(links: ToolResultLink[]): number {
 	});
 	apply();
 	return updated;
-}
-
-/**
- * Shared SELECT list for tool aggregates. Real provider usage comes from the
- * invoking assistant turn (`messages` join) divided by `calls_in_turn`, so
- * per-tool token/cost shares stay additive across tools. The unpriced share
- * reuses the request predicate against the joined message, whose stored cost
- * it attributes.
- */
-const TOOL_AGGREGATE_COLUMNS = `
-	COUNT(*) as calls,
-	SUM(CASE WHEN t.is_error = 1 THEN 1 ELSE 0 END) as errors,
-	SUM(t.args_chars) as args_chars,
-	SUM(COALESCE(t.result_chars, 0)) as result_chars,
-	SUM(COALESCE(m.total_tokens, 0) * 1.0 / t.calls_in_turn) as total_tokens_share,
-	SUM(COALESCE(m.output_tokens, 0) * 1.0 / t.calls_in_turn) as output_tokens_share,
-	SUM(COALESCE(m.cost_total, 0) / t.calls_in_turn) as cost_share,
-	SUM(${unpricedRequestSql("m.")} * 1.0 / t.calls_in_turn) as unpriced_requests_share,
-	MAX(t.timestamp) as last_used
-`;
-
-interface ToolAggregateRow {
-	tool_name: string;
-	model?: string;
-	provider?: string;
-	calls: number;
-	errors: number;
-	args_chars: number | null;
-	result_chars: number | null;
-	total_tokens_share: number | null;
-	output_tokens_share: number | null;
-	cost_share: number | null;
-	unpriced_requests_share: number | null;
-	last_used: number;
-}
-
-function rowToToolUsage(row: ToolAggregateRow): ToolUsageStats {
-	return {
-		tool: row.tool_name,
-		calls: row.calls,
-		errors: row.errors,
-		argsChars: row.args_chars ?? 0,
-		resultChars: row.result_chars ?? 0,
-		totalTokensShare: row.total_tokens_share ?? 0,
-		outputTokensShare: row.output_tokens_share ?? 0,
-		costShare: row.cost_share ?? 0,
-		unpricedRequestsShare: row.unpriced_requests_share ?? 0,
-		lastUsed: row.last_used,
-	};
-}
-
-/**
- * Get tool usage aggregated by tool name.
- */
-export function getToolStats(cutoff?: number): ToolUsageStats[] {
-	if (!db) return [];
-
-	const hasCutoff = cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
-		SELECT t.tool_name, ${TOOL_AGGREGATE_COLUMNS}
-		FROM tool_calls t
-		LEFT JOIN messages m ON m.session_file = t.session_file AND m.entry_id = t.entry_id
-		${hasCutoff ? "WHERE t.timestamp >= ?" : ""}
-		GROUP BY t.tool_name
-		ORDER BY calls DESC
-	`);
-
-	const rows = (hasCutoff ? stmt.all(cutoff) : stmt.all()) as ToolAggregateRow[];
-	return rows.map(rowToToolUsage);
-}
-
-/**
- * Get tool usage aggregated by (tool, model, provider).
- */
-export function getToolStatsByModel(cutoff?: number): ToolModelStats[] {
-	if (!db) return [];
-
-	const hasCutoff = cutoff !== undefined && cutoff > 0;
-	const stmt = db.prepare(`
-		SELECT t.tool_name, t.model, t.provider, ${TOOL_AGGREGATE_COLUMNS}
-		FROM tool_calls t
-		LEFT JOIN messages m ON m.session_file = t.session_file AND m.entry_id = t.entry_id
-		${hasCutoff ? "WHERE t.timestamp >= ?" : ""}
-		GROUP BY t.tool_name, t.model, t.provider
-		ORDER BY calls DESC
-	`);
-
-	const rows = (hasCutoff ? stmt.all(cutoff) : stmt.all()) as ToolAggregateRow[];
-	return rows.map(row => ({
-		...rowToToolUsage(row),
-		model: row.model ?? "",
-		provider: row.provider ?? "",
-	}));
-}
-
-/**
- * Get tool-call time series (one point per bucket per tool).
- */
-export function getToolTimeSeries(
-	days = 14,
-	cutoff?: number | null,
-	bucketMs = 24 * 60 * 60 * 1000,
-): ToolTimeSeriesPoint[] {
-	if (!db) return [];
-
-	const hasCutoff = cutoff !== null;
-	const seriesCutoff = hasCutoff ? (cutoff ?? Date.now() - days * 24 * 60 * 60 * 1000) : 0;
-
-	const stmt = db.prepare(`
-		SELECT
-			(timestamp / ?) * ? as bucket,
-			tool_name,
-			COUNT(*) as calls,
-			SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) as errors
-		FROM tool_calls
-		${hasCutoff ? "WHERE timestamp >= ?" : ""}
-		GROUP BY bucket, tool_name
-		ORDER BY bucket ASC
-	`);
-
-	const rowsRaw = hasCutoff ? stmt.all(bucketMs, bucketMs, seriesCutoff) : stmt.all(bucketMs, bucketMs);
-	const rows = rowsRaw as Array<{ bucket: number; tool_name: string; calls: number; errors: number }>;
-	return rows.map(row => ({
-		timestamp: row.bucket,
-		tool: row.tool_name,
-		calls: row.calls,
-		errors: row.errors,
-	}));
 }

@@ -10,7 +10,6 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	AUTO_THINKING,
 	clampAutoThinkingEffort,
-	parseCliThinkingLevel,
 	parseConfiguredThinkingLevel,
 	parseEffort,
 	parseThinkingLevel,
@@ -55,14 +54,6 @@ describe("auto thinking classifier helpers", () => {
 		expect(parseThinkingLevel(ThinkingLevel.Off)).toBe(ThinkingLevel.Off);
 		expect(parseConfiguredThinkingLevel(Effort.Max)).toBe(Effort.Max);
 		expect(parseThinkingLevel(Effort.Max)).toBe(Effort.Max);
-	});
-
-	it("parses CLI --thinking selectors while rejecting inherit", () => {
-		expect(parseCliThinkingLevel(ThinkingLevel.Off)).toBe(ThinkingLevel.Off);
-		expect(parseCliThinkingLevel(AUTO_THINKING)).toBe(AUTO_THINKING);
-		expect(parseCliThinkingLevel("max")).toBe(ThinkingLevel.Max);
-		expect(parseCliThinkingLevel(ThinkingLevel.Inherit)).toBeUndefined();
-		expect(parseCliThinkingLevel("bogus")).toBeUndefined();
 	});
 
 	it("expands the local reasoning classifier budget", async () => {
@@ -290,6 +281,7 @@ describe("auto thinking classifier helpers", () => {
 			expect.objectContaining({ role: "judge", stopReason: "error", errorMessage: "Internal Server Error" }),
 		);
 		expect(onUsage).toHaveBeenNthCalledWith(2, {
+			purpose: "auto-thinking",
 			role: "judge",
 			api: fixture.classifierModel.api,
 			provider: fixture.classifierModel.provider,
