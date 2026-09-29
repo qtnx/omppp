@@ -33,6 +33,7 @@ import { loadSkills, type Skill } from "./extensibility/skills";
 import { InternalUrlRouter } from "./internal-urls/router";
 import type { SchemeHost } from "./internal-urls/types";
 import activeRepoContextTemplate from "./prompts/system/active-repo-context.md" with { type: "text" };
+import claudeOpusModelNotes from "./prompts/system/model-notes/claude-opus.md" with { type: "text" };
 import openAIGptModelNotes from "./prompts/system/model-notes/openai-gpt.md" with { type: "text" };
 import cavemanModeActiveTemplate from "./prompts/system/caveman-mode-active.md" with { type: "text" };
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
@@ -232,7 +233,14 @@ function renderActiveRepoContextPrompt(activeRepoContext: ActiveRepoContext | nu
 
 /** Model-family guidance block; empty for models without a profile (see `modelPromptProfile`). */
 function renderModelNotesBlock(model: string | undefined): string {
-	return modelPromptProfile(model) === "openai-gpt" ? openAIGptModelNotes.trim() : "";
+	switch (modelPromptProfile(model)) {
+		case "openai-gpt":
+			return openAIGptModelNotes.trim();
+		case "claude-opus":
+			return claudeOpusModelNotes.trim();
+		default:
+			return "";
+	}
 }
 
 function renderCavemanModeBlock(): string {

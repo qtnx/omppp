@@ -48,7 +48,7 @@ Walk 5-whys down: the null-deref frame is level 1; WHY was it null; WHY did the 
 The answer names exactly where the regression test belongs. Write it BEFORE the fix so you watch it go red→green.
 
 ### 7. Fix the CLASS
-Same defect pattern usually has siblings: search for it (`grep`/ast-grep the pattern, not the symptom). In-scope siblings: fix now. Out-of-scope: report in `Noticed:` with file:line.
+MUST inventory consumers of the faulty contract or data, not only matches for the symptom. Same-cause failures within the requested feature belong to the fix unless explicitly excluded. Follow missing producer/payload/consumer links until this bounded set is accounted for; unrelated defects belong in `Noticed:` with file:line.
 
 ### 8. Verify per skill://verify-before-done
 Original reproduction re-run on the real entry point; paste BEFORE (broken) and AFTER (fixed) outputs; run the failure path; regression test in the suite.

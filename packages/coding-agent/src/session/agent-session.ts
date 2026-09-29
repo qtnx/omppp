@@ -220,7 +220,7 @@ import timeBudgetCheckpointTemplate from "../prompts/system/time-budget-checkpoi
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import skillfulNoticePrompt from "../prompts/system/skillful-notice.md" with { type: "text" };
 import videoAttachmentPrompt from "../prompts/system/video-attachment.md" with { type: "text" };
-import { detectSecretsInText, kindToName } from "../secrets/detect";
+import { kindToName } from "../secrets/detect";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -229,7 +229,8 @@ import {
 	obfuscateProviderContext,
 } from "../secrets/message-transform";
 import { type SecretEntry, SecretObfuscator } from "../secrets/obfuscator";
-import { cfgSecretsAutoDetect, cfgSecretsEnabled } from "../secrets/settings";
+import { detectSecrets, sentinelClient } from "../secrets/sentinel";
+import { cfgSecretsAutoDetect, cfgSecretsEnabled, cfgSecretsSentinelUrl } from "../secrets/settings";
 import {
 	createTurnSignalService,
 	type PromptSignals,
@@ -613,6 +614,8 @@ const EXPERIMENTAL_CONTEXT_REQUIRED_TOOLS: Record<string, true> = {
 
 const SUBAGENT_CONTEXT_MAX_BYTES = 64 * 1024;
 const SUBAGENT_CONTEXT_MAX_LINES = 1200;
+/** Shell tools whose output is scanned for secrets before it reaches the model or the transcript. */
+const SECRET_SCANNED_TOOLS: Record<string, true> = { bash: true, ssh: true };
 /** Internal marker for hook messages queued through the agent loop */
 // ============================================================================
 // Constants
@@ -5135,7 +5138,9 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
-	#afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
+	#afterToolCall(
+		ctx: AfterToolCallContext,
+	): Promise<AfterToolCallResult | undefined> | AfterToolCallResult | undefined {
 		if (
 			this.#isTerminalYieldToolResult({
 				toolName: ctx.toolCall.name,
@@ -5148,7 +5153,40 @@ export class AgentSession implements SettingsScope {
 			this.#synchronouslyTerminatedYieldToolCallIds.add(ctx.toolCall.id);
 			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 		}
-		return this.#ttsr.afterToolCall(ctx);
+		const ttsr = this.#ttsr.afterToolCall(ctx);
+		if (!SECRET_SCANNED_TOOLS[ctx.toolCall.name] || !this.#secretAutoDetectActive()) return ttsr;
+		return this.#redactToolResultSecrets(ttsr?.content ?? ctx.result.content).then(content =>
+			content ? { ...ttsr, content } : ttsr,
+		);
+	}
+
+	/**
+	 * Shell output is where credentials leak in (`cat .env`, `printenv`, config
+	 * dumps). Detected values are vaulted and replaced before the result is
+	 * emitted, so neither the provider nor the persisted transcript sees them.
+	 * Returns undefined when no block was rewritten.
+	 */
+	async #redactToolResultSecrets(
+		content: AgentToolResult<unknown>["content"],
+	): Promise<AgentToolResult<unknown>["content"] | undefined> {
+		let rewritten = false;
+		const next: AgentToolResult<unknown>["content"] = [];
+		for (const block of content) {
+			if (block.type !== "text") {
+				next.push(block);
+				continue;
+			}
+			let text = block.text;
+			try {
+				text = await this.#redactDetectedSecrets(block.text);
+			} catch (error) {
+				// Vault write failed: the obfuscator still masks known secrets at the provider boundary.
+				logger.warn("Failed to vault secrets detected in tool output", { error: String(error) });
+			}
+			rewritten ||= text !== block.text;
+			next.push(text === block.text ? block : { ...block, text });
+		}
+		return rewritten ? next : undefined;
 	}
 	/**
 	 * Emits the extension `tool_call` event for a loop-dispatched call at
@@ -7710,36 +7748,48 @@ export class AgentSession implements SettingsScope {
 	 * credentials to the provider verbatim.
 	 */
 	async #applyPromptSecretPolicy(text: string, synthetic: boolean | undefined): Promise<string> {
-		if (
-			synthetic ||
-			!this.#secretVault ||
-			!cfgSecretsEnabled.get(this.settings) ||
-			!cfgSecretsAutoDetect.get(this.settings)
-		) {
-			return text;
-		}
-		return await this.#detectAndStorePromptSecrets(text);
+		if (synthetic || !this.#secretAutoDetectActive()) return text;
+		return await this.#redactDetectedSecrets(text);
+	}
+
+	#secretAutoDetectActive(): boolean {
+		return (
+			this.#secretVault !== undefined &&
+			cfgSecretsEnabled.get(this.settings) &&
+			cfgSecretsAutoDetect.get(this.settings)
+		);
 	}
 
 	/**
-	 * Stores detected prompt secrets and replaces their spans before the prompt
-	 * enters either the streaming queue or the normal message path.
+	 * Stores detected secrets (regex + Secrets Sentinel classifier) in the vault
+	 * and replaces their spans with env var markers, so the model and the
+	 * transcript only ever see the variable name. Used for prompts before they
+	 * enter the streaming queue or message path, and for shell tool output.
 	 */
-	async #detectAndStorePromptSecrets(text: string): Promise<string> {
-		const detected = detectSecretsInText(text);
-		if (detected.length === 0 || !this.#secretVault) return text;
+	async #redactDetectedSecrets(text: string): Promise<string> {
+		if (!this.#secretVault) return text;
+		// Tests never reach the tailnet default; they exercise the classifier through `detectSecrets` directly.
+		sentinelClient.setServerUrl(
+			Bun.env.SECRETS_SENTINEL_URL ?? (isBunTestRuntime() ? "" : cfgSecretsSentinelUrl.get(this.settings)),
+		);
+		const detected = await detectSecrets(text);
+		if (detected.length === 0) return text;
 
 		let transformed = text;
 		const entries: SecretEntry[] = [];
-		for (const span of [...detected].reverse()) {
-			const name = normalizeSecretName(span.name ?? kindToName(span.kind));
-			const finalName = await this.#secretVault.set(name, span.value, span.kind === "tag" ? "tag" : "detected");
-			const mask = maskSecretValue(span.value).replaceAll("$", "•");
-			const replacement = `[secret ${finalName} (${mask}) — exported as env var ${finalName} in bash]`;
-			transformed = transformed.slice(0, span.start) + replacement + transformed.slice(span.end);
-			entries.push(vaultSecretEntry(finalName, span.value));
+		try {
+			for (const span of [...detected].reverse()) {
+				const name = normalizeSecretName(span.name ?? kindToName(span.kind));
+				const finalName = await this.#secretVault.set(name, span.value, span.kind === "tag" ? "tag" : "detected");
+				const mask = maskSecretValue(span.value).replaceAll("$", "•");
+				const replacement = `[secret ${finalName} (${mask}) — exported as env var ${finalName} in bash]`;
+				transformed = transformed.slice(0, span.start) + replacement + transformed.slice(span.end);
+				entries.push(vaultSecretEntry(finalName, span.value));
+			}
+		} finally {
+			// Secrets vaulted before a failed write still get masked at the provider boundary.
+			this.registerRuntimeSecrets(entries);
 		}
-		this.registerRuntimeSecrets(entries);
 		return transformed;
 	}
 

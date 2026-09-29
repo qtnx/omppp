@@ -143,6 +143,8 @@ import {
 	HERDR_MANAGED_FALLBACK_SENTINEL,
 	isNativeHerdrAgentStateEnabled,
 } from "./extensibility/extensions/herdr-agent-state";
+import { claimHerdrOmpProcessName } from "./herdr/entrypoint";
+import { isHerdrPane } from "./herdr/socket";
 import {
 	type LoadSkillsOptions,
 	loadSkills as loadSkillsInternal,
@@ -2806,6 +2808,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const isHerdrSubagentSession = options.parentTaskPrefix !== undefined || (options.taskDepth ?? 0) > 0;
 		const nativeHerdrAgentStateEnabled =
 			!minimalExtensionRuntime && !isHerdrSubagentSession && isNativeHerdrAgentStateEnabled();
+		// herdr drops every `omp` report — native or herdr's managed extension — unless the
+		// pane's foreground process is named `omp`; claim the name for the pane-owning session.
+		if (!minimalExtensionRuntime && !isHerdrSubagentSession && isHerdrPane()) claimHerdrOmpProcessName();
 
 		// Load extensions. Restricted sessions and minimal subagent runtimes skip
 		// extension evaluation; normal sessions preserve preloaded and discovered paths.

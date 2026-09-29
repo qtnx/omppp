@@ -330,3 +330,63 @@ export function detectSecretsInText(text: string): DetectedSecret[] {
 			kind,
 		}));
 }
+
+/** Value-shaped tokens: quoted literals, or runs between whitespace and assignment/call punctuation. */
+const LINE_TOKEN_PATTERN = /"([^"\s]{4,})"|'([^'\s]{4,})'|([^\s"'`,;=:()[\]{}<>]{4,})/g;
+/** Identifier immediately before a value: `NAME=`, `NAME: `, `"name": "`, `--name `. */
+const PRECEDING_NAME_PATTERN =
+	/(?:([A-Za-z][A-Za-z0-9_.-]*)["']?[ \t]*(?::=|[:=])|--?([A-Za-z][A-Za-z0-9_-]*)[ \t]+)[ \t]*["']?$/;
+const PLACEHOLDER_TOKEN_PATTERN = /\$\$(?:[A-Z0-9]+_)?[A-Z0-9]{4,}(?::[ULCM])?\$\$/g;
+
+/** A bare word, path, number, version, or lowercase hash — never a credential on its own. */
+function isInertToken(token: string): boolean {
+	if (token.startsWith("-") || /^(?:\.{0,2}\/|~\/|\/\/)/.test(token) || token.includes("://")) return true;
+	if (!/[A-Za-z]/.test(token)) return true;
+	if (/^[0-9a-f]+$/.test(token)) return true;
+	// Words, identifiers, and CONSTANT_NAMES carry no digit or symbol a secret would.
+	if (/^[A-Za-z_.-]+$/.test(token)) return true;
+	return token.includes("/") && token.length < 20;
+}
+
+function tokenEntropyScore(token: string): number {
+	const counts = new Map<string, number>();
+	for (const char of token) counts.set(char, (counts.get(char) ?? 0) + 1);
+	let entropy = 0;
+	for (const count of counts.values()) {
+		const p = count / token.length;
+		entropy -= p * Math.log2(p);
+	}
+	return entropy * Math.log2(token.length);
+}
+
+/**
+ * Picks the credential value inside one line that a classifier (Secrets
+ * Sentinel) flagged as holding a hardcoded secret: the highest-entropy literal
+ * token that is not a word, path, number, hash, reference, or existing
+ * placeholder. Returns undefined when the line has no such token, so a line
+ * that cannot yield a replaceable value is never sent to the classifier.
+ */
+export function extractLineSecretCandidate(line: string): Omit<DetectedSecret, "kind"> | undefined {
+	const masked: Array<[number, number]> = [];
+	for (const pattern of [replacementPattern, PLACEHOLDER_TOKEN_PATTERN]) {
+		for (const match of line.matchAll(pattern)) masked.push([match.index, match.index + match[0].length]);
+	}
+	let best: { start: number; end: number; value: string; score: number } | undefined;
+	for (const match of line.matchAll(LINE_TOKEN_PATTERN)) {
+		const value = match[1] ?? match[2] ?? match[3];
+		const start = match.index + (match[3] === undefined ? 1 : 0);
+		const end = start + value.length;
+		if (isInReplacement(start, end, masked) || isPlaceholderValue(value) || isInertToken(value)) continue;
+		const score = tokenEntropyScore(value);
+		if (!best || score > best.score) best = { start, end, value, score };
+	}
+	if (!best) return undefined;
+	const preceding = PRECEDING_NAME_PATTERN.exec(line.slice(0, best.start));
+	const identifier = preceding?.[1] ?? preceding?.[2];
+	return {
+		start: best.start,
+		end: best.end,
+		value: best.value,
+		...(identifier && credentialKeyword(identifier) ? { name: identifier } : {}),
+	};
+}

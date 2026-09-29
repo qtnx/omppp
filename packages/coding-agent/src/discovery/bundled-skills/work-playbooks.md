@@ -82,8 +82,8 @@ Senior defaults across all types: understand before fixing, read before writing,
 - Reproduction is evidence, not ritual. The user's observation plus the code path that explains it IS the reproduction; materialize a failing test or command only when the cause is not evident from the code, the fix is on the RISK list, or the user asks. NEVER build a harness to reproduce what a targeted read already explains. Cause not findable and not reproducible → that IS the finding; report what's missing.
 - Walk the causal chain to the frame that VIOLATED the invariant, not the frame that noticed it. The top of the stack trace is where it hurt, rarely where it broke.
 - Ask "why did no test catch this?" — the answer names where a regression test belongs; write it only when the test budget earns it (RISK, or an uncovered load-bearing branch); otherwise the run is the evidence.
-- Fix the CLASS, not the instance: ONE search for sibling occurrences of the same defect pattern; fix siblings inside the requested scope, list the rest in Noticed. A sibling hunt beyond one search is scope creep.
-- Done = the reported path shows the corrected result + regression test when earned + siblings fixed or listed.
+- MUST fix the class, not the instance: inventory consumers of the faulty contract or data, including differently named paths. Same-cause failures within the requested feature belong to the fix unless explicitly excluded. Stop when this bounded set is accounted for, not after one search. Unrelated defects belong in Noticed.
+- Done = the reported path shows the corrected result + in-scope siblings addressed with evidence + regression test when earned. Unverified consumers remain explicit gaps, never silently treated as complete.
 - Fresher traps: null-check at the crash site, catch-and-swallow, sleep() for a race, special-casing the failing input.
 
 ## FEATURE ON EXISTING CODE
