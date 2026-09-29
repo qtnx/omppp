@@ -5739,8 +5739,14 @@ async function openCodexSseEventStream(
 	if (!response.body) {
 		throw new CodexProviderStreamError("No response body", false);
 	}
-	return readSseJson<Record<string, unknown>>(response.body, signal, event =>
-		onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, undefined),
+	// Attach the observer only when a diagnostic listener exists: any observer
+	// turns on per-line raw capture in `readSseJson`.
+	return readSseJson<Record<string, unknown>>(
+		response.body,
+		signal,
+		onSseEvent
+			? event => onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, undefined)
+			: undefined,
 	);
 }
 

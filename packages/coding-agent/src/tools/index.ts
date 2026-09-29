@@ -446,7 +446,7 @@ export interface ToolSession {
 	taskDepth?: number;
 	/** Active-work time budget snapshot; only the main session returns one. */
 	getTimeBudgetSnapshot?: () => TimeBudgetSnapshot | null;
-	/** Get shared eval executor session ID. Subagents inherit this to share JS/Python state. */
+	/** Get this agent's eval executor session ID; keys its retained JS/Python/Ruby/Julia state. */
 	getEvalSessionId?: () => string | null;
 	/** Get session file */
 	getSessionFile: () => string | null;
@@ -659,6 +659,8 @@ export interface ToolSession {
 	 * a data-less `useLastTurn` finalize that would assemble to an empty result.
 	 */
 	getLastAssistantText?: () => string | undefined;
+	/** Resolve a terminal yield's current or immediately preceding report, bound to its call ID. */
+	getYieldReportText?: (toolCallId: string) => string | undefined;
 	/** Replace the active workpool item contract and refresh its provider-facing prompt. */
 	setWorkPoolYieldItems?: (items: readonly WorkPoolYieldItem[]) => Promise<void>;
 	/** The tool-choice queue used to force forthcoming tool invocations and carry invocation handlers. */

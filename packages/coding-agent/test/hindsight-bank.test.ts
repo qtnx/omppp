@@ -98,13 +98,6 @@ describe("computeBankScope", () => {
 				bankId: "prod-team",
 			});
 		});
-
-		it("does not surface tag fields", () => {
-			const scope = computeBankScope(baseConfig(), "/work/proj");
-			expect(scope.retainTags).toBeUndefined();
-			expect(scope.recallTags).toBeUndefined();
-			expect(scope.recallTagsMatch).toBeUndefined();
-		});
 	});
 
 	describe("scoping=per-project", () => {
@@ -133,12 +126,6 @@ describe("computeBankScope", () => {
 			);
 			expect(scope.bankId).toBe("prod-team-cool-app");
 		});
-
-		it("does not surface tag fields (isolation is at the bank level)", () => {
-			const scope = computeBankScope(baseConfig({ scoping: "per-project" }), "/work/proj");
-			expect(scope.retainTags).toBeUndefined();
-			expect(scope.recallTags).toBeUndefined();
-		});
 	});
 
 	describe("scoping=per-project-tagged", () => {
@@ -149,12 +136,6 @@ describe("computeBankScope", () => {
 				recallTags: ["project:proj"],
 				recallTagsMatch: "all_strict",
 			});
-		});
-
-		it("uses the same project label for retain and recall tags", () => {
-			const scope = computeBankScope(baseConfig({ scoping: "per-project-tagged" }), "/repo/cool-app");
-			expect(scope.retainTags).toEqual(["project:cool-app"]);
-			expect(scope.recallTags).toEqual(["project:cool-app"]);
 		});
 
 		it("falls back to project:unknown when cwd is empty", () => {
@@ -316,7 +297,6 @@ describe("deriveBankId (legacy wrapper)", () => {
 		expect(deriveBankId(baseConfig({ scoping: "per-project-tagged" }), "/work/proj")).toBe("omp");
 	});
 });
-
 describe("ensureBankExists", () => {
 	let client: HindsightApi;
 	let createSpy: Mock<HindsightApi["createBank"]> | undefined;

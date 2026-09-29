@@ -1551,7 +1551,6 @@ describe("system prompt tool inventory", () => {
 		expect(text).not.toContain("`node -e`");
 		expect(text).not.toContain("`npx tsx -e`");
 	});
-
 	it("omits the read-only scout delegation gate when scout is unavailable", async () => {
 		const opts = { toolNames: ["read", "bash", "task"], tools: TOOLS };
 		const withScout = (

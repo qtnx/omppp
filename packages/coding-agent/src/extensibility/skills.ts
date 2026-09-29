@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
-import { getProjectDir, prompt } from "@oh-my-pi/pi-utils";
+import { getProjectDir, parseFrontmatter, prompt } from "@oh-my-pi/pi-utils";
 import {
 	isValidManagedSkillName,
 	MANAGED_SKILLS_PROVIDER_ID,
@@ -555,7 +555,8 @@ export async function buildSkillPromptMessage(
 ): Promise<BuiltSkillPromptMessage> {
 	const normalized: SkillPromptInput = typeof input === "string" ? { args: input } : input;
 	const content = skill.content ?? (await Bun.file(skill.filePath).text());
-	const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+	// Preserve HTML comments and accept CRLF frontmatter; diagnostics belong to the loader.
+	const body = parseFrontmatter(content, { source: skill.filePath, repair: false, level: "off" }).body.trim();
 	const trimmedArgs = normalized.args.trim();
 	let message: string;
 	if (invocation === "user") {

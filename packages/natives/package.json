@@ -95,6 +95,11 @@
 			"types": "./native/vcs.d.ts",
 			"import": "./native/vcs.js",
 			"default": "./native/vcs.js"
+		},
+		"./path": {
+			"types": "./native/path.d.ts",
+			"import": "./native/path.js",
+			"default": "./native/path.js"
 		}
 	}
 }

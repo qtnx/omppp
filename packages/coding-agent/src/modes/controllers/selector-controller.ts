@@ -68,6 +68,12 @@ import { toLogoutAccounts } from "../../slash-commands/helpers/logout";
 import type { LogoutAccount } from "@oh-my-pi/pi-tui/overlays/logout-account-selector";
 import { describeRedeemOutcome, toResetUsageAccounts } from "../../slash-commands/helpers/reset-usage";
 import { toSessionPinAccounts } from "../../slash-commands/helpers/session-pin";
+import {
+	accountIdentityLabel,
+	collectStoredAccounts,
+	collectUnreportedAccounts,
+	selectReportableAccounts,
+} from "../../slash-commands/helpers/usage-accounts";
 import { loadDailyActivity } from "../../stats/activity-client";
 import {
 	AUTO_THINKING,
@@ -351,6 +357,19 @@ export class SelectorController {
 	 * classic full report one keypress away. Takes no transcript space.
 	 */
 	showUsageDashboard(reports: UsageReport[]): void {
+		const authStorage = this.ctx.session.modelRegistry.authStorage;
+		const accounts = selectReportableAccounts(
+			collectStoredAccounts(authStorage),
+			provider => authStorage.usage.providerFor(provider) !== undefined,
+		);
+		if (reports.length === 0 && accounts.length === 0) {
+			this.ctx.showWarning("No usage data available.");
+			return;
+		}
+		const unavailableAccounts = collectUnreportedAccounts(reports, accounts).map(account => ({
+			provider: account.provider,
+			label: accountIdentityLabel(account),
+		}));
 		const currentProvider = this.ctx.session.model?.provider;
 		const activeAccount = currentProvider
 			? this.ctx.session.modelRegistry.authStorage.oauth.identity(currentProvider, this.ctx.session.sessionId)
@@ -365,6 +384,7 @@ export class SelectorController {
 		const dashboard = new UsageDashboardComponent({
 			reports,
 			cacheSummary,
+			unavailableAccounts,
 			renderDetail: width =>
 				renderUsageReports(
 					reports,
@@ -374,6 +394,7 @@ export class SelectorController {
 					provider => (provider === currentProvider ? activeAccount : undefined),
 					usageModelSelectors,
 					cacheSummary,
+					unavailableAccounts,
 				),
 			loadActivity: loadDailyActivity,
 			requestRender: () => this.ctx.ui.requestRender(),
@@ -957,13 +978,7 @@ export class SelectorController {
 				},
 				onFallbackChainChange: (role, chain) => {
 					try {
-						const chains = { ...cfgRetryFallbackChains.get(this.ctx.settings) };
-						if (chain.length === 0) {
-							delete chains[role];
-						} else {
-							chains[role] = chain;
-						}
-						cfgRetryFallbackChains.set(this.ctx.settings, chains);
+						cfgRetryFallbackChains.setEntry(this.ctx.settings, role, chain.length > 0 ? chain : undefined);
 						const roleInfo = getRoleInfo(role, settings);
 						this.ctx.showStatus(
 							chain.length > 0

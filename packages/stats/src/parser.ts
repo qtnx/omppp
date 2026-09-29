@@ -35,7 +35,7 @@ import type {
 	UserMessageLink,
 	UserMessageStats,
 } from "./types";
-import { computeUserMessageMetrics } from "./user-metrics";
+import { computeUserMessageMetrics, judgeProse } from "./user-metrics";
 
 /** Basename of an advisor agent's transcript inside a session artifacts dir. */
 const ADVISOR_TRANSCRIPT_BASENAME = "__advisor.jsonl";
@@ -286,17 +286,19 @@ function extractSubagentRunStats(sessionFile: string, entry: SessionCustomEntry)
 	};
 }
 
+/** Assistant fields a reminder inherits when its details omit model/provider. */
+type ReminderParent = Pick<AssistantMessage, "model" | "provider" | "api" | "timestamp">;
+
 function extractReminderBase(
 	sessionFile: string,
 	folder: string,
 	entry: SessionCustomMessageEntry | SessionCustomEntry,
 	details: Record<string, unknown>,
-	assistantByEntryId: ReadonlyMap<string, SessionMessageEntry>,
+	assistantByEntryId: ReadonlyMap<string, ReminderParent>,
 	customType: string,
 ): ReminderStats | null {
 	if (entry.customType !== customType || typeof entry.id !== "string") return null;
-	const parent = entry.parentId ? assistantByEntryId.get(entry.parentId) : undefined;
-	const parentMessage = parent?.message as AssistantMessage | undefined;
+	const parentMessage = entry.parentId ? assistantByEntryId.get(entry.parentId) : undefined;
 	const hasDetailsModelProvider = typeof details.model === "string" && typeof details.provider === "string";
 	const hasPartialDetailsModelProvider = details.model !== undefined || details.provider !== undefined;
 	if (!hasDetailsModelProvider && hasPartialDetailsModelProvider) return null;
@@ -322,7 +324,7 @@ function extractReminderStats(
 	sessionFile: string,
 	folder: string,
 	entry: SessionCustomMessageEntry,
-	assistantByEntryId: ReadonlyMap<string, SessionMessageEntry>,
+	assistantByEntryId: ReadonlyMap<string, ReminderParent>,
 ): ReminderStats | null {
 	const details = isRecord(entry.details) ? entry.details : {};
 	return extractReminderBase(sessionFile, folder, entry, details, assistantByEntryId, "system-context-reminder");
@@ -337,7 +339,7 @@ function extractDelegationReminderStats(
 	sessionFile: string,
 	folder: string,
 	entry: SessionCustomMessageEntry | SessionCustomEntry,
-	assistantByEntryId: ReadonlyMap<string, SessionMessageEntry>,
+	assistantByEntryId: ReadonlyMap<string, ReminderParent>,
 ): DelegationReminderStats | null {
 	let details: Record<string, unknown> = {};
 	if (entry.type === "custom_message") {
@@ -388,6 +390,7 @@ function extractUserStats(sessionFile: string, folder: string, entry: SessionMes
 	const text = extractUserText(msg.content);
 	if (!text.trim()) return null;
 	const metrics = computeUserMessageMetrics(text);
+	const prose = judgeProse(text);
 	const ts = Date.parse(entry.timestamp);
 	return {
 		sessionFile,
@@ -404,6 +407,8 @@ function extractUserStats(sessionFile: string, folder: string, entry: SessionMes
 		negation: metrics.negation,
 		repetition: metrics.repetition,
 		blame: metrics.blame,
+		prose,
+		proseHash: prose ? Bun.hash(prose).toString(16) : "",
 	};
 }
 
@@ -718,14 +723,11 @@ function visitSessionEntriesLenient(bytes: Uint8Array, visit: (entry: SessionEnt
 	return read;
 }
 
-function parseSessionEntriesLenient(bytes: Uint8Array): { entries: SessionEntry[]; read: number } {
-	const entries: SessionEntry[] = [];
-	const read = visitSessionEntriesLenient(bytes, entry => entries.push(entry));
-	return { entries, read };
-}
 /** Parse every well-formed entry in a transcript buffer (malformed lines skipped). */
 export function parseAllSessionEntries(bytes: Uint8Array): SessionEntry[] {
-	return parseSessionEntriesLenient(bytes).entries;
+	const entries: SessionEntry[] = [];
+	visitSessionEntriesLenient(bytes, entry => entries.push(entry));
+	return entries;
 }
 
 function scanLastServiceTier(bytes: Uint8Array): ServiceTierByFamily | undefined {
@@ -795,7 +797,84 @@ export async function parseSessionFile(
 	let info: nodeFs.Stats;
 	let checkpoint: string;
 	let read: number;
-	let entries: SessionEntry[];
+	const folder = extractFolderFromPath(sessionPath);
+	const agentType = classifyAgentType(sessionPath);
+	const stats: MessageStatsInput[] = [];
+	const userStats: UserMessageStats[] = [];
+	const userLinks: UserMessageLink[] = [];
+	const toolCalls: ToolCallStats[] = [];
+	const toolResults: ToolResultLink[] = [];
+	const reminderStats: ReminderStats[] = [];
+	const delegationReminderStats: DelegationReminderStats[] = [];
+	const subagentRuns: SubagentRunStats[] = [];
+	const timeBudgetEntries: TimeBudgetEntryStats[] = [];
+	// Reminders resolve their model from the parent assistant turn, which always
+	// precedes them; keep only the fields they read, not the message bodies.
+	const assistantByEntryId = new Map<string, ReminderParent>();
+
+	// Reduce each entry immediately so full replays do not retain tool-output/message bodies.
+	const visit = (entry: SessionEntry): void => {
+		if (isServiceTierChange(entry)) {
+			currentServiceTier = coerceServiceTierByFamily(entry.serviceTier);
+			return;
+		}
+		if (isUserMessage(entry)) {
+			const userMsg = extractUserStats(sessionPath, folder, entry);
+			if (userMsg) userStats.push(userMsg);
+			return;
+		}
+		if (isCustomMessage(entry)) {
+			const reminder = extractReminderStats(sessionPath, folder, entry, assistantByEntryId);
+			if (reminder) reminderStats.push(reminder);
+			const delegationReminder = extractDelegationReminderStats(sessionPath, folder, entry, assistantByEntryId);
+			if (delegationReminder) delegationReminderStats.push(delegationReminder);
+			return;
+		}
+		if (isCustomEntry(entry)) {
+			const timeBudgetEntry = extractTimeBudgetEntry(sessionPath, entry);
+			if (timeBudgetEntry) timeBudgetEntries.push(timeBudgetEntry);
+			const subagentRun = extractSubagentRunStats(sessionPath, entry);
+			if (subagentRun) subagentRuns.push(subagentRun);
+			const delegationReminder = extractDelegationReminderStats(sessionPath, folder, entry, assistantByEntryId);
+			if (delegationReminder) delegationReminderStats.push(delegationReminder);
+			return;
+		}
+		if (isToolResultMessage(entry)) {
+			const link = extractToolResultLink(sessionPath, entry);
+			if (link) toolResults.push(link);
+			return;
+		}
+		if (isModelUsage(entry)) {
+			const modelUsageStats = extractModelUsageStats(sessionPath, folder, entry, agentType);
+			if (modelUsageStats) stats.push(modelUsageStats);
+			return;
+		}
+		if (isAssistantMessage(entry)) {
+			const msgStats = extractStats(sessionPath, folder, entry, currentServiceTier, agentType);
+			if (msgStats) stats.push(msgStats);
+			toolCalls.push(...extractToolCalls(sessionPath, folder, entry, agentType));
+			// Persist links even when the user entry was ingested in an earlier tail read.
+			const parentId = entry.parentId;
+			const msg = entry.message;
+			if (msg.role === "assistant") {
+				assistantByEntryId.set(entry.id, {
+					model: msg.model,
+					provider: msg.provider,
+					api: msg.api,
+					timestamp: msg.timestamp,
+				});
+			}
+			if (parentId && msg.role === "assistant" && msg.model && msg.provider) {
+				userLinks.push({
+					sessionFile: sessionPath,
+					entryId: parentId,
+					model: msg.model,
+					provider: msg.provider,
+				});
+			}
+		}
+	};
+
 	try {
 		const handle = await fs.open(sessionPath, "r");
 		try {
@@ -821,7 +900,7 @@ export async function parseSessionFile(
 			currentServiceTier = resume
 				? (state?.serviceTier ?? undefined)
 				: scanLastServiceTier(bytes.subarray(0, start));
-			({ entries, read } = parseSessionEntriesLenient(bytes.subarray(start - readStart)));
+			read = visitSessionEntriesLenient(bytes.subarray(start - readStart), visit);
 			const newOffset = start + read;
 			const checkpointStart = Math.max(0, newOffset - CHECKPOINT_BYTES);
 			const previous =
@@ -848,87 +927,6 @@ export async function parseSessionFile(
 			};
 		}
 		throw err;
-	}
-
-	const folder = extractFolderFromPath(sessionPath);
-	const agentType = classifyAgentType(sessionPath);
-	const stats: MessageStatsInput[] = [];
-	const userStats: UserMessageStats[] = [];
-	const userLinks: UserMessageLink[] = [];
-	const reminderStats: ReminderStats[] = [];
-	const delegationReminderStats: DelegationReminderStats[] = [];
-	const toolCalls: ToolCallStats[] = [];
-	const toolResults: ToolResultLink[] = [];
-	const subagentRuns: SubagentRunStats[] = [];
-	const timeBudgetEntries: TimeBudgetEntryStats[] = [];
-	const userByEntryId = new Map<string, UserMessageStats>();
-	const assistantByEntryId = new Map<string, SessionMessageEntry>();
-	for (const entry of entries) {
-		if (isAssistantMessage(entry)) assistantByEntryId.set(entry.id, entry);
-	}
-	for (const entry of entries) {
-		if (isServiceTierChange(entry)) {
-			currentServiceTier = coerceServiceTierByFamily(entry.serviceTier);
-			continue;
-		}
-		if (isUserMessage(entry)) {
-			const userMsg = extractUserStats(sessionPath, folder, entry);
-			if (userMsg) {
-				userStats.push(userMsg);
-				userByEntryId.set(entry.id, userMsg);
-			}
-			continue;
-		}
-		if (isCustomMessage(entry)) {
-			const reminder = extractReminderStats(sessionPath, folder, entry, assistantByEntryId);
-			if (reminder) reminderStats.push(reminder);
-			const delegationReminder = extractDelegationReminderStats(sessionPath, folder, entry, assistantByEntryId);
-			if (delegationReminder) delegationReminderStats.push(delegationReminder);
-			continue;
-		}
-		if (isCustomEntry(entry)) {
-			const timeBudgetEntry = extractTimeBudgetEntry(sessionPath, entry);
-			if (timeBudgetEntry) timeBudgetEntries.push(timeBudgetEntry);
-			const subagentRun = extractSubagentRunStats(sessionPath, entry);
-			if (subagentRun) subagentRuns.push(subagentRun);
-			const delegationReminder = extractDelegationReminderStats(sessionPath, folder, entry, assistantByEntryId);
-			if (delegationReminder) delegationReminderStats.push(delegationReminder);
-			continue;
-		}
-		if (isToolResultMessage(entry)) {
-			const link = extractToolResultLink(sessionPath, entry);
-			if (link) toolResults.push(link);
-			continue;
-		}
-		if (isModelUsage(entry)) {
-			const modelUsageStats = extractModelUsageStats(sessionPath, folder, entry, agentType);
-			if (modelUsageStats) stats.push(modelUsageStats);
-			continue;
-		}
-		if (isAssistantMessage(entry)) {
-			const msgStats = extractStats(sessionPath, folder, entry, currentServiceTier, agentType);
-			if (msgStats) stats.push(msgStats);
-			toolCalls.push(...extractToolCalls(sessionPath, folder, entry, agentType));
-			// Link assistant's responding model back to the user message it answered.
-			const parentId = (entry as SessionMessageEntry).parentId;
-			if (parentId) {
-				const msg = entry.message as AssistantMessage;
-				if (msg.model && msg.provider) {
-					// Emit unconditionally. The aggregator's UPDATE is guarded by
-					// `model IS NULL` so this is idempotent: a no-op for already
-					// linked rows, a fix-up for fresh inserts (which start NULL
-					// because the user row is recorded before its reply lands) and
-					// for cross-pass orphans whose parent was committed by an
-					// earlier incremental sync.
-					userLinks.push({
-						sessionFile: sessionPath,
-						entryId: parentId,
-						model: msg.model,
-						provider: msg.provider,
-					});
-				}
-			}
-		}
 	}
 
 	const newOffset = start + read;

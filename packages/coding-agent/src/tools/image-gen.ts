@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import {
+	type GeneratedImage,
 	generateImage,
 	type ImageGenerationRequest,
 	type ImageGenerationResult,
@@ -12,12 +13,13 @@ import {
 } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
 import { isEnoent, logger, parseImageMetadata, prompt, ptree, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
-import { resolveModelRoleValue, resolveRoleChain, type RoleChainCandidate } from "../config/model-resolver";
+import { type RoleChainCandidate, resolveModelRoleValue, resolveRoleChain } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
 import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
 import { settings } from "../config/settings";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
+import { resolveConfiguredModelTarget } from "../session/role-models";
 import { resolveReadPath } from "./path-utils";
 
 const IMAGE_TIMEOUT = 3 * 60 * 1000;
@@ -52,7 +54,7 @@ interface ImageGenToolDetails {
 	model: string;
 	imageCount: number;
 	imagePaths: string[];
-	images: Array<{ data: string; mimeType: string }>;
+	images: GeneratedImage[];
 	responseText?: string;
 	usage?: ImageGenerationResult["usage"];
 }
@@ -141,7 +143,6 @@ function isOpenAIHostedImageModel(model: Model | undefined): model is Model {
 // OMPx fork: the Codex subscription path pins its hosted default here, `gpt-6-astra` first, ahead of
 // whatever GPT model the session happens to chat with.
 const HOSTED_CHAT_MODEL_PRIORITY = ["gpt-6-astra", "gpt-5.5", "gpt-5.4", "gpt-5.1", "gpt-5", "gpt-5-codex"];
-
 function resolveHostedImageCarrier(
 	modelRegistry: ModelRegistry,
 	selectedModel: Model,
@@ -168,15 +169,35 @@ function resolveHostedImageCarrier(
 
 /**
  * OMPx fork attempt order for the `image` role: explicit configuration first, then a connected Codex
- * subscription, then the active session provider, then the remaining defaults. Codex outranks the
- * session provider on purpose — it is key-free and model-agnostic, so the model a session happens to
- * chat with must never shadow it.
+ * subscription, then the session's own provider (its `imageModel` swap, then the session model itself
+ * when it carries the hosted image tool, then that provider's chain entries), then the remaining
+ * defaults. Codex outranks the session provider on purpose — it is key-free and model-agnostic, so
+ * the model a session happens to chat with must never shadow it.
  */
-function orderImageCandidates(chain: RoleChainCandidate[], activeProvider: string | undefined): RoleChainCandidate[] {
+function orderImageCandidates(chain: RoleChainCandidate[], sessionModel: Model | undefined, pool: Model[]): Model[] {
 	const rank = (candidate: RoleChainCandidate): number =>
-		candidate.model.provider === "openai-codex" ? 0 : candidate.model.provider === activeProvider ? 1 : 2;
+		candidate.model.provider === "openai-codex" ? 0 : candidate.model.provider === sessionModel?.provider ? 1 : 2;
 	const nonExplicit = chain.filter(candidate => !candidate.explicit).sort((a, b) => rank(a) - rank(b));
-	return [...chain.filter(candidate => candidate.explicit), ...nonExplicit];
+	const sessionCandidates = sessionModel
+		? [
+				resolveConfiguredModelTarget(sessionModel.imageModel, sessionModel, pool),
+				sessionModel.hostedImage ? sessionModel : undefined,
+			]
+		: [];
+	const ordered = [
+		...chain.filter(candidate => candidate.explicit).map(candidate => candidate.model),
+		...nonExplicit.filter(candidate => rank(candidate) === 0).map(candidate => candidate.model),
+		...sessionCandidates,
+		...nonExplicit.filter(candidate => rank(candidate) > 0).map(candidate => candidate.model),
+	];
+	const seen = new Set<string>();
+	return ordered.filter((model): model is Model => {
+		if (!model) return false;
+		const key = `${model.provider}/${model.id}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
 }
 
 async function buildToolResult(
@@ -184,12 +205,14 @@ async function buildToolResult(
 	result: ImageGenerationResult,
 ): Promise<AgentToolResult<ImageGenToolDetails, ImageGenParams>> {
 	const imagePaths = await saveImagesToTemp(result.images);
+	// Hosted backends may run a different model than the selected catalog entry; report what actually ran.
+	const ranModel = result.model ?? model.id;
 	if (imagePaths.length === 0) {
 		return {
 			content: [{ type: "text", text: `No image data returned.${result.text ? `\n\n${result.text}` : ""}` }],
 			details: {
 				provider: model.provider,
-				model: model.id,
+				model: ranModel,
 				imageCount: 0,
 				imagePaths: [],
 				images: [],
@@ -198,14 +221,20 @@ async function buildToolResult(
 			},
 		};
 	}
-	const lines = [`Provider: ${model.provider}`, `Model: ${model.id}`, `Generated ${imagePaths.length} image(s):`];
-	for (const imagePath of imagePaths) lines.push(`  ${imagePath}`);
+	const modelLine =
+		ranModel === model.id ? `Model: ${ranModel}` : `Model: ${ranModel} (catalog entry ${model.provider}/${model.id})`;
+	const lines = [`Provider: ${model.provider}`, modelLine, `Generated ${imagePaths.length} image(s):`];
+	for (const [index, imagePath] of imagePaths.entries()) {
+		const { size, quality } = result.images[index] ?? {};
+		const meta = [size, quality && `quality ${quality}`].filter(Boolean).join(", ");
+		lines.push(meta ? `  ${imagePath} (${meta})` : `  ${imagePath}`);
+	}
 	if (result.text) lines.push("", result.text.trim());
 	return {
 		content: [{ type: "text", text: lines.join("\n") }],
 		details: {
 			provider: model.provider,
-			model: model.id,
+			model: ranModel,
 			imageCount: result.images.length,
 			imagePaths,
 			images: result.images,
@@ -235,10 +264,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 					throw new Error(`Image model selector did not match an available image model: ${params.model}`);
 				candidates = [selected];
 			} else {
-				candidates = orderImageCandidates(
-					resolveRoleChain("image", effectiveSettings, pool),
-					ctx.model?.provider,
-				).map(candidate => candidate.model);
+				candidates = orderImageCandidates(resolveRoleChain("image", effectiveSettings, pool), ctx.model, pool);
 			}
 
 			const failures: ProviderHttpError[] = [];
@@ -268,7 +294,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 				let carrier: Model | undefined;
 				let apiKey = ctx.modelRegistry.resolver(model, sessionId);
 				if (model.api === "openai-responses" || model.api === "openai-codex-responses") {
-					carrier = resolveHostedImageCarrier(ctx.modelRegistry, model, ctx.model);
+					carrier = model.hostedImage ? model : resolveHostedImageCarrier(ctx.modelRegistry, model, ctx.model);
 					if (!carrier) {
 						skipped.push(`${model.provider}/${model.id} (hosted chat carrier unavailable)`);
 						continue;

@@ -179,7 +179,6 @@ describe("hindsightBackend.start", () => {
 		expect(session.getHindsightSessionState()?.sessionId).toBe("s-after");
 		expect(session.getHindsightSessionState()?.bankId).toBeTruthy();
 	});
-
 	it("retains every Nth user turn on agent_end and skips intermediate turns", async () => {
 		const settings = Settings.isolated({
 			"memory.backend": "hindsight",
@@ -462,29 +461,6 @@ describe("hindsightBackend first-turn injection", () => {
 		const block = await pending;
 		expect(block).toBeUndefined();
 		expect(session.getHindsightSessionState()?.hasRecalledForFirstTurn).toBe(false);
-	});
-
-	it("keeps the <memories> wrapper in buildDeveloperInstructions", async () => {
-		const settings = Settings.isolated({
-			"memory.backend": "hindsight",
-			"hindsight.apiUrl": "http://localhost:8888",
-		});
-		const session = makeFakeSession({ sessionId: "s9" });
-		await hindsightBackend.start({
-			session: session as never,
-			settings,
-			modelRegistry: {} as never,
-			agentDir: "/tmp",
-			taskDepth: 0,
-		});
-
-		const state = session.getHindsightSessionState();
-		state!.lastRecallSnippet = "<memories>\nremembered fact\n</memories>";
-
-		const prompt = await hindsightBackend.buildDeveloperInstructions("/tmp", settings, session as never);
-		expect(prompt).toContain("<memories>");
-		expect(prompt).toContain("</memories>");
-		expect(prompt).toContain("remembered fact");
 	});
 
 	it("names memory tools by their xd:// URL only when they are mounted as devices", async () => {

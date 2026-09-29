@@ -23,6 +23,7 @@ import type { postmortem } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import type { AsyncJob, AsyncJobDeliveryState, AsyncJobManager } from "../async";
 import type { EffectiveExtensionRoots } from "../capability/types";
+import type { AgentDefinition } from "../task/types";
 import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
@@ -34,6 +35,7 @@ import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { ExtensionRunner, PreparedExtension } from "../extensibility/extensions";
+import type { CacheWarmer } from "./cache-warmer";
 import type { ContextUsage } from "../extensibility/extensions/types";
 import type { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
 import type { Skill, SkillWarning } from "../extensibility/skills";
@@ -168,6 +170,8 @@ export interface AgentSessionConfig {
 	scoutAllowedBySpawnPolicy?: boolean;
 	/** Whether the caller explicitly requested yolo/auto-approve behavior for this session. */
 	autoApprove?: boolean;
+	/** User-authorized model agents inherited from the parent session for nested delegation. */
+	inheritedSessionAgents?: readonly AgentDefinition[];
 	/** Models to cycle through with Ctrl+P (from --models flag). */
 	scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	/** Initial session thinking selector. */
@@ -178,6 +182,8 @@ export interface AgentSessionConfig {
 	initialRetryFallback?: InitialRetryFallbackState;
 	/** Advisor spend already persisted for this resumed session. */
 	initialAdvisorCosts?: ReadonlyMap<string, number>;
+	/** Skip retry.fallbackChains validation at construction; the host calls `validateRetryFallbackChains()` later. */
+	deferRetryFallbackValidation?: boolean;
 	/** Prewalk from the starting model to a fast/cheap target after implementation begins. */
 	/** One-way model transition evaluated at completed assistant-turn boundaries. */
 	reasoningSlide?: ReasoningSlide;
@@ -194,6 +200,12 @@ export interface AgentSessionConfig {
 	/** Tagged workspace roots available to file mentions and prompt context. */
 	workspaceRoots?: WorkspaceRoot[];
 	extensionRunner?: ExtensionRunner;
+	/**
+	 * Prompt-cache warmer owned by the main agent loop. The session arms it per
+	 * main-loop request, settles it when the agent run finishes, and invalidates
+	 * it when the context changes; side-channel requests never arm it.
+	 */
+	cacheWarmer?: CacheWarmer;
 	/** Returns the current enabled eval prelude definitions. */
 	getEvalPreludes?: () => readonly EvalPreludeDefinition[];
 	/** Tool bridge context used by user-initiated Python cells to project enabled eval preludes. */
@@ -386,6 +398,17 @@ export interface AgentSessionConfig {
 export interface PromptOptions {
 	/** Whether to expand file-based prompt templates (default: true). */
 	expandPromptTemplates?: boolean;
+	/**
+	 * Whether a leading `/` may run an extension or custom TypeScript command
+	 * locally instead of prompting the agent (default: true). Headless task
+	 * drivers disable it so an assignment is always delivered to the model.
+	 */
+	runCommands?: boolean;
+	/**
+	 * Reject with `PromptDroppedError` when the prompt is dropped before
+	 * reaching the agent, instead of resolving `true` (default: false).
+	 */
+	throwOnDrop?: boolean;
 	/** Image attachments. */
 	images?: ImageContent[];
 	/** Queue behavior while streaming. `"aside"` is non-interrupting — it does not steer/follow-up

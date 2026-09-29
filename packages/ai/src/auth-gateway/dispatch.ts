@@ -234,6 +234,7 @@ export function buildGatewayApiKeyResolver(
 				...modelKeyOptions(model, sig),
 				forceRefresh: true,
 				preferOAuth: true,
+				refreshReason: AIError.status(error) === 401 ? "auth-recovery" : undefined,
 			});
 			return select(refreshed);
 		}

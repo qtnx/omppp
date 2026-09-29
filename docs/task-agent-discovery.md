@@ -149,7 +149,7 @@ Because bundled parsing uses `level: "fatal"`, malformed bundled frontmatter thr
    - project `extensions:` settings
    - user `extensions:` settings
    - installed npm/link plugins
-4. Claude marketplace plugin roots (`listClaudePluginRoots(home, cwd)`) with `agents/` subdirs — only when `isProviderEnabled("claude-plugins")`; project-scope plugins sort before user-scope
+4. Claude marketplace plugin roots (`listClaudePluginRoots(home, cwd)`) with `agents/` subdirs — only when `isProviderEnabled("claude-plugins")`; project-scope plugins sort before user-scope. User-scope roots additionally require the `claude-plugins` or `claude` user source to be enabled (`isUserSourceEnabled`: normally via `enabledProviders`, e.g. `["claude-plugins"]`; `claude` is also enabled implicitly when `CLAUDE_CONFIG_DIR` is set), except roots whose origin is not the foreign `~/.claude/plugins` tree (omp's own installs with `origin: "omp"` and `--plugin-dir` roots) — mirroring the skills path's exemption.
 5. Bundled agents (`loadBundledAgents()`)
 
 The OMP extension-package surface is disabled when the `omp-plugins` capability provider is disabled. Marketplace roots are excluded from `listOmpExtensionRoots` and enter only through the separately gated Claude-plugin path.
@@ -221,6 +221,8 @@ For task dispatch, model precedence is:
 Reasoning suffixes such as `:high` are preserved. The task tool rejects blank, empty-array, and comma-only per-call selectors before policy resolution so they cannot bypass a configured agent override. Role aliases in the first three sources are expanded through `modelRoles`. The shared eval bridge can also supply an invocation-local model override ahead of the settings override; the task wire schema does not expose that field.
 
 The stale `schema` field remains rejected in favor of `outputSchema`; ad-hoc structured workflows can use the eval bridge's `agent(prompt, schema)`.
+
+The `Alt+P` task model pick is session-only; saving a model in `/agents` replaces that runtime selection for the current session and persists the new value for future sessions.
 
 Compaction triggers are separate from model and service-tier selection: an exact, case-sensitive
 `task.agentCompactionThresholdOverrides[agentName]` entry (`90000` or `"80%"`) replaces the

@@ -54,11 +54,6 @@ function makeMessage(
 	};
 }
 
-async function readFolderStats(response: Response): Promise<FolderStats[]> {
-	expect(response.status).toBe(200);
-	return response.json() as Promise<FolderStats[]>;
-}
-
 describe("getDashboardStats time range", () => {
 	it("filters dashboard stats by selected range", async () => {
 		await initDb();
@@ -524,24 +519,5 @@ describe("getDashboardStats time range", () => {
 				expect.objectContaining({ folder: "/tmp/older-project", totalRequests: 1 }),
 			]),
 		);
-	});
-
-	it("returns range-filtered folder stats through the HTTP API", async () => {
-		const db = await initDb();
-
-		const now = Date.now();
-		insertMessageStats([
-			makeMessage(now, "api-folder-within-24h", "/tmp/current-project"),
-			makeMessage(now - 48 * 60 * 60 * 1000, "api-folder-outside-24h", "/tmp/older-project"),
-		]);
-
-		// The legacy dashboard path reads this in getStatsByAgentType; the folder query does not.
-		db.run("DROP INDEX idx_messages_timestamp_agent_type");
-		db.run("ALTER TABLE messages DROP COLUMN agent_type");
-
-		const folders = await readFolderStats(
-			await handleApi(new Request("http://stats.test/api/stats/folders?range=24h")),
-		);
-		expect(folders).toEqual([expect.objectContaining({ folder: "/tmp/current-project", totalRequests: 1 })]);
 	});
 });

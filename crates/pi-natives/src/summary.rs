@@ -3,6 +3,8 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+use crate::task;
+
 #[napi(object)]
 pub struct SummaryOptions {
 	/// Source code to summarize.
@@ -125,8 +127,7 @@ pub fn source_declarations(options: SourceDeclarationsOptions) -> Result<SourceD
 	.map_err(|error| Error::from_reason(error.to_string()))
 }
 
-#[napi]
-pub fn summarize_code(options: SummaryOptions) -> Result<SummaryResult> {
+fn summarize(options: SummaryOptions) -> Result<SummaryResult> {
 	pi_ast::summary::summarize_code(pi_ast::summary::SummaryOptions {
 		code:               options.code,
 		lang:               options.lang,
@@ -138,4 +139,22 @@ pub fn summarize_code(options: SummaryOptions) -> Result<SummaryResult> {
 	})
 	.map(Into::into)
 	.map_err(|error| Error::from_reason(error.to_string()))
+}
+
+/// Summarize source structure synchronously on the calling thread.
+///
+/// Prefer [`summarize_code_async`] on hot paths: the tree-sitter parse blocks
+/// the JS thread for the whole call.
+#[napi]
+pub fn summarize_code(options: SummaryOptions) -> Result<SummaryResult> {
+	summarize(options)
+}
+
+/// Summarize source structure on libuv's thread pool.
+///
+/// Same result as [`summarize_code`], but the parse and summary run off the
+/// JS thread; only argument and result marshalling happen on it.
+#[napi]
+pub fn summarize_code_async(options: SummaryOptions) -> task::Promise<SummaryResult> {
+	task::blocking("summarize_code", (), move |_| summarize(options))
 }

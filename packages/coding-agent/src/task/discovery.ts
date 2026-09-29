@@ -38,6 +38,8 @@ const TASK_AGENT_CONFIG_SOURCE = ".omp";
 export interface DiscoveryResult {
 	agents: AgentDefinition[];
 	projectAgentsDir: string | null;
+	/** Agent directories searched, in precedence order (for "unknown agent" diagnostics). */
+	searchedDirs?: string[];
 }
 
 interface AgentDirectory {
@@ -172,7 +174,11 @@ export async function discoverAgents(
 
 	const projectAgentsDir = projectDirs.length > 0 ? projectDirs[0].path : null;
 
-	return { agents: [...loadedAgents, ...bundledAgents], projectAgentsDir };
+	return {
+		agents: [...loadedAgents, ...bundledAgents],
+		projectAgentsDir,
+		searchedDirs: orderedDirs.map(entry => entry.dir),
+	};
 }
 
 /**

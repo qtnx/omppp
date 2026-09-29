@@ -124,7 +124,6 @@ describe("PluginListComponent", () => {
 		expect(text).toContain("ompx plugin install <package>");
 		expect(text).toContain("ompx plugin install <name>@<marketplace>");
 	});
-
 	it("routes enter on a marketplace entry to onMarketplaceSelect", () => {
 		const target = marketplace("pick@mkt");
 		let selected: MarketplaceSettingsPlugin | null = null;

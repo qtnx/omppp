@@ -16,6 +16,7 @@ import {
 	parseStreamingJsonThrottled,
 	readSseEvents,
 } from "@oh-my-pi/pi-utils";
+import { NO_AUTH_SENTINEL } from "../auth-retry";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
 import { getEnvApiKey, OUTPUT_FALLBACK_BUFFER } from "../stream";
@@ -431,10 +432,17 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 		};
 		return allowAnthropicHeaderOverrides ? mergeHeaders(headers, anthropicHeaderOverrides) : headers;
 	} else if (!isOfficialAnthropicApiUrl(options.baseUrl)) {
+		// A keyless provider (`auth: none`) resolves to the `N/A` sentinel
+		// rather than a real key; custom endpoints that authenticate via their
+		// own headers may reject a bogus bearer, so send no Authorization —
+		// same sentinel guard as the openai transports. A caller-supplied
+		// Authorization in `model.headers` still wins.
+		const bearer =
+			incomingAuthorization ?? (options.apiKey !== NO_AUTH_SENTINEL ? `Bearer ${options.apiKey}` : undefined);
 		return {
 			...modelHeaders,
 			Accept: acceptHeader,
-			Authorization: incomingAuthorization ?? `Bearer ${options.apiKey}`,
+			...(bearer ? { Authorization: bearer } : {}),
 			...sharedHeaders,
 			...(incomingUserAgent ? { "User-Agent": incomingUserAgent } : {}),
 			...(betaHeader ? { "anthropic-beta": betaHeader } : {}),
@@ -1714,31 +1722,6 @@ export function applyAnthropicUsageExtras(usage: Usage, source: AnthropicUsageLi
 	}
 }
 
-function parseAnthropicWireUsage(value: unknown): AnthropicWireUsage | undefined {
-	if (!isRecord(value)) return undefined;
-	const cacheCreation = isRecord(value.cache_creation)
-		? {
-				...(typeof value.cache_creation.ephemeral_5m_input_tokens === "number"
-					? { ephemeral_5m_input_tokens: value.cache_creation.ephemeral_5m_input_tokens }
-					: {}),
-				...(typeof value.cache_creation.ephemeral_1h_input_tokens === "number"
-					? { ephemeral_1h_input_tokens: value.cache_creation.ephemeral_1h_input_tokens }
-					: {}),
-			}
-		: undefined;
-	return {
-		...(typeof value.input_tokens === "number" ? { input_tokens: value.input_tokens } : {}),
-		...(typeof value.output_tokens === "number" ? { output_tokens: value.output_tokens } : {}),
-		...(typeof value.cache_read_input_tokens === "number"
-			? { cache_read_input_tokens: value.cache_read_input_tokens }
-			: {}),
-		...(typeof value.cache_creation_input_tokens === "number"
-			? { cache_creation_input_tokens: value.cache_creation_input_tokens }
-			: {}),
-		...(cacheCreation === undefined ? {} : { cache_creation: cacheCreation }),
-	};
-}
-
 function parseAnthropicFallbackWireBlock(value: unknown): AnthropicFallbackContent | undefined {
 	if (!isRecord(value) || value.type !== "fallback") return undefined;
 	const from = isRecord(value.from) && typeof value.from.model === "string" ? value.from.model : undefined;
@@ -1758,6 +1741,28 @@ function isReplayableAnthropicCompaction(
 	model: Model<"anthropic-messages">,
 ): payload is AnthropicCompactionPayload {
 	return payload?.type === "anthropicCompaction" && payload.provider === model.provider && payload.content.length > 0;
+}
+
+/** Which persisted compaction summaries a request replays as native blocks. */
+interface AnthropicCompactionReplay {
+	model: Model<"anthropic-messages">;
+	/** Replay persisted legacy threshold blocks (encrypted content) too. */
+	legacy: boolean;
+}
+
+/**
+ * Whether `payload` goes on the wire as a `compaction` block under `replay`:
+ * replayable for the model, and carrying a signature or (when legacy replay is
+ * on) the legacy ciphertext. Anything else is sent as the summary's text.
+ */
+function replaysAnthropicCompactionBlock(
+	payload: ProviderPayload | undefined,
+	replay: AnthropicCompactionReplay,
+): payload is AnthropicCompactionPayload {
+	return (
+		isReplayableAnthropicCompaction(payload, replay.model) &&
+		(payload.signature !== undefined || (replay.legacy && payload.encryptedContent !== undefined))
+	);
 }
 
 /** The wire block for a replayed compaction payload, opaque state included. */
@@ -2205,7 +2210,6 @@ const streamAnthropicOnce = (
 				});
 			}
 
-			const zeroOutputCacheRefresh = options?.anthropicCacheRefreshRequest === true;
 			// Preserve the caller/token classification for pre-client header choices.
 			// The client builder then normalizes it for transports that must not use
 			// Claude Code body shaping; injected clients are always non-OAuth.
@@ -2354,7 +2358,7 @@ const streamAnthropicOnce = (
 					model,
 					apiKey,
 					extraBetas,
-					stream: !zeroOutputCacheRefresh,
+					stream: true,
 					interleavedThinking: options?.interleavedThinking ?? true,
 					headers: options?.headers,
 					dynamicHeaders: copilotDynamicHeaders?.headers,
@@ -2477,83 +2481,6 @@ const streamAnthropicOnce = (
 			const firstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs);
 			const requestTimeoutMs =
 				firstEventTimeoutMs !== undefined && firstEventTimeoutMs > 0 ? firstEventTimeoutMs : undefined;
-
-			if (zeroOutputCacheRefresh) {
-				const refreshParams: MessageCreateParams = { ...params, max_tokens: 0, stream: false };
-				// Anthropic rejects `tool_choice: {type:"tool"|"any"}` with `max_tokens: 0`
-				// ("tool_choice ... cannot be used when max_tokens is 0", #12597). A refresh
-				// replays the captured turn's payload, which can carry a forced selector
-				// (e.g. a forced yield). A zero-output keep-alive produces no tokens, so the
-				// forced choice is meaningless here — drop it so the request is accepted.
-				const refreshChoiceType = refreshParams.tool_choice?.type;
-				if (refreshChoiceType === "tool" || refreshChoiceType === "any") {
-					delete refreshParams.tool_choice;
-				}
-				rawRequestDump = {
-					provider: model.provider,
-					api: output.api,
-					model: model.id,
-					method: "POST",
-					url: `${baseUrl}/v1/messages${isOAuthToken ? "?beta=true" : ""}`,
-					body: refreshParams,
-				};
-				const { requestSignal } = activeAbortTracker;
-				// A replayed compaction block needs the beta on injected clients too.
-				// Route by the client's own endpoint when it exposes one.
-				const refreshBetaRouteUrl =
-					options?.client !== undefined ? (injectedClientBaseUrl(options.client) ?? baseUrl) : baseUrl;
-				let refreshHeaders: Record<string, string> | undefined;
-				if (options?.client !== undefined && !isVertexRawPredictUrl(refreshBetaRouteUrl)) {
-					if (carriesSignedCompaction(refreshParams)) {
-						refreshHeaders = mergeAnthropicBetaHeader(refreshHeaders ?? mergedCallerHeaders, COMPACTION_BETA);
-					}
-					if (carriesLegacyCompactionEdit(refreshParams)) {
-						refreshHeaders = mergeAnthropicBetaHeader(
-							refreshHeaders ?? mergedCallerHeaders,
-							LEGACY_COMPACTION_BETA,
-						);
-					}
-				}
-				const requestOptions = {
-					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
-					maxRetries: 0,
-					...(refreshHeaders ? { headers: refreshHeaders } : {}),
-				};
-				const request: unknown =
-					isOAuthToken && client.beta
-						? client.beta.messages.create(refreshParams, requestOptions)
-						: client.messages.create(refreshParams, requestOptions);
-				if (!hasAnthropicRawResponseRequest(request)) {
-					throw new AIError.AnthropicStreamEnvelopeError(
-						"Anthropic cache refresh request did not expose a raw response",
-					);
-				}
-				const response = await request.asResponse();
-				await notifyProviderResponse(options, response, model, response.headers.get("request-id"));
-				const body: unknown = await response.json();
-				if (!isRecord(body)) {
-					throw new AIError.AnthropicStreamEnvelopeError("Anthropic cache refresh returned a malformed response");
-				}
-				const wireUsage = parseAnthropicWireUsage(body.usage);
-				if (!wireUsage) {
-					throw new AIError.AnthropicStreamEnvelopeError("Anthropic cache refresh response omitted usage");
-				}
-				if (typeof body.id === "string") output.responseId = body.id;
-				applyReportedInputTransformations(output, body.input_transformations, seenInputTransformations);
-				output.usage.input = wireUsage.input_tokens ?? 0;
-				output.usage.output = wireUsage.output_tokens ?? 0;
-				output.usage.cacheRead = wireUsage.cache_read_input_tokens ?? 0;
-				output.usage.cacheWrite = wireUsage.cache_creation_input_tokens ?? 0;
-				applyAnthropicUsageExtras(output.usage, wireUsage);
-				output.usage.totalTokens =
-					output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-				calculateCost(model, output.usage, output.timestamp);
-				output.duration = performance.now() - startTime;
-				stream.push({ type: "start", partial: output });
-				stream.push({ type: "done", reason: "stop", message: output });
-				stream.end();
-				return;
-			}
 
 			// Opt-in flag: the response parser only honors `fallback` content
 			// blocks and `usage.iterations` when the current request opted into
@@ -4041,8 +3968,13 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	// the proxy to deal with two competing credentials when the user explicitly
 	// asked for one.
 	const authorizationHeader = getHeaderCaseInsensitive(defaultHeaders, "Authorization");
+	// A keyless provider resolves to the `N/A` sentinel, for which no
+	// Authorization was built above; the client would otherwise inject a
+	// bogus `X-Api-Key: N/A` of its own.
 	const shouldSuppressClientApiKey =
-		!oauthToken && !model.compat.officialEndpoint && typeof authorizationHeader === "string";
+		!oauthToken &&
+		!model.compat.officialEndpoint &&
+		(typeof authorizationHeader === "string" || apiKey === NO_AUTH_SENTINEL);
 
 	return {
 		isOAuthToken: oauthToken,
@@ -4577,9 +4509,11 @@ function stableSystemSuffixStart(systemBlocks: readonly AnthropicSystemBlock[]):
  * sit first in wire order and survive message rewrites, and sibling subagents of
  * the same definition share this prefix byte for byte.
  *
- * When the OAuth Claude Code path already anchors its identity system block at
- * buildAnthropicSystemBlocks, the system check skips adding a second system
- * breakpoint, while the tool check still anchors the last tool definition.
+ * OMPx's OAuth Claude Code path never decorates its cloak blocks (billing
+ * header, identity instruction); system breakpoints are placed on the stable
+ * prompt in buildAnthropicSystemBlocks, so the system check below only adds an
+ * anchor when none exists, while the tool check still anchors the last tool
+ * definition on non-OAuth layouts.
  *
  * Runs on the fresh system blocks and wire tools built for this request, after
  * the declared tool list was derived from the transcript's request controls.
@@ -4618,16 +4552,13 @@ function applyHeadCaching(
 	}
 
 	if (systemBlocks && systemBlocks.length > 0) {
-		// Anchor on the last stable block so a volatile recall suffix refresh
-		// re-bills only the suffix, not the whole head. The skip-if-decorated
-		// check applies only when there is no volatile suffix (previous
-		// behavior): with a suffix present the boundary anchor is added
-		// whenever the anchor block itself lacks a breakpoint, even if the
-		// OAuth path pre-decorated its identity block — otherwise the only
-		// system breakpoint sits before the stable prompt and a recall
-		// refresh re-bills it. The message budget in `applyPromptCaching`
-		// shrinks accordingly (4 minus head breakpoints). All-volatile falls
-		// back to tail anchoring (previous behavior).
+		// Anchor on the last stable block before the first volatile segment so
+		// a recall refresh or a different working directory re-bills only the
+		// suffix, not the whole head. The skip-if-decorated check applies only
+		// when there is no volatile suffix: with a suffix present the boundary
+		// anchor is added whenever the anchor block itself lacks a breakpoint.
+		// The message budget in `applyPromptCaching` shrinks accordingly (4
+		// minus head breakpoints). All-volatile falls back to tail anchoring.
 		const suffixStart = stableSystemSuffixStart(systemBlocks);
 		if (suffixStart === systemBlocks.length) {
 			if (!systemAnchored) {
@@ -4757,12 +4688,26 @@ function collectAnthropicControlRecords(messages: readonly Message[]): Anthropic
  * lands between a `tool_use` and its `tool_result`, where `transformMessages`
  * would flush synthetic aborted results; a mid-turn change therefore takes
  * effect from the next step.
+ *
+ * A summary replayed as a `compaction` block is never a slot: the block must
+ * open the request, so nothing may precede it. A response opened by the block
+ * (no real user turn between them) takes the change from its next step. A
+ * summary sent as text is an ordinary user turn.
  */
-function anthropicEffortInsertIndex(messages: readonly Message[], end: number): number {
+function anthropicEffortInsertIndex(
+	messages: readonly Message[],
+	end: number,
+	compactionReplay: AnthropicCompactionReplay | undefined,
+): number {
 	for (let i = end - 1; i >= 0; i--) {
-		const role = messages[i]?.role;
-		if (role === "user") return i;
-		if (role === "assistant") return end;
+		const message = messages[i];
+		if (message?.role === "assistant") return end;
+		if (message?.role !== "user") continue;
+		if (!compactionReplay || !replaysAnthropicCompactionBlock(message.providerPayload, compactionReplay)) return i;
+		let next = end;
+		if (messages[next]?.role === "assistant") next++;
+		while (messages[next]?.role === "toolResult") next++;
+		return next;
 	}
 	return end;
 }
@@ -4938,6 +4883,7 @@ function planAnthropicEffortControls(
 	messages: readonly Message[],
 	records: readonly AnthropicControlRecord[],
 	enabled: boolean,
+	compactionReplay: AnthropicCompactionReplay | undefined,
 ): {
 	topLevel: AnthropicOutputEffort | undefined;
 	inserts: AnthropicControlInsert[];
@@ -4962,7 +4908,7 @@ function planAnthropicEffortControls(
 		const recorded = record.effort.tail;
 		if (recorded !== null && recorded !== tail) {
 			inserts.push({
-				index: anthropicEffortInsertIndex(messages, record.index),
+				index: anthropicEffortInsertIndex(messages, record.index, compactionReplay),
 				spec: { toolChanges: [], effort: recorded },
 			});
 		}
@@ -4970,7 +4916,7 @@ function planAnthropicEffortControls(
 	}
 	if (current !== undefined && current !== tail) {
 		inserts.push({
-			index: anthropicEffortInsertIndex(messages, messages.length),
+			index: anthropicEffortInsertIndex(messages, messages.length, compactionReplay),
 			spec: { toolChanges: [], effort: current },
 		});
 		tail = current;
@@ -5247,11 +5193,15 @@ function buildParams(
 		systemBlocks,
 		context.messages[0],
 	);
+	const compactionReplay: AnthropicCompactionReplay | undefined = compactionSupported
+		? { model: effectiveModel, legacy: !compactionRequest && !signedReplay }
+		: undefined;
 	const effortPlan = planAnthropicEffortControls(
 		outputConfigEffort,
 		context.messages,
 		records,
 		model.compat.supportsPerMessageEffort === true,
+		compactionReplay,
 	);
 	const wireMessages = convertAnthropicMessages(
 		insertAnthropicControlMarkers(context.messages, [...toolPlan.inserts, ...effortPlan.inserts]),
@@ -5260,7 +5210,7 @@ function buildParams(
 		{
 			serverSideFallbackEnabled: !!fallbacks?.length,
 			replayCompaction: compactionSupported,
-			replayLegacyCompaction: !compactionRequest && !signedReplay,
+			replayLegacyCompaction: compactionReplay?.legacy,
 			dropAllThinking,
 			droppedThinkingBlocks: prefixDroppedThinking,
 			credentialId: options?.credentialId,
@@ -5581,9 +5531,7 @@ export function convertAnthropicMessages(
 		if (
 			opts?.replayCompaction &&
 			(msg.role === "user" || msg.role === "developer") &&
-			isReplayableAnthropicCompaction(msg.providerPayload, model) &&
-			(msg.providerPayload.signature !== undefined ||
-				(opts.replayLegacyCompaction !== false && msg.providerPayload.encryptedContent !== undefined))
+			replaysAnthropicCompactionBlock(msg.providerPayload, { model, legacy: opts.replayLegacyCompaction !== false })
 		) {
 			const compactionParam: AnthropicMessageParam = {
 				role: "assistant",
@@ -5667,9 +5615,10 @@ export function convertAnthropicMessages(
 			// replayed turn.
 			if (
 				opts?.replayCompaction &&
-				isReplayableAnthropicCompaction(msg.providerPayload, model) &&
-				(msg.providerPayload.signature !== undefined ||
-					(opts.replayLegacyCompaction !== false && msg.providerPayload.encryptedContent !== undefined))
+				replaysAnthropicCompactionBlock(msg.providerPayload, {
+					model,
+					legacy: opts.replayLegacyCompaction !== false,
+				})
 			) {
 				blocks.push(compactionBlockParam(msg.providerPayload));
 			}

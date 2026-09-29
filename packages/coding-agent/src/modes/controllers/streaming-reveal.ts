@@ -230,6 +230,42 @@ export function buildDisplayMessage(
 	return { ...target, content };
 }
 
+/** A leading block as snapped at the tool-call boundary: the live object plus
+ *  its own-property values at snap time (all primitives). */
+type SnappedBlock = { block: AssistantContentBlock; fields: [string, unknown][] };
+
+/** Record the live blocks and their primitive fields, or undefined when a block
+ *  carries a nested object (a later in-place edit to it would be invisible to
+ *  a field-identity check, so those snaps compare by value only). */
+function snapBlockFields(content: AssistantMessage["content"]): SnappedBlock[] | undefined {
+	const snapped: SnappedBlock[] = [];
+	for (const block of content) {
+		const fields = Object.entries(block);
+		for (const [, value] of fields) {
+			if (typeof value === "object" && value !== null) return undefined;
+		}
+		snapped.push({ block, fields });
+	}
+	return snapped;
+}
+
+/** Whether `content` holds the very blocks snapped, each with every field still
+ *  `===` its snapped value. Strings are immutable, so an unchanged field is
+ *  the same reference and the check is O(fields); an in-place rewrite
+ *  (`block.text = …`) swaps the reference and fails it. A `true` proves the
+ *  content equals the snap-time clone; a `false` proves nothing. */
+function unchangedSinceSnap(snapped: SnappedBlock[], content: AssistantMessage["content"]): boolean {
+	if (snapped.length !== content.length) return false;
+	for (let i = 0; i < snapped.length; i++) {
+		const { block, fields } = snapped[i]!;
+		if (content[i] !== block || Object.keys(block).length !== fields.length) return false;
+		for (const [key, value] of fields) {
+			if (Reflect.get(block, key) !== value) return false;
+		}
+	}
+	return true;
+}
+
 export function nextStep(backlog: number): number {
 	return Math.max(MIN_STEP, Math.ceil(Math.max(0, backlog) / CATCHUP_FRAMES));
 }
@@ -250,6 +286,10 @@ export class StreamingRevealController {
 	// streamed text with authoritative terminal content) is still detected —
 	// aliasing the live array would make the equality check compare it to itself.
 	#snappedToolBoundaryContent: AssistantMessage["content"] | undefined;
+	// Live blocks + field values recorded with the clone: while the leading
+	// content is frozen (every flush of a tool-arg stream) they prove equality
+	// in O(blocks) without walking the text; any mismatch defers to the clone.
+	#snappedToolBoundaryBlocks: SnappedBlock[] | undefined;
 	#hideThinkingBlock = false;
 	#proseOnlyThinking = true;
 	#smoothStreaming = true;
@@ -298,7 +338,7 @@ export class StreamingRevealController {
 			component.updateContent(this.#build(message, this.#revealed), {
 				transient: true,
 			});
-			this.#snappedToolBoundaryContent = structuredClone(message.content);
+			this.#snapToolBoundary(message.content);
 			return;
 		}
 		this.#renderCurrent();
@@ -322,10 +362,18 @@ export class StreamingRevealController {
 		const total = this.#visibleUnits(message);
 		this.#targetTotal = total;
 		if (hasToolCalls) {
-			const alreadySnapped =
-				this.#revealed === total &&
-				this.#snappedToolBoundaryContent !== undefined &&
-				Bun.deepEquals(this.#snappedToolBoundaryContent, message.content);
+			let alreadySnapped = false;
+			if (this.#revealed === total && this.#snappedToolBoundaryContent !== undefined) {
+				const blocks = this.#snappedToolBoundaryBlocks;
+				if (blocks !== undefined && unchangedSinceSnap(blocks, message.content)) {
+					alreadySnapped = true;
+				} else if (Bun.deepEquals(this.#snappedToolBoundaryContent, message.content)) {
+					alreadySnapped = true;
+					// Equal by value, not by reference (e.g. a block object was
+					// replaced): re-anchor the fast check on the live blocks.
+					this.#snappedToolBoundaryBlocks = snapBlockFields(message.content);
+				}
+			}
 			// A tool call is a transcript-order boundary: finish any leading
 			// assistant text before EventController renders the separate tool card.
 			this.#revealed = total;
@@ -335,10 +383,11 @@ export class StreamingRevealController {
 			this.#component.updateContent(this.#build(message, this.#revealed), {
 				transient: true,
 			});
-			this.#snappedToolBoundaryContent = structuredClone(message.content);
+			this.#snapToolBoundary(message.content);
 			return;
 		}
 		this.#snappedToolBoundaryContent = undefined;
+		this.#snappedToolBoundaryBlocks = undefined;
 		if (this.#revealed > total) {
 			this.#revealed = total;
 		}
@@ -365,7 +414,13 @@ export class StreamingRevealController {
 		this.#targetTotal = 0;
 		this.#targetDirty = false;
 		this.#snappedToolBoundaryContent = undefined;
+		this.#snappedToolBoundaryBlocks = undefined;
 		this.#unitCounter.reset();
+	}
+
+	#snapToolBoundary(content: AssistantMessage["content"]): void {
+		this.#snappedToolBoundaryContent = structuredClone(content);
+		this.#snappedToolBoundaryBlocks = snapBlockFields(content);
 	}
 
 	/**
