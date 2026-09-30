@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed long sessions freezing for 15–25 seconds before every model call while secret redaction rechecked placeholders.
+
 ## [1.11.6] - 2026-09-29
 
 ### Added

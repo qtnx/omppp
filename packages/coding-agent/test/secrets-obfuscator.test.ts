@@ -2782,6 +2782,28 @@ describe("SecretObfuscator friendlyName placeholders", () => {
 		expect(obfuscator.deobfuscate(bravoPlaceholder)).toBe(secretB);
 	});
 
+	it("rejects a forged prefix that only became secret-shaped after an earlier pass accepted it", () => {
+		// The forged-prefix verdict is memoized per instance for speed. A prefix
+		// judged safe before a regex secret was ever discovered must be rejected
+		// once that secret is minted: a later turn must not reuse the stale
+		// "safe" verdict and pass the normalized secret through as a label.
+		const secretB = "bravo-secret-value";
+		const obfuscator = new SecretObfuscator([
+			{ type: "regex", content: "tok-[a-z]+-[0-9]+" },
+			{ type: "plain", content: secretB, friendlyName: "BRAVO" },
+		]);
+		const bravoPlaceholder = obfuscator.obfuscate(secretB);
+		const aliasSuffix = bravoPlaceholder.replace(/^\$\$BRAVO/, "");
+		const forged = `$$TOKABC42${aliasSuffix}`;
+
+		// Nothing secret-shaped is known yet, so the label is an ordinary alias.
+		expect(obfuscator.obfuscate(forged)).toContain("TOKABC42");
+
+		// Discovering tok-abc-42 (normalizes to TOKABC42) flips the verdict.
+		expect(obfuscator.obfuscate("tok-abc-42")).not.toContain("tok-abc-42");
+		expect(obfuscator.obfuscate(forged)).not.toContain("TOKABC42");
+	});
+
 	it("rejects a forged alias wrapper whose prefix only matches a case-variant regex-discovered secret", () => {
 		// Regression: the forged-prefix checks above only ever scanned EXACT
 		// previously-DISCOVERED secret strings (`#configuredSecretValues` and
