@@ -2,27 +2,11 @@
 
 ## [Unreleased]
 
+## [1.11.7] - 2026-09-30
+
 ### Fixed
 
 - Fixed long sessions freezing for 15–25 seconds before every model call while secret redaction rechecked placeholders.
-
-## [1.11.6] - 2026-09-29
-
-### Added
-
-- Secrets in prompts and bash output are now also caught by the Secrets Sentinel classifier (`hypn05/secrets-sentinel`), vaulted, and shown to the model and transcript only as their env var names. Sessions use the shared server at `secrets.sentinelUrl` (default `http://codemc:8795`, override with `SECRETS_SENTINEL_URL`, empty to disable) and fall back to regex detection when it is unreachable; run it with `scripts/secrets-sentinel/server.py`.
-
-### Changed
-
-- Dropped connections, server errors, and overloads now retry the same model up to 5 times with backoff before switching to a fallback model (`retry.retriesBeforeFallback`); rate-limit and quota errors still switch immediately
-
-### Fixed
-
-- A connection that drops with a bare `aborted` error is now retried instead of immediately falling back to another model
-- The convergence and case-coverage guidance is now part of the shared system prompt for every model instead of a Claude Opus-only block: decide routing and rules once, stop re-checking settled facts, write plans and docs to disk early instead of composing them in reasoning, and list every case (other places reading the same data, variants, pending/failed/reloaded states) once before editing. In local A/B runs at xhigh thinking, Claude Opus 5.5 plan requests finished in every run instead of hitting the 20-minute cap in 3 of 5, and GPT-6 Astra plan requests finished about 17% faster (median 785s vs 950s) with the same coverage.
-- Bug-fix guidance no longer stops the sibling search after one lookup; it follows every place that reads the faulty data.
-- Fixed Herdr showing `ompx` panes as unknown instead of working/idle on Linux; no `ompx herdr install` symlink is needed anymore.
-- Fixed `computer.window(74)` matching every open window and `computer.window({ id: 74 })` matching none; a numeric id now resolves the same window as `"74"` ([#13649](https://github.com/can1357/oh-my-pi/pull/13649) by [@will-bogusz](https://github.com/will-bogusz))
 
 ## [18.4.3] - 2026-09-28
 
@@ -1744,5 +1728,23 @@
 - Kept embedded context usage visible in the status line when long session names or paths consume available space.
 - Added a status message when `CTRL-O` toggles tool-output expansion.
 - Fixed `omp usage` to report Codex Chat and Spark capacity meters separately when they share a usage window.
+
+## [1.11.6] - 2026-09-29
+
+### Added
+
+- Secrets in prompts and bash output are now also caught by the Secrets Sentinel classifier (`hypn05/secrets-sentinel`), vaulted, and shown to the model and transcript only as their env var names. Sessions use the shared server at `secrets.sentinelUrl` (default `http://codemc:8795`, override with `SECRETS_SENTINEL_URL`, empty to disable) and fall back to regex detection when it is unreachable; run it with `scripts/secrets-sentinel/server.py`.
+
+### Changed
+
+- Dropped connections, server errors, and overloads now retry the same model up to 5 times with backoff before switching to a fallback model (`retry.retriesBeforeFallback`); rate-limit and quota errors still switch immediately
+
+### Fixed
+
+- A connection that drops with a bare `aborted` error is now retried instead of immediately falling back to another model
+- The convergence and case-coverage guidance is now part of the shared system prompt for every model instead of a Claude Opus-only block: decide routing and rules once, stop re-checking settled facts, write plans and docs to disk early instead of composing them in reasoning, and list every case (other places reading the same data, variants, pending/failed/reloaded states) once before editing. In local A/B runs at xhigh thinking, Claude Opus 5.5 plan requests finished in every run instead of hitting the 20-minute cap in 3 of 5, and GPT-6 Astra plan requests finished about 17% faster (median 785s vs 950s) with the same coverage.
+- Bug-fix guidance no longer stops the sibling search after one lookup; it follows every place that reads the faulty data.
+- Fixed Herdr showing `ompx` panes as unknown instead of working/idle on Linux; no `ompx herdr install` symlink is needed anymore.
+- Fixed `computer.window(74)` matching every open window and `computer.window({ id: 74 })` matching none; a numeric id now resolves the same window as `"74"` ([#13649](https://github.com/can1357/oh-my-pi/pull/13649) by [@will-bogusz](https://github.com/will-bogusz))
 
 Older entries are archived in [packages/coding-agent/CHANGELOG.md@de89130e456f](https://github.com/can1357/oh-my-pi/blob/de89130e456f80eabce98ca1617cb20fdb6dd063/packages/coding-agent/CHANGELOG.md).
