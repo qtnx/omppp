@@ -115,6 +115,15 @@ export class SecretObfuscator {
 	/** Regex values seen in the current obfuscate input, used to keep friendly labels from exposing normalized matches that are discovered later in the same pass. */
 	#currentRegexSecretValues = new Set<string>();
 
+	/** Raw secret value → `sanitizeForCollisionCheck` form, and the memoized
+	 *  `#prefixMatchesKnownSecret` verdicts. `#prefixIsSecretShaped` runs for
+	 *  every placeholder occurrence on every provider call; rescanning every
+	 *  known secret each time blocked the event loop for tens of seconds per
+	 *  turn on long sessions. */
+	#sanitizedSecretValues = new Map<string, string>();
+	#knownSecretPrefixVerdicts = new Map<string, boolean>();
+	#knownSecretPrefixVersion = -1;
+
 	/** Placeholder base-key (exact value for :M, case-folded otherwise) → base hash. */
 	#placeholderBaseByKey = new Map<string, string>();
 
@@ -1071,17 +1080,36 @@ export class SecretObfuscator {
 	// alias keyed only by the hash suffix, so both need the same defense
 	// against a forged/attacker-chosen prefix.
 	#prefixIsSecretShaped(prefix: string): boolean {
-		for (const secretValue of this.#configuredSecretValues) {
-			const sanitizedSecret = sanitizeForCollisionCheck(secretValue);
-			if (sanitizedLabelCollidesWithSecret(prefix, sanitizedSecret)) return true;
-		}
+		if (this.#prefixMatchesKnownSecret(prefix)) return true;
 		for (const secretValue of this.#currentRegexSecretValues) {
-			const sanitizedSecret = sanitizeForCollisionCheck(secretValue);
-			if (sanitizedLabelCollidesWithSecret(prefix, sanitizedSecret)) return true;
+			if (sanitizedLabelCollidesWithSecret(prefix, this.#sanitizedSecret(secretValue))) return true;
+		}
+		return false;
+	}
+
+	// Verdict over the long-lived secret sets: configured values, every minted
+	// obfuscate mapping, and the configured regex patterns. Those sets only
+	// grow and their entries never change, so their combined size versions the
+	// memo; any newly configured or minted secret clears it.
+	#prefixMatchesKnownSecret(prefix: string): boolean {
+		const version = this.#configuredSecretValues.size + this.#obfuscateMappings.size;
+		if (version !== this.#knownSecretPrefixVersion) {
+			this.#knownSecretPrefixVerdicts.clear();
+			this.#knownSecretPrefixVersion = version;
+		}
+		const cached = this.#knownSecretPrefixVerdicts.get(prefix);
+		if (cached !== undefined) return cached;
+		const verdict = this.#computePrefixMatchesKnownSecret(prefix);
+		this.#knownSecretPrefixVerdicts.set(prefix, verdict);
+		return verdict;
+	}
+
+	#computePrefixMatchesKnownSecret(prefix: string): boolean {
+		for (const secretValue of this.#configuredSecretValues) {
+			if (sanitizedLabelCollidesWithSecret(prefix, this.#sanitizedSecret(secretValue))) return true;
 		}
 		for (const { secret } of this.#obfuscateMappings.values()) {
-			const sanitizedSecret = sanitizeForCollisionCheck(secret);
-			if (sanitizedLabelCollidesWithSecret(prefix, sanitizedSecret)) return true;
+			if (sanitizedLabelCollidesWithSecret(prefix, this.#sanitizedSecret(secret))) return true;
 		}
 		for (const entry of this.#regexEntries) {
 			entry.regex.lastIndex = 0;
@@ -1090,6 +1118,15 @@ export class SecretObfuscator {
 			if (matches) return true;
 		}
 		return false;
+	}
+
+	#sanitizedSecret(secretValue: string): string {
+		let sanitized = this.#sanitizedSecretValues.get(secretValue);
+		if (sanitized === undefined) {
+			sanitized = sanitizeForCollisionCheck(secretValue);
+			this.#sanitizedSecretValues.set(secretValue, sanitized);
+		}
+		return sanitized;
 	}
 
 	// A placeholder is an exact match, or the friendly-name-independent bare
