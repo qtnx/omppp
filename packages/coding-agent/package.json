@@ -83,7 +83,7 @@
 		"@xyflow/react": "12.11.2",
 		"arktype": "catalog:",
 		"chalk": "catalog:",
-		"dompurify": "3.4.13",
+		"dompurify": "3.4.16",
 		"fast-xml-parser": "catalog:",
 		"fflate": "catalog:",
 		"handlebars": "catalog:",

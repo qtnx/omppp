@@ -1933,9 +1933,9 @@
     url = "https://registry.npmjs.org/domhandler/-/domhandler-6.0.1.tgz";
     hash = "sha512-gYzvtM72ZtxQO0T048kd6HWSbbGCNOUwcnfQ01cqIJ4X2IYKFFHZ5mKvrQETcFXxsRObZulDaKmy//R7TPtsBg==";
   };
-  "dompurify@3.4.13" = fetchurl {
-    url = "https://registry.npmjs.org/dompurify/-/dompurify-3.4.13.tgz";
-    hash = "sha512-2vmYIoqjze2d+kakP8S/nS5shfsl587kzwEjcGlTdiksUVgFHnFCsLYDVj/JNqJVOQZGSYBTmuycv0PodwmnMQ==";
+  "dompurify@3.4.16" = fetchurl {
+    url = "https://registry.npmjs.org/dompurify/-/dompurify-3.4.16.tgz";
+    hash = "sha512-sqo+pNp3qRhCIpbgRi1y8Tgk27Bo2Ry7w0dC1NBeNTdZChWjz9Xb/KOoZbRP/R6pQZ80Qw8YhXw13hWWBbMRnQ==";
   };
   "domutils@3.2.2" = fetchurl {
     url = "https://registry.npmjs.org/domutils/-/domutils-3.2.2.tgz";
