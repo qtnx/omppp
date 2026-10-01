@@ -9992,6 +9992,13 @@ export class AgentSession implements SettingsScope {
 		);
 	}
 
+	/** {@link queuedMessageCount} minus next-turn context, which rides the next user turn and
+	 *  never wakes the session by itself (e.g. the system-context reminder queued after every
+	 *  turn). RPC quiescence reads this so a settled session is reported as settled. */
+	get wakingQueuedMessageCount(): number {
+		return this.queuedMessageCount - this.#pendingNextTurnMessages.length;
+	}
+
 	/** Whether an empty submit should interrupt the streaming turn: displayable input is
 	 *  queued, or live steering sits in the in-flight response, which the abort requeues
 	 *  for the continuation turn. */

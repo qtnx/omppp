@@ -115,7 +115,10 @@ describe("AgentSession video attachments", () => {
 		it(`${operation} removes a queued video's hidden path with the restored prompt`, async () => {
 			if (!session) throw new Error("Session was not initialized");
 			const preview = createVideoPreviewImage({ type: "image", data: TINY_PNG, mimeType: "image/png" }, SOURCE_PATH);
+			// Fork: an idle follow-up auto-starts from an empty context; queue it as if a turn were running.
+			session.agent.state.isStreaming = true;
 			await session.followUp("Review [Video #1]", [preview]);
+			session.agent.state.isStreaming = false;
 
 			const restored = operation === "pop" ? session.popLastQueuedMessage() : session.clearQueue().followUp[0];
 			expect(restored?.text).toBe("Review [Video #1]");

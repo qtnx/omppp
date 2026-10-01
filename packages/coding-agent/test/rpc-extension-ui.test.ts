@@ -56,7 +56,8 @@ export default function (pi) {
 			reasoning: false,
 			input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 32768,
+			// OMPx's default system prompt alone exceeds 32K; leave room so auto-compaction stays idle.
+			contextWindow: 262144,
 			maxTokens: 1024,
 		}],
 		streamSimple: (model, context) => {
@@ -511,6 +512,9 @@ describe("RPC ask dialog", () => {
 		await using temp = await TempDir.create("@rpc-ask-dialog-");
 		const extensionPath = temp.join("scripted-ask.ts");
 		await Bun.write(extensionPath, scriptedAskProvider);
+		// OMPx moves built-ins behind tool discovery for small-context models; the
+		// scripted model has a 32K window, so keep `ask` a direct tool here.
+		await Bun.write(temp.join("agent", "config.yml"), "tools:\n  discoveryMode: off\n");
 		const child = Bun.spawn(
 			[
 				process.execPath,

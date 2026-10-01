@@ -1146,9 +1146,24 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 
 	const extensionUserMessageTracker = new RpcExtensionUserMessageTracker();
 	const wordPredictor = new RpcWordPredictor();
-	const promptResults = new RpcPromptResults(session, output);
+	// Quiescence counts only queued work that can wake the session: next-turn context
+	// (the OMPx system-context reminder is queued after every turn) rides the next user turn.
+	const settleView = {
+		get isStreaming() {
+			return session.isStreaming;
+		},
+		get hasAdmittedSubmission() {
+			return session.hasAdmittedSubmission;
+		},
+		get queuedMessageCount() {
+			return session.wakingQueuedMessageCount;
+		},
+		hasPendingAsyncWork: () => session.hasPendingAsyncWork(),
+		settleAsyncWork: () => session.settleAsyncWork(),
+	};
+	const promptResults = new RpcPromptResults(settleView, output);
 	const sessionEvents = new RpcSessionEventForwarder(output);
-	const settleWatcher = new RpcSessionSettleWatcher(session, output);
+	const settleWatcher = new RpcSessionSettleWatcher(settleView, output);
 
 	const pendingExtensionRequests = new RpcPendingExtensionRequests();
 	const hostToolBridge = new RpcHostToolBridge(output);
@@ -1655,7 +1670,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					queuedMessageCount: session.queuedMessageCount,
 					hasPendingAsyncWork: session.hasPendingAsyncWork(),
-					isSettled: isRpcSessionSettled(session),
+					isSettled: isRpcSessionSettled(settleView),
 					queuedMessages: { steering: [...queuedMessages.steering], followUp: [...queuedMessages.followUp] },
 					todoPhases: session.getTodoPhases(),
 					fastModeEnabled: session.isFastModeEnabled(),
