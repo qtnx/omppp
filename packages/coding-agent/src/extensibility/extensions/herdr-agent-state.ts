@@ -56,7 +56,7 @@ function isRetryableErrorMessage(errorMessage: string): boolean {
 }
 
 type HerdrAgentState = "working" | "blocked" | "idle";
-type HerdrMethod = "pane.report_agent" | "pane.release_agent";
+type HerdrMethod = "pane.report_agent" | "pane.report_metadata" | "pane.release_agent";
 
 type HerdrRequest = {
 	id: string;
@@ -259,6 +259,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		// a respawned process reusing a static source can never report again.
 		// A unique per-instance source lets every new session claim the pane.
 		const source = `${SOURCE}:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+		const statusSource = `${source}:status`;
 
 		const idleDebounceMs = parseDurationEnv(env, "HERDR_OMP_IDLE_DEBOUNCE_MS", DEFAULT_IDLE_DEBOUNCE_MS);
 		const retryGraceMs = parseDurationEnv(env, "HERDR_OMP_RETRY_GRACE_MS", DEFAULT_RETRY_GRACE_MS);
@@ -383,12 +384,7 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 		// `pane.report_agent` carries the session identity too: herdr surfaces
 		// `agent_session` on the *agent* view, so a supervisor watching a named
 		// agent can jump straight to this session's transcript.
-		const buildReportRequest = (
-			state: HerdrAgentState,
-			message: string | undefined,
-			customStatus: string | undefined,
-			seq: number,
-		): HerdrRequest => ({
+		const buildReportRequest = (state: HerdrAgentState, message: string | undefined, seq: number): HerdrRequest => ({
 			id: `${source}:${Date.now()}:${seq}`,
 			method: "pane.report_agent",
 			params: {
@@ -397,10 +393,30 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 				agent: AGENT,
 				state,
 				message,
-				custom_status: customStatus,
 				seq,
 				agent_session_id: lastContext?.sessionManager.getSessionId(),
 				agent_session_path: lastContext?.sessionManager.getSessionFile(),
+			},
+		});
+
+		// Herdr lifecycle reports are semantic only; a status label ("done",
+		// "running", "need review") renders only as metadata `state_labels`.
+		// A dedicated source keeps the title/token metadata (which replaces its
+		// own source's labels on every refresh) from wiping it, and sending it
+		// ahead of the state report means the label is in place when the state lands.
+		const buildStatusLabelRequest = (
+			state: HerdrAgentState,
+			customStatus: string | undefined,
+			seq: number,
+		): HerdrRequest => ({
+			id: `${statusSource}:${Date.now()}:${seq}`,
+			method: "pane.report_metadata",
+			params: {
+				pane_id: paneId,
+				source: statusSource,
+				agent: AGENT,
+				seq,
+				...(customStatus ? { state_labels: { [state]: customStatus } } : { clear_state_labels: true }),
 			},
 		});
 
@@ -409,12 +425,14 @@ export function createHerdrAgentStateExtension(options: HerdrAgentStateExtension
 				while (queuedState) {
 					const next = queuedState;
 					queuedState = undefined;
+					// Best-effort: a failed injected transport must not break the agent
+					// loop, and a lost label must never hold back the state report.
 					try {
-						await transport(buildReportRequest(next.state, next.message, next.customStatus, next.seq));
-					} catch {
-						// Herdr status is best-effort; a failed injected transport must not
-						// break the agent loop or strand later coalesced state updates.
-					}
+						await transport(buildStatusLabelRequest(next.state, next.customStatus, next.seq));
+					} catch {}
+					try {
+						await transport(buildReportRequest(next.state, next.message, next.seq));
+					} catch {}
 				}
 			} finally {
 				drainPromise = undefined;

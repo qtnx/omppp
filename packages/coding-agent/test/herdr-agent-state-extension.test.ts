@@ -29,6 +29,8 @@ import { Snowflake } from "@oh-my-pi/pi-utils";
 type CapturedRequest = {
 	method: string;
 	params: Record<string, unknown>;
+	/** Herdr status label (`state_labels`) in effect for this lifecycle report. */
+	statusLabel?: string;
 };
 
 const tempDirs: string[] = [];
@@ -108,7 +110,10 @@ async function createHarness(
 	} = {},
 ) {
 	configureHerdrEnv(options);
+	// Lifecycle reports only; the status-label metadata that precedes each
+	// report is folded into it as `statusLabel`.
 	const requests: CapturedRequest[] = [];
+	let stateLabels: Record<string, string> | undefined;
 	const eventBus = new EventBus();
 	let idle = true;
 	let pending = false;
@@ -120,7 +125,14 @@ async function createHarness(
 		createHerdrAgentStateExtension({
 			transport: async request => {
 				const captured = request as CapturedRequest;
-				requests.push(captured);
+				if (captured.method === "pane.report_metadata") {
+					stateLabels = captured.params.state_labels as Record<string, string> | undefined;
+				} else {
+					if (captured.method === "pane.report_agent") {
+						captured.statusLabel = stateLabels?.[String(captured.params.state)];
+					}
+					requests.push(captured);
+				}
 				await options.transport?.(captured);
 			},
 		}),
@@ -229,7 +241,7 @@ describe("native Herdr agent state extension", () => {
 
 		expect(harness.requests).toHaveLength(1);
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.statusLabel).toBeUndefined();
 	});
 
 	it("does not report or release from a headless inherited Herdr env", async () => {
@@ -253,7 +265,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("working");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("running");
 
 		await harness.runner.emit({
 			type: "tool_execution_end",
@@ -267,7 +279,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.statusLabel).toBeUndefined();
 	});
 
 	it("does not stay working for a tool whose end event never arrived once the run ends", async () => {
@@ -289,7 +301,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("working");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("running");
 
 		harness.setIdle(true);
 		await harness.runner.emit({ type: "turn_start", turnIndex: 0, timestamp: 0 });
@@ -322,7 +334,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.statusLabel).toBeUndefined();
 
 		await harness.runner.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
 		await harness.runner.emit({ type: "auto_compaction_start", reason: "threshold", action: "context-full" });
@@ -459,7 +471,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("need review");
 		expect(harness.requests.at(-1)?.params.message).toBe("confirm deployment");
 
 		await harness.runner.emit({
@@ -472,7 +484,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("working");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("running");
 	});
 
 	it("reports the ask question text as the blocked message ahead of the tool intent", async () => {
@@ -507,7 +519,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("need review");
 		expect(harness.requests.at(-1)?.params.message).toBe("dangerous command");
 
 		await harness.runner.emit({
@@ -520,7 +532,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("working");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("running");
 	});
 
 	it("drops pending approval waits after run end and follows the run outcome", async () => {
@@ -538,14 +550,14 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("need review");
 		expect(harness.requests.at(-1)?.params.message).toBe("dangerous command");
 
 		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("done");
 	});
 
 	it("drops live ask waits after aborted run end", async () => {
@@ -562,13 +574,13 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("need review");
 
 		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("aborted")] });
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.statusLabel).toBeUndefined();
 	});
 
 	it("reports successful run completion as done and flips to working on the next prompt", async () => {
@@ -579,20 +591,48 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("done");
 
 		await harness.runner.emitInput("next", undefined, "interactive");
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("working");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("running");
 
 		await harness.runner.emit({ type: "agent_start" });
 		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("done");
+	});
+
+	it("sends the done label as Herdr state-label metadata from its own source, and clears it on plain idle", async () => {
+		// Herdr drops unknown report_agent fields, rejects set+clear in one
+		// metadata report, and replaces a source's labels on every metadata
+		// report — so the label must ride on its own metadata source.
+		const metadata: CapturedRequest[] = [];
+		const harness = await createHarness({
+			transport: async request => {
+				if (request.method === "pane.report_metadata") metadata.push(request);
+			},
+		});
+
+		await harness.runner.emit({ type: "agent_start" });
+		await harness.runner.emit({ type: "agent_end", messages: [assistantMessage("stop")] });
+		await flushTimers();
+
+		const reportSource = harness.requests.at(-1)?.params.source;
+		expect(metadata.at(-1)?.params).toMatchObject({ pane_id: "w1:p1", agent: "omp", state_labels: { idle: "done" } });
+		expect(metadata.at(-1)?.params.clear_state_labels).toBeUndefined();
+		expect(metadata.at(-1)?.params.source).not.toBe(reportSource);
+
+		await harness.runner.emit({ type: "session_switch", reason: "resume", previousSessionFile: "old-session.json" });
+		await flushTimers();
+
+		expect(harness.requests.at(-1)?.params.state).toBe("idle");
+		expect(metadata.at(-1)?.params.clear_state_labels).toBe(true);
+		expect(metadata.at(-1)?.params.state_labels).toBeUndefined();
 	});
 
 	it("does not report done for aborted assistant runs", async () => {
@@ -603,7 +643,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.statusLabel).toBeUndefined();
 	});
 
 	it.each([
@@ -618,7 +658,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe(expectedCustomStatus);
+		expect(harness.requests.at(-1)?.statusLabel).toBe(expectedCustomStatus);
 	});
 
 	it("rechecks terminal delivery work so a completed run does not stay running", async () => {
@@ -630,14 +670,14 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("working");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("running");
 
 		harness.setDelivery({ delivering: false });
 		vi.advanceTimersByTime(250);
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("done");
 	});
 
 	it("reports non-retryable agent errors as need review", async () => {
@@ -648,7 +688,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("blocked");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("need review");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("need review");
 		expect(harness.requests.at(-1)?.params.message).toContain("invalid api key");
 	});
 
@@ -666,7 +706,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.statusLabel).toBeUndefined();
 	});
 
 	it("clears done status on session switch without clearing external pane blockers", async () => {
@@ -677,13 +717,13 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("done");
 
 		await harness.runner.emit({ type: "session_switch", reason: "resume", previousSessionFile: "old-session.json" });
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.statusLabel).toBeUndefined();
 	});
 
 	it("does not carry a stale running state into the next session on switch", async () => {
@@ -702,7 +742,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.statusLabel).toBeUndefined();
 	});
 
 	it("debounces plain idle after prompt submit so a new run does not flash idle", async () => {
@@ -715,7 +755,7 @@ describe("native Herdr agent state extension", () => {
 		const doneIndex = harness.requests.length - 1;
 
 		expect(harness.requests.at(doneIndex)?.params.state).toBe("idle");
-		expect(harness.requests.at(doneIndex)?.params.custom_status).toBe("done");
+		expect(harness.requests.at(doneIndex)?.statusLabel).toBe("done");
 
 		await harness.runner.emitInput("next", undefined, "interactive");
 		harness.setIdle(false);
@@ -725,13 +765,13 @@ describe("native Herdr agent state extension", () => {
 
 		const nextWorkingIndex = harness.requests.findIndex(
 			(request, index) =>
-				index > doneIndex && request.params.state === "working" && request.params.custom_status === "running",
+				index > doneIndex && request.params.state === "working" && request.statusLabel === "running",
 		);
 		expect(nextWorkingIndex).toBeGreaterThan(doneIndex);
 		expect(
 			harness.requests
 				.slice(doneIndex + 1, nextWorkingIndex)
-				.some(request => request.params.state === "idle" && request.params.custom_status === undefined),
+				.some(request => request.params.state === "idle" && request.statusLabel === undefined),
 		).toBe(false);
 	});
 
@@ -757,7 +797,7 @@ describe("native Herdr agent state extension", () => {
 		vi.advanceTimersByTime(600);
 		await flushTimers();
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBeUndefined();
+		expect(harness.requests.at(-1)?.statusLabel).toBeUndefined();
 	});
 
 	it("keeps the prompt hold past the grace window while prompt setup is still in flight", async () => {
@@ -780,7 +820,7 @@ describe("native Herdr agent state extension", () => {
 		vi.advanceTimersByTime(251);
 		await flushTimers();
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("done");
 	});
 
 	it("reconciles run flags that outlived their run against the idle session on the periodic tick", async () => {
@@ -817,7 +857,7 @@ describe("native Herdr agent state extension", () => {
 
 		expect(harness.requests.length).toBe(reported + 1);
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("done");
 		expect(Number(harness.requests.at(-1)?.params.seq)).toBeGreaterThan(Number(harness.requests.at(-2)?.params.seq));
 	});
 
@@ -850,7 +890,7 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("idle");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("done");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("done");
 	});
 
 	it("keeps retrying work active when auto retry starts before the grace timer fires", async () => {
@@ -911,13 +951,13 @@ describe("native Herdr agent state extension", () => {
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("working");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("running");
 
 		await harness.runner.emitInput("next", undefined, "interactive");
 		await flushTimers();
 
 		expect(harness.requests.at(-1)?.params.state).toBe("working");
-		expect(harness.requests.at(-1)?.params.custom_status).toBe("running");
+		expect(harness.requests.at(-1)?.statusLabel).toBe("running");
 	});
 
 	it("holds working for usage-limit retryable errors before auto retry starts", async () => {
