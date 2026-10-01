@@ -666,7 +666,8 @@ describe("AuthStorage.getUsageHeadroom", () => {
 			const rowA = oauthRow(1);
 			const rowB = oauthRow(2);
 			const reports: Record<string, UsageReport> = {
-				"account-1": dualWindowReport({ fiveHourFraction: 1, weeklyFraction: 0.1 }),
+				// Allowance left on the pin: a spent pin is now evicted for a measured sibling (#13889).
+				"account-1": dualWindowReport({ fiveHourFraction: 0.5, weeklyFraction: 0.1 }),
 				"account-2": dualWindowReport({ fiveHourFraction: 0.1, weeklyFraction: 0.1 }),
 			};
 			const store = makeStoreBackedUsageStore([rowA, rowB], reports);

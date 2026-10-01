@@ -372,7 +372,7 @@ const RESERVED_TOP_LEVEL_WORDS: Record<string, string> = {
 	discover:
 		'`ompx discover` is not a top-level command. Use `ompx plugin discover [marketplace]` to browse available plugins, or run `ompx launch discover` if you meant to send "discover" as a prompt.',
 	upgrade:
-		'`ompx upgrade` is not a top-level command. Use `ompx plugin upgrade [name@marketplace]` to upgrade plugins, or run `ompx launch upgrade` if you meant to send "upgrade" as a prompt.',
+		'`ompx upgrade` is not a top-level command. Use `ompx plugin upgrade [name]` to upgrade plugins, or run `ompx launch upgrade` if you meant to send "upgrade" as a prompt.',
 	enable:
 		'`ompx enable` is not a top-level command. Use `ompx plugin enable <name@marketplace>` to enable a plugin, or run `ompx launch enable` if you meant to send "enable" as a prompt.',
 	disable:

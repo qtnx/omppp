@@ -56,6 +56,7 @@ import { parseAnthropicInputTransformations, THINKING_BINDING_CONTROLS_BETA } fr
 import { invalidateAwsCredentialCache, resolveAwsCredentials } from "./aws-credentials";
 import { decodeEventStream } from "./aws-eventstream";
 import { signRequest } from "./aws-sigv4";
+import { isBedrockRequestMetadataValue } from "./bedrock-request-metadata";
 import { transformMessages } from "./transform-messages";
 
 /**
@@ -380,9 +381,7 @@ interface MetadataEvent {
 	};
 }
 
-const REQUEST_METADATA_PATTERN = /^[a-zA-Z0-9\s:_@$#=/+,\-.]*$/;
 const REQUEST_METADATA_MAX_ENTRIES = 16;
-const REQUEST_METADATA_MAX_LENGTH = 256;
 
 /**
  * Bedrock rejects the whole invocation on a malformed `requestMetadata` entry.
@@ -399,10 +398,8 @@ function sanitizeRequestMetadata(raw: unknown): Record<string, string> | undefin
 		if (
 			typeof value !== "string" ||
 			key.length < 1 ||
-			key.length > REQUEST_METADATA_MAX_LENGTH ||
-			!REQUEST_METADATA_PATTERN.test(key) ||
-			value.length > REQUEST_METADATA_MAX_LENGTH ||
-			!REQUEST_METADATA_PATTERN.test(value) ||
+			!isBedrockRequestMetadataValue(key) ||
+			!isBedrockRequestMetadataValue(value) ||
 			kept >= REQUEST_METADATA_MAX_ENTRIES
 		) {
 			dropped.push(key);
@@ -461,14 +458,16 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 				? (options.anthropicPrefixMismatchBehavior ?? "drop_block")
 				: undefined;
 
-			// Bedrock rejects thinking + forced tool_choice. Fable's adaptive
-			// thinking cannot be disabled, so downgrade its forced choice instead.
-			if (toolConfig?.toolChoice && additionalModelRequestFields) {
-				const tc = toolConfig.toolChoice;
-				if (tc.any || tc.tool) {
-					if (prefixMismatchBehavior) toolConfig = { ...toolConfig, toolChoice: { auto: {} } };
-					else additionalModelRequestFields = undefined;
-				}
+			// Some models (Opus/Sonnet 5.5) reject forced tool use outright; keep the
+			// tools offered under `auto` and leave thinking intact.
+			const forcedChoice = toolConfig?.toolChoice?.any || toolConfig?.toolChoice?.tool;
+			if (toolConfig && forcedChoice && !model.compat.supportsForcedToolChoice) {
+				toolConfig = { ...toolConfig, toolChoice: { auto: {} } };
+			} else if (toolConfig && forcedChoice && additionalModelRequestFields) {
+				// Bedrock rejects thinking + forced tool_choice. Fable's adaptive
+				// thinking cannot be disabled, so downgrade its forced choice instead.
+				if (prefixMismatchBehavior) toolConfig = { ...toolConfig, toolChoice: { auto: {} } };
+				else additionalModelRequestFields = undefined;
 			}
 			if (prefixMismatchBehavior) {
 				additionalModelRequestFields = applyBedrockThinkingBinding(

@@ -184,13 +184,13 @@ describe("auth broker OAuth refresh backoff", () => {
 			"peer",
 		);
 		const unauthorized = Object.assign(new Error("401 invalid_api_key"), { status: 401 });
-		expect(await resolve({ lastChance: false, error: unauthorized })).toBe("access-1");
+		expect(await resolve({ lastChance: false, error: unauthorized })).toMatchObject({ apiKey: "access-1" });
 		// The reused recent mint is the bearer the client just rejected; the gateway
 		// resolver never re-hands a rejected bearer, and the reuse spends no refresh.
 		expect(await resolve({ lastChance: false, error: unauthorized })).toBeUndefined();
 		expect(
 			await resolve({ lastChance: false, error: Object.assign(new Error("server error"), { status: 500 }) }),
-		).toBe("access-2");
+		).toMatchObject({ apiKey: "access-2" });
 		expect(refreshCalls).toBe(2);
 	});
 

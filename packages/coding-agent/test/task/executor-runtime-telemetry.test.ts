@@ -16,6 +16,7 @@ import {
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { logger } from "@oh-my-pi/pi-utils";
 
 interface SessionHarness {
 	session: AgentSession;
@@ -111,6 +112,7 @@ function createSessionHarness(lastAssistantMessage?: AssistantMessage): SessionH
 		},
 		setIrcWakeTurnObserver: () => {},
 		isAdvisorActive: () => false,
+		getToolByName: () => undefined,
 		dispose: async () => {
 			disposed = true;
 		},
@@ -151,6 +153,8 @@ const baseOptions = {
 };
 
 function mockSession(harness: SessionHarness): void {
+	// The rotating log file arms a flush timer; keep timer-leak assertions about the executor.
+	vi.spyOn(logger, "debug").mockImplementation(() => {});
 	vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
 		session: harness.session,
 		extensionsResult: {} as unknown as LoadExtensionsResult,

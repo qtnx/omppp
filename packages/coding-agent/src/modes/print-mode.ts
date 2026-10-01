@@ -14,7 +14,11 @@ import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_
 import { CREDENTIAL_DISABLED_NOTICE_SOURCE } from "../session/credential-disabled-notice";
 import { isSilentAbort } from "../session/messages";
 import { flushTelemetryExport } from "../telemetry-export";
-import { formatPersistenceDurabilityFailure, formatPersistenceFailure } from "./persistence-failure";
+import {
+	formatPersistenceDurabilityFailure,
+	formatPersistenceFailure,
+	formatPersistenceNotice,
+} from "./persistence-failure";
 import { initializeExtensions } from "./runtime-init";
 
 import { cfgPlanDefaultOnStartup, cfgPlanEnabled } from "../plan-mode/settings";
@@ -219,6 +223,9 @@ async function runPrintModeCore(
 	session.sessionManager.onPersistenceError(error => {
 		persistenceFailure = error;
 		writeStderrLine(formatPersistenceFailure(error.message));
+	});
+	session.sessionManager.onPersistenceNotice(notice => {
+		writeStderrLine(`Warning: ${formatPersistenceNotice(notice)}`);
 	});
 
 	// Always subscribe to enable session persistence via _handleAgentEvent

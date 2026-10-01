@@ -1085,11 +1085,12 @@ describe("Settings", () => {
 				await rename(source, target);
 			});
 
-			cfgSetupVersion.set(settings, SETUP_CONFIG_VERSION);
+			// A real change is required: re-setting a persisted value is a no-op save now.
+			cfgThemeDark.set(settings, "titanium");
 			await settings.flush();
 
 			expect(injected).toBe(true);
-			expect(await readSettings()).toEqual({ setupVersion: SETUP_CONFIG_VERSION });
+			expect(await readSettings()).toEqual({ setupVersion: SETUP_CONFIG_VERSION, theme: { dark: "titanium" } });
 			expect(fs.readdirSync(agentDir).some(name => name.endsWith(".tmp") || name.endsWith(".bak"))).toBe(false);
 		});
 

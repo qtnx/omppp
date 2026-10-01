@@ -170,6 +170,7 @@ import {
 	resolveAnthropicMetadataUserId,
 	stripClaudeToolPrefix,
 } from "./anthropic-identity";
+import { fitBedrockAnthropicPayload } from "./bedrock-anthropic";
 import {
 	anthropicProviderSessionStateKey,
 	clearAnthropicFastModeFallback,
@@ -375,7 +376,7 @@ export function buildAnthropicHeaders(options: AnthropicHeaderOptions): Record<s
 		for (const key in headerSource) {
 			const value = headerSource[key];
 			const lowerKey = key.toLowerCase();
-			if (enforcedHeaderKeys.has(lowerKey)) {
+			if (enforcedHeaderKeys.has(lowerKey) && (oauthToken || !coworkHeaderKeys.has(lowerKey))) {
 				if (allowAnthropicHeaderOverrides && overridableAnthropicHeaderKeys.has(lowerKey)) {
 					anthropicHeaderOverrides[key] = value;
 					continue;
@@ -725,6 +726,15 @@ export const claudeCodeHeaders = {
 	"X-Stainless-Runtime-Version": "v26.3.0",
 	"X-Stainless-Timeout": "600",
 };
+
+/**
+ * Cowork's fingerprint keys. Only the OAuth branch re-emits them, so only that
+ * branch may enforce them: everywhere else nothing would fill the gap and
+ * filtering would silently delete a client identity the caller built on
+ * purpose (Factory Droid mirrors droid's Anthropic SDK fingerprint on this
+ * wire, right down to the 600s client timeout).
+ */
+const coworkHeaderKeys = new Set(Object.keys(claudeCodeHeaders).map(key => key.toLowerCase()));
 
 const enforcedHeaderKeys = new Set(
 	[
@@ -2229,11 +2239,10 @@ const streamAnthropicOnce = (
 				);
 			} else {
 				const extraBetas = normalizeExtraBetas(options?.betas);
-				const wantsAnthropicPriority = model.provider === "anthropic" && options?.serviceTier === "priority";
 				// Skip the fast-mode beta when this session already learned the
 				// endpoint+model rejects fast mode; `speed` is dropped from the params
 				// too (dropFastMode), so the request stays a faithful non-fast request.
-				if (wantsAnthropicPriority && !dropFastMode && !extraBetas.includes(fastModeBeta)) {
+				if (wantsAnthropicFastMode(model, options) && !dropFastMode && !extraBetas.includes(fastModeBeta)) {
 					extraBetas.push(fastModeBeta);
 				}
 				if (options?.taskBudget && !extraBetas.includes(taskBudgetBeta)) {
@@ -2252,12 +2261,16 @@ const streamAnthropicOnce = (
 					isAdaptiveOnlyThinking(model) &&
 					(options?.thinkingEnabled === false ||
 						(model.compat.supportsForcedToolChoice && isForcedToolChoice(options?.toolChoice)));
-				if (
-					model.reasoning &&
-					model.compat.supportsOutputEffort &&
-					((options?.thinkingEnabled && options.effort !== "adaptive") || sendsAdaptiveEffortPin) &&
-					!extraBetas.includes(effortBeta)
-				) {
+				// A resolved `effortBeta` (Factory Droid routes, whose Bedrock/Vertex
+				// upstreams gate the beta themselves) replaces the heuristic: the beta
+				// rides exactly when an output effort does.
+				const emitsEffortBeta =
+					model.compat.effortBeta !== undefined
+						? model.compat.effortBeta && options?.effort !== undefined
+						: model.reasoning &&
+							model.compat.supportsOutputEffort &&
+							((options?.thinkingEnabled && options.effort !== "adaptive") || sendsAdaptiveEffortPin);
+				if (emitsEffortBeta && !extraBetas.includes(effortBeta)) {
 					extraBetas.push(effortBeta);
 				}
 				if (
@@ -2421,6 +2434,8 @@ const streamAnthropicOnce = (
 					nextParams = replacementPayload as typeof nextParams;
 				}
 				if (nextParams.compaction) stripCompactionIncompatibleParams(nextParams);
+				// After `onPayload`, so a hook cannot restore a field Bedrock rejects.
+				if (model.compat.bedrockMessagesApi) fitBedrockAnthropicPayload(nextParams);
 				nextParams = toWellFormedDeep(nextParams) as typeof nextParams;
 				rawRequestDump = {
 					provider: model.provider,
@@ -3489,8 +3504,7 @@ const streamAnthropicOnce = (
 					}
 					if (
 						!dropFastMode &&
-						model.provider === "anthropic" &&
-						options?.serviceTier === "priority" &&
+						wantsAnthropicFastMode(model, options) &&
 						firstTokenTime === undefined &&
 						AIError.isFastModeUnsupported(streamFailure)
 					) {
@@ -4072,22 +4086,17 @@ function ensureMaxTokensForThinking(params: MessageCreateParamsStreaming, maxAll
 	const budgetTokens = thinking.budget_tokens ?? 0;
 	if (budgetTokens <= 0) return;
 
-	const currentMaxTokens = Math.min(params.max_tokens ?? maxAllowedTokens, maxAllowedTokens);
-	const raisedMaxTokens = Math.min(
-		Math.max(currentMaxTokens, budgetTokens + OUTPUT_FALLBACK_BUFFER),
-		maxAllowedTokens,
-	);
-	params.max_tokens = raisedMaxTokens;
+	const output = budgetThinkingOutput(params.max_tokens, budgetTokens, maxAllowedTokens);
+	params.max_tokens = output.maxTokens;
 
-	if (budgetTokens + OUTPUT_FALLBACK_BUFFER <= raisedMaxTokens) return;
+	if (output.budgetTokens === budgetTokens) return;
 
-	const clampedBudget = raisedMaxTokens - OUTPUT_FALLBACK_BUFFER;
-	if (clampedBudget <= 0) {
+	if (output.budgetTokens <= 0) {
 		throw new AIError.ConfigurationError(
-			`Anthropic thinking budget requires max_tokens greater than ${OUTPUT_FALLBACK_BUFFER}; got ${raisedMaxTokens}`,
+			`Anthropic thinking budget requires max_tokens greater than ${OUTPUT_FALLBACK_BUFFER}; got ${output.maxTokens}`,
 		);
 	}
-	thinking.budget_tokens = clampedBudget;
+	thinking.budget_tokens = output.budgetTokens;
 }
 
 type CacheControlBlock = {
@@ -4591,6 +4600,41 @@ function usesAdaptiveThinkingTagOnly(model: Model<"anthropic-messages">): boolea
 }
 
 /**
+ * True when enabled thinking on `model` is budget thinking
+ * (`thinking.type: "enabled"` with `budget_tokens`) rather than adaptive.
+ */
+export function usesBudgetThinking(model: Model<"anthropic-messages">): boolean {
+	return model.thinking?.mode !== "anthropic-adaptive" || model.compat.disableAdaptiveThinking === true;
+}
+
+/** The most output tokens a request to `model` may ask for (`max_tokens` ceiling). */
+export function anthropicOutputLimit(model: Model<"anthropic-messages">): number {
+	return model.maxTokens ?? UNKNOWN_MODEL_MAX_OUTPUT_TOKENS;
+}
+
+/**
+ * The `max_tokens` and thinking budget of budget thinking: `max_tokens`
+ * rises to leave {@link OUTPUT_FALLBACK_BUFFER} visible output tokens after
+ * the budget, within `maxAllowedTokens`, and the budget shrinks when that
+ * ceiling leaves less (a non-positive budget means the ceiling is too low).
+ */
+export function budgetThinkingOutput(
+	maxTokens: number | undefined,
+	budgetTokens: number,
+	maxAllowedTokens: number,
+): { maxTokens: number; budgetTokens: number } {
+	const currentMaxTokens = Math.min(maxTokens ?? maxAllowedTokens, maxAllowedTokens);
+	const raisedMaxTokens = Math.min(
+		Math.max(currentMaxTokens, budgetTokens + OUTPUT_FALLBACK_BUFFER),
+		maxAllowedTokens,
+	);
+	return {
+		maxTokens: raisedMaxTokens,
+		budgetTokens: Math.min(budgetTokens, raisedMaxTokens - OUTPUT_FALLBACK_BUFFER),
+	};
+}
+
+/**
  * True for adaptive-only Claude models (Opus 4.6+, Sonnet 4.6+, Fable/Mythos 5)
  * that reject `thinking.type: "disabled"`. Turning thinking off on these models
  * means omitting the `thinking` field entirely and pinning the lowest adaptive
@@ -4994,6 +5038,70 @@ type AnthropicParamBuildOptions = {
 	effectiveBaseUrl?: string;
 };
 
+/**
+ * Fast mode (`speed: "fast"` plus its beta): a KDL fast-mode SKU, or a
+ * priority-tier request to first-party Anthropic.
+ */
+function wantsAnthropicFastMode(model: Model<"anthropic-messages">, options: AnthropicOptions | undefined): boolean {
+	return model.compat.fastMode === true || (model.provider === "anthropic" && options?.serviceTier === "priority");
+}
+
+/**
+ * Native Factory Droid history predicate (ported from the CLI's request
+ * builder): true when the conversation contains assistant turns but none of
+ * them leads with a `thinking`/`redactedThinking` block.
+ */
+function hasThinkinglessAssistantHistory(messages: readonly Message[]): boolean {
+	let hasAssistant = false;
+	for (const message of messages) {
+		if (message.role !== "assistant") continue;
+		if (!Array.isArray(message.content) || message.content.length === 0) continue;
+		hasAssistant = true;
+		const first = message.content[0];
+		if (
+			first != null &&
+			typeof first === "object" &&
+			(first.type === "thinking" || first.type === "redactedThinking")
+		) {
+			return false;
+		}
+	}
+	return hasAssistant;
+}
+
+/**
+ * Native Factory Droid history predicate: true when the message after the last
+ * user turn is an assistant turn whose first block is not
+ * `thinking`/`redactedThinking` (the conversation is not resuming a
+ * thinking-led chain).
+ */
+function hasNonThinkingTurnAfterLastUser(messages: readonly Message[]): boolean {
+	let lastUser = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === "user") {
+			lastUser = i;
+			break;
+		}
+	}
+	if (lastUser === -1 || lastUser === messages.length - 1) return false;
+	const next = messages[lastUser + 1];
+	if (next.role !== "assistant") return false;
+	if (!Array.isArray(next.content) || next.content.length === 0) return false;
+	const first = next.content[0];
+	if (first == null || typeof first !== "object") return false;
+	return first.type !== "thinking" && first.type !== "redactedThinking";
+}
+
+/**
+ * Whether the conversation has stopped being thinking-led, so routes with
+ * `compat.stripThinkingHistory` drop the budget `thinking` config and replay
+ * history without thinking blocks. Exported so the factory-droid provider can
+ * gate its header-level interleaved beta on the same decision.
+ */
+export function shouldStripThinkingHistory(messages: readonly Message[]): boolean {
+	return hasThinkinglessAssistantHistory(messages) || hasNonThinkingTurnAfterLastUser(messages);
+}
+
 function buildParams(
 	model: Model<"anthropic-messages">,
 	context: Context,
@@ -5091,12 +5199,24 @@ function buildParams(
 	let thinking: MessageCreateParamsStreaming["thinking"] | undefined;
 	let outputConfigEffort: AnthropicOutputEffort | undefined;
 	if (model.reasoning) {
-		if (options?.thinkingEnabled || model.compat.requiresThinkingEnabled) {
+		const disabledThinking = model.compat.disabledThinking;
+		if (options?.thinkingEnabled === false && disabledThinking !== undefined) {
+			if (disabledThinking !== "omit") {
+				thinking =
+					disabledThinking === "adaptive"
+						? {
+								type: "adaptive",
+								...(model.thinking?.supportsDisplay
+									? { display: options.thinkingDisplay ?? "summarized" }
+									: {}),
+							}
+						: { type: "disabled" };
+			}
+		} else if (options?.thinkingEnabled || model.compat.requiresThinkingEnabled) {
 			const thinkingOptions = options ?? {};
 			const mode = model.thinking?.mode;
 			const effort = resolveAnthropicAdaptiveEffort(model, thinkingOptions);
-			const compat = model.compat;
-			if (mode === "anthropic-adaptive" && !compat.disableAdaptiveThinking) {
+			if (!usesBudgetThinking(model)) {
 				const adaptive: { type: "adaptive"; display?: AnthropicThinkingDisplay } = { type: "adaptive" };
 				// The effective display is resolved model-aware by `effectiveThinkingDisplay`:
 				// Opus 4.7+ default to summarized so thinking deltas keep streaming with
@@ -5115,12 +5235,21 @@ function buildParams(
 				thinking = {
 					type: "enabled",
 					budget_tokens: thinkingOptions.thinkingBudgetTokens || 1024,
-					display: thinkingOptions.thinkingDisplay ?? "summarized",
+					// Budget thinking accepts `display` unless a host explicitly declares
+					// it unsupported (proxies whose native clients never send it).
+					...(model.thinking?.supportsDisplay === false
+						? {}
+						: { display: thinkingOptions.thinkingDisplay ?? "summarized" }),
 				};
 				if (mode === "anthropic-budget-effort" && effort && effort !== "adaptive") outputConfigEffort = effort;
 			}
 		} else if (options?.thinkingEnabled === false) {
-			if (isAdaptiveOnlyThinking(model)) {
+			if (model.compat.supportsBetweenToolsThinking) {
+				// Sonnet 5.5 rejects `disabled` with a 400; `between_tools` is its lowest
+				// thinking setting. It takes no other field and leaves effort untouched:
+				// pinning `low` here would cap the whole turn's quality, not only thinking.
+				thinking = { type: "between_tools" };
+			} else if (isAdaptiveOnlyThinking(model)) {
 				// Adaptive-only Claude models (Opus 4.6+, Sonnet 4.6+, Fable/Mythos 5) reject
 				// `thinking.type: "disabled"` — adaptive thinking cannot be switched off.
 				// Omit the thinking field (the API defaults to adaptive) and pin the
@@ -5136,13 +5265,31 @@ function buildParams(
 	}
 
 	if (prefixMismatchBehavior) {
-		if (!thinking && model.thinking?.mode === "anthropic-adaptive") {
+		if (
+			!thinking &&
+			model.thinking?.mode === "anthropic-adaptive" &&
+			!(options?.thinkingEnabled === false && model.compat.disabledThinking === "omit")
+		) {
 			thinking = { type: "adaptive" };
 		}
 		if (thinking?.type === "adaptive" || thinking?.type === "enabled") {
 			thinking.block_binding = { prefix_mismatch_behavior: prefixMismatchBehavior };
 		}
 	}
+
+	// Factory Droid's native thinking-history rule for non-adaptive budget
+	// models: when the conversation is not thinking-led (an assistant turn
+	// exists but none opens with a thinking block, or the turn after the last
+	// user does not), the CLI drops the `thinking` field and replays the
+	// history without thinking blocks — budget-effort models keep
+	// `output_config.effort`, interleaved budget models carry none. Off turns
+	// never strip (native only applies this to an active non-adaptive
+	// `thinking` config).
+	const stripThinkingHistory =
+		model.compat.stripThinkingHistory === true &&
+		thinking?.type === "enabled" &&
+		shouldStripThinkingHistory(context.messages);
+	if (stripThinkingHistory) thinking = undefined;
 
 	// Pre-compute context_management. Send keep: "all" for every enabled or
 	// adaptive thinking request (OAuth + API-key) — not just OAuth. Without
@@ -5203,6 +5350,12 @@ function buildParams(
 		model.compat.supportsPerMessageEffort === true,
 		compactionReplay,
 	);
+	// `between_tools` returns a 400 at `xhigh`/`max` effort, and the effort in
+	// force from earlier turns outlives a thinking toggle. Fall back to the
+	// default adaptive request, which accepts every effort level.
+	if (thinking?.type === "between_tools" && (effortPlan.topLevel === "xhigh" || effortPlan.topLevel === "max")) {
+		thinking = undefined;
+	}
 	const wireMessages = convertAnthropicMessages(
 		insertAnthropicControlMarkers(context.messages, [...toolPlan.inserts, ...effortPlan.inserts]),
 		effectiveModel,
@@ -5211,7 +5364,7 @@ function buildParams(
 			serverSideFallbackEnabled: !!fallbacks?.length,
 			replayCompaction: compactionSupported,
 			replayLegacyCompaction: compactionReplay?.legacy,
-			dropAllThinking,
+			dropAllThinking: dropAllThinking || stripThinkingHistory,
 			droppedThinkingBlocks: prefixDroppedThinking,
 			credentialId: options?.credentialId,
 		},
@@ -5243,7 +5396,8 @@ function buildParams(
 
 	// OAuth and API-key requests alike get the full model ceiling; Claude Code
 	// itself requests 128k on Opus 5.5.
-	const maxOutputTokens = model.maxTokens ?? UNKNOWN_MODEL_MAX_OUTPUT_TOKENS;
+	const maxOutputTokens = anthropicOutputLimit(model);
+
 	// A caller-owned client targets its own endpoint: route body betas by the
 	// client's URL when it exposes one, not the model's routing. Otherwise the
 	// already-resolved effective URL wins over the spec URL so environment
@@ -5314,7 +5468,7 @@ function buildParams(
 			seqs.length > ANTHROPIC_STOP_SEQUENCES_MAX ? seqs.slice(0, ANTHROPIC_STOP_SEQUENCES_MAX) : seqs;
 	}
 
-	if (model.provider === "anthropic" && options?.serviceTier === "priority") {
+	if (wantsAnthropicFastMode(model, options)) {
 		params.speed = "fast";
 	}
 

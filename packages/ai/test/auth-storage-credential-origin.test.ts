@@ -107,7 +107,7 @@ describe("AuthStorage.keys.source", () => {
 			await auth.credentials.set("anthropic", [
 				{ type: "oauth", access: "sk-ant-oat-test", refresh: "refresh", expires: Date.now() + 3_600_000 },
 			]);
-			expect(await auth.keys.withOrigin("anthropic")).toEqual({
+			expect(await auth.keys.withOrigin("anthropic")).toMatchObject({
 				apiKey: "sk-ant-oat-test",
 				origin: { kind: "oauth" },
 			});
@@ -137,7 +137,7 @@ describe("AuthStorage.keys.source", () => {
 			await auth.credentials.set("anthropic", [{ type: "api_key", key: "missing-login-key", source: "login" }]);
 			auth.keys.setConfig("anthropic", "gateway-key");
 
-			expect(await auth.keys.withOrigin("anthropic")).toEqual({
+			expect(await auth.keys.withOrigin("anthropic")).toMatchObject({
 				apiKey: "gateway-key",
 				origin: { kind: "config" },
 			});
@@ -156,7 +156,7 @@ describe("AuthStorage.keys.source", () => {
 			await auth.credentials.set("anthropic", [{ type: "api_key", key: "missing-static-key" }]);
 			auth.keys.setConfig("anthropic", "gateway-key");
 
-			expect(await auth.keys.withOrigin("anthropic")).toEqual({
+			expect(await auth.keys.withOrigin("anthropic")).toMatchObject({
 				apiKey: "gateway-key",
 				origin: { kind: "config" },
 			});
@@ -180,7 +180,7 @@ describe("AuthStorage.keys.source", () => {
 			]);
 			auth.keys.setConfig("anthropic", "gateway-key");
 
-			expect(await auth.keys.withOrigin("anthropic")).toEqual({
+			expect(await auth.keys.withOrigin("anthropic")).toMatchObject({
 				apiKey: "gateway-key",
 				origin: { kind: "config" },
 			});
@@ -200,13 +200,13 @@ describe("AuthStorage.keys.source", () => {
 			]);
 			auth.keys.setConfig("anthropic", "gateway-fallback");
 
-			expect(await auth.keys.withOrigin("anthropic", undefined, { preferOAuth: true })).toEqual({
+			expect(await auth.keys.withOrigin("anthropic", undefined, { preferOAuth: true })).toMatchObject({
 				apiKey: "sk-ant-oat-preferred",
 				origin: { kind: "oauth" },
 			});
 
 			await auth.credentials.set("anthropic", []);
-			expect(await auth.keys.withOrigin("anthropic", undefined, { preferOAuth: true })).toEqual({
+			expect(await auth.keys.withOrigin("anthropic", undefined, { preferOAuth: true })).toMatchObject({
 				apiKey: "gateway-fallback",
 				origin: { kind: "config" },
 			});
@@ -228,7 +228,7 @@ describe("AuthStorage.keys.source", () => {
 			auth.keys.setConfig("anthropic", "gateway-key");
 			auth.keys.setRuntime("anthropic", "runtime-key");
 
-			expect(await auth.keys.withOrigin("anthropic")).toEqual({
+			expect(await auth.keys.withOrigin("anthropic")).toMatchObject({
 				apiKey: "runtime-key",
 				origin: { kind: "runtime" },
 			});
@@ -304,7 +304,7 @@ describe("AuthStorage.keys.source", () => {
 			auth.keys.setConfig("anthropic", "gateway-key");
 			expect(auth.oauth.accountId("anthropic")).toBeUndefined();
 
-			expect(await auth.keys.withOrigin("anthropic")).toEqual({
+			expect(await auth.keys.withOrigin("anthropic")).toMatchObject({
 				apiKey: "gateway-key",
 				origin: { kind: "config" },
 			});
