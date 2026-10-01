@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Herdr panes showing plain `idle` instead of `done` after a run finished; the done/running/need review labels now actually render in Herdr
+
 ## [1.11.7] - 2026-09-30
 
 ### Fixed
