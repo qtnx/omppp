@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed secret auto-detection vaulting ordinary words, paths, test names, pod names, and UUIDs from tool output, which then replaced every later occurrence of those words with an opaque marker in prompts and transcripts; existing false-positive entries are removed from the vault on next start
 - Fixed Herdr panes showing plain `idle` instead of `done` after a run finished; the done/running/need review labels now actually render in Herdr
 
 ## [1.11.7] - 2026-09-30

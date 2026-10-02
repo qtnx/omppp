@@ -77,6 +77,15 @@ function isPlaceholderValue(value: string): boolean {
 	}
 	// Code rather than a literal: calls and member access (`getPassword()`, `req.body.password`).
 	if (/[()]/.test(value) || /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(value)) return true;
+	// Paths (`PWD=/tmp`) and words or identifiers (`forgotPassword: "<word>"`, `--- PASS: TestLogin_Expired`):
+	// short, separator-joined, or PascalCase letters. Long random letter runs and spaced passphrases still count.
+	if (/^(?:\.{0,2}\/|~\/)/.test(value)) return true;
+	if (
+		/^[A-Za-z_./-]+$/.test(value) &&
+		(value.length < 16 || /[_./-]/.test(value) || /^(?:[A-Z][a-z]+){2,}$/.test(value))
+	) {
+		return true;
+	}
 	return false;
 }
 
@@ -338,14 +347,40 @@ const PRECEDING_NAME_PATTERN =
 	/(?:([A-Za-z][A-Za-z0-9_.-]*)["']?[ \t]*(?::=|[:=])|--?([A-Za-z][A-Za-z0-9_-]*)[ \t]+)[ \t]*["']?$/;
 const PLACEHOLDER_TOKEN_PATTERN = /\$\$(?:[A-Z0-9]+_)?[A-Z0-9]{4,}(?::[ULCM])?\$\$/g;
 
-/** A bare word, path, number, version, or lowercase hash — never a credential on its own. */
-function isInertToken(token: string): boolean {
+/**
+ * A bare word, path, number, version, lowercase hash, or structured identifier
+ * (UUID, timestamp, kebab/dotted name such as a pod, image tag, or hostname,
+ * lowercase image ref, email) — shapes tool output is full of and that are
+ * never a credential on their own.
+ */
+export function isInertToken(token: string): boolean {
 	if (token.startsWith("-") || /^(?:\.{0,2}\/|~\/|\/\/)/.test(token) || token.includes("://")) return true;
 	if (!/[A-Za-z]/.test(token)) return true;
 	if (/^[0-9a-f]+$/.test(token)) return true;
 	// Words, identifiers, and CONSTANT_NAMES carry no digit or symbol a secret would.
 	if (/^[A-Za-z_.-]+$/.test(token)) return true;
-	return token.includes("/") && token.length < 20;
+	if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) return true;
+	if (/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}(?::\d{2}){0,2})?/.test(token)) return true;
+	// `api-7f9c4d8b5-x2kqz`, `v1.2.34-alpine.3c4d5e6f`, `db.internal`: lowercase segments joined by `-`/`.`.
+	if (/^v?[a-z0-9]+(?:[-.][a-z0-9]+)+$/.test(token)) return true;
+	if (/^[a-z0-9._+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*$/.test(token)) return true;
+	// Lowercase paths and image refs (`org/app-5f6d7c/run`); base64 secrets carry uppercase.
+	return token.includes("/") && (token.length < 20 || !/[A-Z]/.test(token));
+}
+
+/**
+ * A vaulted `detected` secret that the current detector would reject — an
+ * earlier false positive. Keyword-named entries (`DB_PASSWORD`) only need to
+ * clear the keyword checks, and vendor-shaped ones are always kept;
+ * generically named ones (`SECRET_12`, classifier picks) must also not be
+ * an inert token such as a pod name or UUID.
+ */
+export function isImplausibleDetectedSecret(name: string, value: string): boolean {
+	if (!isPlaceholderValue(value) && !(/^SECRET(?:_\d+)?$/.test(name) && isInertToken(value))) return false;
+	// Vendor-shaped tokens (`ghp_…`, `sk-…`, PEM) are credentials whatever their characters.
+	return !detectSecretsInText(value).some(
+		span => span.kind !== "generic" && span.start === 0 && span.end === value.length,
+	);
 }
 
 function tokenEntropyScore(token: string): number {

@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { isImplausibleDetectedSecret } from "./detect";
 import { loadOrCreateVaultKey, type VaultKey, type VaultKeyBackend, VaultKeyRetrievalError } from "./keychain";
 import type { SecretEntry } from "./obfuscator";
 import { MIN_OBFUSCATE_SECRET_LEN } from "./placeholder";
@@ -241,7 +242,9 @@ export class SecretVault implements SecretVaultLike {
 
 		try {
 			const secrets = decryptVault(await vaultFile.text(), vaultKey.key).secrets;
-			return new SecretVault(agentDir, vaultKey.key, vaultKey.backend, vaultKey.keyMaterialToRedact, secrets);
+			const vault = new SecretVault(agentDir, vaultKey.key, vaultKey.backend, vaultKey.keyMaterialToRedact, secrets);
+			await vault.#pruneImplausibleDetected();
+			return vault;
 		} catch (error) {
 			if (isEnoent(error)) {
 				// Vault removed between the existence probe and the read: fall back
@@ -309,6 +312,30 @@ export class SecretVault implements SecretVaultLike {
 
 	#assertWritable(): void {
 		if (this.#degradedReason) throw new Error(this.#degradedReason);
+	}
+
+	/**
+	 * Drop auto-detected entries the current detector rejects. Earlier detector
+	 * versions vaulted words, paths, pod names, and UUIDs; every vaulted value is
+	 * redacted wherever it appears, so a stored plain word turned each later
+	 * occurrence of that word into an opaque marker. User and tag entries are kept.
+	 * A failed rewrite still prunes in memory; the next open retries the write.
+	 */
+	async #pruneImplausibleDetected(): Promise<void> {
+		const kept: Record<string, StoredSecret> = {};
+		let pruned = 0;
+		for (const [name, secret] of Object.entries(this.#secrets)) {
+			if (secret.source === "detected" && isImplausibleDetectedSecret(name, secret.value)) pruned++;
+			else kept[name] = secret;
+		}
+		if (pruned === 0) return;
+		this.#secrets = kept;
+		try {
+			await this.#persist(kept);
+			logger.warn("Removed false-positive auto-detected secrets from the vault", { pruned });
+		} catch (error) {
+			logger.warn("Failed to rewrite vault after pruning false-positive secrets", { error: String(error) });
+		}
 	}
 
 	/**
