@@ -97,7 +97,7 @@ describe("detectSecretsInText", () => {
 			["password: hunter2", "hunter2", "password"],
 			["export DB_PASSWORD=s3cr3t!", "s3cr3t!", "DB_PASSWORD"],
 			['{"userPassword": "my pass word"}', "my pass word", "userPassword"],
-			["PGPASSWORD := 'abcd'", "abcd", "PGPASSWORD"],
+			["PGPASSWORD := 'ab1!'", "ab1!", "PGPASSWORD"],
 		];
 		for (const [text, value, name] of cases) {
 			const detected = detectSecretsInText(text);
@@ -119,6 +119,13 @@ describe("detectSecretsInText", () => {
 			"bypass=hunter2",
 			"max_tokens: 4096",
 			"token: abc123",
+			// Words, identifiers, and paths from tool output are never vaulted.
+			'"forgotPassword": "Submit"',
+			"PWD=/tmp",
+			"--- PASS: TestLoginRejectsExpiredSession",
+			"--- PASS: Test_login_rejects_expired",
+			"--- PASS: TestLogin_Flow/expired_session (0.01s)",
+			"POSTGRES_PASSWORD=letmein",
 		]) {
 			expect(detectSecretsInText(text)).toEqual([]);
 		}

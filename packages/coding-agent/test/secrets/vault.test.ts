@@ -268,4 +268,28 @@ describe("SecretVault", () => {
 			expect((await fs.stat(path.join(agentDir, "secret-vault.key"))).mode & 0o777).toBe(0o600);
 		});
 	});
+
+	it("drops earlier auto-detected false positives on open but keeps real and user secrets", async () => {
+		await withAgentDir(async agentDir => {
+			vi.spyOn(vaultKeychainRuntime, "platform").mockReturnValue("win32");
+			const vault = await SecretVault.open(agentDir);
+			// Every vaulted value is redacted wherever it appears, so a vaulted word mangles all later text.
+			await vault.set("FORGOT_PASSWORD", "change", "detected");
+			await vault.set("PWD", "/tmp", "detected");
+			await vault.set("SECRET_7", "api-7f9c4d8b5-x2kqz", "detected");
+			await vault.set("SECRET_8", "3f2b8c1e-9a4d-4e6f-8b2a-1c3d5e7f9a0b", "detected");
+			await vault.set("OPENAI_API_KEY", `sk-${"a".repeat(20)}`, "detected");
+			await vault.set("DB_PASSWORD", "s3cr3t!", "detected");
+			await vault.set("NAME", "change2", "user");
+
+			const reopened = await SecretVault.open(agentDir);
+			expect(Object.keys(reopened.env()).sort()).toEqual(["DB_PASSWORD", "NAME", "OPENAI_API_KEY"]);
+			// The prune is persisted, not just applied in memory.
+			expect(Object.keys((await SecretVault.open(agentDir)).env()).sort()).toEqual([
+				"DB_PASSWORD",
+				"NAME",
+				"OPENAI_API_KEY",
+			]);
+		});
+	});
 });
