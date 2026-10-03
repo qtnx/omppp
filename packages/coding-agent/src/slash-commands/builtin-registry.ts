@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import { renderContextGcReport } from "@oh-my-pi/context-gc-plugin";
+import { clearSubmittedText } from "./helpers/draft";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import {
 	formatCrashReportPathLine,
@@ -60,6 +61,8 @@ import { BUILTIN_MARKETPLACE_SLASH_COMMANDS, reloadTuiPluginState } from "./buil
 import { BUILTIN_MODE_SLASH_COMMANDS, refreshStatusLine } from "./builtin-modes";
 import { BUILTIN_SESSION_SLASH_COMMANDS } from "./builtin-session";
 import { BUILTIN_SKILLS_SLASH_COMMANDS } from "./builtin-skills";
+
+const [SKILLS_REGISTRY_COMMAND] = BUILTIN_SKILLS_SLASH_COMMANDS;
 import { commandConsumed, parseSlashCommand, parseSubcommand, usage } from "./helpers/parse";
 import type {
 	BuiltinSlashCommand,
@@ -148,7 +151,7 @@ function formatSkillLine(skill: Skill): string {
 	return `* ${name} [${source}]${description ? ` — ${description}` : ""}`;
 }
 
-function buildSkillsReportText(runtime: SlashCommandRuntime): string {
+function buildSkillsReportText(runtime: Pick<SlashCommandRuntime, "session" | "settings">): string {
 	const skillSettings = runtime.session.skillsSettings ?? {
 		enabled: cfgSkillsEnabled.get(runtime.settings),
 		enableSkillCommands: cfgSkillsEnableSkillCommands.get(runtime.settings),
@@ -780,12 +783,22 @@ const FORK_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
-		name: "skills",
-		description: "Show active skills and skill-selection filters",
+		// One `/skills`: bare shows the fork's active-skill report; subcommands
+		// reach the upstream skills.omp.sh registry flow.
+		...SKILLS_REGISTRY_COMMAND,
+		description: "Show active skills, or search/install/update registry skills",
 		acpDescription: "Show active skills and skill filters",
 		handle: async (_command, runtime) => {
 			await runtime.output(buildSkillsReportText(runtime));
 			return commandConsumed();
+		},
+		handleTui: async (command, runtime) => {
+			if (command.args.trim()) {
+				await SKILLS_REGISTRY_COMMAND.handleTui?.(command, runtime);
+				return;
+			}
+			clearSubmittedText(runtime);
+			runtime.ctx.showStatus(buildSkillsReportText(runtime.ctx));
 		},
 	},
 	{
@@ -1029,7 +1042,6 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	...BUILTIN_SESSION_SLASH_COMMANDS,
 	...BUILTIN_LIFECYCLE_SLASH_COMMANDS,
 	...BUILTIN_MARKETPLACE_SLASH_COMMANDS,
-	...BUILTIN_SKILLS_SLASH_COMMANDS,
 	...BUILTIN_CONTROL_SLASH_COMMANDS.filter(command => command.name !== "live"),
 	...FORK_SLASH_COMMANDS,
 	productPreviewSlashCommand,
@@ -1131,7 +1143,7 @@ export async function executeBuiltinSlashCommand(
 	// host-only; the allowlist covers purely local/read-only commands.
 	if (runtime.ctx.collabGuest && !COLLAB_GUEST_ALLOWED_COMMANDS[command.name]) {
 		runtime.ctx.showStatus(`/${command.name} is host-only during a collab session`);
-		runtime.ctx.editor.setText("");
+		clearSubmittedText(runtime);
 		return true;
 	}
 	if (command.handleTui) {
@@ -1159,7 +1171,7 @@ export async function executeBuiltinSlashCommand(
 			reloadPlugins: () => reloadTuiPluginState(ctx),
 		};
 		const result = await command.handle(parsed, adapted);
-		ctx.editor.setText("");
+		clearSubmittedText(runtime);
 		if (result && typeof result === "object" && "prompt" in result) return result.prompt;
 		return true;
 	}

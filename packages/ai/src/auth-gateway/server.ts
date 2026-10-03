@@ -61,6 +61,7 @@ import {
 	captureRequestHeaders,
 	corsHeaders,
 	gatewayResponseHeaders,
+	hasMisplacedBearer,
 	isAuthorized,
 	json,
 	resolveClientIdentity,
@@ -758,7 +759,6 @@ async function handlePiNative(
 			`No credential available for provider ${model.provider}`,
 		);
 	}
-	const { apiKey } = apiKeyResolution;
 	const credentialAuthType = credentialAuthTypeForResolution(model.provider, apiKeyResolution);
 
 	// Per-session provider learning, owned by this gateway instance. The map is
@@ -778,7 +778,6 @@ async function handlePiNative(
 	// `buildStreamOptions` — Codex rejects every one with a 400 (#3117).
 	const streamOpts: SimpleStreamOptions = {
 		...parsed.options,
-		apiKey,
 		signal: controller.signal,
 		cursorExternalToolExecutor: true,
 		providerSessionState: lease.states,
@@ -1016,6 +1015,25 @@ function handleModelsList(opts: AuthGatewayBootOptions): Response {
 /** `GET /v1/videos/:id` (poll) and `GET /v1/videos/:id/content` (download); group 1 = id, group 2 = `/content`. */
 const VIDEO_JOB_PATH = /^\/v1\/videos\/([^/]+)(\/content)?$/;
 
+// Only exact static routes are safe to include in unauthorized request logs.
+// Dynamic video IDs and unknown paths may carry credentials.
+const LOGGABLE_PATHS: Record<string, true> = {
+	"/v1/usage": true,
+	"/v1/credentials/check": true,
+	"/v1/pi/stream": true,
+	"/v1/systemone": true,
+	"/alpha/decisions": true,
+	"/v1/images/generations": true,
+	"/v1/images": true,
+	"/v1/images/edits": true,
+	"/v1/audio/speech": true,
+	"/v1/audio/transcriptions": true,
+	"/v1/embeddings": true,
+	"/v1/rerank": true,
+	"/v1/videos": true,
+	"/v1/models": true,
+};
+
 export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServerHandle {
 	const bind = parseBind(opts.bind ?? DEFAULT_AUTH_GATEWAY_BIND);
 	const tokens = new Set<string>(opts.bearerTokens);
@@ -1027,10 +1045,14 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 	const server = Bun.serve({
 		hostname: bind.hostname,
 		port: bind.port,
-		fetch: async (req): Promise<Response> => {
+		fetch: async (req, server): Promise<Response> => {
 			const url = new URL(req.url);
 			const pathname = url.pathname;
-			const peer = resolvePeer(req);
+			// Only static routes reach logs verbatim; dynamic or unknown paths may carry caller-supplied secrets.
+			const logPath =
+				Object.hasOwn(FORMAT_ROUTES, pathname) || Object.hasOwn(LOGGABLE_PATHS, pathname) ? pathname : "<unrouted>";
+			const socketPeer = server.requestIP(req)?.address ?? "unknown";
+			let peer = socketPeer;
 			// CORS preflight is always answered without auth — browsers send
 			// preflights pre-authentication and a 401 here breaks the actual
 			// request before the bearer is ever attached.
@@ -1042,10 +1064,17 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 					return withCors(json(200, { ok: true, version }), req);
 				}
 				if (!isAuthorized(req, tokens)) {
-					logger.info("auth-gateway request unauthorized", { method: req.method, path: pathname, peer });
+					logger.info("auth-gateway request unauthorized", {
+						method: req.method,
+						path: logPath,
+						peer: socketPeer,
+					});
 					return withCors(json(401, { error: "unauthorized" }), req);
 				}
-
+				if (hasMisplacedBearer(req, url, tokens)) {
+					return withCors(json(400, { error: "gateway bearer token outside Authorization" }), req);
+				}
+				peer = resolvePeer(req, socketPeer, opts.trustProxyHeaders);
 				// Aggregated usage — backed by AuthStorage's 5-min per-credential cache.
 				// Same shape as the broker's `/v1/usage`, so widget/llm-git speak to either with the
 				// same client struct.
@@ -1132,7 +1161,7 @@ export function startAuthGateway(opts: AuthGatewayBootOptions): AuthGatewayServe
 			} catch (error) {
 				logger.error("auth-gateway handler crashed", {
 					method: req.method,
-					path: pathname,
+					path: logPath,
 					peer,
 					error: String(error),
 				});

@@ -78,10 +78,10 @@ export function resolveGatewayAccount(
  * Resolve the credential for one request from broker-backed storage.
  *
  * pi-ai clients never consult `AuthStorage`; the gateway resolves the bearer
- * (an OAuth access token refreshed through the broker when needed) and hands
- * it to the client. Returns the key, or the error classification the route
- * should encode in its own envelope: storage failures map through
- * {@link classifyGatewayError}, a provider without any credential is a 401.
+ * and its OAuth identity together (refreshing through the broker when needed).
+ * Keep this selection snapshot intact even if another request replaces the
+ * stored token before dispatch. Storage failures map through
+ * {@link classifyGatewayError}; a provider without any credential is a 401.
  */
 export async function resolveGatewayApiKeyWithOrigin(
 	storage: AuthStorage,
@@ -130,7 +130,7 @@ export async function resolveGatewayApiKeyWithOrigin(
  * - **auth-failure** → {@link AuthStorage.limits.invalidateMatching}.
  *   Suspect/delete the row so it doesn't get re-picked next request.
  *
- * In both branches we return the next `getApiKey` result (sticky on the
+ * In both branches we return the next `getWithCredential` result (sticky on the
  * same `sessionId`) so the client can transparently retry the pre-emit
  * failure with a fresh credential. Returning `undefined` aborts the retry
  * and surfaces the original error to the caller.
@@ -215,18 +215,18 @@ export function buildGatewayApiKeyResolver(
 ): ApiKeyResolver {
 	let lastResolution = initialResolution;
 	const attemptedKeys = new Set<string>();
-	const select = (resolution: AuthApiKeyResolution | undefined): string | undefined => {
+	const select = (resolution: AuthApiKeyResolution | undefined): AuthApiKeyResolution | undefined => {
 		if (!resolution || attemptedKeys.has(resolution.apiKey)) return undefined;
 		lastResolution = resolution;
 		onResolution?.(resolution);
-		return resolution.apiKey;
+		return resolution;
 	};
 	return async ({ lastChance, error, signal }) => {
 		const sig = signal ?? requestSignal;
 		if (error === undefined) {
 			lastResolution = initialResolution;
 			attemptedKeys.clear();
-			return initialResolution.apiKey;
+			return initialResolution;
 		}
 		attemptedKeys.add(lastResolution.apiKey);
 		if (!lastChance) {

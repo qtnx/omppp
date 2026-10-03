@@ -195,7 +195,9 @@ export class AuthStorage {
 			leaseWaitTimeoutMs: options.oauthRefreshLeaseTimeoutMs,
 		});
 		const usageProviders = options.usageProviderResolver ?? defaultUsageProvider;
-		const usageCache = new UsageCache(store, pool, usageProviders);
+		// Key reports by the effective provider (runtime extension override first), so an
+		// override's `cacheVersion` separates its rows from other processes sharing the store.
+		const usageCache = new UsageCache(store, pool, provider => usage.providerFor(provider));
 		const blocks = new CredentialBlocks({ store, pool, health: blockHealth, usageCache, strategies });
 		const affinity = new SessionAffinity(store, pool, overrides);
 		const usage = new UsageService({
