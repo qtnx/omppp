@@ -58,15 +58,6 @@
 			"types": "./src/index.ts",
 			"import": "./src/index.ts"
 		},
-		"./*": {
-			"types": "./src/*.ts",
-			"import": "./src/*.ts"
-		},
-		"./components/*": {
-			"types": "./src/components/*.ts",
-			"import": "./src/components/*.ts"
-		},
-		"./*.js": "./src/*.ts",
 		"./theme": {
 			"types": "./src/theme/index.ts",
 			"import": "./src/theme/index.ts"
@@ -94,6 +85,19 @@
 		"./status-line": {
 			"types": "./src/status-line/index.ts",
 			"import": "./src/status-line/index.ts"
-		}
+		},
+		"./*": {
+			"types": "./src/*.ts",
+			"import": "./src/*.ts"
+		},
+		"./components/*": {
+			"types": "./src/components/*.ts",
+			"import": "./src/components/*.ts"
+		},
+		"./native/*": {
+			"types": "./src/native/*.ts",
+			"import": "./src/native/*.ts"
+		},
+		"./*.js": "./src/*.ts"
 	}
 }

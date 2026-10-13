@@ -5,7 +5,6 @@ import type { OAuthCredentials, OAuthProvider } from "../registry/oauth/types";
 import type { Provider } from "../types";
 import { raceSignal } from "./abort";
 import { authCredentialEquals, type CredentialPool, credentialDisabledEvent } from "./pool";
-import type { AccountPolicies } from "./policy";
 import { resolveCredentialIdentityKey, serializeCredential } from "./sqlite-credential-store";
 import { hasRefreshLeases, type AuthCredentialStore } from "./store";
 import {
@@ -46,6 +45,32 @@ const OAUTH_REFRESH_LEASE_RENEW_MS = 5_000;
 const OAUTH_REFRESH_OPERATION_TIMEOUT_MS = 10_000;
 const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 10_000;
 
+type OrganizationScope = Pick<
+	OAuthCredentials,
+	"orgId" | "region" | "inferenceRegion" | "activeOrganizationId" | "orgName"
+>;
+
+/**
+ * Organization-scoped identity after a refresh: refreshed values win; stored
+ * org/residency/inference scope carries over only while the organization is
+ * unchanged. The WorkOS selection always falls back to the stored one.
+ */
+export function mergeRefreshedOrganizationScope(
+	current: OrganizationScope,
+	refreshed: OrganizationScope,
+): OrganizationScope {
+	const sameOrg =
+		(refreshed.orgId === undefined || refreshed.orgId === current.orgId) &&
+		(refreshed.activeOrganizationId === undefined || refreshed.activeOrganizationId === current.activeOrganizationId);
+	return {
+		orgId: refreshed.orgId ?? (sameOrg ? current.orgId : undefined),
+		region: refreshed.region ?? (sameOrg ? current.region : undefined),
+		inferenceRegion: refreshed.inferenceRegion ?? (sameOrg ? current.inferenceRegion : undefined),
+		activeOrganizationId: refreshed.activeOrganizationId ?? current.activeOrganizationId,
+		orgName: refreshed.orgName ?? (sameOrg ? current.orgName : undefined),
+	};
+}
+
 /** Merge provider refresh bytes with the stored OAuth row, preserving subtype metadata for every refresh path. */
 export function mergeRefreshedCredential<T extends OAuthCredential>(current: T, refreshed: OAuthCredentials): T {
 	return {
@@ -58,8 +83,7 @@ export function mergeRefreshedCredential<T extends OAuthCredential>(current: T, 
 		projectId: refreshed.projectId ?? current.projectId,
 		enterpriseUrl: refreshed.enterpriseUrl ?? current.enterpriseUrl,
 		apiEndpoint: refreshed.apiEndpoint ?? current.apiEndpoint,
-		orgId: refreshed.orgId ?? current.orgId,
-		orgName: refreshed.orgName ?? current.orgName,
+		...mergeRefreshedOrganizationScope(current, refreshed),
 		authorizedAt: refreshed.authorizedAt ?? current.authorizedAt,
 	};
 }
@@ -74,7 +98,6 @@ export interface RefreshOptions {
 export interface OAuthRefresherDeps {
 	store: AuthCredentialStore;
 	pool: CredentialPool;
-	policies: AccountPolicies;
 	override?: AuthStorageOptions["refreshOAuthCredential"];
 	/** Durable lease TTL; tests shorten it to observe handoff. Defaults to {@link OAUTH_REFRESH_LEASE_TTL_MS}. */
 	leaseTtlMs?: number;
@@ -82,6 +105,7 @@ export interface OAuthRefresherDeps {
 	leasePollMs?: number;
 	/** Acquisition wait cap before resolving from disk without posting. Defaults to {@link OAUTH_REFRESH_LEASE_WAIT_TIMEOUT_MS}. */
 	leaseWaitTimeoutMs?: number;
+	overrideMints?: AuthStorageOptions["refreshOAuthCredentialMints"];
 }
 
 /** Single-flighted, lease-guarded OAuth refresh with compare-and-set persistence. */
@@ -126,6 +150,13 @@ export class OAuthRefresher {
 			if (now - mint.at >= OAUTH_REMINT_COOLDOWN_MS) this.#recentMints.delete(cachedId);
 		}
 		this.#recentMints.set(id, { provider, access: credential.access, at: now });
+	}
+
+	/** Whether refreshes run the provider token exchange in this process rather than delegating it. */
+	#mintsLocally(): boolean {
+		return this.#deps.override
+			? this.#deps.overrideMints === true
+			: this.#deps.store.refreshOAuthCredential === undefined;
 	}
 
 	/**
@@ -346,7 +377,7 @@ export class OAuthRefresher {
 			} else {
 				this.#deps.store.updateAuthCredential(row.id, merged);
 			}
-			if (this.#deps.override === undefined && this.#deps.store.refreshOAuthCredential === undefined) {
+			if (this.#mintsLocally()) {
 				this.#rememberMint(provider, row.id, merged);
 			}
 			this.#deps.pool.replace(
@@ -423,7 +454,6 @@ export class OAuthRefresher {
 			await this.#deps.pool.reload();
 			return "cas-lost";
 		}
-		this.#deps.policies.validateFor(provider, this.#deps.pool.credentials(provider));
 		return "disabled";
 	}
 
@@ -472,11 +502,7 @@ export class OAuthRefresher {
 			.then(refreshed => {
 				// A delegated refresh may have returned a broker-cached token rather
 				// than minting one. Only direct local requests can establish mint time.
-				if (
-					!hasRefreshLeases(this.#deps.store) &&
-					this.#deps.override === undefined &&
-					this.#deps.store.refreshOAuthCredential === undefined
-				) {
+				if (!hasRefreshLeases(this.#deps.store) && this.#mintsLocally()) {
 					this.#rememberMint(provider, credentialId, refreshed);
 				}
 				return refreshed;
@@ -634,7 +660,7 @@ export class OAuthRefresher {
 		const promise = (async () => {
 			this.#deps.pool.bump("credential-refresh-start");
 			try {
-				return await this.#forceRefreshCredentialByIdUnshared(id, signal);
+				return await this.#forceRefreshCredentialByIdUnshared(id, signal, options?.reason);
 			} catch (error) {
 				this.#deps.pool.bump("credential-refresh-failure");
 				throw error;
@@ -646,7 +672,11 @@ export class OAuthRefresher {
 		return raceSignal(promise, signal, "credential refresh aborted");
 	}
 
-	async #forceRefreshCredentialByIdUnshared(id: number, signal?: AbortSignal): Promise<AuthCredentialSnapshotEntry> {
+	async #forceRefreshCredentialByIdUnshared(
+		id: number,
+		signal?: AbortSignal,
+		reason?: OAuthRefreshReason,
+	): Promise<AuthCredentialSnapshotEntry> {
 		for (const provider of this.#deps.pool.providers()) {
 			const entries = this.#deps.pool.entries(provider);
 			const index = entries.findIndex(entry => entry.id === id);
@@ -666,7 +696,7 @@ export class OAuthRefresher {
 			const stale: OAuthCredential = { ...attempted, expires: 0 };
 			let refreshed: OAuthCredentials;
 			try {
-				refreshed = await this.#refreshSingleFlight(provider as Provider, stale, id, signal);
+				refreshed = await this.#refreshSingleFlight(provider as Provider, stale, id, signal, undefined, reason);
 			} catch (error) {
 				// A definitively-dead grant tears the row down here, where the
 				// attempted credential is known. CAS on the persisted credential so a

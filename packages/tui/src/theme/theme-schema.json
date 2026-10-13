@@ -33,7 +33,7 @@
 		},
 		"colors": {
 			"type": "object",
-			"description": "Theme color definitions (all required except thinkingMax)",
+			"description": "Theme color definitions (all required except thinkingMax and assistantMessageText)",
 			"required": [
 				"accent",
 				"border",
@@ -142,6 +142,10 @@
 				"text": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Default text color (usually empty string)"
+				},
+				"assistantMessageText": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Assistant paragraph prose color (optional; empty string or omitted keeps the terminal default foreground)"
 				},
 				"thinkingText": {
 					"$ref": "#/$defs/colorValue",
@@ -389,6 +393,36 @@
 				"infoBg": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Info sections background (system prompt, notices)"
+				}
+			},
+			"additionalProperties": false
+		},
+		"terminal": {
+			"type": "object",
+			"description": "The terminal this theme was made for, for hosts that paint the terminal themselves (Tern); omp never sets the terminal's colors. Absent fields are derived from colors.",
+			"properties": {
+				"background": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Terminal background"
+				},
+				"foreground": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Default text"
+				},
+				"chrome": {
+					"$ref": "#/$defs/colorValue",
+					"description": "The window around the terminal: sidebar, tab bar, title bar"
+				},
+				"widget": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Lifted surfaces: popovers, menus, buttons"
+				},
+				"ansi": {
+					"type": "array",
+					"description": "ANSI colors 0-15",
+					"items": { "$ref": "#/$defs/colorValue" },
+					"minItems": 16,
+					"maxItems": 16
 				}
 			},
 			"additionalProperties": false

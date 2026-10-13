@@ -77,7 +77,7 @@ test("model listing preserves bundled multimodal context limits", async () => {
 		expect(body.data).toHaveLength(1);
 		expect(body.data[0]).toMatchObject({
 			id: "openai-codex/gpt-5.6-sol",
-			context_length: 372_000,
+			context_length: sol.contextWindow,
 			input_modalities: ["text", "image"],
 		});
 	} finally {

@@ -199,6 +199,12 @@ export interface AutocompleteItem {
 	description?: string;
 	/** Optional type-indicator glyph rendered in an aligned column before the label */
 	icon?: string;
+	/** Named icon for TSP terminals (`folder`, `file`, a slash-command icon name). */
+	iconName?: string;
+	/** Native detail when it differs from {@link description} (static text, parent dir). */
+	nativeDetail?: string;
+	/** Live state drawn right-aligned natively ("demo/demo", "off"). */
+	state?: string;
 	/** Dim hint text shown inline after cursor when this item is selected */
 	hint?: string;
 }
@@ -211,6 +217,8 @@ export interface SlashCommand {
 	description?: string;
 	/** Optional type-indicator glyph shown before the command name in autocomplete */
 	icon?: string;
+	/** Named icon for TSP terminals, drawn instead of the {@link icon} glyph. */
+	iconName?: string;
 	argumentHint?: string;
 	/** Whether the command consumes argument text after the command name. False means the full input stays normal prompt text once args are present. */
 	allowArgs?: boolean;
@@ -257,8 +265,11 @@ export interface AutocompleteProvider {
 
 	/** Get inline hint text to show as dim ghost text after the cursor */
 	getInlineHint?(lines: string[], cursorLine: number, cursorCol: number): string | null;
-	/** Synchronously try to complete a slash command at the start of a line (no async I/O). */
-	/** Returns matched items and the full prefix, or null if not applicable. */
+	/**
+	 * Synchronously list slash command-name completions for a leading slash token (no async I/O).
+	 * Mirrors the command-name branch of {@link getSuggestions}, including the bare `/` listing and
+	 * the collapsed `/skill:` namespace row. Returns null outside a command-name token or with no match.
+	 */
 	trySyncSlashCompletion?(textBeforeCursor: string): { items: AutocompleteItem[]; prefix: string } | null;
 	/**
 	 * Synchronously try to expand text immediately before the cursor (no async I/O).
@@ -320,6 +331,23 @@ function getAutocompleteCommandDescription(cmd: CommandEntry): string {
 	return cmd.description ?? "";
 }
 
+/**
+ * Native split of a command's autocomplete text: a live description in
+ * `Label: state` form ("Model: demo/demo") becomes the static description as
+ * the detail and the state as the item's right-aligned value.
+ */
+function nativeCommandText(
+	liveDesc: string,
+	staticDesc: string,
+	hint: string | undefined,
+): Pick<AutocompleteItem, "nativeDetail" | "state"> {
+	if (!liveDesc || liveDesc === staticDesc) return {};
+	const colon = liveDesc.indexOf(": ");
+	if (colon <= 0) return {};
+	const detail = staticDesc || liveDesc.slice(0, colon);
+	return { nativeDetail: hint ? `${hint} - ${detail}` : detail, state: liveDesc.slice(colon + 2) };
+}
+
 function commandMatchesNameOrAlias(cmd: CommandEntry, commandName: string): boolean {
 	const name = getCommandName(cmd);
 	if (name === commandName) return true;
@@ -351,6 +379,7 @@ function buildSlashCommandCompletions(
 				const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
 				const staticDesc = getStaticCommandDescription(cmd);
 				let fullDescMemo: string | undefined;
+				let nativeTextMemo: Pick<AutocompleteItem, "nativeDetail" | "state"> = {};
 				let fullDescComputed = false;
 				// Resolve the (possibly live) display description lazily, only once a
 				// candidate actually matches — getAutocompleteDescription reads live
@@ -359,6 +388,7 @@ function buildSlashCommandCompletions(
 					if (!fullDescComputed) {
 						const displayDesc = getAutocompleteCommandDescription(cmd);
 						fullDescMemo = hint ? (displayDesc ? `${hint} - ${displayDesc}` : hint) : displayDesc;
+						nativeTextMemo = nativeCommandText(displayDesc, staticDesc, hint);
 						fullDescComputed = true;
 					}
 					return fullDescMemo;
@@ -393,7 +423,9 @@ function buildSlashCommandCompletions(
 						score: primaryScore,
 						usage,
 						...(cmd.icon && { icon: cmd.icon }),
+						...(cmd.iconName && { iconName: cmd.iconName }),
 						...(fullDesc && { description: fullDesc }),
+						...nativeTextMemo,
 					};
 				}
 
@@ -409,7 +441,9 @@ function buildSlashCommandCompletions(
 							score: aliasScore,
 							usage,
 							...(cmd.icon && { icon: cmd.icon }),
+							...(cmd.iconName && { iconName: cmd.iconName }),
 							...(fullDesc && { description: fullDesc }),
+							...nativeTextMemo,
 						};
 					}
 				}
@@ -503,11 +537,13 @@ function collapseSkillNamespace(commands: CommandEntry[], lowerPrefix: string): 
 	}
 	let skillCount = 0;
 	let skillIcon: string | undefined;
+	let skillIconName: string | undefined;
 	const rest = commands.filter(cmd => {
 		const name = getCommandName(cmd);
 		if (!name?.startsWith(SKILL_NAMESPACE)) return true;
 		skillCount += 1;
 		skillIcon ??= cmd.icon;
+		skillIconName ??= cmd.iconName;
 		return (
 			!approachesNamespace &&
 			skillBareNameBreakoutTier(lowerPrefix, name.slice(SKILL_NAMESPACE.length).toLowerCase()) > commandTier
@@ -519,6 +555,7 @@ function collapseSkillNamespace(commands: CommandEntry[], lowerPrefix: string): 
 		name: SKILL_NAMESPACE,
 		description: `${skillCount} skill${skillCount === 1 ? "" : "s"}`,
 		...(skillIcon && { icon: skillIcon }),
+		...(skillIconName && { iconName: skillIconName }),
 	});
 	return rest;
 }
@@ -563,6 +600,22 @@ function buildMidPromptSkillCompletions(commands: CommandEntry[], lowerPrefix: s
 	);
 }
 
+const DIR_CACHE_MAX = 100;
+const DIR_CACHE_EVICT = 50;
+
+/**
+ * Drops the `count` oldest entries once `map` exceeds `max`. Callers delete a
+ * key before re-setting it, so Map insertion order is refresh order.
+ */
+function evictOldest(map: Map<string, unknown>, max: number, count: number): void {
+	if (map.size <= max) return;
+	let remaining = count;
+	for (const key of map.keys()) {
+		if (remaining-- === 0) break;
+		map.delete(key);
+	}
+}
+
 // Combined provider that handles both slash commands and file paths.
 export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	#commands: CommandEntry[];
@@ -573,6 +626,9 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	// per-directory readdir fast-path for prefix completions. Global fuzzy
 	// discovery continues to use native fuzzyFind + shared scan cache.
 	#dirCache: Map<string, { entries: fs.Dirent[]; timestamp: number }> = new Map();
+	// Whether a scoped fuzzy query's base (`src/` in `@src/foo`) is a directory;
+	// stat'ing it on every keystroke is redundant while the base is unchanged.
+	#scopedBaseCache: Map<string, { isDirectory: boolean; timestamp: number }> = new Map();
 	readonly #DIR_CACHE_TTL = 2000; // 2 seconds
 
 	constructor(
@@ -792,7 +848,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 
-		// Slash command suggestions can be accepted before the debounced refresh
+		// Slash command suggestions can be accepted before an async refresh
 		// catches up to newly typed characters. Replace the live command token,
 		// not only the prefix captured when the suggestion list was rendered.
 		// Absolute-path completions share the leading-slash prefix shape but
@@ -801,7 +857,10 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const isPathCompletionItem = item.value.startsWith("/") || item.value.startsWith('"');
 		if (findLeadingSlashCommandStart(prefix) !== null && leadingSlashStart !== null && !isPathCompletionItem) {
 			const slashPrefix = textBeforeCursor.slice(leadingSlashStart);
-			if (!slashPrefix.includes(" ") && !slashPrefix.slice(1).includes("/")) {
+			// A `/` past the leading one usually means an absolute path, but a
+			// namespaced skill (`skill:<ns>/<name>`) is a real command name too.
+			const isKnownCommand = this.#commands.some(cmd => commandMatchesNameOrAlias(cmd, item.value));
+			if (!slashPrefix.includes(" ") && (isKnownCommand || !slashPrefix.slice(1).includes("/"))) {
 				const beforeSlash = currentLine.slice(0, leadingSlashStart);
 				// The collapsed `/skill:` namespace row completes to the namespace
 				// itself: no trailing space, so completion continues with the
@@ -959,11 +1018,21 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			baseDir = path.join(this.#basePath, displayBase);
 		}
 
-		try {
-			if (!(await fs.promises.stat(baseDir)).isDirectory()) {
-				return null;
+		const now = Date.now();
+		let cachedBase = this.#scopedBaseCache.get(baseDir);
+		if (!cachedBase || now - cachedBase.timestamp >= this.#DIR_CACHE_TTL) {
+			let isDirectory = false;
+			try {
+				isDirectory = (await fs.promises.stat(baseDir)).isDirectory();
+			} catch {
+				// Missing or inaccessible base: not a scope.
 			}
-		} catch {
+			cachedBase = { isDirectory, timestamp: now };
+			this.#scopedBaseCache.delete(baseDir);
+			this.#scopedBaseCache.set(baseDir, cachedBase);
+			evictOldest(this.#scopedBaseCache, DIR_CACHE_MAX, DIR_CACHE_EVICT);
+		}
+		if (!cachedBase.isDirectory) {
 			return null;
 		}
 
@@ -1036,17 +1105,9 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		const entries = await fs.promises.readdir(searchDir, { withFileTypes: true });
+		this.#dirCache.delete(searchDir);
 		this.#dirCache.set(searchDir, { entries, timestamp: now });
-
-		if (this.#dirCache.size > 100) {
-			const sortedKeys = [...this.#dirCache.entries()]
-				.sort((a, b) => a[1].timestamp - b[1].timestamp)
-				.slice(0, 50)
-				.map(([key]) => key);
-			for (const key of sortedKeys) {
-				this.#dirCache.delete(key);
-			}
-		}
+		evictOldest(this.#dirCache, DIR_CACHE_MAX, DIR_CACHE_EVICT);
 
 		return entries;
 	}
@@ -1054,8 +1115,10 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	invalidateDirCache(dir?: string): void {
 		if (dir) {
 			this.#dirCache.delete(dir);
+			this.#scopedBaseCache.delete(dir);
 		} else {
 			this.#dirCache.clear();
+			this.#scopedBaseCache.clear();
 		}
 	}
 
@@ -1124,26 +1187,29 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			const entries = await this.#getCachedDirEntries(searchDir);
 			const suggestions: AutocompleteItem[] = [];
 
-			for (const entry of entries) {
-				if (!entry.name.toLowerCase().startsWith(searchPrefix.toLowerCase())) {
-					continue;
-				}
-				// Skip .git directory
-				if (entry.name === ".git") {
-					continue;
-				}
+			const lowerSearchPrefix = searchPrefix.toLowerCase();
+			// Skip .git directory
+			const matched = entries.filter(
+				entry => entry.name !== ".git" && entry.name.toLowerCase().startsWith(lowerSearchPrefix),
+			);
+			// Directory flag per match; symlinks are stat'ed concurrently to learn whether
+			// they point at a directory. `null` drops a broken symlink, a file deleted
+			// between readdir and stat, or a permission error.
+			const directoryFlags = await Promise.all(
+				matched.map(entry =>
+					!entry.isDirectory() && entry.isSymbolicLink()
+						? fs.promises.stat(path.join(searchDir, entry.name)).then(
+								stats => stats.isDirectory(),
+								() => null,
+							)
+						: entry.isDirectory(),
+				),
+			);
 
-				// Check if entry is a directory (or a symlink pointing to a directory)
-				let isDirectory = entry.isDirectory();
-				if (!isDirectory && entry.isSymbolicLink()) {
-					try {
-						const fullPath = path.join(searchDir, entry.name);
-						isDirectory = (await fs.promises.stat(fullPath)).isDirectory();
-					} catch {
-						// Broken symlink, file deleted between readdir and stat, or permission error
-						continue;
-					}
-				}
+			for (let index = 0; index < matched.length; index++) {
+				const isDirectory = directoryFlags[index];
+				if (typeof isDirectory !== "boolean") continue;
+				const entry = matched[index]!;
 
 				let relativePath: string;
 				const name = entry.name;
@@ -1192,9 +1258,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 					isQuotedPrefix,
 				});
 
+				const parentDir = path.posix.dirname(relativePath);
 				suggestions.push({
 					value,
 					label: name + (isDirectory ? "/" : ""),
+					iconName: isDirectory ? "folder" : "file",
+					...(parentDir !== "." && { nativeDetail: parentDir }),
 				});
 			}
 
@@ -1249,10 +1318,13 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 					isAtPrefix: true,
 					isQuotedPrefix: options.isQuotedPrefix,
 				});
+				const parentDir = path.posix.dirname(displayPath);
 				suggestions.push({
 					value,
 					label: entryName + (isDirectory ? "/" : ""),
 					description: displayPath,
+					iconName: isDirectory ? "folder" : "file",
+					nativeDetail: parentDir === "." ? "" : parentDir,
 				});
 			}
 			return suggestions;
@@ -1332,19 +1404,14 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const slashStart = findLeadingSlashCommandStart(textBeforeCursor);
 		if (slashStart === null) return null;
 		const commandText = textBeforeCursor.slice(slashStart);
-		if (commandText.length <= 1) return null; // Bare "/" alone, don't auto-complete
 		if (commandText.includes(" ")) return null; // Only complete command name, not args
 
-		const prefix = commandText.slice(1);
-		const lowerPrefix = prefix.toLowerCase();
-
-		// The `/skill:` namespace row is excluded here: the sync path submits
-		// immediately after applying, and the bare namespace is not a command.
+		const lowerPrefix = commandText.slice(1).toLowerCase();
 		const matches = buildSlashCommandCompletions(
 			collapseSkillNamespace(this.#commands, lowerPrefix),
 			lowerPrefix,
 			this.#commandUsage,
-		).filter(item => item.value !== SKILL_NAMESPACE);
+		);
 
 		if (matches.length === 0) return null;
 		// Mirror `getSuggestions`: preserve leading whitespace so the editor's

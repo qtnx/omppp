@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { afterAll, describe, expect, it } from "bun:test";
 import { type Api, type FetchImpl, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -11,7 +13,7 @@ import {
 	getImageGenToolsWithRegistry,
 	imageGenTool,
 } from "@oh-my-pi/pi-coding-agent/tools/image-gen";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { hasFsCode, removeWithRetries, TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
 const generatedImagePaths: string[] = [];
@@ -416,6 +418,26 @@ describe("imageGenTool catalog routing", () => {
 		expect(result.details?.imageCount).toBe(1);
 	});
 
+	it("labels a LiteLLM hosted image request with the conversation session header", async () => {
+		const proxied = catalogModel("litellm", "gpt-5.6-sol", "openai-responses", "chat");
+		const sessionHeaders: (string | null)[] = [];
+		const fetchMock: FetchImpl = async (_input, init) => {
+			sessionHeaders.push(new Headers(init?.headers).get("x-litellm-session-id"));
+			return hostedResponse();
+		};
+		const ctx = createContext({
+			models: [proxied],
+			settings: Settings.isolated(),
+			fetch: fetchMock,
+			activeModel: proxied,
+		});
+
+		const result = await imageGenTool.execute("litellm-hosted", { subject: "proxy" }, undefined, ctx);
+		collectPaths(result);
+
+		expect(sessionHeaders).toEqual([ctx.sessionManager.getSessionId()]);
+	});
+
 	it("omits the image tool model for Codex hosted image requests", async () => {
 		const image = catalogModel("openai-codex", "gpt-image-selected", "openai-codex-responses");
 		const carrier = catalogModel("openai-codex", "gpt-5.5", "openai-codex-responses", "chat");
@@ -540,4 +562,55 @@ describe("imageGenTool catalog routing", () => {
 		expect(text).toContain("Model: gpt-image-2-codex (catalog entry openai-codex/gpt-image-2)");
 		expect(text).toContain("(1774x887, quality low)");
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"rejects a FIFO image input before reading or contacting the provider",
+		async () => {
+			// Real kernel FIFO I/O cannot be driven by fake timers; the race proves the async read rejects boundedly.
+			const tempDir = TempDir.createSync("@omp-image-special-file-");
+			const fifo = path.join(tempDir.path(), "input.png");
+			try {
+				expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+				let fetchCalls = 0;
+				const model = catalogModel("deepinfra", "test-image", "openai-images");
+				const ctx = createContext({
+					models: [model],
+					settings: Settings.isolated(),
+					fetch: async () => {
+						fetchCalls++;
+						return imageResponse();
+					},
+				});
+				const loading = imageGenTool
+					.execute(
+						"special-image",
+						{ subject: "edit", model: "deepinfra/test-image", input: [{ path: fifo }] },
+						undefined,
+						ctx,
+					)
+					.then(
+						() => undefined,
+						error => error,
+					);
+				const outcome = await Promise.race([loading, Bun.sleep(1_500).then(() => "HUNG" as const)]);
+				if (outcome === "HUNG") {
+					try {
+						fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK));
+					} catch (error) {
+						if (!hasFsCode(error, "ENXIO")) throw error;
+					}
+					await loading;
+				}
+				expect(outcome).toBeInstanceOf(Error);
+				expect(outcome).toHaveProperty(
+					"message",
+					`Cannot load '${fifo}': it is a FIFO, not a regular file or directory.`,
+				);
+				expect(fetchCalls).toBe(0);
+			} finally {
+				tempDir.removeSync();
+			}
+		},
+		10_000,
+	);
 });

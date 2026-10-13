@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
+import * as fsp from "node:fs/promises";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { generateRoomKey, importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
@@ -17,6 +18,23 @@ import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-
 import { type Component, setTerminalImageProtocol, TERMINAL, type TUI } from "@oh-my-pi/pi-tui";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "../../collab/helpers/in-memory-relay";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
+
+/**
+ * Starts watching the shared spinner ticker; the returned probe reports whether
+ * its interval is still armed. Collab relay sockets keep a heartbeat interval on
+ * the same fake clock, so `vi.getTimerCount()` cannot isolate the ticker. Call
+ * after `vi.useFakeTimers()` and before any live block registers.
+ */
+function watchSpinnerTicker(): () => boolean {
+	const arm = spyOn(globalThis, "setInterval");
+	const clear = spyOn(globalThis, "clearInterval");
+	return () =>
+		arm.mock.calls.some(([, ms], index) => {
+			if (ms !== SPINNER_ADVANCE_MS) return false;
+			const timer = arm.mock.results[index]?.value;
+			return !clear.mock.calls.some(([cleared]) => cleared === timer);
+		});
+}
 
 // Contract under test: live tool previews that render a pending/running status
 // must keep the spinner glyph tied to the shared tool-frame ticker. This covers
@@ -523,8 +541,10 @@ describe("ToolExecutionComponent live preview spinners", () => {
 	it("unregisters a live tool block from the shared ticker via the guest resync teardown", async () => {
 		installInMemoryRelay();
 		const writeSpy = spyOn(Bun, "write").mockResolvedValue(0);
+		const renameSpy = spyOn(fsp, "rename").mockResolvedValue(undefined);
 		try {
 			vi.useFakeTimers();
+			const tickerArmed = watchSpinnerTicker();
 
 			const chatContainer = new TranscriptContainer();
 			const liveBlock = new ToolExecutionComponent(
@@ -536,7 +556,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				process.cwd(),
 			);
 			chatContainer.addChild(liveBlock);
-			expect(vi.getTimerCount()).toBeGreaterThan(0);
+			expect(tickerArmed()).toBe(true);
 
 			await Settings.init({ inMemory: true });
 			const ctx = {
@@ -555,6 +575,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				},
 				statusContainer: { clear: () => {}, disposeChildren: () => {} },
 				pendingMessagesContainer: { clear: () => {}, disposeChildren: () => {} },
+				updatePendingMessagesDisplay: () => {},
 				compactionQueuedMessages: [],
 				streamingComponent: undefined,
 				streamingMessage: undefined,
@@ -576,7 +597,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				ui: { requestRender: () => {} },
 				chatContainer,
 				resetObserverRegistry: () => {},
-				eventController: { takeDisplaceableComponents: () => [] },
+				eventController: { takeDisplaceableComponents: () => [], resetTranscriptAnchors: () => {} },
 				// The real transcript-commit path is the contract under test: the
 				// guest resync performs no eager teardown, so the orphaned live
 				// block's ticker registration must drop exactly when
@@ -656,13 +677,14 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				await guest.join(link);
 
 				expect(chatContainer.children).not.toContain(liveBlock);
-				expect(vi.getTimerCount()).toBe(0);
+				expect(tickerArmed()).toBe(false);
 			} finally {
 				hostSocket.close();
 				await guest.leave("test cleanup").catch(() => {});
 			}
 		} finally {
 			writeSpy.mockRestore();
+			renameSpy.mockRestore();
 			uninstallInMemoryRelay();
 			stopSharedSpinnerTicker();
 		}
@@ -687,8 +709,10 @@ describe("ToolExecutionComponent live preview spinners", () => {
 	it("folds a displaceable poll/todo block into orphan cleanup when guest resync staging fails", async () => {
 		installInMemoryRelay();
 		const writeSpy = spyOn(Bun, "write").mockResolvedValue(0);
+		const renameSpy = spyOn(fsp, "rename").mockResolvedValue(undefined);
 		try {
 			vi.useFakeTimers();
+			const tickerArmed = watchSpinnerTicker();
 
 			const chatContainer = new TranscriptContainer();
 			await Settings.init({ inMemory: true });
@@ -727,7 +751,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
 			);
 			if (!displaceableBlock) throw new Error("expected the wait to render a live block");
-			expect(vi.getTimerCount()).toBeGreaterThan(0);
+			expect(tickerArmed()).toBe(true);
 
 			const ctx = {
 				settings: Settings.isolated(),
@@ -745,6 +769,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				},
 				statusContainer: { clear: () => {}, disposeChildren: () => {} },
 				pendingMessagesContainer: { clear: () => {}, disposeChildren: () => {} },
+				updatePendingMessagesDisplay: () => {},
 				compactionQueuedMessages: [],
 				streamingComponent: undefined,
 				streamingMessage: undefined,
@@ -863,13 +888,14 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				// rendered row survives the failed resync untouched.
 				expect(chatContainer.children).toContain(displaceableBlock);
 				// ...but it no longer holds the shared ticker open.
-				expect(vi.getTimerCount()).toBe(0);
+				expect(tickerArmed()).toBe(false);
 			} finally {
 				hostSocket.close();
 				await guest.leave("test cleanup").catch(() => {});
 			}
 		} finally {
 			writeSpy.mockRestore();
+			renameSpy.mockRestore();
 			uninstallInMemoryRelay();
 			stopSharedSpinnerTicker();
 		}
@@ -886,8 +912,10 @@ describe("ToolExecutionComponent live preview spinners", () => {
 	it("seals rather than disposes orphaned blocks when guest resync staging fails", async () => {
 		installInMemoryRelay();
 		const writeSpy = spyOn(Bun, "write").mockResolvedValue(0);
+		const renameSpy = spyOn(fsp, "rename").mockResolvedValue(undefined);
 		try {
 			vi.useFakeTimers();
+			const tickerArmed = watchSpinnerTicker();
 
 			const chatContainer = new TranscriptContainer();
 			const pendingBlock = new ToolExecutionComponent(
@@ -908,7 +936,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				process.cwd(),
 			);
 			chatContainer.addChild(displaceableBlock);
-			expect(vi.getTimerCount()).toBeGreaterThan(0);
+			expect(tickerArmed()).toBe(true);
 
 			const pendingDisposeSpy = spyOn(pendingBlock, "dispose");
 			const displaceableDisposeSpy = spyOn(displaceableBlock, "dispose");
@@ -930,6 +958,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				},
 				statusContainer: { clear: () => {}, disposeChildren: () => {} },
 				pendingMessagesContainer: { clear: () => {}, disposeChildren: () => {} },
+				updatePendingMessagesDisplay: () => {},
 				compactionQueuedMessages: [],
 				streamingComponent: undefined,
 				streamingMessage: undefined,
@@ -951,7 +980,10 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				ui: { requestRender: () => {} },
 				chatContainer,
 				resetObserverRegistry: () => {},
-				eventController: { takeDisplaceableComponents: () => [displaceableBlock] },
+				eventController: {
+					takeDisplaceableComponents: () => [displaceableBlock],
+					resetTranscriptAnchors: () => {},
+				},
 				renderInitialMessages: (options?: { clearTerminalHistory?: boolean }) =>
 					uiHelpers.renderInitialMessages(options),
 				renderSessionContext: (context: unknown, options: unknown) =>
@@ -1032,7 +1064,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				expect(chatContainer.children).toContain(pendingBlock);
 				expect(chatContainer.children).toContain(displaceableBlock);
 				// ...but neither holds the shared ticker open any longer.
-				expect(vi.getTimerCount()).toBe(0);
+				expect(tickerArmed()).toBe(false);
 				// seal(), not dispose(): a rollback-preserved row's own renderer
 				// children must not be torn down.
 				expect(pendingDisposeSpy).not.toHaveBeenCalled();
@@ -1043,6 +1075,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			}
 		} finally {
 			writeSpy.mockRestore();
+			renameSpy.mockRestore();
 			uninstallInMemoryRelay();
 			stopSharedSpinnerTicker();
 		}

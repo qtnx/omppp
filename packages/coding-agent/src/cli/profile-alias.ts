@@ -1,13 +1,10 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { APP_NAME, normalizeProfileName } from "@oh-my-pi/pi-utils/dirs";
+import { quotePosixArgument } from "../utils/shell-quote";
 import { isBundledCliEntryArg } from "./process-argv";
 
 export type ProfileAliasShell = "bash" | "zsh" | "fish" | "powershell" | "pwsh";
-
-function quoteForShell(pathValue: string): string {
-	return `'${pathValue.replace(/'/g, `'"'"'`)}'`;
-}
 
 function quoteForPowerShell(pathValue: string): string {
 	return `'${pathValue.replace(/'/g, `''`)}'`;
@@ -215,7 +212,7 @@ export function resolveProfileAliasCommandFromProcess({
 	// can't resolve backslash-separated paths, even on Windows (Git Bash, WSL).
 	const posixScriptPath = scriptPath.replace(/\\/g, "/");
 	const posixRuntime = runtime.replace(/\\/g, "/");
-	const posix = `${quoteForShell(posixRuntime)} ${quoteForShell(posixScriptPath)}`;
+	const posix = `${quotePosixArgument(posixRuntime)} ${quotePosixArgument(posixScriptPath)}`;
 	return {
 		display: `${posixRuntime} ${posixScriptPath}`,
 		posix,
@@ -374,9 +371,9 @@ export async function installProfileAlias(options: ProfileAliasInstallOptions): 
 		command,
 		reloadedWith:
 			shell === "fish"
-				? `source ${quoteForShell(configPath)}`
+				? `source ${quotePosixArgument(configPath)}`
 				: shell === "powershell" || shell === "pwsh"
 					? `. ${quoteForPowerShell(configPath)}`
-					: `. ${quoteForShell(configPath)}`,
+					: `. ${quotePosixArgument(configPath)}`,
 	};
 }

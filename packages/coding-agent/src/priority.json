@@ -1,11 +1,10 @@
 {
 	"smol": [
 		"tnx/smol:medium",
-		"cerebras/zai-glm-4.7",
-		"cerebras/zai-glm-4.6",
-		"cerebras/zai-glm",
-		"google-antigravity/gemini-3.1-flash-lite",
-		"google-gemini-cli/gemini-3.1-flash-lite",
+		"claude-haiku-5-5",
+		"claude-haiku-5.5",
+		"haiku-5-5",
+		"haiku-5.5",
 		"google-antigravity/gemini-3.8-flash",
 		"gemini-3.8-flash",
 		"gemini-3-8-flash",

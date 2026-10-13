@@ -39,6 +39,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.acpHelp,
 	},
 	{
+		name: "auth",
+		load: () => import("./commands/auth").then(m => m.default),
+		help: commandHelp.authHelp,
+	},
+	{
 		name: "auth-broker",
 		load: () => import("./commands/auth-broker").then(m => m.default),
 		help: commandHelp.authBrokerHelp,
@@ -57,6 +62,11 @@ export const commands: CommandEntry[] = [
 		name: "annotate",
 		load: () => import("./commands/annotate").then(m => m.default),
 		help: commandHelp.annotateHelp,
+	},
+	{
+		name: "anonymize",
+		load: () => import("./commands/anonymize").then(m => m.default),
+		help: commandHelp.anonymizeHelp,
 	},
 	{
 		name: "bench",
@@ -250,6 +260,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.shareHelp,
 	},
 	{
+		name: "session",
+		load: () => import("./commands/session").then(m => m.default),
+		help: commandHelp.sessionHelp,
+	},
+	{
 		name: "setup",
 		load: () => import("./commands/setup").then(m => m.default),
 		help: commandHelp.setupHelp,
@@ -372,7 +387,7 @@ const RESERVED_TOP_LEVEL_WORDS: Record<string, string> = {
 	discover:
 		'`ompx discover` is not a top-level command. Use `ompx plugin discover [marketplace]` to browse available plugins, or run `ompx launch discover` if you meant to send "discover" as a prompt.',
 	upgrade:
-		'`ompx upgrade` is not a top-level command. Use `ompx plugin upgrade [name@marketplace]` to upgrade plugins, or run `ompx launch upgrade` if you meant to send "upgrade" as a prompt.',
+		'`ompx upgrade` is not a top-level command. Use `ompx plugin upgrade [name]` to upgrade plugins, or run `ompx launch upgrade` if you meant to send "upgrade" as a prompt.',
 	enable:
 		'`ompx enable` is not a top-level command. Use `ompx plugin enable <name@marketplace>` to enable a plugin, or run `ompx launch enable` if you meant to send "enable" as a prompt.',
 	disable:

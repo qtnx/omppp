@@ -8,6 +8,7 @@ import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import {
+	ensureAntigravityVersion,
 	getAntigravityModelWireProfile,
 	getAntigravityUserAgent,
 	getGeminiCliHeaders,
@@ -35,6 +36,7 @@ import { armPreResponseTimeout, getStreamFirstEventTimeoutMs, iterateWithIdleTim
 // the stream provider trusts the access token threaded through `options.apiKey`.
 import { normalizeSchemaForCCA } from "../utils/schema";
 import { StreamMarkupHealing, type StreamMarkupHealingEvent } from "../utils/stream-markup-healing";
+import { prepareAnthropicImageContext } from "./anthropic-images";
 import forcedToolDirective from "./google-antigravity-forced-tool.md" with { type: "text" };
 import type { Content, FunctionCallingConfigMode, ThinkingConfig } from "./google-shared";
 import {
@@ -572,11 +574,23 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				endpoints = baseUrl ? [baseUrl] : [DEFAULT_ENDPOINT];
 			}
 
-			let requestBody = buildRequest(model, context, projectId, options, isAntigravity);
+			// A host that declares an image contract (Claude behind Antigravity)
+			// rejects oversized images, and a rejected image stays in context, so
+			// clamp before building; readers without one take images as sent. The
+			// cost is one pass over the context, as on `anthropic-messages`: images
+			// already within bounds hit the per-image cache and are not decoded.
+			const requestContext =
+				model.compat.maxImageDimension !== undefined || model.compat.maxImagePayloadBytes !== undefined
+					? await prepareAnthropicImageContext(context, model)
+					: context;
+			let requestBody = buildRequest(model, requestContext, projectId, options, isAntigravity);
 			const replacementPayload = await options?.onPayload?.(requestBody, model);
 			if (replacementPayload !== undefined) {
 				requestBody = replacementPayload as typeof requestBody;
 			}
+			// The backend gates newer models on the client version; a process that
+			// skipped discovery (fresh model cache) must still send the current one.
+			if (isAntigravity) await ensureAntigravityVersion(options?.fetch ?? fetch, options?.signal);
 			const headers = isAntigravity ? { "User-Agent": getAntigravityUserAgent() } : getGeminiCliHeaders(model.id);
 
 			const requestHeaders = {

@@ -13,6 +13,7 @@ const themeColorsSchema = type({
 	muted: "string | number",
 	dim: "string | number",
 	text: "string | number",
+	"assistantMessageText?": "string | number",
 	thinkingText: "string | number",
 	selectedBg: "string | number",
 	userMessageBg: "string | number",
@@ -103,6 +104,13 @@ const themeJsonSchema = type({
 		"pageBg?": "string | number",
 		"cardBg?": "string | number",
 		"infoBg?": "string | number",
+	},
+	"terminal?": {
+		"background?": "string | number",
+		"foreground?": "string | number",
+		"chrome?": "string | number",
+		"widget?": "string | number",
+		"ansi?": "(string | number)[] == 16",
 	},
 	"symbols?": {
 		"preset?": "'unicode' | 'nerd' | 'ascii'",

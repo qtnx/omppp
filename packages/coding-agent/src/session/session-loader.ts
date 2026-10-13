@@ -1,8 +1,16 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { ConcatSink, getBlobsDir, isEnoent, isEnotdir, parseJsonlLenient } from "@oh-my-pi/pi-utils";
+import { ConcatSink, getBlobsDir, isEisdir, isEnoent, isEnotdir, parseJsonlLenient } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { Semaphore } from "../task/parallel";
-import { BlobStore, isBlobRef, lazyImageDataSync, resolveImageData, resolveImageDataUrl } from "./blob-store";
+import {
+	BlobStore,
+	isBlobRef,
+	lazyImageDataSync,
+	resolveImageData,
+	resolveImageDataSync,
+	resolveImageDataUrl,
+	resolveImageDataUrlSync,
+} from "./blob-store";
 import { rehydrateEntries } from "./entry-archival";
 import { buildSessionContext } from "./session-context";
 import type { CompactionEntry, FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./session-entries";
@@ -22,6 +30,60 @@ const STREAM_LOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const STREAM_YIELD_BYTES = 1 * 1024 * 1024;
 const STREAM_YIELD_ENTRIES = 8_192;
 const BLOB_READ_CONCURRENCY = 8;
+
+/**
+ * Complete optional accounting fields from persisted/imported assistant turns.
+ * Complete provider usage is left untouched; missing prices never discard reported tokens.
+ */
+export function normalizeAssistantUsage(message: Extract<AgentMessage, { role: "assistant" }>): boolean {
+	const usage = message.usage;
+	if (
+		usage &&
+		usage.input !== undefined &&
+		usage.output !== undefined &&
+		usage.cacheRead !== undefined &&
+		usage.cacheWrite !== undefined &&
+		usage.totalTokens !== undefined &&
+		usage.cost?.input !== undefined &&
+		usage.cost.output !== undefined &&
+		usage.cost.cacheRead !== undefined &&
+		usage.cost.cacheWrite !== undefined &&
+		usage.cost.total !== undefined
+	) {
+		return false;
+	}
+	const input = usage?.input ?? 0;
+	const output = usage?.output ?? 0;
+	const cacheRead = usage?.cacheRead ?? 0;
+	const cacheWrite = usage?.cacheWrite ?? 0;
+	const cost = usage?.cost;
+	message.usage = {
+		...usage,
+		input,
+		output,
+		cacheRead,
+		cacheWrite,
+		totalTokens:
+			usage?.totalTokens ??
+			input +
+				output +
+				cacheRead +
+				cacheWrite +
+				(usage?.orchestration?.input ?? 0) +
+				(usage?.orchestration?.cacheRead ?? 0) +
+				(usage?.orchestration?.output ?? 0),
+		cost: {
+			...cost,
+			input: cost?.input ?? 0,
+			output: cost?.output ?? 0,
+			cacheRead: cost?.cacheRead ?? 0,
+			cacheWrite: cost?.cacheWrite ?? 0,
+			total:
+				cost?.total ?? (cost?.input ?? 0) + (cost?.output ?? 0) + (cost?.cacheRead ?? 0) + (cost?.cacheWrite ?? 0),
+		},
+	};
+	return true;
+}
 
 export interface VisitEntriesFromFileStreamOptions {
 	/** Stop after the visitor returns `false`. */
@@ -121,6 +183,32 @@ function getActiveBranchPath(entries: FileEntry[]): SessionEntry[] {
 		cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
 	}
 	return path.reverse();
+}
+
+/** Upper bound on the bytes read to find a header: real headers (and the title slot before them) are far smaller. */
+const SESSION_HEADER_READ_LIMIT = 1024 * 1024;
+
+/**
+ * The session id in `filePath`'s header, or `undefined` when there is no file
+ * there or it does not start with a valid session header. Reads at most one
+ * record and {@link SESSION_HEADER_READ_LIMIT} bytes.
+ */
+export async function readSessionHeaderId(filePath: string): Promise<string | undefined> {
+	let id: string | undefined;
+	try {
+		await visitEntriesFromFileStream(
+			filePath,
+			entry => {
+				if (isValidSessionHeader(entry)) id = entry.id;
+				return false;
+			},
+			{ maxRecords: 1, maxBytes: SESSION_HEADER_READ_LIMIT },
+		);
+	} catch (err) {
+		if (isEnoent(err) || isEnotdir(err) || isEisdir(err)) return undefined;
+		throw err;
+	}
+	return id;
 }
 
 /** Parse session JSONL and visit each entry without retaining prior entries. */
@@ -394,7 +482,10 @@ export async function loadSessionFile(
 	}
 }
 
-/** Load the valid entries from a session file, skipping malformed records. */
+/**
+ * Load the valid entries from a session file, skipping malformed records.
+ * Each call returns freshly parsed entries owned by the caller.
+ */
 export async function loadEntriesFromFile(
 	filePath: string,
 	storage: SessionStorage = new FileSessionStorage(),
@@ -430,49 +521,45 @@ export async function visitEntriesFromFile(
 	}
 }
 
-/**
- * Resolve blob references in loaded entries, restoring session image blocks and
- * provider image URLs for downstream transports. Snapcompact frames stay as
- * references until context rebuilding selects them, and only the entries the
- * current branch can send or render immediately are resolved: cold history
- * remains in its persisted blob-ref shape until a boundary transition makes it
- * live again.
- */
 function hasImageUrl(value: unknown): value is { image_url: string } {
 	return typeof value === "object" && value !== null && "image_url" in value && typeof value.image_url === "string";
 }
 
-type BlobReferenceResolver = (data: string, asDataUrl?: boolean) => Promise<string>;
+/** A persisted blob reference and the field that holds it. */
+interface BlobRefSite {
+	holder: Record<string, unknown>;
+	key: string;
+	ref: string;
+	/** Provider image URLs persist the whole data URL; image payloads persist bare base64. */
+	asDataUrl: boolean;
+}
 
-async function resolvePersistedBlobRefs(value: unknown, resolve: BlobReferenceResolver, key?: string): Promise<void> {
+/**
+ * Collect the blob references in session image blocks and provider image URLs.
+ * Snapcompact frames stay as references until context rebuilding selects them.
+ */
+function collectBlobRefSites(value: unknown, sites: BlobRefSite[], key?: string): void {
 	if (key !== "frames" && isExternalizableImagePosition(value, key) && isBlobRef(value.data)) {
-		value.data = await resolve(value.data);
+		sites.push({ holder: value, key: "data", ref: value.data, asDataUrl: false });
 		return;
 	}
 
 	if (Array.isArray(value)) {
-		await Promise.all(value.map(item => resolvePersistedBlobRefs(item, resolve, key)));
+		for (const item of value) collectBlobRefSites(item, sites, key);
 		return;
 	}
 
 	if (typeof value !== "object" || value === null) return;
-	if (
-		"type" in value &&
-		value.type === "image_generation_call" &&
-		"result" in value &&
-		typeof value.result === "string" &&
-		isBlobRef(value.result)
-	) {
-		value.result = await resolve(value.result);
+	const holder = value as Record<string, unknown>;
+	if (holder.type === "image_generation_call" && typeof holder.result === "string" && isBlobRef(holder.result)) {
+		sites.push({ holder, key: "result", ref: holder.result, asDataUrl: false });
 	}
 
 	if (hasImageUrl(value) && isBlobRef(value.image_url)) {
-		value.image_url = await resolve(value.image_url, true);
+		sites.push({ holder, key: "image_url", ref: value.image_url, asDataUrl: true });
 	}
 
-	await Promise.all(
-		Object.entries(value).map(([childKey, item]) => resolvePersistedBlobRefs(item, resolve, childKey)),
-	);
+	for (const childKey in holder) collectBlobRefSites(holder[childKey], sites, childKey);
 }
 
 function entriesRequiringResolution(entries: FileEntry[]): SessionEntry[] {
@@ -494,8 +581,10 @@ function entriesRequiringResolution(entries: FileEntry[]): SessionEntry[] {
 }
 
 /**
- * Cheap synchronous precheck for persisted blob references. It is conservative:
- * false positives only add a no-op resolver walk.
+Cheap synchronous precheck: does this value's tree contain any `blob:sha256:` string?
+ * Early-exits on the first hit, so blob-free entries skip the
+ * {@link collectBlobRefSites} descent entirely. Conservative — a blob ref in a
+ * non-resolved position still returns true, which only costs an extra (no-op) walk.
  */
 function containsBlobRef(value: unknown): boolean {
 	if (typeof value === "string") return isBlobRef(value);
@@ -533,6 +622,18 @@ function repairTruncatedSnapcompactFrames(entry: FileEntry): void {
 	});
 }
 
+function blobRefSites(values: readonly unknown[]): BlobRefSite[] {
+	const sites: BlobRefSite[] = [];
+	for (const value of values) {
+		if (containsBlobRef(value)) collectBlobRefSites(value, sites);
+	}
+	return sites;
+}
+
+function blobSiteKey(site: BlobRefSite): string {
+	return `${site.asDataUrl ? "url" : "ZZ1NCy"}:${site.ref}`;
+}
+
 async function resolveBlobRefs(
 	values: readonly unknown[],
 	blobStore: BlobStore,
@@ -546,32 +647,68 @@ async function resolveBlobRefs(
 	} = {},
 ): Promise<void> {
 	const semaphore = new Semaphore(BLOB_READ_CONCURRENCY);
-	const resolve: BlobReferenceResolver = async (data, asDataUrl = false) => {
-		await semaphore.acquire();
-		try {
-			const resolved = await (asDataUrl ? resolveImageDataUrl(blobStore, data) : resolveImageData(blobStore, data));
-			return options.preserveUnresolved && resolved === "" ? data : resolved;
-		} finally {
-			semaphore.release();
-		}
-	};
-	const pending: Promise<void>[] = [];
-	for (const value of values) {
-		if (!containsBlobRef(value)) continue;
-		pending.push(resolvePersistedBlobRefs(value, resolve));
-	}
-	await Promise.all(pending);
+	const resolved = new Map<string, Promise<string>>();
+	await Promise.all(
+		blobRefSites(values).map(async site => {
+			const key = blobSiteKey(site);
+			let data = resolved.get(key);
+			if (!data) {
+				data = (async () => {
+					await semaphore.acquire();
+					try {
+						const missing = { keepMissingRef: options.preserveUnresolved };
+						return await (site.asDataUrl
+							? resolveImageDataUrl(blobStore, site.ref, missing)
+							: resolveImageData(blobStore, site.ref, missing));
+					} finally {
+						semaphore.release();
+					}
+				})();
+				resolved.set(key, data);
+			}
+			site.holder[site.key] = await data;
+		}),
+	);
 }
 
+/**
+ * Resolve blob references in loaded entries, restoring session image blocks and
+ * provider image URLs for downstream transports. Snapcompact frames stay as
+ * references until context rebuilding selects them, and only the entries the
+ * current branch can send or render immediately are resolved: cold history
+ * remains in its persisted blob-ref shape until a boundary transition makes it
+ * live again.
+ */
 export async function resolveBlobRefsInEntries(entries: FileEntry[], blobStore: BlobStore): Promise<void> {
 	const liveEntries = entriesRequiringResolution(entries);
 	// Repair snapcompact frames in cold entries without resolving their blob refs.
 	for (const entry of entries) {
 		if (entry.type !== "session") repairTruncatedSnapcompactFrames(entry);
 	}
-	await resolveBlobRefs(liveEntries, blobStore);
+	await resolveBlobRefs(liveEntries, blobStore, { preserveUnresolved: true });
 	// Frames stay cold on load: the context builder resolves only the newest ones.
-	rehydrateEntries(liveEntries, blobStore, { frames: false });
+	rehydrateEntries(liveEntries, blobStore, { frames: false, images: false });
+}
+
+/** Synchronous {@link resolveBlobRefsInEntries}. */
+export function resolveBlobRefsInEntriesSync(entries: FileEntry[], blobStore: BlobStore): void {
+	const liveEntries = entriesRequiringResolution(entries);
+	for (const entry of entries) {
+		if (entry.type !== "session") repairTruncatedSnapcompactFrames(entry);
+	}
+	const resolved = new Map<string, string>();
+	for (const site of blobRefSites(liveEntries)) {
+		const key = blobSiteKey(site);
+		let data = resolved.get(key);
+		if (data === undefined) {
+			data = site.asDataUrl
+				? resolveImageDataUrlSync(blobStore, site.ref)
+				: resolveImageDataSync(blobStore, site.ref);
+			resolved.set(key, data);
+		}
+		site.holder[site.key] = data;
+	}
+	rehydrateEntries(liveEntries, blobStore, { frames: false, images: false });
 }
 
 /**

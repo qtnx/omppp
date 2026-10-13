@@ -25,6 +25,8 @@ export interface TruncationMeta {
 	elidedLines?: number;
 	/** Artifact ID if full output was saved */
 	artifactId?: string;
+	/** Bytes the artifact cap dropped from the saved file's middle; the artifact is then a head/tail sample. */
+	artifactElidedBytes?: number;
 	/** Next offset for pagination (head truncation only) */
 	nextOffset?: number;
 	/**
@@ -61,8 +63,20 @@ export interface LimitsMeta {
 	/** `suggestion` is omitted when the tool is already at its hard cap, so no larger usable limit exists to advise. */
 	resultLimit?: { reached: number; suggestion?: number };
 	headLimit?: { reached: number; suggestion: number };
-	/** `unit` may be absent in sessions persisted before it was recorded. */
-	columnTruncated?: { maxColumn: number; unit?: "bytes" | "chars"; artifactId?: string };
+	/**
+	 * `unit` may be absent in sessions persisted before it was recorded. `lines` is
+	 * the first-to-last range of cut lines, and `selectorBase` the target a
+	 * `:raw:<line>-<line>` selector reads one of them whole from (an artifact's
+	 * `artifact://<id>` stands in when absent).
+	 */
+	columnTruncated?: {
+		maxColumn: number;
+		unit?: "bytes" | "chars";
+		artifactId?: string;
+		artifactElidedBytes?: number;
+		lines?: { first: number; last: number };
+		selectorBase?: string;
+	};
 }
 
 /**
@@ -130,8 +144,14 @@ export function formatGroupedDiagnosticMessages(messages: string[]): string {
 	return lines.join("\n");
 }
 
-/** Format a recoverable output artifact link. */
-export function formatFullOutputReference(artifactId: string): string {
+/**
+ * Format a recoverable output artifact link. An artifact the size cap cut
+ * (`artifactElidedBytes > 0`) is labeled as the head/tail sample it holds.
+ */
+export function formatFullOutputReference(artifactId: string, artifactElidedBytes?: number): string {
+	if (artifactElidedBytes !== undefined && artifactElidedBytes > 0) {
+		return `Read artifact://${artifactId} for a head/tail sample of the output; ${formatBytes(artifactElidedBytes)} from its middle was not saved`;
+	}
 	return `Read artifact://${artifactId} for full output`;
 }
 
@@ -206,7 +226,7 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta, source?: 
 			? undefined
 			: source?.type === "report"
 				? `Read artifact://${truncation.artifactId} for full report (${source.value})`
-				: formatFullOutputReference(truncation.artifactId);
+				: formatFullOutputReference(truncation.artifactId, truncation.artifactElidedBytes);
 
 	if (truncation.direction === "middle") {
 		const head = truncation.headRange;
@@ -321,8 +341,16 @@ export function formatOutputNotice(meta: OutputMeta | undefined): string {
 		// a resumed legacy session renders "… 768 undefined" and stripOutputNotice
 		// stops matching the persisted "… 768 chars" text.
 		let columnNotice = `Some lines truncated to ${c.maxColumn} ${c.unit ?? "chars"}`;
-		if (c.artifactId != null) {
-			columnNotice += `. ${formatFullOutputReference(c.artifactId)}`;
+		// An artifact cut to a head/tail sample renumbers its lines, so only a complete one names a line.
+		const selectorBase =
+			c.selectorBase ?? (c.artifactId != null && !c.artifactElidedBytes ? `artifact://${c.artifactId}` : undefined);
+		if (c.lines && selectorBase !== undefined) {
+			// One line per selector: a span of cut lines can exceed what one read returns.
+			const { first, last } = c.lines;
+			columnNotice += `. Use ${selectorBase}:raw:${first}-${first} to read line ${first} whole`;
+			if (last > first) columnNotice += `; cut lines run to line ${last}, each read the same way`;
+		} else if (c.artifactId != null) {
+			columnNotice += `. ${formatFullOutputReference(c.artifactId, c.artifactElidedBytes)}`;
 		}
 		parts.push(columnNotice);
 	}

@@ -18,7 +18,7 @@ import { loadSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { loadSlashCommands } from "@oh-my-pi/pi-coding-agent/extensibility/slash-commands";
 import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { loadAllExtensions } from "@oh-my-pi/pi-coding-agent/modes/components/extensions/state-manager";
-import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { __resetDirsFromEnvForTests, logger, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import "@oh-my-pi/pi-coding-agent/discovery/claude-plugins";
 import { isSameMCPConnection, type MCPServer, mcpCapability } from "@oh-my-pi/pi-coding-agent/capability/mcp";
 import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
@@ -110,6 +110,39 @@ describe("listClaudePluginRoots", () => {
 		const result = await listClaudePluginRoots(tempDir);
 		expect(result.roots).toEqual([]);
 		expect(result.warnings).toEqual([]);
+	});
+
+	test("logs registry warnings once per cached computation", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		await fs.mkdir(pluginsDir, { recursive: true });
+		const registryPath = path.join(pluginsDir, "installed_plugins.json");
+		await fs.writeFile(registryPath, "not json");
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		const first = await listClaudePluginRoots(tempDir);
+		const second = await listClaudePluginRoots(tempDir);
+
+		expect(first.warnings).toEqual([`Failed to parse Claude Code plugin registry: ${registryPath}`]);
+		expect(second).toBe(first);
+		expect(warnSpy.mock.calls.filter(([message]) => message === first.warnings[0])).toHaveLength(1);
+	});
+
+	test("logs registry warnings once for concurrent callers", async () => {
+		const pluginsDir = path.join(tempDir, ".claude", "plugins");
+		await fs.mkdir(pluginsDir, { recursive: true });
+		const registryPath = path.join(pluginsDir, "installed_plugins.json");
+		await fs.writeFile(registryPath, "not json");
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		const results = await Promise.all([
+			listClaudePluginRoots(tempDir),
+			listClaudePluginRoots(tempDir),
+			listClaudePluginRoots(tempDir),
+		]);
+
+		const message = `Failed to parse Claude Code plugin registry: ${registryPath}`;
+		for (const result of results) expect(result.warnings).toEqual([message]);
+		expect(warnSpy.mock.calls.filter(([m]) => m === message)).toHaveLength(1);
 	});
 
 	test("parses plugin with user scope", async () => {
@@ -2284,6 +2317,55 @@ describe("listClaudePluginRoots", () => {
 		expect(result.all.find(c => c.name === "manifest-commands-replace:admin")).toBeDefined();
 		expect(result.all.find(c => c.name === "manifest-commands-replace:default")).toBeUndefined();
 	});
+	test("derives the namespace from the plugin name, not the Claude cache version segment (#12151)", async () => {
+		// Claude Code's own plugin cache keeps marketplace/plugin/version as
+		// three separate path segments (`.../cache/<marketplace>/<plugin>/<version>/skills/...`),
+		// unlike OMP's single joined `<marketplace>___<plugin>___<version>` cache
+		// directory. Deriving the namespace from the path segment owning `skills/`
+		// would read the shared version ("1.0.0" → "1-0-0") for both plugins here,
+		// colliding them together instead of keeping their own plugin identities.
+		const marketRoot = path.join(tempDir, ".claude", "plugins", "cache", "test-market");
+		const pluginARoot = path.join(marketRoot, "plugin-a", "1.0.0");
+		const pluginBRoot = path.join(marketRoot, "plugin-b", "1.0.0");
+		const ompRegistryPath = path.join(tempDir, ".omp", "plugins", "installed_plugins.json");
+
+		await Promise.all([
+			fs.mkdir(path.join(pluginARoot, "skills", "shared-skill"), { recursive: true }),
+			fs.mkdir(path.join(pluginBRoot, "skills", "shared-skill"), { recursive: true }),
+			fs.mkdir(path.dirname(ompRegistryPath), { recursive: true }),
+		]);
+		await Promise.all([
+			fs.writeFile(
+				path.join(pluginARoot, "skills", "shared-skill", "SKILL.md"),
+				"---\nname: shared-skill\ndescription: Plugin A's skill.\n---\nPlugin A body\n",
+			),
+			fs.writeFile(
+				path.join(pluginBRoot, "skills", "shared-skill", "SKILL.md"),
+				"---\nname: shared-skill\ndescription: Plugin B's skill.\n---\nPlugin B body\n",
+			),
+			fs.writeFile(
+				ompRegistryPath,
+				JSON.stringify({
+					version: 2,
+					plugins: {
+						"plugin-a@test-market": [{ scope: "user", installPath: pluginARoot, version: "1.0.0" }],
+						"plugin-b@test-market": [{ scope: "user", installPath: pluginBRoot, version: "1.0.0" }],
+					},
+				}),
+			),
+		]);
+
+		const { skills, warnings } = await loadSkills({ cwd: tempDir });
+		const names = skills
+			.map(skill => skill.name)
+			.filter(name => name === "shared-skill" || name.endsWith("/shared-skill"))
+			.sort();
+		// "plugin-a" is admitted first (bare); "plugin-b" is namespaced by its
+		// own plugin name, never by the version segment both share.
+		expect(names).toEqual(["plugin-b/shared-skill", "shared-skill"]);
+		expect(warnings.some(warning => warning.message.includes("1-0-0"))).toBe(false);
+	});
+
 	test("loads OMP user skills without opting into foreign Claude skills", async () => {
 		// This case asserts the foreign opt-in gate itself, so it drops the
 		// blanket opt-in the surrounding suite applies for plugin discovery.

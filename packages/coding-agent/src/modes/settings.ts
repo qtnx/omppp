@@ -1,4 +1,5 @@
 import { combine, effect, register, type Setting } from "../config/registry";
+import type { Settings } from "../config/settings";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/app-keybindings";
 import { cfgReadToolResultPreview } from "../tools/settings";
 import { MAGIC_KEYWORDS, type MagicKeywordId } from "./magic-keywords";
@@ -148,7 +149,7 @@ export const cfgComposerTokenRate = register({
 		group: "Composer",
 		label: "Generation Rate",
 		description:
-			"Show a live generation tok/s readout on the working row, docked right next to the session title. Estimated from streamed deltas and corrected by the provider's billed output count as each message completes.",
+			"Show a live generation tok/s readout: on the working row next to the session title, or in the native composer bar right after the thinking level, where the last reading stays between turns. Estimated from streamed deltas and corrected by the provider's billed output count as each message completes.",
 	},
 });
 
@@ -262,7 +263,7 @@ export const cfgStatusLineCompactThinkingLevel = register({
 		group: "Status Line",
 		label: "Compact Thinking Level",
 		description:
-			"Show the thinking level as a single icon on the model name instead of a separate ` · <level>` suffix.",
+			"Show the thinking level as a single icon on the model name instead of a separate ` · <level>` suffix; in Tern's composer, as the model chip's icon instead of a separate chip (click the icon to cycle it).",
 	},
 });
 
@@ -400,7 +401,21 @@ export const cfgTerminalShowProgress = register({
 		tab: "appearance",
 		group: "Display",
 		label: "Native Terminal Progress",
-		description: "Emit OSC 9;4 indeterminate progress while the agent or context maintenance is running",
+		description:
+			"Emit OSC 9;4 indeterminate progress while the agent or context maintenance is running (always on in Tern)",
+	},
+});
+
+export const cfgTerminalProgramStatus = register({
+	id: "terminal.programStatus",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Program Status (OSC 7501)",
+		description:
+			"Report whether the agent is working, waiting on you, done, or failed over OSC 7501, for terminal tab indicators and agent inboxes",
 	},
 });
 
@@ -426,6 +441,47 @@ export const cfgTuiRenderMermaid = register({
 		group: "Display",
 		label: "Render Mermaid Diagrams",
 		description: "Render Mermaid fenced code blocks as ASCII diagrams",
+	},
+});
+
+export const cfgTuiRenderSvg = register({
+	id: "tui.renderSvg",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Render SVG Figures",
+		description:
+			"Invite the agent to draw diagrams and charts as SVG, rendered inline as images on terminals that show graphics",
+	},
+});
+
+export const cfgTuiAutoGraph = register({
+	id: "tui.autoGraph",
+	type: "enum",
+	values: ["smart", "always", "off"] as const,
+	default: "always",
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Auto-Graph Tables",
+		description:
+			"Draw a chart under numeric tables in the agent's answers, in your theme's colors, on terminals that show graphics",
+		options: [
+			{
+				value: "smart",
+				label: "Smart",
+				description:
+					"The judge model refines each chart: kind, columns, row names and grouping, scales, which way is better, and its title",
+			},
+			{
+				value: "always",
+				label: "Always",
+				description: "Chart every table that reads as numeric, using the built-in best guess",
+			},
+			{ value: "off", label: "Off", description: "Leave tables as tables" },
+		],
 	},
 });
 
@@ -585,6 +641,18 @@ export const cfgDisplayPinnedAgents = register({
 			{ value: "collapsed", label: "Collapsed", description: "Show a few rows with an expander" },
 			{ value: "full", label: "Full", description: "Always list every live agent" },
 		],
+	},
+});
+
+export const cfgDisplaySubagentLivePreview = register({
+	id: "display.subagentLivePreview",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Subagent Live Preview",
+		description: "Show each pinned subagent's current (or most recent) tool call beneath its row",
 	},
 });
 
@@ -766,7 +834,7 @@ export const cfgTuiVimModeDisplay = register({
 		description: "How the current Vim mode appears in the status line",
 		condition: "vimModeEnabled",
 		options: [
-			{ value: "text", label: "Text", description: "Full mode name — NORMAL, INSERT, VISUAL, V-LINE" },
+			{ value: "text", label: "Text", description: "Full mode name — NORMAL, INSERT, VISUAL, V-LINE, REPLACE" },
 			{ value: "icon", label: "Icon", description: "Single compact glyph per mode" },
 			{ value: "none", label: "Hidden", description: "Do not show the mode in the status line" },
 		],
@@ -893,6 +961,32 @@ export const cfgDoubleEscapeAction = register({
 	},
 });
 
+export const cfgBareExitOnEmptySession = register({
+	id: "input.bareExitOnEmptySession",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "interaction",
+		group: "Input",
+		label: "Bare Exit on Empty Session",
+		description:
+			"Submitting exactly `exit`, `quit`, or `q` (any case) before the first message quits instead of prompting the model",
+	},
+});
+
+export const cfgBareSlashCommands = register({
+	id: "input.bareSlashCommands",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "interaction",
+		group: "Input",
+		label: "Bare Slash Commands",
+		description:
+			"Submitting exactly a command name without the leading `/` (e.g. `model`, `compact`) runs that slash command; once the session has messages, press Enter twice to confirm",
+	},
+});
+
 export const cfgTreeFilterMode = register({
 	id: "treeFilterMode",
 	type: "enum",
@@ -968,6 +1062,20 @@ export const cfgSpellingAutocomplete = register({
 				? [{ value: "apple" as const, label: "Apple", description: "macOS dictionary completions" }]
 				: []),
 		],
+	},
+});
+
+export const cfgComposerPredictions = register({
+	id: "composer.predictions",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "interaction",
+		group: "Input",
+		label: "Composer Predictions",
+		get description() {
+			return `After a completed turn, ask the active model to predict your next message and show it as ghost text in the empty composer; ${formatKeyHint("tab")} or ${formatKeyHint("right")} inserts it without sending. Extra usage: every completed turn sends one more billed request over the whole conversation (counted in /stats)`;
+		},
 	},
 });
 
@@ -1191,7 +1299,8 @@ export const cfgAskTimeout = register({
 		tab: "interaction",
 		group: "Notifications",
 		label: "Ask Timeout",
-		description: "Auto-select the recommended ask option after this many seconds (0 disables)",
+		description:
+			"Auto-select the recommended ask option after this many seconds (0 disables). Also bounds cfg:// approval prompts; an unanswered approval denies the write instead of auto-selecting",
 		options: [
 			{ value: "0", label: "Disabled" },
 			{ value: "15", label: "15 seconds" },
@@ -1201,6 +1310,16 @@ export const cfgAskTimeout = register({
 		],
 	},
 });
+
+/**
+ * `ask.timeout` in the milliseconds dialogs consume, or `undefined` for no
+ * deadline. Shared by the ask tool and the `cfg://` approval prompt so the
+ * setting means the same thing everywhere it is honored.
+ */
+export function askTimeoutMs(settings: Settings): number | undefined {
+	const timeoutSeconds = cfgAskTimeout.get(settings);
+	return timeoutSeconds === 0 ? undefined : timeoutSeconds * 1000;
+}
 
 export const cfgAskNotify = register({
 	id: "ask.notify",

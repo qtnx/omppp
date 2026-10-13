@@ -300,7 +300,7 @@ describe("AgentRegistry IRC visibility", () => {
 		const manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
 		const sessionFile = manager.getSessionFile();
 		if (!sessionFile) throw new Error("Expected a persisted session file path");
-		manager.appendSessionInit({ systemPrompt: "restricted", task: "t", tools: ["read", "yield"], spawns: "" });
+		manager.appendSessionInit({ systemPrompt: ["restricted"], task: "t", tools: ["read", "yield"], spawns: "" });
 		manager.appendMessage(assistantMessage("flush"));
 
 		AgentRegistry.resetGlobalForTests();

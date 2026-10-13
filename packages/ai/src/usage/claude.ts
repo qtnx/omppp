@@ -1,27 +1,29 @@
-import { scheduler } from "node:timers/promises";
 import { classifyModel } from "@oh-my-pi/pi-catalog/compat/taxonomy";
-import { toNumber } from "@oh-my-pi/pi-catalog/utils";
+import { isAnthropicOAuthToken, toNumber } from "@oh-my-pi/pi-catalog/utils";
 import * as AIError from "../error";
 import {
 	type CredentialRankingContext,
 	type CredentialRankingStrategy,
 	resolveUsedFraction,
 	type UsageAmount,
+	type UsageCredential,
 	type UsageFetchContext,
 	type UsageFetchParams,
 	type UsageLimit,
 	type UsageProvider,
 	type UsageReport,
-	type UsageStatus,
 	type UsageWindow,
 } from "../usage";
 import { isRecord } from "../utils";
+import { waitForRetry } from "../utils/retry-wait";
 import { buildClaudeOAuthHeaders, claudeOAuthBaseUrls } from "./claude-api";
 import { listClaudeResetCredits, parseClaudeResetCreditsFromUsagePayload } from "./claude-reset";
-import { HOUR_MS, parseIsoTimestamp, WEEK_MS } from "./shared";
+import { HOUR_MS, parseIsoTimestamp, usageStatus, WEEK_MS } from "./shared";
 
 const MAX_ATTEMPTS = 3;
 const BASE_RETRY_DELAY_MS = 500;
+/** `/usage` stays rate-limited for minutes after a 429, so a failed refresh waits instead of re-polling. */
+const FAILURE_BACKOFF_MS = 60_000;
 /** Shared windows that gate every Claude request, whatever the model. */
 const CLAUDE_SHARED_GATE_WINDOW_IDS = ["5h", "7d"] as const;
 
@@ -238,11 +240,7 @@ async function waitBeforeRetry(
 	if (attempt >= MAX_ATTEMPTS - 1) return false;
 	try {
 		const delayMs = retryDelayMs(attempt, retryAfter);
-		if (retryWait) {
-			await retryWait(delayMs, signal);
-		} else {
-			await scheduler.wait(delayMs, { signal });
-		}
+		await waitForRetry(retryWait, delayMs, signal);
 		return !signal?.aborted;
 	} catch (error) {
 		if (isAbortError(error, signal)) return false;
@@ -416,13 +414,6 @@ function buildUsageAmount(utilization: number | undefined): UsageAmount | undefi
 	};
 }
 
-function buildUsageStatus(usedFraction: number | undefined): UsageStatus | undefined {
-	if (usedFraction === undefined) return undefined;
-	if (usedFraction >= 1) return "exhausted";
-	if (usedFraction >= 0.9) return "warning";
-	return "ok";
-}
-
 function parseDollarAmount(
 	amountMinor: unknown,
 	exponent: unknown,
@@ -500,12 +491,13 @@ function buildClaudeExtraUsageLimit(payload: ClaudeUsageResponse): UsageLimit | 
 
 	const amount = buildExtraUsageAmount(parsed.used, parsed.limit);
 	if (!amount) return null;
+	// A defined limit makes `buildExtraUsageAmount` set `usedFraction`.
 	const status =
 		parsed.limit === undefined
 			? undefined
 			: parsed.used >= parsed.limit
 				? "exhausted"
-				: (buildUsageStatus(amount.usedFraction) ?? "ok");
+				: usageStatus(amount.usedFraction);
 	return {
 		id: "anthropic:extra",
 		label: "Claude Extra Usage",
@@ -549,7 +541,7 @@ function buildUsageLimit(args: {
 		},
 		window,
 		amount,
-		status: buildUsageStatus(amount.usedFraction),
+		status: amount.usedFraction === undefined ? undefined : usageStatus(amount.usedFraction),
 	};
 }
 
@@ -636,12 +628,19 @@ export function parseClaudeRateLimitHeaders(headers: Record<string, string>, now
 	};
 }
 
+function claudeUsageToken(credential: UsageCredential): string | undefined {
+	if (credential.type === "oauth") return credential.accessToken;
+	const apiKey = credential.apiKey;
+	return apiKey && isAnthropicOAuthToken(apiKey) ? apiKey : undefined;
+}
+
 async function fetchClaudeUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null> {
 	if (params.provider !== "anthropic") return null;
 	const credential = params.credential;
-	if (credential.type !== "oauth" || !credential.accessToken) return null;
+	const accessToken = claudeUsageToken(params.credential);
+	if (!accessToken) return null;
 
-	const headers = buildClaudeOAuthHeaders(credential.accessToken, { beta: CLAUDE_USAGE_BETAS });
+	const headers = buildClaudeOAuthHeaders(accessToken, { beta: CLAUDE_USAGE_BETAS });
 
 	let baseUrl: string | undefined;
 	let payload: ClaudeUsageResponse | null = null;
@@ -670,7 +669,7 @@ async function fetchClaudeUsage(params: UsageFetchParams, ctx: UsageFetchContext
 	const resetCreditList =
 		parseClaudeResetCreditsFromUsagePayload(payload, credential.orgId, baseUrl) ??
 		(await listClaudeResetCredits({
-			accessToken: credential.accessToken,
+			accessToken,
 			accountId: credential.accountId,
 			email: credential.email,
 			orgId: credential.orgId,
@@ -804,9 +803,10 @@ export const claudeUsageProvider: UsageProvider = {
 	// Anthropic extra-usage rows existed; header ingestion can otherwise keep
 	// renewing those incomplete reports throughout the 24h last-good retention.
 	cacheVersion: 3,
+	failureBackoffMs: FAILURE_BACKOFF_MS,
 	fetchUsage: fetchClaudeUsage,
 	parseRateLimitHeaders: parseClaudeRateLimitHeaders,
-	supports: params => params.provider === "anthropic" && params.credential.type === "oauth",
+	supports: params => params.provider === "anthropic" && !!claudeUsageToken(params.credential),
 };
 
 function getClaudeModelKind(context: CredentialRankingContext | undefined): ClaudeModelKind | undefined {

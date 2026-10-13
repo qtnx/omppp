@@ -6,6 +6,7 @@
  */
 
 import {
+	type AnthropicCompactionFiles,
 	type Api,
 	type ApiKey,
 	type AssistantMessage,
@@ -64,10 +65,9 @@ import type { CompactionEntry, SessionEntry } from "./entries";
 import { NativeCompactionError } from "./errors";
 import {
 	type ConvertToLlm,
-	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
-	createCustomMessage,
 	defaultConvertToLlm,
+	getMessageFromEntry,
 } from "./messages";
 import {
 	assertRemoteCompactionInputFits,
@@ -143,34 +143,6 @@ function extractFileOperations(
 	return fileOps;
 }
 
-// ============================================================================
-// Message Extraction
-// ============================================================================
-
-/**
- * Extract AgentMessage from an entry if it produces one.
- * Returns undefined for entries that don't contribute to LLM context.
- */
-function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
-	if (entry.type === "message") {
-		return entry.message;
-	}
-	if (entry.type === "custom_message") {
-		return createCustomMessage(
-			entry.customType,
-			entry.content,
-			entry.display,
-			entry.details,
-			entry.timestamp,
-			entry.attribution,
-		);
-	}
-	if (entry.type === "branch_summary") {
-		return createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
-	}
-	return undefined;
-}
-
 /** Result from compact() - SessionManager adds uuid/parentUuid when saving */
 export interface CompactionResult<T = unknown> {
 	summary: string;
@@ -193,6 +165,14 @@ export interface CompactionSettings {
 	strategy?: "context-full" | "handoff" | "shake" | "snapcompact" | "off";
 	thresholdPercent?: number;
 	thresholdTokens?: number;
+	/**
+	 * Stands in for the context window when the percentage or reserve-based
+	 * threshold is computed (when `> 0` and smaller than the window); a positive
+	 * `thresholdTokens` still wins and is checked against the real window (at
+	 * or past it, the window less its reserve applies). Set by per-model
+	 * compaction limits; request and overflow budgets keep the real window.
+	 */
+	baseWindowTokens?: number;
 	midTurnEnabled?: boolean;
 	/**
 	 * Tokens reserved below the context window for the next prompt + response.
@@ -388,27 +368,42 @@ export function compactionContextTokens(providerContextTokens: number, storedCon
 	return Math.max(Math.max(0, providerContextTokens), Math.max(0, storedConversationEstimate));
 }
 
+/**
+ * The prompt budget below `contextWindow`: the window less
+ * {@link resolveBudgetReserveTokens}, capped at `contextWindow - 1` so it never
+ * reaches the whole window even when the reserve resolves to 0.
+ */
+function promptBudgetTokens(contextWindow: number, settings: CompactionSettings): number {
+	return Math.max(0, Math.min(contextWindow - 1, contextWindow - resolveBudgetReserveTokens(contextWindow, settings)));
+}
+
 export function resolveThresholdTokens(contextWindow: number, settings: CompactionSettings): number {
-	// Fixed token limit takes priority over percentage
+	// Fixed token limit takes priority over percentage, and is checked against
+	// the real window: `baseWindowTokens` only rescales the policies below.
 	const thresholdTokens = settings.thresholdTokens;
 	if (typeof thresholdTokens === "number" && Number.isFinite(thresholdTokens) && thresholdTokens > 0) {
-		// Clamp to [1, contextWindow - 1] so there's always room
+		// A trigger at or past the window can never fire before the request
+		// overflows (a provider may cap the window below the configured point);
+		// fall back to the window's prompt budget, as the reserve policy does.
+		// A trigger below the window is exact, as the `f` model entries promise,
+		// even one inside the reserve: the user chose that headroom. The step at
+		// the window is inherent; a monotone fallback would sit at window - 1.
+		if (thresholdTokens >= contextWindow) return promptBudgetTokens(contextWindow, settings);
 		return Math.min(contextWindow - 1, Math.max(1, thresholdTokens));
+	}
+	const baseWindowTokens = settings.baseWindowTokens;
+	if (typeof baseWindowTokens === "number" && Number.isFinite(baseWindowTokens) && baseWindowTokens > 0) {
+		contextWindow = Math.min(contextWindow, baseWindowTokens);
 	}
 
 	// Percentage-based threshold. The default absolute reserve can exceed bundled
 	// small-context windows, or nearly consume a 16k-class window; in those
 	// known-impossible default configurations, fall back to the proportional
 	// reserve so threshold/recovery-band checks stay usable. Explicit valid
-	// configured reserves still define the usable prompt budget. Cap at
-	// contextWindow - 1 (matching the fixed-token clamp above) so the threshold
-	// never reaches the whole window even when the reserve resolves to 0.
+	// configured reserves still define the usable prompt budget.
 	const thresholdPercent = settings.thresholdPercent;
 	if (typeof thresholdPercent !== "number" || !Number.isFinite(thresholdPercent) || thresholdPercent <= 0) {
-		return Math.max(
-			0,
-			Math.min(contextWindow - 1, contextWindow - resolveBudgetReserveTokens(contextWindow, settings)),
-		);
+		return promptBudgetTokens(contextWindow, settings);
 	}
 	const clampedThresholdPercent = Math.min(99, Math.max(1, thresholdPercent));
 	return Math.floor(contextWindow * (clampedThresholdPercent / 100));
@@ -685,6 +680,25 @@ export interface SummaryOptions {
 	initiatorOverride?: MessageAttribution;
 	metadata?: Record<string, unknown>;
 	convertToLlm?: ConvertToLlm;
+	/**
+	 * The provider context a live turn sends for `summarized` + `retained`, cut to
+	 * `summarized`, as read by the summarizer `model`. Anthropic on-demand
+	 * compaction sends it so retained signed thinking keeps its prefix; without
+	 * it the request uses `remoteSystemPrompt`, `tools` and `convertToLlm`.
+	 */
+	buildProviderContext?: (
+		summarized: AgentMessage[],
+		retained: AgentMessage[],
+		signal: AbortSignal | undefined,
+		model: Model,
+	) => Promise<Context>;
+	/**
+	 * Whether a message is a turn the user wrote. Remote Compaction V2 keeps these
+	 * next to the compaction item. Defaults to `role === "user"`; hosts whose
+	 * user-initiated turns also arrive as custom messages (e.g. skill invocations)
+	 * widen it.
+	 */
+	isUserAuthored?: (message: AgentMessage) => boolean;
 	/**
 	 * Optional telemetry handle. When provided, every LLM call emitted during
 	 * compaction is wrapped in an OTEL chat span tagged with
@@ -1700,6 +1714,8 @@ export async function compact(
 		initiatorOverride: options?.initiatorOverride,
 		metadata: options?.metadata,
 		convertToLlm: options?.convertToLlm,
+		buildProviderContext: options?.buildProviderContext,
+		isUserAuthored: options?.isUserAuthored,
 		telemetry: options?.telemetry,
 		// Honor /model thinking selection on every fan-out summarizer.
 		// Without this propagation, generateSummary / generateTurnPrefixSummary
@@ -1723,12 +1739,28 @@ export async function compact(
 		oneshotRetry: options?.oneshotRetry,
 	};
 
-	const previousSnapcompactArchive = snapcompact.getPreservedArchive(previousPreserveData);
+	// An archive keeps the reasoning policy of the model it was rendered for;
+	// Claude refuses inputs that reproduce reasoning (issue #6093), so a
+	// summarizer whose classifier refuses quoted reasoning (the
+	// `classifier-cot-extraction` catalog axis) reads the archive's no-reasoning view (scrubbed
+	// while its tool-output spans are still marked), and a summary with no
+	// archive behind it is scrubbed of `¶think:` sections.
+	const withoutThinking = !snapcompact.readerIncludesThinking(model);
+	const storedSnapcompactArchive = snapcompact.getPreservedArchive(previousPreserveData);
+	const snapcompactView =
+		storedSnapcompactArchive && withoutThinking
+			? snapcompact.viewWithoutThinking(previousSummary ?? "", storedSnapcompactArchive)
+			: undefined;
+	const previousSnapcompactArchive = snapcompactView?.archive ?? storedSnapcompactArchive;
+	const previousSummaryForReader =
+		withoutThinking && previousSummary !== undefined
+			? (snapcompactView?.summary ?? snapcompact.textWithoutThinking(previousSummary))
+			: previousSummary;
 	const previousSnapcompactArchiveText = previousSnapcompactArchive
 		? snapcompact.archiveSourceText(previousSnapcompactArchive)
 		: undefined;
 	const previousSummaryForCompaction = mergePreviousSummaryWithSnapcompactArchive(
-		previousSummary,
+		previousSummaryForReader,
 		previousSnapcompactArchiveText,
 	);
 	const snapcompactArchiveMigrationMessage = previousSnapcompactArchiveText
@@ -1739,8 +1771,8 @@ export async function compact(
 	// A local summary has no native payload to carry it into the first remote
 	// request. Encode it as history; do not resend opaque native placeholders.
 	const previousSummaryMigrationMessage =
-		settings.remoteEnabled !== false && previousSummary && !previousNativeHistory
-			? createCompactionSummaryMessage(previousSummary, tokensBefore, new Date().toISOString())
+		settings.remoteEnabled !== false && previousSummaryForReader && !previousNativeHistory
+			? createCompactionSummaryMessage(previousSummaryForReader, tokensBefore, new Date().toISOString())
 			: undefined;
 
 	let preserveData = withAnthropicCompactionPreserveData(
@@ -1767,7 +1799,17 @@ export async function compact(
 			previousRemoteCompaction?.provider === model.provider
 				? previousRemoteCompaction.replacementHistory
 				: undefined;
-		const messages = (summaryOptions.convertToLlm ?? defaultConvertToLlm)(remoteMessages);
+		const convertToLlm = summaryOptions.convertToLlm ?? defaultConvertToLlm;
+		const messages = convertToLlm(remoteMessages);
+		// Replacement history keeps what the user wrote. Summaries, archive
+		// migrations, and custom/hook messages can serialize as user-role items
+		// too, so pick the user's own messages before serialization erases that,
+		// then serialize each one exactly as the request does.
+		const isUserAuthored = summaryOptions.isUserAuthored ?? ((message: AgentMessage) => message.role === "user");
+		const userMessages = convertToLlm(
+			[...messagesToSummarize, ...turnPrefixMessages, ...recentMessages].filter(isUserAuthored),
+		);
+		const retainedUserItems: unknown[] = [...(previousReplacementHistory ?? [])];
 		const remoteSystemPrompt = summaryOptions.remoteSystemPrompt ?? [SUMMARIZATION_SYSTEM_PROMPT];
 		let codexBody: OpenAICodexCompactionBody | undefined;
 		let remoteHistory: Array<Record<string, unknown>>;
@@ -1807,8 +1849,19 @@ export async function compact(
 			}
 			remoteHistory = stripOpenAIResponsesOutputOnlyStatusesForReplay(nativeInput);
 			codexBody.input = remoteHistory;
+			for (const message of userMessages) {
+				const userBody = await buildTransformedCodexRequestBody(
+					model,
+					{ messages: [message] },
+					{ responsesLite: model.useResponsesLite },
+				);
+				retainedUserItems.push(...(userBody.input ?? []));
+			}
 		} else {
 			remoteHistory = buildOpenAiResponsesCompactionInput(messages, model, previousReplacementHistory);
+			for (const message of userMessages) {
+				retainedUserItems.push(...buildOpenAiResponsesCompactionInput([message], model, undefined));
+			}
 		}
 		if (remoteHistory.length > 0) {
 			try {
@@ -1846,6 +1899,7 @@ export async function compact(
 					sessionId: summaryOptions.sessionId,
 					promptCacheKey: summaryOptions.promptCacheKey,
 					retainedMessageBudget: settings.v2RetainedMessageBudget,
+					retainedUserItems,
 				};
 				const request = codexBody
 					? buildCompactionV2RequestFromBody(model, { ...codexBody, input: trimmed.input }, requestOptions)
@@ -1874,11 +1928,17 @@ export async function compact(
 				// summarization" and keep compaction running on an aborted signal.
 				if (signal?.aborted) throw err;
 				nativeCompactionError = selectNativeCompactionError(nativeCompactionError, err);
-				logger.warn("OpenAI V2 remote compaction failed, falling back to V1 remote compaction", {
-					error: err instanceof Error ? err.message : String(err),
-					model: model.id,
-					provider: model.provider,
-				});
+				// Claim the V1 fallback only when the V1 block below will run.
+				logger.warn(
+					shouldUseOpenAiRemoteCompaction(model)
+						? "OpenAI V2 remote compaction failed, falling back to V1 remote compaction"
+						: "OpenAI V2 remote compaction failed",
+					{
+						error: err instanceof Error ? err.message : String(err),
+						model: model.id,
+						provider: model.provider,
+					},
+				);
 			}
 		}
 	}
@@ -1925,7 +1985,7 @@ export async function compact(
 					(!previousSummary || previousReplacementHistory !== undefined);
 				const isRemoteSummary = remote.compactionItem.type === "compaction_summary";
 				const candidateSummary = isRemoteSummary ? remote.compactionItem.summary?.trim() : undefined;
-				preserveData = withOpenAiRemoteCompactionPreserveData(previousPreserveData, remote);
+				preserveData = withOpenAiRemoteCompactionPreserveData(preserveData, remote);
 				if (!isRemoteSummary) {
 					usedRemoteCompaction = true;
 					logger.debug("OpenAI remote compaction state preserved", {
@@ -1975,32 +2035,40 @@ export async function compact(
 	let nativeSignature: string | undefined;
 	let nativeFirstKeptEntryId = firstKeptEntryId;
 	let nativeUsedTokens: number | undefined;
+	let nativeRetainedFiles: AnthropicCompactionFiles[] | undefined;
 	if (!usedRemoteCompaction && settings.remoteEnabled !== false && shouldUseAnthropicNativeCompaction(model)) {
 		const previousNative = getPreservedAnthropicCompactionData(previousPreserveData);
 		// Lead with the previous summary as the live context renders it:
 		// natively when this provider wrote it, as text otherwise.
 		// A prior snapcompact archive is already merged into that summary
-		// text. Predate the rewrite marker before all replayed messages so
+		// text. Like the live context, the summary keeps its commit time and
+		// predates its rewrite marker before all replayed messages, so
 		// retained thinking stays bound to the original prefix.
 		const firstReplayed = messagesToSummarize[0] ?? turnPrefixMessages[0] ?? recentMessages[0];
-		const previousSummaryAt =
-			firstReplayed !== undefined ? new Date(firstReplayed.timestamp - 1).toISOString() : new Date().toISOString();
 		const previousSummaryMessage = previousSummaryForCompaction
-			? createCompactionSummaryMessage(previousSummaryForCompaction, tokensBefore, previousSummaryAt, {
-					providerPayload:
-						previousNative?.provider === model.provider
-							? {
-									type: "anthropicCompaction",
-									provider: previousNative.provider,
-									content: previousNative.content,
-									...(previousNative.signature ? { signature: previousNative.signature } : {}),
-									...(previousNative.encryptedContent
-										? { encryptedContent: previousNative.encryptedContent }
-										: {}),
-									...(previousNative.filesText ? { filesText: previousNative.filesText } : {}),
-								}
-							: undefined,
-				})
+			? createCompactionSummaryMessage(
+					previousSummaryForCompaction,
+					tokensBefore,
+					preparation.previousSummaryTimestamp ?? new Date().toISOString(),
+					{
+						historyRewriteAt: firstReplayed !== undefined ? firstReplayed.timestamp - 1 : undefined,
+						providerPayload:
+							previousNative?.provider === model.provider
+								? {
+										type: "anthropicCompaction",
+										provider: previousNative.provider,
+										content: previousNative.content,
+										...(previousNative.signature ? { signature: previousNative.signature } : {}),
+										...(previousNative.encryptedContent
+											? { encryptedContent: previousNative.encryptedContent }
+											: {}),
+										...(previousNative.filesText ? { filesText: previousNative.filesText } : {}),
+										...(previousNative.retainedFiles ? { retainedFiles: previousNative.retainedFiles } : {}),
+										...(previousNative.exactTail ? { exactTail: true as const } : {}),
+									}
+								: undefined,
+					},
+				)
 			: undefined;
 		const allMessages = [...messagesToSummarize, ...turnPrefixMessages, ...recentMessages];
 		const originalCut = messagesToSummarize.length + turnPrefixMessages.length;
@@ -2018,20 +2086,57 @@ export async function compact(
 					? firstKeptEntryId
 					: (recentEntryIds?.[safeCut - originalCut] ?? "");
 		for (let i = originalCut; i < safeCut; i++) extractFileOpsFromMessage(allMessages[i], fileOps);
-		const messages = (summaryOptions.convertToLlm ?? defaultConvertToLlm)([
+		const summarizedMessages = [
 			...(previousSummaryMessage ? [previousSummaryMessage] : []),
 			...allMessages.slice(0, safeCut),
-		]);
+		];
+		// Earlier file metadata replays before the first message created after
+		// its summary. Metadata due inside the new retained tail stays out of the
+		// request, and the new summary keeps replaying it. So does metadata due
+		// right at the cut when the first kept message is a user-side turn: live
+		// requests sent it merged into that turn, and ending the request with it
+		// would merge the summarized range into the kept turn instead, which
+		// invalidates the kept thinking.
+		const firstRetained = allMessages[safeCut];
+		const filesDueBefore =
+			firstRetained === undefined
+				? undefined
+				: firstRetained.role === "assistant"
+					? firstRetained.timestamp
+					: (allMessages.slice(0, safeCut).findLast(message => message.role !== "toolResult")?.timestamp ??
+						Number.NEGATIVE_INFINITY);
+		const previousPayload = previousSummaryMessage?.providerPayload;
+		if (
+			filesDueBefore !== undefined &&
+			previousSummaryMessage !== undefined &&
+			previousPayload?.type === "anthropicCompaction" &&
+			previousPayload.exactTail
+		) {
+			const carried = [
+				...(previousPayload.retainedFiles ?? []),
+				...(previousPayload.filesText
+					? [{ text: previousPayload.filesText, after: previousSummaryMessage.timestamp }]
+					: []),
+			].filter(files => files.after >= filesDueBefore);
+			if (carried.length > 0) nativeRetainedFiles = carried;
+		}
 		try {
+			// The live turn's own system prompt, wire tools and transformed
+			// history when the host can build them: kept thinking remains valid
+			// only when the summarized prefix matches what was sent byte for byte.
+			const context = summaryOptions.buildProviderContext
+				? await summaryOptions.buildProviderContext(summarizedMessages, allMessages.slice(safeCut), signal, model)
+				: {
+						systemPrompt: summaryOptions.remoteSystemPrompt ?? [],
+						messages: (summaryOptions.convertToLlm ?? defaultConvertToLlm)(summarizedMessages),
+						tools: summaryOptions.tools,
+					};
 			const remote = await requestAnthropicNativeCompaction(
 				model,
 				apiKey,
 				{
-					// The live prompt, not the local summarizer's synthetic system
-					// prompt: kept thinking remains valid only under identical controls.
-					systemPrompt: summaryOptions.remoteSystemPrompt ?? [],
-					messages,
-					tools: summaryOptions.tools,
+					context,
+					filesDueBefore,
 					instructions: buildAnthropicCompactionInstructions(
 						summaryOptions.promptOverride ?? SUMMARIZATION_PROMPT,
 						customInstructions,
@@ -2158,6 +2263,8 @@ export async function compact(
 			content: nativeSummary,
 			...(nativeSignature ? { signature: nativeSignature } : {}),
 			...(filesText ? { filesText } : {}),
+			...(nativeRetainedFiles ? { retainedFiles: nativeRetainedFiles } : {}),
+			exactTail: true,
 			model: model.id,
 			usedTokens: nativeUsedTokens,
 		});

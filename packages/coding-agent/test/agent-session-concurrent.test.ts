@@ -267,11 +267,11 @@ describe("AgentSession concurrent prompt guard", () => {
 		discoveryGate.resolve({ agents: [], projectAgentsDir: null });
 		await cancelledFollowUp;
 
-		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [], liveSteered: 0 });
 		expect(session.agent.peekFollowUpQueue()).toEqual([]);
 
 		await session.followUp("live-loop-delivery", undefined, { signal: new AbortController().signal });
-		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: ["live-loop-delivery"] });
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: ["live-loop-delivery"], liveSteered: 0 });
 		expect(session.agent.peekFollowUpQueue()).toHaveLength(1);
 
 		session.agent.clearAllQueues();
@@ -364,6 +364,7 @@ describe("AgentSession concurrent prompt guard", () => {
 			expect(session.getQueuedMessages()).toEqual({
 				steering: ["ultrathink fix via extension"],
 				followUp: [],
+				liveSteered: 0,
 			});
 		} finally {
 			session.agent.clearAllQueues();
@@ -392,7 +393,7 @@ describe("AgentSession concurrent prompt guard", () => {
 
 			expect(session.isStreaming).toBe(true);
 			expect(settled).toBe(false);
-			expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+			expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [], liveSteered: 0 });
 		} finally {
 			await session.abort();
 			await turn;
@@ -451,7 +452,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		);
 
 		expect(session.queuedMessageCount).toBe(0);
-		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [] });
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [], liveSteered: 0 });
 
 		firstStream?.push({ type: "done", reason: "stop", message: createAssistantMessage("Done") });
 		await firstPrompt;
@@ -1640,6 +1641,57 @@ describe("AgentSession TTSR resume gate", () => {
 		expect(session.isStreaming).toBe(false);
 	});
 
+	it("retries a TTSR continuation when the interrupted run is still busy", async () => {
+		collapseSchedulerSettleDelays();
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const ttsrManager = new TtsrManager({
+			enabled: true,
+			contextMode: "discard",
+			interruptMode: "always",
+			repeatMode: "once",
+			repeatGap: 10,
+		});
+		ttsrManager.addRule(testRule);
+		let requests = 0;
+		let sawInjection = false;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			convertToLlm,
+			streamFn: (_model, context, options) => {
+				requests++;
+				const stream = new AssistantMessageEventStream();
+				if (requests === 1) {
+					pushAbortableTtsrStream(stream, options?.signal);
+				} else {
+					sawInjection = context.messages.some(
+						message =>
+							message.role === "developer" &&
+							typeof message.content !== "string" &&
+							message.content.some(
+								part => part.type === "text" && part.text.includes('reason="rule_violation"'),
+							),
+					);
+					pushContinuationStream(stream, () => {});
+				}
+				return stream;
+			},
+		});
+		vi.spyOn(agent, "continue").mockRejectedValueOnce(new AgentBusyError());
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
+			modelRegistry: sharedModelRegistry,
+			ttsrManager,
+		});
+
+		await session.prompt("Write some Rust code");
+
+		expect(requests).toBe(2);
+		expect(sawInjection).toBe(true);
+	});
+
 	it("marks extension agent_end willContinue for TTSR abort and not ordinary abort", async () => {
 		collapseSchedulerSettleDelays();
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
@@ -2578,14 +2630,21 @@ describe("AgentSession TTSR resume gate", () => {
 		expect(toolExecuted).toBe(true);
 		expect(streamCallCount).toBe(2);
 
-		// The matched tool's result must carry the in-band reminder.
+		// The tool output remains unmodified; the harness-authored reminder is a
+		// separate developer message after the result.
 		const toolResult = agent.state.messages.find(
 			(m): m is Extract<typeof m, { role: "toolResult" }> =>
 				m.role === "toolResult" && m.toolCallId === toolCallContent.id,
 		);
-		expect(toolResult).toBeDefined();
-		const text = Array.isArray(toolResult?.content)
-			? toolResult.content
+		expect(toolResult?.content).toEqual([{ type: "text", text: "edit applied" }]);
+		const reminder = agent.state.messages.find(
+			(m): m is Extract<typeof m, { role: "developer" }> =>
+				m.role === "developer" &&
+				Array.isArray(m.content) &&
+				m.content.some(c => c.type === "text" && c.text.includes("<system-reminder")),
+		);
+		const text = Array.isArray(reminder?.content)
+			? reminder.content
 					.filter((c): c is { type: "text"; text: string } => c.type === "text")
 					.map(c => c.text)
 					.join("\n")
@@ -2593,7 +2652,6 @@ describe("AgentSession TTSR resume gate", () => {
 		expect(text).toContain("<system-reminder");
 		expect(text).toContain('rule="no-unwrap"');
 		expect(text).toContain("Do not use .unwrap()");
-		expect(text.indexOf("<system-reminder")).toBeLessThan(text.indexOf("edit applied"));
 	});
 
 	it.each(["always", "never"] as const)(
@@ -2654,7 +2712,7 @@ describe("AgentSession TTSR resume gate", () => {
 			session = new AgentSession({
 				agent,
 				sessionManager,
-				settings: Settings.isolated({ "autonomy.stopGate": false }),
+				settings: Settings.isolated({ "autonomy.stopGate": false, "advisor.enabled": false }),
 				modelRegistry: sharedModelRegistry,
 				ttsrManager,
 			});
@@ -2794,6 +2852,7 @@ describe("AgentSession TTSR resume gate", () => {
 			sessionManager,
 			settings: Settings.isolated({
 				"autonomy.stopGate": false,
+				"advisor.enabled": false,
 				"compaction.enabled": false,
 				"tools.approvalMode": "yolo",
 			}),
@@ -2882,6 +2941,7 @@ describe("AgentSession TTSR resume gate", () => {
 			sessionManager,
 			settings: Settings.isolated({
 				"autonomy.stopGate": false,
+				"advisor.enabled": false,
 				"compaction.enabled": false,
 				"tools.approvalMode": "yolo",
 			}),
@@ -3009,12 +3069,14 @@ describe("AgentSession TTSR resume gate", () => {
 			});
 
 			await session.prompt("Write the probe");
-			const result = agent.state.messages.find(
-				(message): message is Extract<typeof message, { role: "toolResult" }> =>
-					message.role === "toolResult" && message.toolCallId === toolCall.id,
+			const contextMessage = agent.state.messages.find(
+				(message): message is Extract<typeof message, { role: "developer" }> =>
+					message.role === "developer" &&
+					Array.isArray(message.content) &&
+					message.content.some(c => c.type === "text" && c.text.includes("<system-reminder")),
 			);
-			const reminder = Array.isArray(result?.content)
-				? result.content
+			const reminder = Array.isArray(contextMessage?.content)
+				? contextMessage.content
 						.filter((content): content is { type: "text"; text: string } => content.type === "text")
 						.map(content => content.text)
 						.join("\n")
@@ -3125,14 +3187,20 @@ describe("AgentSession TTSR resume gate", () => {
 			(message): message is Extract<typeof message, { role: "toolResult" }> =>
 				message.role === "toolResult" && message.toolCallId === toolCall.id,
 		);
-		const reminder = Array.isArray(result?.content)
-			? result.content
+		expect(result?.content).toEqual([{ type: "text", text: "probe ran" }]);
+		const contextMessage = agent.state.messages.find(
+			(message): message is Extract<typeof message, { role: "developer" }> =>
+				message.role === "developer" &&
+				Array.isArray(message.content) &&
+				message.content.some(c => c.type === "text" && c.text.includes("<system-reminder")),
+		);
+		const reminder = Array.isArray(contextMessage?.content)
+			? contextMessage.content
 					.filter((content): content is { type: "text"; text: string } => content.type === "text")
 					.map(content => content.text)
 					.join("\n")
 			: "";
 		expect(reminder).toContain('rule="probe-args"');
-		expect(reminder.indexOf("<system-reminder")).toBeLessThan(reminder.indexOf("probe ran"));
 	});
 
 	it("interruptMode never deduplicates the reminder across sibling tool calls in one batch", async () => {
@@ -3250,20 +3318,28 @@ describe("AgentSession TTSR resume gate", () => {
 			(m): m is Extract<typeof m, { role: "toolResult" }> => m.role === "toolResult",
 		);
 		expect(toolResults).toHaveLength(3);
-		const withReminder = toolResults.filter(r =>
-			Array.isArray(r.content)
-				? r.content.some(c => c.type === "text" && c.text.includes("<system-reminder"))
-				: false,
+		expect(
+			toolResults.every(result =>
+				Array.isArray(result.content)
+					? result.content.every(content => content.type !== "text" || !content.text.includes("<system-reminder"))
+					: true,
+			),
+		).toBe(true);
+		const reminders = agent.state.messages.filter(
+			(message): message is Extract<typeof message, { role: "developer" }> =>
+				message.role === "developer" &&
+				Array.isArray(message.content) &&
+				message.content.some(content => content.type === "text" && content.text.includes("<system-reminder")),
 		);
-		expect(withReminder).toHaveLength(1);
+		expect(reminders).toHaveLength(1);
 	});
 
 	it("prompt() waits for context-promotion continuation to finish", async () => {
 		collapseSchedulerSettleDelays();
 		const authStorage = sharedAuthStorage;
 		// The bundled catalog has no codex model whose promotion target carries a
-		// strictly larger window (gpt-5.5's bundled target gpt-5.4 is same-window),
-		// so pin gpt-5.5 (272k) -> gpt-5.6-sol (372k) via modelOverrides.
+		// strictly larger window, so pin gpt-6-luna (372k) -> gpt-6.1-sol (500k) via modelOverrides.
+		// The registry keeps standard windows: extended rows would put the source window (922k) above the target.
 		const modelsConfigPath = path.join(tempDir, "models-promo.json");
 		await Bun.write(
 			modelsConfigPath,
@@ -3271,18 +3347,18 @@ describe("AgentSession TTSR resume gate", () => {
 				providers: {
 					"openai-codex": {
 						modelOverrides: {
-							"gpt-5.5": { contextPromotionTarget: "openai-codex/gpt-5.6-sol" },
+							"gpt-6-luna": { contextPromotionTarget: "openai-codex/gpt-6.1-sol" },
 						},
 					},
 				},
 			}),
 		);
 		const modelRegistry = new ModelRegistry(authStorage, modelsConfigPath, {
-			settings: Settings.isolated({ "autonomy.stopGate": false, extendedContext: true }),
+			settings: Settings.isolated({ "autonomy.stopGate": false }),
 		});
 
-		const smallModel = modelRegistry.find("openai-codex", "gpt-5.5");
-		const largeModel = modelRegistry.find("openai-codex", "gpt-5.6-sol");
+		const smallModel = modelRegistry.find("openai-codex", "gpt-6-luna");
+		const largeModel = modelRegistry.find("openai-codex", "gpt-6.1-sol");
 		if (!smallModel || !largeModel) {
 			throw new Error("Expected small and large codex models to exist");
 		}

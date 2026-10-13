@@ -1,13 +1,13 @@
 import { authPolicyFor } from "@oh-my-pi/pi-catalog/compat/auth";
-import { $env, $envExact } from "@oh-my-pi/pi-utils";
+import { $env, $envExact, logger } from "@oh-my-pi/pi-utils";
 import { type ApiKeyResolver, markAfterSiblingWait, type ResolvedApiKey } from "../auth-retry";
+import { getEnvApiKey, getEnvApiKeyName } from "../env-api-key";
 import * as AIError from "../error";
 import { isUsageLimitOutcome } from "../error/rate-limit";
 import { AUTHENTICATED_SENTINEL } from "../registry/types";
-import { getEnvApiKey, getEnvApiKeyName } from "../stream";
 import type { SessionAffinity } from "./affinity";
 import type { CredentialPool } from "./pool";
-import type { CredentialSelector } from "./select";
+import type { CredentialSelector, OAuthResolutionResult } from "./select";
 import type {
 	AuthApiKeyOptions,
 	AuthApiKeyResolution,
@@ -16,6 +16,7 @@ import type {
 	AuthSourceOptions,
 	KeysApi,
 	LimitsApi,
+	OAuthRequestIdentity,
 } from "./types";
 
 /**
@@ -31,6 +32,7 @@ async function defaultConfigValueResolver(config: string): Promise<string | unde
 export class KeyOverrides {
 	#runtimeOverrides: Map<string, string> = new Map();
 	#configOverrides: Map<string, string> = new Map();
+	#configFallbacks: Map<string, string> = new Map();
 	#configValueResolver: (config: string) => Promise<string | undefined>;
 
 	constructor(resolver?: (config: string) => Promise<string | undefined>) {
@@ -41,12 +43,28 @@ export class KeyOverrides {
 		return this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider);
 	}
 
+	/**
+	 * Whether an override replaces OAuth for a session. Any override does for an
+	 * unrestricted session. A restricted session skips the runtime key, but a
+	 * config key still blocks OAuth: it marks the provider's endpoint (often a
+	 * proxy) as taking that key, so the session fails closed instead of sending
+	 * a pooled OAuth token there (see `KeyCascade.get`).
+	 */
+	suppressesOAuth(provider: string, restricted: boolean): boolean {
+		return restricted ? this.#configOverrides.has(provider) : this.has(provider);
+	}
+
 	runtimeKey(provider: string): string | undefined {
 		return this.#runtimeOverrides.get(provider);
 	}
 
 	configKey(provider: string): string | undefined {
 		return this.#configOverrides.get(provider);
+	}
+
+	/** Config value consulted only after stored OAuth/login credentials. */
+	fallbackKey(provider: string): string | undefined {
+		return this.#configFallbacks.get(provider);
 	}
 
 	/** Resolve a config value (env var name, "!command", literal) to the secret. */
@@ -78,16 +96,28 @@ export class KeyOverrides {
 	 *
 	 * Lower priority than {@link KeyOverrides.setRuntime} so a CLI `--api-key`
 	 * still wins for the duration of a single invocation.
+	 *
+	 * `fallback: true` instead ranks the value below stored OAuth and `/login`
+	 * credentials (at the env-var tier). Providers that own a `/login` flow use
+	 * this so their default key reference (e.g. an unset env-var name, which
+	 * resolves to its literal text) cannot shadow the key the user logged in with.
 	 */
-	setConfig(provider: string, apiKeyConfig: string): void {
-		this.#configOverrides.set(provider, apiKeyConfig);
+	setConfig(provider: string, apiKeyConfig: string, options?: { fallback?: boolean }): void {
+		if (options?.fallback) {
+			this.#configOverrides.delete(provider);
+			this.#configFallbacks.set(provider, apiKeyConfig);
+		} else {
+			this.#configFallbacks.delete(provider);
+			this.#configOverrides.set(provider, apiKeyConfig);
+		}
 	}
 
 	/**
-	 * Remove a single config-sourced API key override.
+	 * Remove a single config-sourced API key (override or fallback).
 	 */
 	removeConfig(provider: string): void {
 		this.#configOverrides.delete(provider);
+		this.#configFallbacks.delete(provider);
 	}
 
 	/**
@@ -96,6 +126,7 @@ export class KeyOverrides {
 	 */
 	clearConfig(): void {
 		this.#configOverrides.clear();
+		this.#configFallbacks.clear();
 	}
 
 	/**
@@ -177,7 +208,7 @@ export class KeyCascade implements KeysApi {
 	/**
 	 * Classify where a provider's auth comes from, following the same precedence
 	 * as {@link KeyCascade.get}: runtime override → config override →
-	 * stored OAuth → login-stored api_key → env var → stored api_key.
+	 * stored OAuth → login-stored api_key → config fallback → env var → stored api_key.
 	 * Returns undefined when no auth is configured.
 	 *
 	 * Compact, structured counterpart to {@link KeyCascade.describe}; `env`
@@ -192,6 +223,7 @@ export class KeyCascade implements KeysApi {
 		if (bearing.some(credential => credential.type === "api_key" && credential.source === "login")) {
 			return { kind: "api_key", concrete: true };
 		}
+		if (this.#deps.overrides.fallbackKey(provider) !== undefined) return { kind: "config", concrete: true };
 		if (
 			(env === "dedicated" && this.#hasDedicatedEnvAuth(provider)) ||
 			(env === "aliases" && (this.#hasDedicatedEnvAuth(provider) || Boolean(getEnvApiKey(provider))))
@@ -264,6 +296,9 @@ export class KeyCascade implements KeysApi {
 			return this.#deps.overrides.resolve(loginApiKeySelection.credential.key);
 		}
 
+		const fallbackKey = this.#deps.overrides.fallbackKey(provider);
+		if (fallbackKey !== undefined) return this.#deps.overrides.resolve(fallbackKey);
+
 		const envKey = getEnvApiKey(provider);
 		if (envKey) return envKey;
 
@@ -274,48 +309,90 @@ export class KeyCascade implements KeysApi {
 		return undefined;
 	}
 
-	/** Resolve a bearer together with the stored row that supplied it. */
+	/**
+	 * Resolve a bearer together with the stored row that supplied it, for a request.
+	 * Same precedence as {@link KeyCascade.get}, but rejects with
+	 * {@link AIError.OAuthRefreshUnavailableError} (transient, retryable) when OAuth
+	 * refresh failed with a retryable error and no other permitted source could serve
+	 * the request, so request paths retry instead of reporting a missing key.
+	 */
 	async getWithCredential(
 		provider: string,
 		sessionId?: string,
 		options?: AuthApiKeyOptions,
 	): Promise<ResolvedApiKey | undefined> {
 		let credentialId: number | undefined;
-		const apiKey = await this.get(provider, sessionId, options, id => {
+		let oauthIdentity: OAuthRequestIdentity | undefined;
+		const apiKey = await this.#resolve(provider, sessionId, options, (id, identity) => {
 			credentialId = id;
+			oauthIdentity = identity;
 		});
-		return apiKey === undefined ? undefined : { apiKey, credentialId };
+		return apiKey === undefined ? undefined : { apiKey, credentialId, ...(oauthIdentity ? { oauthIdentity } : {}) };
 	}
 
 	/**
 	 * Get API key for a provider.
 	 * Priority (first match wins): runtime override, config override, OAuth,
 	 * login API key, environment variable, then another stored API key.
+	 * A session restricted by `sessions.restrict` resolves only its allowed
+	 * OAuth accounts and throws {@link AIError.MissingApiKeyError} when none
+	 * can serve or a config key (a models.yml `apiKey`, often for a proxy
+	 * `baseUrl`) owns the provider, rather than using any other credential.
+	 * A transient OAuth refresh failure resolves `undefined`, so availability
+	 * probes move on to their next candidate; request paths use
+	 * {@link KeyCascade.getWithCredential}, which surfaces it.
 	 */
-	async get(
+	async get(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
+		try {
+			return await this.#resolve(provider, sessionId, options);
+		} catch (error) {
+			if (!(error instanceof AIError.OAuthRefreshUnavailableError)) throw error;
+			logger.debug("API key probe skipped transient OAuth refresh failure", { provider, error: error.message });
+			return undefined;
+		}
+	}
+
+	async #resolve(
 		provider: string,
 		sessionId?: string,
 		options?: AuthApiKeyOptions,
-		onCredentialId?: (id: number) => void,
+		onCredentialId?: (id: number, identity?: OAuthRequestIdentity) => void,
 	): Promise<string | undefined> {
-		return (await this.withOrigin(provider, sessionId, options, onCredentialId))?.apiKey;
+		return (await this.#resolveOrigin(provider, sessionId, options, onCredentialId))?.apiKey;
 	}
 
 	/**
-	 * Origin-bearing form of {@link KeyCascade.get}: same precedence, one
-	 * decision, plus the credential stratum the winning key came from. Callers
+	 * Origin-bearing form of {@link KeyCascade.getWithCredential}: same precedence,
+	 * one decision, plus the credential stratum the winning key came from. Callers
 	 * that must report or audit which credential authenticated a request (the
 	 * auth-gateway) use this instead of calling `get` and `source` separately,
-	 * which could disagree when a refresh rotates the pool in between.
+	 * which could disagree when a refresh rotates the pool in between. Rejects
+	 * with {@link AIError.OAuthRefreshUnavailableError} like
+	 * {@link KeyCascade.getWithCredential}.
 	 */
 	async withOrigin(
 		provider: string,
 		sessionId?: string,
 		options?: AuthApiKeyOptions,
-		onCredentialId?: (id: number) => void,
 	): Promise<AuthApiKeyResolution | undefined> {
+		let credentialId: number | undefined;
+		let oauthIdentity: OAuthRequestIdentity | undefined;
+		const resolution = await this.#resolveOrigin(provider, sessionId, options, (id, identity) => {
+			credentialId = id;
+			oauthIdentity = identity;
+		});
+		return resolution && { ...resolution, credentialId, ...(oauthIdentity ? { oauthIdentity } : {}) };
+	}
+
+	async #resolveOrigin(
+		provider: string,
+		sessionId?: string,
+		options?: AuthApiKeyOptions,
+		onCredentialId?: (id: number, identity?: OAuthRequestIdentity) => void,
+	): Promise<AuthApiKeyResolution | undefined> {
+		const restricted = this.#deps.affinity.isRestricted(provider, sessionId);
 		// Runtime override takes highest priority
-		const runtimeKey = this.#deps.overrides.runtimeKey(provider);
+		const runtimeKey = restricted ? undefined : this.#deps.overrides.runtimeKey(provider);
 		if (runtimeKey) {
 			return { apiKey: runtimeKey, origin: { kind: "runtime" } };
 		}
@@ -326,7 +403,13 @@ export class KeyCascade implements KeysApi {
 		// honor it instead of forwarding an upstream OAuth token that the proxy
 		// won't accept. Gateway callers can opt into OAuth-pool-first resolution
 		// (`preferOAuth`) while retaining this key as the fallback.
-		const configKey = this.#deps.overrides.configKey(provider);
+		if (restricted && this.#deps.overrides.configKey(provider) !== undefined) {
+			throw new AIError.MissingApiKeyError(
+				provider,
+				`No API key for provider: ${provider} (session ${sessionId} is restricted to its OAuth account pool, but models.yml configures an apiKey for this provider, and pooled OAuth tokens are never sent past it)`,
+			);
+		}
+		const configKey = restricted ? undefined : this.#deps.overrides.configKey(provider);
 		if (configKey !== undefined && !options?.preferOAuth) {
 			const apiKey = await this.#deps.overrides.resolve(configKey);
 			if (sessionId) this.#deps.affinity.forget(provider, sessionId);
@@ -339,10 +422,29 @@ export class KeyCascade implements KeysApi {
 			configKey !== undefined && options?.preferOAuth ? { ...options, allowBlockedOAuthFallback: false } : options;
 		// Precedence: a deliberate OAuth/login credential wins, then an explicit env var,
 		// then a stored static api_key (which may be a stale broker-migrated copy) as a last resort.
-		const oauthResolved = await this.#deps.selector.resolveOAuth(provider, sessionId, oauthOptions);
+		// A transient OAuth refresh failure still lets later sources serve the request; it is
+		// rethrown only when none can, so callers retry instead of reporting a missing key.
+		let oauthResolved: OAuthResolutionResult | undefined;
+		let oauthRefreshFailure: AIError.OAuthRefreshUnavailableError | undefined;
+		try {
+			oauthResolved = await this.#deps.selector.resolveOAuth(provider, sessionId, oauthOptions);
+		} catch (error) {
+			if (!(error instanceof AIError.OAuthRefreshUnavailableError)) throw error;
+			oauthRefreshFailure = error;
+		}
 		if (oauthResolved) {
-			if (oauthResolved.credentialId !== undefined) onCredentialId?.(oauthResolved.credentialId);
+			if (onCredentialId && oauthResolved.credentialId !== undefined) {
+				const { orgId, region, inferenceRegion } = oauthResolved.credential;
+				onCredentialId(oauthResolved.credentialId, { orgId, region, inferenceRegion });
+			}
 			return { apiKey: oauthResolved.apiKey, origin: { kind: "oauth" } };
+		}
+		if (restricted) {
+			if (oauthRefreshFailure) throw oauthRefreshFailure;
+			throw new AIError.MissingApiKeyError(
+				provider,
+				`No API key for provider: ${provider} (session ${sessionId} is restricted to its OAuth account pool and none of those accounts is available)`,
+			);
 		}
 
 		if (configKey !== undefined) {
@@ -350,7 +452,6 @@ export class KeyCascade implements KeysApi {
 			if (sessionId) this.#deps.affinity.forget(provider, sessionId);
 			return apiKey === undefined ? undefined : { apiKey, origin: { kind: "config" } };
 		}
-
 		const loginApiKeySelection = await this.#deps.selector.selectApiKey(
 			provider,
 			sessionId,
@@ -361,7 +462,9 @@ export class KeyCascade implements KeysApi {
 				!this.#unresolvedApiKeyCredentials.has(`${provider}:${credential.key}`),
 		);
 		if (loginApiKeySelection) {
-			this.#deps.affinity.record(provider, sessionId, "api_key", loginApiKeySelection.index);
+			if (options?.recordAffinity !== false) {
+				this.#deps.affinity.record(provider, sessionId, "api_key", loginApiKeySelection.index);
+			}
 			const credentialId = onCredentialId
 				? this.#deps.pool.entries(provider)[loginApiKeySelection.index]?.id
 				: undefined;
@@ -382,6 +485,12 @@ export class KeyCascade implements KeysApi {
 		// suppresses account_uuid for this session.
 		if (sessionId) this.#deps.affinity.forget(provider, sessionId);
 
+		const fallbackKey = this.#deps.overrides.fallbackKey(provider);
+		if (fallbackKey !== undefined) {
+			const apiKey = await this.#deps.overrides.resolve(fallbackKey);
+			return apiKey === undefined ? undefined : { apiKey, origin: { kind: "config" } };
+		}
+
 		const envKey = getEnvApiKey(provider);
 		if (envKey) return { apiKey: envKey, origin: { kind: "env", envVar: getEnvApiKeyName(provider) } };
 		const apiKeySelection = await this.#deps.selector.selectApiKey(
@@ -394,7 +503,9 @@ export class KeyCascade implements KeysApi {
 				!this.#unresolvedApiKeyCredentials.has(`${provider}:${credential.key}`),
 		);
 		if (apiKeySelection) {
-			this.#deps.affinity.record(provider, sessionId, "api_key", apiKeySelection.index);
+			if (options?.recordAffinity !== false) {
+				this.#deps.affinity.record(provider, sessionId, "api_key", apiKeySelection.index);
+			}
 			const credentialId = onCredentialId ? this.#deps.pool.entries(provider)[apiKeySelection.index]?.id : undefined;
 			const apiKey = await this.#deps.overrides.resolve(apiKeySelection.credential.key);
 			if (apiKey !== undefined) {
@@ -404,6 +515,7 @@ export class KeyCascade implements KeysApi {
 			}
 			this.#unresolvedApiKeyCredentials.add(`${provider}:${apiKeySelection.credential.key}`);
 		}
+		if (oauthRefreshFailure) throw oauthRefreshFailure;
 		return undefined;
 	}
 
@@ -528,6 +640,7 @@ export class KeyCascade implements KeysApi {
 				!this.isKeylessFallback(provider, credential),
 		);
 		if (loginApiKeySource) return loginApiKeySource;
+		if (this.#deps.overrides.fallbackKey(provider) !== undefined) return "provider config (fallback)";
 		if (getEnvApiKey(provider)) return `env (over ${baseLabel})`;
 		const apiKeySource = describeStored(
 			"api_key",
@@ -545,8 +658,8 @@ export class KeyCascade implements KeysApi {
 		this.#deps.overrides.removeRuntime(provider);
 	}
 
-	setConfig(provider: string, apiKeyConfig: string): void {
-		this.#deps.overrides.setConfig(provider, apiKeyConfig);
+	setConfig(provider: string, apiKeyConfig: string, options?: { fallback?: boolean }): void {
+		this.#deps.overrides.setConfig(provider, apiKeyConfig, options);
 	}
 
 	removeConfig(provider: string): void {

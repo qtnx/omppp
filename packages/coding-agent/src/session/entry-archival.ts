@@ -110,13 +110,13 @@ function archiveContent(content: unknown, blobs: BlobStore): void {
 	}
 }
 
-function rehydrateContent(content: unknown, blobs: BlobStore): void {
+function rehydrateContent(content: unknown, blobs: BlobStore, images: boolean): void {
 	if (!Array.isArray(content)) return;
 	for (const block of content) {
 		if (isMutableTextBlock(block)) {
 			block.text = resolveText(block.text, blobs);
 		} else if (isMutableImageBlock(block)) {
-			resolveImage(block, blobs);
+			if (images) resolveImage(block, blobs);
 		} else if (isMutableThinkingBlock(block)) {
 			block.thinking = resolveText(block.thinking, blobs);
 			if (typeof block.thinkingSignature === "string") {
@@ -154,20 +154,21 @@ function archiveCustomData(value: unknown, blobs: BlobStore): void {
 	}
 }
 
-function rehydrateCustomData(value: unknown, blobs: BlobStore): void {
+function rehydrateCustomData(value: unknown, blobs: BlobStore, images: boolean): void {
 	if (Array.isArray(value)) {
-		for (const item of value) rehydrateCustomData(item, blobs);
+		for (const item of value) rehydrateCustomData(item, blobs, images);
 		return;
 	}
 	if (typeof value !== "object" || value === null) return;
 	if (isMutableImageBlock(value)) {
-		resolveImage(value, blobs);
+		if (images) resolveImage(value, blobs);
 		return;
 	}
 	const record = value as Record<string, unknown>;
 	for (const [key, child] of Object.entries(record)) {
 		if (typeof child === "string") {
 			if (key === "image_url" && isBlobRef(child)) {
+				if (!images) continue;
 				const hash = parseBlobRef(child);
 				const data = hash ? blobs.getSync(hash) : null;
 				if (!data) {
@@ -179,7 +180,7 @@ function rehydrateCustomData(value: unknown, blobs: BlobStore): void {
 			}
 			continue;
 		}
-		rehydrateCustomData(child, blobs);
+		rehydrateCustomData(child, blobs, images);
 	}
 }
 
@@ -234,22 +235,31 @@ export function archiveEntries(entries: SessionEntry[], blobs: BlobStore): void 
  * path wants them cold, because the context builder resolves only the newest
  * frames that fit its budget (`resolveFrameData`). The explicit archival
  * round-trip keeps the default so `archiveEntries` stays byte-reversible.
+ *
+ * `images: false` leaves image payloads alone: the session-load path resolves them
+ * itself (`resolveBlobRefsInEntries`), deduplicating reads and keeping the ref of a
+ * blob that is still missing so a later load can retry it.
  */
-export function rehydrateEntries(entries: SessionEntry[], blobs: BlobStore, options: { frames?: boolean } = {}): void {
+export function rehydrateEntries(
+	entries: SessionEntry[],
+	blobs: BlobStore,
+	options: { frames?: boolean; images?: boolean } = {},
+): void {
+	const images = options.images !== false;
 	for (const entry of entries) {
 		if (entry.type === "message") {
 			const message = entry.message as { content?: unknown; role?: string; details?: unknown };
 			if (Array.isArray(message.content)) {
-				rehydrateContent(message.content, blobs);
+				rehydrateContent(message.content, blobs, images);
 			} else if (typeof message.content === "string") {
 				message.content = resolveText(message.content, blobs);
 			}
-			if (entry.message.role === "toolResult") rehydrateDetailImages(entry.message.details, blobs);
+			if (images && entry.message.role === "toolResult") rehydrateDetailImages(entry.message.details, blobs);
 		} else if (entry.type === "custom_message") {
-			if (Array.isArray(entry.content)) rehydrateContent(entry.content, blobs);
+			if (Array.isArray(entry.content)) rehydrateContent(entry.content, blobs, images);
 			else if (typeof entry.content === "string") entry.content = resolveText(entry.content, blobs);
 		} else if (entry.type === "custom") {
-			rehydrateCustomData(entry.data, blobs);
+			rehydrateCustomData(entry.data, blobs, images);
 		}
 		if (options.frames !== false) rehydrateFrames(entry, blobs);
 	}

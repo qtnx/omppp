@@ -54,6 +54,10 @@ import {
 import { OverlayPanel, PanelDivider, PanelRows } from "../chrome/overlay-box";
 import { formatKeyHint } from "../app-keybindings";
 import { editorKey, editorKeys } from "../chrome/keybinding-hints";
+import type { TspSpan, TspTableColumn, TspText, TspTone } from "@oh-my-pi/pi-wire";
+import { col, elapsed, node, span, text } from "../native/describe";
+import { type DescribeContext, leafKey, type NativeChild, type NativeNode, type NativeUiEvent } from "../native/node";
+import { actionBar, actionButton } from "../native/overlay";
 
 /** Local calendar-day activity consumed by the usage heatmap. */
 export interface DailyActivityPoint {
@@ -94,10 +98,12 @@ export interface ProviderCard {
 	/** Number of represented accounts, including unavailable usage lookups. */
 	accounts: number;
 	unavailableAccounts: string[];
-	/** Window rows sorted most-pressing first. */
+	/** Window rows in provider-declared order (e.g. 5h → weekly → monthly); the fullest CARD_MAX_WINDOWS lead. */
 	windows: CardWindowRow[];
-	/** True when every account reports no limits (e.g. enterprise plans). */
+	/** True when every account reports no limits (e.g. enterprise plans, providers without a quota API). */
 	unlimited: boolean;
+	/** Distinct report notes across accounts (e.g. why a provider exposes no quota windows). */
+	notes: string[];
 	/** True when nothing is used anywhere (or there are no limits): collapses to a tick. */
 	idle: boolean;
 	resetCredits?: {
@@ -156,8 +162,10 @@ function compactWindowTag(window: NonNullable<UsageLimit["window"]>): string {
  * Collapse usage reports into one compact card per provider: limits grouped by
  * quota bucket (label + window), each bucket showing the mean used fraction
  * across accounts (matching the classic report's aggregate "% free") with the
- * most-used account's reset countdown. Cards sort most-pressing first so
- * what's burning is on top-left; fully idle providers collapse into a tick.
+ * most-used account's reset countdown. Rows keep the provider's declared window
+ * order so 5h → week → month reads the same every time; cards sort by their
+ * fullest window so what's burning is on top-left; fully idle providers
+ * collapse into a tick.
  */
 export function buildProviderCards(
 	reports: UsageReport[],
@@ -191,7 +199,7 @@ export function buildProviderCards(
 			}
 		}
 
-		const windows: CardWindowRow[] = [...buckets.values()].map(bucket => {
+		const declared: CardWindowRow[] = [...buckets.values()].map(bucket => {
 			const fractions = bucket.limits
 				.map(limit => resolveUsedFraction(limit))
 				.filter((value): value is number => value !== undefined);
@@ -210,7 +218,13 @@ export function buildProviderCards(
 				usedText: fraction === undefined ? formatAbsoluteOnlyAmount(bucket.limits) : undefined,
 			};
 		});
-		windows.sort((a, b) => (b.fraction ?? -1) - (a.fraction ?? -1));
+		// Cards render at most CARD_MAX_WINDOWS rows; when a provider declares
+		// more, keep the fullest ones visible (still in declared order) so an
+		// exhausted bucket never hides behind "+N more".
+		const visible = new Set(
+			[...declared].sort((a, b) => (b.fraction ?? -1) - (a.fraction ?? -1)).slice(0, CARD_MAX_WINDOWS),
+		);
+		const windows = [...declared.filter(row => visible.has(row)), ...declared.filter(row => !visible.has(row))];
 		// The window tag earns its columns only when sibling rows would otherwise
 		// be indistinguishable (e.g. Antigravity's daily vs weekly "Usage (Google)").
 		for (const window of windows) {
@@ -264,6 +278,7 @@ export function buildProviderCards(
 			unavailableAccounts: unavailable,
 			windows,
 			unlimited: windows.length === 0 && unavailable.length === 0,
+			notes: [...new Set(providerReports.flatMap(report => report.notes ?? []))],
 			idle:
 				unavailable.length === 0 &&
 				!resetCredits &&
@@ -274,9 +289,12 @@ export function buildProviderCards(
 		});
 	}
 
+	const worstFraction = new Map(
+		cards.map(card => [card, card.windows.reduce((max, window) => Math.max(max, window.fraction ?? -1), -1)]),
+	);
 	cards.sort((a, b) => {
-		const aWorst = a.windows[0]?.fraction ?? -1;
-		const bWorst = b.windows[0]?.fraction ?? -1;
+		const aWorst = worstFraction.get(a)!;
+		const bWorst = worstFraction.get(b)!;
 		if (aWorst !== bWorst) return bWorst - aWorst;
 		return a.name.localeCompare(b.name);
 	});
@@ -295,6 +313,8 @@ export interface HeatmapLayout {
 	cells: (number | null)[][];
 	totalCost: number;
 	totalRequests: number;
+	/** Local midnight of the first cell (column 0, Monday). */
+	start: Date;
 }
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -360,6 +380,7 @@ export function buildHeatmapLayout(points: DailyActivityPoint[], weeks: number, 
 		cells,
 		totalCost: inRange.reduce((sum, point) => sum + point.cost, 0),
 		totalRequests: inRange.reduce((sum, point) => sum + point.requests, 0),
+		start,
 	};
 }
 
@@ -478,6 +499,249 @@ export function renderCacheSummaryLines(summary: CacheSummary, width: number): s
 }
 
 // =============================================================================
+// Native description helpers
+// =============================================================================
+
+/** Weeks of history the native heatmap carries (a year, GitHub-style). */
+const NATIVE_HEATMAP_WEEKS = 53;
+/** Span tokens for heatmap intensity levels 1..4 (the `table` fallback). */
+const HEAT_LEVEL_TOKENS = ["dim", "accent dim", "accent", "accent strong"];
+/** Heatmap row labels, Monday first like omp's grid: M/W/F only. */
+const HEATMAP_ROW_LABELS = ["M", "", "W", "", "F", "", ""];
+const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** Meter tone of a quota window: ok is the accent fill, pressure warns, exhaustion errors. */
+function statusTone(status: UsageLimit["status"]): TspTone {
+	if (status === "exhausted") return "error";
+	if (status === "warning") return "warning";
+	if (status === "ok") return "accent";
+	return "muted";
+}
+
+/** Status dot before a provider's name, toned by the card's aggregate status. */
+function statusDot(status: UsageLimit["status"]): NativeNode {
+	const token =
+		status === "exhausted" ? "error" : status === "warning" ? "warning" : status === "ok" ? "success" : "dim";
+	const label =
+		status === "exhausted"
+			? "Exhausted"
+			: status === "warning"
+				? "Under pressure"
+				: status === "ok"
+					? "OK"
+					: "Unknown";
+	return text([span("●", token)], { role: "omp.usage.dot", title: label, aria: label });
+}
+
+/**
+ * Used-fraction bar of a quota window, toned by status: a `meter` where the
+ * terminal draws one, else a `progress` bar.
+ */
+function usageMeter(fraction: number, status: UsageLimit["status"], meter: boolean): NativeNode {
+	const value = Math.min(Math.max(fraction, 0), 1);
+	const tone = statusTone(status);
+	return meter ? node("meter", { value, style: "bar", size: "md", tone }) : node("progress", { value, tone, grow: 1 });
+}
+
+/** `Mon 28 Sep` for a local date. */
+function shortDate(date: Date): string {
+	return `${WEEKDAY_NAMES[date.getDay()]} ${date.getDate()} ${MONTH_NAMES[date.getMonth()]}`;
+}
+
+/** `18:00` for a local time. */
+function clockTime(date: Date): string {
+	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * When a window resets, relative to `nowMs`: `resets 18:00` today, `resets
+ * Tue 18:00` within the week, `resets 3 Oct` beyond; the title carries the
+ * absolute date and the countdown.
+ */
+function resetLabel(nowMs: number, resetMs: number): { text: string; title: string } {
+	const at = new Date(nowMs + resetMs);
+	const now = new Date(nowMs);
+	const sameDay = at.toDateString() === now.toDateString();
+	const text = sameDay
+		? `resets ${clockTime(at)}`
+		: resetMs < 6 * 86_400_000
+			? `resets ${WEEKDAY_NAMES[at.getDay()]} ${clockTime(at)}`
+			: `resets ${at.getDate()} ${MONTH_NAMES[at.getMonth()]}`;
+	return {
+		text,
+		title: `Resets ${shortDate(at)} ${at.getFullYear()}, ${clockTime(at)} (in ${formatDuration(resetMs)})`,
+	};
+}
+
+function mutedText(content: string, wrap = false): NativeNode {
+	return text([span(content, "muted")], wrap ? { wrap: "word" } : { truncate: "end" });
+}
+
+/**
+ * A quiet row under the provider rows naming the providers that get none
+ * (`Untouched   Kimi Code, Zai`): the label sits in the provider column, the
+ * names in the quota column; `title` says why on hover.
+ */
+function footnote(key: string, label: string, cards: readonly ProviderCard[], title?: string): NativeNode {
+	const names = cards.map(card => card.name).join(", ");
+	return node(
+		"row",
+		{ role: "omp.usage.footnote", align: "baseline", ...(title ? { title: sanitizeDisplayLine(title) } : {}) },
+		[text([span(label, "dim")], { role: "omp.usage.footnote.k" }), text([span(names)], { wrap: "word" })],
+		key,
+	);
+}
+
+/** A section's title over its rows (`Quotas`, `Activity`) with quiet facts at its right end. */
+function sectionHead(title: string, meta: readonly NativeChild[]): NativeNode {
+	return node(
+		"row",
+		{ role: "omp.usage.section", gap: "sm", align: "center" },
+		[text([span(title)], { role: "omp.usage.section.title" }), node("spacer", { grow: 1 }), ...meta],
+		"head",
+	);
+}
+
+/**
+ * One headline figure of the summary strip: a small label, the figure (with an
+ * optional chart beside it), and a line of context under it.
+ */
+function statTile(
+	key: string,
+	label: string,
+	value: TspText,
+	sub: TspText,
+	options: { chart?: NativeNode; title?: string } = {},
+): NativeNode {
+	const figure: NativeChild[] = [text(value, { role: "omp.usage.stat.value", truncate: "end" })];
+	if (options.chart) figure.push(options.chart);
+	return node(
+		"col",
+		{ role: "omp.usage.stat", gap: "xs", ...(options.title ? { title: options.title } : {}) },
+		[
+			text([span(label)], { role: "omp.usage.stat.label", truncate: "end" }),
+			node("row", { gap: "md", align: "end" }, figure, "figure"),
+			text(sub, { role: "omp.usage.stat.sub", truncate: "end" }),
+		],
+		key,
+	);
+}
+
+/** `62%` in mono, toned like the window's status, then a quiet `left`. */
+function leftSpans(fraction: number, status: UsageLimit["status"]): TspSpan[] {
+	const token = status === "exhausted" ? "mono error" : status === "warning" ? "mono warning" : "mono";
+	return [span(`${Math.max(0, Math.round((1 - fraction) * 100))}%`, token), span(" left", "dim")];
+}
+
+/** Stable, human account name for a report in the detail view. */
+function reportAccountLabel(report: UsageReport, limit: UsageLimit | undefined, index: number): string {
+	const metadata = report.metadata;
+	const pick = (value: unknown): string | undefined => (typeof value === "string" && value ? value : undefined);
+	const identity =
+		pick(metadata?.email) ??
+		pick(metadata?.accountId) ??
+		pick(metadata?.projectId) ??
+		pick(limit?.scope.projectId) ??
+		`account ${index + 1}`;
+	const org = pick(metadata?.orgName);
+	return sanitizeDisplayLine(org && org !== identity ? `${identity} (${org})` : identity);
+}
+
+/** Window qualifier worth showing after a limit title (none when the title already names it). */
+function detailWindowLabel(label: string, limit: UsageLimit): string | undefined {
+	const windowLabel = limit.window?.label ?? limit.window?.id ?? limit.scope.windowId;
+	if (!windowLabel) return undefined;
+	const normalized = windowLabel.toLowerCase();
+	if (normalized === "quota window" || label.toLowerCase().includes(normalized)) return undefined;
+	return sanitizeDisplayLine(windowLabel);
+}
+
+const WHOLE_DOLLARS = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+const COMPACT_COUNT = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+
+/** `$1,234`, `$759`, `$84.20`, `$0.13`: cents only below $100. */
+function formatCost(cost: number): string {
+	if (cost <= 0) return "$0";
+	return cost >= 100 ? `$${WHOLE_DOLLARS.format(cost)}` : `$${cost.toFixed(2)}`;
+}
+
+function requestsText(requests: number): string {
+	return `${COMPACT_COUNT.format(requests)} request${requests === 1 ? "" : "s"}`;
+}
+
+/** Days the spend spark and the "Last 30 days" figure cover. */
+const MONTH_DAYS = 30;
+
+interface ActivityDay {
+	date: Date;
+	cost: number;
+	requests: number;
+}
+
+/** Headline figures of the activity history behind the summary strip and the calendar's foot. */
+interface ActivityFigures {
+	/** Whether any day in range carries a price (else figures fall back to request counts). */
+	priced: boolean;
+	/** The last {@link MONTH_DAYS} days, oldest first. */
+	month: ActivityDay[];
+	monthCost: number;
+	monthRequests: number;
+	busiest?: ActivityDay;
+	activeDays: number;
+	longestStreak: number;
+}
+
+/** Derive the headline figures from the daily points over the heatmap's range. */
+function activityFigures(
+	points: readonly DailyActivityPoint[],
+	layout: HeatmapLayout,
+	today = new Date(),
+): ActivityFigures {
+	const byDay = new Map(points.map(point => [point.day, point]));
+	const today0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+	const priced = layout.totalCost > 0;
+	const weight = (day: ActivityDay): number => (priced ? day.cost : day.requests);
+	const month: ActivityDay[] = [];
+	for (let back = MONTH_DAYS - 1; back >= 0; back--) {
+		const date = addDays(today0, -back);
+		const point = byDay.get(localIso(date));
+		month.push({ date, cost: point?.cost ?? 0, requests: point?.requests ?? 0 });
+	}
+	let busiest: ActivityDay | undefined;
+	let activeDays = 0;
+	let streak = 0;
+	let longestStreak = 0;
+	for (let date = layout.start; date <= today0; date = addDays(date, 1)) {
+		const point = byDay.get(localIso(date));
+		if (!point || (point.cost <= 0 && point.requests <= 0)) {
+			streak = 0;
+			continue;
+		}
+		activeDays++;
+		streak++;
+		longestStreak = Math.max(longestStreak, streak);
+		const day = { date, cost: point.cost, requests: point.requests };
+		if (!busiest || weight(day) > weight(busiest)) busiest = day;
+	}
+	return {
+		priced,
+		month,
+		monthCost: month.reduce((sum, day) => sum + day.cost, 0),
+		monthRequests: month.reduce((sum, day) => sum + day.requests, 0),
+		busiest,
+		activeDays,
+		longestStreak,
+	};
+}
+
+/** `$1,234 · 5.6K requests` totals for the activity summary. */
+function formatActivityTotals(layout: HeatmapLayout): string {
+	const cost =
+		layout.totalCost >= 1 ? `$${WHOLE_DOLLARS.format(layout.totalCost)}` : `$${layout.totalCost.toFixed(2)}`;
+	return `${cost} · ${COMPACT_COUNT.format(layout.totalRequests)} requests`;
+}
+
+// =============================================================================
 // Component
 // =============================================================================
 
@@ -486,10 +750,10 @@ export interface UsageDashboardOptions {
 	reports: UsageReport[];
 	unavailableAccounts?: readonly UnavailableUsageAccount[];
 	/**
-	 * Full classic `/usage` report for the expanded detail view; re-invoked per
-	 * terminal width.
+	 * Full classic `/usage` report of `reports` (the latest refresh) for the
+	 * expanded detail view; re-invoked per terminal width.
 	 */
-	renderDetail: (width: number) => string;
+	renderDetail: (width: number, reports: UsageReport[]) => string;
 	/**
 	 * Stream daily activity into the heatmap: push cached DB rows immediately,
 	 * then push again after an incremental session sync. Resolves when the sync
@@ -499,6 +763,8 @@ export interface UsageDashboardOptions {
 	loadActivity: (push: (points: DailyActivityPoint[]) => void, signal: AbortSignal) => Promise<void>;
 	/** Session prompt-cache composition; omitted when the session billed no prompt tokens. */
 	cacheSummary?: CacheSummary;
+	/** Re-fetch the usage reports (`r`); omitted when the host can't. Resolves null when nothing came back. */
+	refresh?: () => Promise<UsageReport[] | null>;
 	requestRender: () => void;
 	onClose: () => void;
 }
@@ -533,15 +799,24 @@ interface CardRowLayout {
 }
 
 export class UsageDashboardComponent implements Component {
+	/** The terminal draws the sheet: a large glass overlay titled Usage. */
+	readonly nativeOverlay = { role: "omp.overlay.usage", size: "lg", anchor: "center", head: "Usage" } as const;
 	#options: UsageDashboardOptions;
+	#reports: UsageReport[];
 	#cards: ProviderCard[];
 	#nowMs: number;
+	#refreshing = false;
+	#refreshError: string | null = null;
+	/** Bumped whenever anything the native description shows changes. */
+	#revision = 0;
 	#view: "overview" | "detail" = "overview";
 	#scroll = 0;
 	#activity: DailyActivityPoint[] | null = null;
 	#activityError: string | null = null;
 	#syncing = true;
 	#detailCache: { width: number; lines: string[] } | null = null;
+	/** ANSI overview rows; rebuilt when the revision or width changes. */
+	#overviewCache: { revision: number; width: number; lines: string[] } | null = null;
 	#lastViewportRows = 10;
 	#closed = false;
 	readonly #panel: OverlayPanel;
@@ -549,12 +824,14 @@ export class UsageDashboardComponent implements Component {
 	readonly #body: PanelRows;
 	readonly #footer: PanelRows;
 	readonly #closeController = new AbortController();
+	#nativeCache: { revision: number; meter: boolean; chart: boolean; node: NativeNode } | undefined;
 
 	constructor(options: UsageDashboardOptions) {
 		ensureThemeSync();
 		this.#options = options;
+		this.#reports = options.reports;
 		this.#nowMs = Date.now();
-		this.#cards = buildProviderCards(options.reports, this.#nowMs, options.unavailableAccounts);
+		this.#cards = buildProviderCards(this.#reports, this.#nowMs, options.unavailableAccounts);
 		this.#panel = new OverlayPanel("Usage");
 		this.#header = new PanelRows();
 		this.#header.setHeight(1);
@@ -573,18 +850,19 @@ export class UsageDashboardComponent implements Component {
 			await this.#options.loadActivity(points => {
 				if (this.#closed) return;
 				this.#activity = points;
-				this.#options.requestRender();
+				this.#changed();
 			}, this.#closeController.signal);
 		} catch (error) {
 			this.#activityError = error instanceof Error ? error.message : String(error);
 		} finally {
 			this.#syncing = false;
-			if (!this.#closed) this.#options.requestRender();
+			if (!this.#closed) this.#changed();
 		}
 	}
 
 	invalidate(): void {
 		this.#detailCache = null;
+		this.#overviewCache = null;
 		this.#panel.invalidate();
 	}
 
@@ -829,12 +1107,8 @@ export class UsageDashboardComponent implements Component {
 		const ramp = this.#heatRamp();
 		const reset = "\x1b[39m";
 
-		const cost = formatUsd(layout.totalCost);
-		const requests = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
-			layout.totalRequests,
-		);
 		summary.push(
-			`${theme.bold(theme.fg("accent", "Activity"))} ${theme.fg("dim", `${cost} · ${requests} requests · last ${weeks} weeks`)}${this.#syncing ? theme.fg("dim", " · syncing…") : ""}`,
+			`${theme.bold(theme.fg("accent", "Activity"))} ${theme.fg("dim", `${formatActivityTotals(layout)} · last ${weeks} weeks`)}${this.#syncing ? theme.fg("dim", " · syncing…") : ""}`,
 		);
 		summary.push("");
 
@@ -866,6 +1140,8 @@ export class UsageDashboardComponent implements Component {
 	// ---------------------------------------------------------------------------
 
 	#overviewLines(innerWidth: number): string[] {
+		const cached = this.#overviewCache;
+		if (cached?.revision === this.#revision && cached.width === innerWidth) return cached.lines;
 		const lines: string[] = [];
 		lines.push(...this.#renderCardsGrid(innerWidth));
 		if (this.#options.cacheSummary) {
@@ -874,12 +1150,16 @@ export class UsageDashboardComponent implements Component {
 		}
 		lines.push("");
 		lines.push(...this.#renderHeatmap(innerWidth));
+		this.#overviewCache = { revision: this.#revision, width: innerWidth, lines };
 		return lines;
 	}
 
 	#detailLines(innerWidth: number): string[] {
 		if (this.#detailCache?.width !== innerWidth) {
-			this.#detailCache = { width: innerWidth, lines: this.#options.renderDetail(innerWidth).split("\n") };
+			this.#detailCache = {
+				width: innerWidth,
+				lines: this.#options.renderDetail(innerWidth, this.#reports).split("\n"),
+			};
 		}
 		return this.#detailCache.lines;
 	}
@@ -895,22 +1175,753 @@ export class UsageDashboardComponent implements Component {
 		const maxScroll = Math.max(0, contentSource.length - contentRows);
 		if (this.#scroll > maxScroll) this.#scroll = maxScroll;
 
-		const latestFetchedAt = Math.max(0, ...this.#options.reports.map(report => report.fetchedAt ?? 0));
-		const checkedText = latestFetchedAt ? `checked ${formatDuration(this.#nowMs - latestFetchedAt)} ago` : "";
+		const latestFetchedAt = Math.max(0, ...this.#reports.map(report => report.fetchedAt ?? 0));
+		const checkedText = this.#refreshing
+			? "refreshing…"
+			: latestFetchedAt
+				? `checked ${formatDuration(this.#nowMs - latestFetchedAt)} ago`
+				: "";
 		const title = this.#view === "detail" ? "Usage · Details" : "Usage";
 
 		const scrollHint = maxScroll > 0 ? `${editorKeys("tui.select.up", "tui.select.down")} scroll · ` : "";
 		const cancel = editorKey("tui.select.cancel");
+		const refreshHint = this.#options.refresh ? "r refresh · " : "";
 		const hint =
 			this.#view === "detail"
-				? `${scrollHint}${cancel} back`
-				: `${scrollHint}${formatKeyHint("enter")} details · ${cancel} close`;
+				? `${scrollHint}${refreshHint}${cancel} back`
+				: `${scrollHint}${refreshHint}${formatKeyHint("enter")} details · ${cancel} close`;
 		this.#panel.title = title;
 		this.#header.setLines([checkedText ? theme.fg("dim", checkedText) : ""]);
 		this.#body.setLines(contentSource.slice(this.#scroll, this.#scroll + contentRows));
 		this.#body.setHeight(contentRows);
 		this.#footer.setLines([theme.fg("dim", hint)]);
 		return this.#panel.render(width);
+	}
+
+	// ---------------------------------------------------------------------------
+	// Native description
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * The sheet body (the terminal's `lg` overlay is the frame): a toolbar
+	 * (Overview/Details, freshness, Refresh), then either the overview — a
+	 * strip of headline figures, the quota rows per provider, the activity
+	 * calendar — or the per-provider detail tables, then Close like the other
+	 * report sheets. `meter`/`chart` fall back to `progress`/`table` on
+	 * terminals without them. Rebuilt only when its inputs change.
+	 */
+	describe(cx: DescribeContext): NativeNode {
+		const meter = cx.supports("meter");
+		const chart = cx.supports("chart");
+		const cache = this.#nativeCache;
+		if (cache && cache.revision === this.#revision && cache.meter === meter && cache.chart === chart) {
+			return cache.node;
+		}
+		const body = this.#view === "detail" ? this.#describeDetail() : this.#describeOverview(meter, chart);
+		// Esc leaves Details for Overview first, so only Overview's Close wears its keycap.
+		const close = actionButton("Close", "close", this.#view === "overview" ? { keys: "escape" } : {});
+		const root = col(
+			[
+				this.#describeHead(),
+				node("col", { role: "omp.usage.body", gap: "lg" }, body, this.#view),
+				actionBar([null, close]),
+			],
+			{ gap: "lg" },
+		);
+		this.#nativeCache = { revision: this.#revision, meter, chart, node: root };
+		return root;
+	}
+
+	/** Tab clicks switch views like Enter/Esc; the Refresh button runs `r`; Close closes from either view. */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (event.type === "action") {
+			if (event.act === "refresh") void this.#refresh();
+			else if (event.act === "close") this.#close();
+			return;
+		}
+		if (event.type !== "select" && event.type !== "activate") return;
+		if (leafKey(event.key) !== "tabs") return;
+		if ((event.item === "overview" || event.item === "detail") && event.item !== this.#view) {
+			this.#setView(event.item);
+		}
+	}
+
+	/** The toolbar: the two views as a segmented control, then how fresh the reports are and Refresh. */
+	#describeHead(): NativeNode {
+		const checked: NativeChild[] = [];
+		const latestFetchedAt = Math.max(0, ...this.#reports.map(report => report.fetchedAt ?? 0));
+		if (this.#refreshing) {
+			checked.push(node("spinner", { style: "dots", label: [span("Refreshing…", "dim")] }));
+		} else if (this.#refreshError) {
+			checked.push(
+				text([span(`Refresh failed: ${sanitizeDisplayLine(this.#refreshError)}`, "warning")], {
+					truncate: "end",
+					title: sanitizeDisplayLine(this.#refreshError),
+				}),
+			);
+		} else if (latestFetchedAt) {
+			checked.push(
+				text([span("Updated", "dim")]),
+				elapsed(Date.now() - latestFetchedAt),
+				text([span("ago", "dim")]),
+			);
+		}
+		const children: NativeChild[] = [
+			node(
+				"tabs",
+				{
+					items: [
+						{ id: "overview", label: "Overview" },
+						{ id: "detail", label: "Details" },
+					],
+					active: this.#view,
+				},
+				undefined,
+				"tabs",
+			),
+			node("spacer", { grow: 1 }),
+			node("row", { gap: "xs", align: "baseline", shrink: 1 }, checked, "checked"),
+		];
+		if (this.#options.refresh) children.push(actionButton("Refresh", "refresh", { keys: "r" }));
+		return node("row", { role: "omp.usage.head", gap: "md", align: "center" }, children, "head");
+	}
+
+	/**
+	 * The overview: headline figures, then a row per provider with something
+	 * to show (the rest named in footnote rows), then the activity calendar.
+	 * With nothing used anywhere it is one empty state instead.
+	 */
+	#describeOverview(meter: boolean, chart: boolean): NativeChild[] {
+		// Only providers with something to show get a row: the rest are named
+		// in footnotes, whether untouched, unreadable or quota-less.
+		const framed: ProviderCard[] = [];
+		const untouched: ProviderCard[] = [];
+		const unreported: ProviderCard[] = [];
+		const unmetered: ProviderCard[] = [];
+		for (const entry of this.#cards) {
+			const shown =
+				entry.windows.length > 0 || entry.resetCredits !== undefined || entry.daybreakAccounts !== undefined;
+			if (!shown) (entry.unavailableAccounts.length > 0 ? unreported : unmetered).push(entry);
+			else if (entry.idle) untouched.push(entry);
+			else framed.push(entry);
+		}
+		const notes: NativeNode[] = [];
+		if (untouched.length > 0) notes.push(footnote("idle", "Untouched", untouched));
+		if (unreported.length > 0) {
+			const accounts = unreported.flatMap(entry =>
+				entry.unavailableAccounts.map(account => `${entry.name} (${account})`),
+			);
+			notes.push(
+				footnote(
+					"unreported",
+					"No usage data",
+					unreported,
+					`No usage report came back for ${accounts.join(", ")}: the sign-in expired, the request failed, or the plan has no quotas`,
+				),
+			);
+		}
+		if (unmetered.length > 0) {
+			const why = unmetered.flatMap(entry => entry.notes.map(note => `${entry.name}: ${note}`));
+			notes.push(
+				footnote(
+					"unmetered",
+					"No quotas reported",
+					unmetered,
+					why.length > 0 ? why.join(" • ") : "These providers report no quota windows to track",
+				),
+			);
+		}
+
+		const points = this.#activity;
+		const layout = points ? buildHeatmapLayout(points, NATIVE_HEATMAP_WEEKS) : undefined;
+		const figures = points && layout ? activityFigures(points, layout) : undefined;
+		const quiet = layout !== undefined && layout.totalCost <= 0 && layout.totalRequests <= 0;
+		if (framed.length === 0 && quiet && !this.#activityError) {
+			const children: NativeChild[] = [
+				node("icon", { name: "gauge" }, undefined, "icon"),
+				text([span("No usage yet")], { role: "omp.usage.empty.title" }),
+				text(
+					[
+						span(
+							"Quotas show here once a signed-in provider reports usage, and the calendar fills in as you work.",
+							"muted",
+						),
+					],
+					{ role: "omp.usage.empty.body", wrap: "word" },
+				),
+			];
+			if (notes.length > 0) children.push(node("col", { gap: "xs" }, notes, "footnotes"));
+			return [node("col", { role: "omp.usage.empty", gap: "sm", align: "center" }, children, "empty")];
+		}
+
+		const quotas: NativeChild[] = [sectionHead("Quotas", this.#quotaMeta(framed))];
+		for (const entry of framed) quotas.push(this.#describeProvider(entry, meter));
+		if (this.#cards.length === 0) {
+			quotas.push(text([span("No usage data available.", "muted")], { role: "omp.usage.none", wrap: "word" }));
+		} else if (framed.length === 0) {
+			quotas.push(text([span("Nothing used on any quota yet.", "muted")], { role: "omp.usage.none", wrap: "word" }));
+		}
+		quotas.push(...notes);
+		const cache = this.#options.cacheSummary;
+		return [
+			this.#describeStats(framed, layout, figures, chart),
+			node("col", { role: "omp.usage.quotas" }, quotas, "quotas"),
+			...(cache ? [this.#describeCache(cache)] : []),
+			this.#describeActivity(chart, layout, figures),
+		];
+	}
+
+	/** Session prompt-cache split and cost, one quiet row under the quotas. */
+	#describeCache(summary: CacheSummary): NativeNode {
+		const pct = (fraction: number): string => `${Math.round(fraction * 100)}%`;
+		const parts = [
+			`hit ${pct(summary.hitFraction)} · write ${pct(summary.writeFraction)} · miss ${pct(summary.missFraction)}`,
+			`${formatUsd(summary.cost.read)} read · ${formatUsd(summary.cost.write)} write · ${formatUsd(summary.cost.uncached)} uncached`,
+		];
+		if (summary.estimatedSavings !== undefined) parts.push(`saved ≈${formatUsd(summary.estimatedSavings)}`);
+		return node(
+			"col",
+			{ role: "omp.usage.cache", gap: "xs" },
+			[
+				sectionHead("Cache", [
+					text([span(`this session · ${formatNumber(summary.promptTokens)} prompt tokens`, "dim")], {
+						truncate: "end",
+					}),
+				]),
+				text([span(parts.join(" · "), "muted")], { wrap: "word" }),
+			],
+			"cache",
+		);
+	}
+
+	/** `3 providers · 10 accounts` over the quota rows. */
+	#quotaMeta(framed: readonly ProviderCard[]): NativeChild[] {
+		if (framed.length === 0) return [];
+		const accounts = framed.reduce((sum, entry) => sum + entry.accounts, 0);
+		const parts = [`${framed.length} provider${framed.length === 1 ? "" : "s"}`];
+		if (accounts > framed.length) parts.push(`${accounts} accounts`);
+		return [
+			text([span(parts.join(" · "), "dim")], {
+				role: "omp.usage.section.meta",
+				title: "Each quota shows the mean across a provider's accounts; it resets with the fullest one",
+			}),
+		];
+	}
+
+	/**
+	 * The summary strip: the tightest quota (what stops work first), the
+	 * year's spend, the last 30 days with a spend spark, and the busiest day.
+	 */
+	#describeStats(
+		framed: readonly ProviderCard[],
+		layout: HeatmapLayout | undefined,
+		figures: ActivityFigures | undefined,
+		chart: boolean,
+	): NativeNode {
+		const tiles: NativeNode[] = [];
+		let tightest: { entry: ProviderCard; window: CardWindowRow; fraction: number } | undefined;
+		for (const entry of framed) {
+			for (const window of entry.windows) {
+				if (window.fraction === undefined) continue;
+				if (!tightest || window.fraction > tightest.fraction)
+					tightest = { entry, window, fraction: window.fraction };
+			}
+		}
+		if (tightest) {
+			const where = `${sanitizeDisplayLine(tightest.window.label)} · ${tightest.entry.name}`;
+			const reset =
+				tightest.window.resetMs !== undefined ? resetLabel(this.#nowMs, tightest.window.resetMs) : undefined;
+			tiles.push(
+				statTile(
+					"quota",
+					"Tightest quota",
+					leftSpans(tightest.fraction, tightest.window.status),
+					[span(where, "dim")],
+					{
+						title: reset ? `${where} · ${reset.title}` : where,
+					},
+				),
+			);
+		} else {
+			tiles.push(
+				statTile(
+					"quota",
+					"Tightest quota",
+					[span("—", "dim")],
+					[span(this.#cards.length > 0 ? "Every quota untouched" : "No quotas reported", "dim")],
+				),
+			);
+		}
+
+		if (!figures || !layout) {
+			const sub = [span(this.#activityError ? "History unavailable" : "Loading…", "dim")];
+			tiles.push(
+				statTile("year", "Past year", [span("—", "dim")], sub),
+				statTile("month", "Last 30 days", [span("—", "dim")], sub),
+				statTile("busiest", "Busiest day", [span("—", "dim")], sub),
+			);
+			return node("row", { role: "omp.usage.stats", wrap: true }, tiles, "stats");
+		}
+
+		const amount = (cost: number, requests: number): TspSpan[] =>
+			figures.priced ? [span(formatCost(cost))] : [span(COMPACT_COUNT.format(requests))];
+		const counted = (requests: number): string =>
+			figures.priced ? requestsText(requests) : `request${requests === 1 ? "" : "s"}`;
+		tiles.push(
+			statTile("year", "Past year", amount(layout.totalCost, layout.totalRequests), [
+				span(counted(layout.totalRequests), "dim"),
+			]),
+		);
+
+		const spark =
+			chart && (figures.monthCost > 0 || figures.monthRequests > 0)
+				? node(
+						"chart",
+						{
+							kind: "spark",
+							token: "accent",
+							series: figures.month.map(day => ({
+								value: figures.priced ? day.cost : day.requests,
+								title: `${shortDate(day.date)} · ${formatCost(day.cost)} · ${requestsText(day.requests)}`,
+							})),
+						},
+						undefined,
+						"spark",
+					)
+				: undefined;
+		tiles.push(
+			statTile(
+				"month",
+				"Last 30 days",
+				amount(figures.monthCost, figures.monthRequests),
+				[span(counted(figures.monthRequests), "dim")],
+				spark ? { chart: spark } : {},
+			),
+		);
+
+		const busiest = figures.busiest;
+		tiles.push(
+			busiest
+				? statTile("busiest", "Busiest day", amount(busiest.cost, busiest.requests), [
+						span(
+							figures.priced
+								? `${shortDate(busiest.date)} · ${requestsText(busiest.requests)}`
+								: `requests · ${shortDate(busiest.date)}`,
+							"dim",
+						),
+					])
+				: statTile("busiest", "Busiest day", [span("—", "dim")], [span("No activity yet", "dim")]),
+		);
+		return node("row", { role: "omp.usage.stats", wrap: true }, tiles, "stats");
+	}
+
+	/**
+	 * One provider: its name, status and accounts in the left column, one row
+	 * per quota window on the right (label · meter · left · reset), aligned
+	 * with every other provider's.
+	 */
+	#describeProvider(entry: ProviderCard, meter: boolean): NativeNode {
+		const cardStatus =
+			entry.unavailableAccounts.length > 0
+				? statusWithUnavailableAccounts(entry.windows)
+				: entry.unlimited
+					? "ok"
+					: aggregateStatus(entry.windows);
+		const who: NativeChild[] = [
+			node(
+				"row",
+				{ gap: "sm", align: "center" },
+				[
+					statusDot(cardStatus),
+					text([span(entry.name)], { role: "omp.usage.provider.name", truncate: "end", title: entry.name }),
+				],
+				"name",
+			),
+		];
+		if (entry.accounts > 1) {
+			who.push(text([span(`${entry.accounts} accounts`, "dim")], { role: "omp.usage.provider.meta" }));
+		}
+		if (entry.resetCredits) {
+			const resets = entry.resetCredits;
+			const details: string[] = [];
+			if (resets.redeemableCount !== resets.bankedCount) details.push(`${resets.redeemableCount} usable now`);
+			if (resets.soonestExpiryMs !== undefined) {
+				details.push(
+					resets.soonestExpiryMs > 0 ? `expires in ${formatDuration(resets.soonestExpiryMs)}` : "expired",
+				);
+			}
+			if (resets.redeemableCount === 0 && resets.unavailableReasons.length > 0) {
+				details.push(`unavailable: ${sanitizeDisplayLine(resets.unavailableReasons.join(" • "))}`);
+			}
+			const label = `${resets.bankedCount} reset${resets.bankedCount === 1 ? "" : "s"} banked`;
+			who.push(
+				text([span(label, resets.redeemableCount > 0 ? "success" : "warning")], {
+					role: "omp.usage.provider.meta",
+					title: details.length > 0 ? `${label} · ${details.join(" · ")}` : label,
+				}),
+			);
+		}
+		for (const account of entry.daybreakAccounts ?? []) {
+			const name = sanitizeDisplayLine(account);
+			who.push(
+				text([span(`Daybreak · ${name}`, "success")], {
+					role: "omp.usage.provider.meta",
+					truncate: "middle",
+					title: `Daybreak access · ${name}`,
+				}),
+			);
+		}
+		for (const account of entry.unavailableAccounts) {
+			const name = sanitizeDisplayLine(account);
+			who.push(
+				text([span(`${name}: no usage data`, "warning")], {
+					role: "omp.usage.provider.meta",
+					truncate: "middle",
+					title: `${name}: no usage data`,
+				}),
+			);
+		}
+
+		const rows: NativeChild[] = [];
+		if (entry.unlimited) {
+			rows.push(text([span("No quotas reported", "muted")], { role: "omp.usage.none" }));
+		} else {
+			for (const [index, window] of entry.windows.slice(0, CARD_MAX_WINDOWS).entries()) {
+				const label: TspSpan[] = [span(sanitizeDisplayLine(window.label))];
+				if (window.windowTag) label.push(span(` ${sanitizeDisplayLine(window.windowTag)}`, "dim"));
+				const cells: NativeChild[] = [
+					text(label, { role: "omp.usage.label", truncate: "end", title: sanitizeDisplayLine(window.label) }),
+				];
+				if (window.fraction === undefined) {
+					cells.push(
+						text([span(window.usedText ?? "No data", "muted")], { role: "omp.usage.amount", truncate: "end" }),
+					);
+				} else {
+					cells.push(
+						usageMeter(window.fraction, window.status, meter),
+						text(leftSpans(window.fraction, window.status), { role: "omp.usage.pct" }),
+					);
+					if (window.resetMs !== undefined) {
+						const reset = resetLabel(this.#nowMs, window.resetMs);
+						cells.push(text([span(reset.text, "dim")], { role: "omp.usage.reset", title: reset.title }));
+					}
+				}
+				rows.push(node("row", { role: "omp.usage.window", gap: "md", align: "center" }, cells, `w${index}`));
+			}
+			const hidden = entry.windows.length - CARD_MAX_WINDOWS;
+			if (hidden > 0) {
+				rows.push(
+					text([span(`${hidden} more in Details`, "dim")], {
+						role: "omp.usage.more",
+						title: "Details lists every quota per account  ⏎",
+					}),
+				);
+			}
+		}
+		return node(
+			"row",
+			{ role: "omp.usage.provider", gap: "lg", align: "start" },
+			[
+				node("col", { role: "omp.usage.provider.head", gap: "xs" }, who, "who"),
+				node("col", { role: "omp.usage.windows", grow: 1 }, rows, "windows"),
+			],
+			entry.provider,
+		);
+	}
+
+	/**
+	 * The activity calendar: a year of daily spend as a heatmap (per-day
+	 * tooltips), then active days and the longest streak beside a Less–More
+	 * legend; loading, failure and a quiet year each say so in its place.
+	 */
+	#describeActivity(
+		chart: boolean,
+		layout: HeatmapLayout | undefined,
+		figures: ActivityFigures | undefined,
+	): NativeNode {
+		const meta: NativeChild[] = [];
+		if (this.#syncing && this.#activity) {
+			meta.push(node("spinner", { style: "dots", label: [span("Syncing", "dim")] }));
+		} else if (layout) {
+			const today = new Date();
+			const range = `${layout.start.getDate()} ${MONTH_NAMES[layout.start.getMonth()]} ${layout.start.getFullYear()} – ${today.getDate()} ${MONTH_NAMES[today.getMonth()]} ${today.getFullYear()}`;
+			meta.push(text([span(range, "dim")], { role: "omp.usage.section.meta" }));
+		}
+		const children: NativeChild[] = [sectionHead("Activity", meta)];
+		const points = this.#activity;
+		if (this.#activityError) {
+			const detail = formatActivityErrorDetail(this.#activityError);
+			children.push(
+				text([span(detail ? `Usage history unavailable (${detail}).` : "Usage history unavailable.", "muted")], {
+					role: "omp.usage.none",
+					wrap: "word",
+				}),
+			);
+		} else if (!points || !layout || !figures) {
+			children.push(
+				node("spinner", { style: "dots", label: [span("Loading usage history…", "muted")] }, undefined, "loading"),
+			);
+		} else {
+			const summary =
+				layout.totalRequests > 0 || layout.totalCost > 0
+					? `${formatActivityTotals(layout)} · last ${NATIVE_HEATMAP_WEEKS} weeks`
+					: `No activity in the last ${NATIVE_HEATMAP_WEEKS} weeks`;
+			children.push(chart ? this.#heatmapChart(layout, points, summary) : this.#heatmapTable(layout, summary));
+			const foot: NativeChild[] = [
+				text(
+					[
+						span(
+							figures.activeDays > 0
+								? `${figures.activeDays} active day${figures.activeDays === 1 ? "" : "s"} · longest streak ${figures.longestStreak} day${figures.longestStreak === 1 ? "" : "s"}`
+								: `No activity in the last ${NATIVE_HEATMAP_WEEKS} weeks`,
+							"dim",
+						),
+					],
+					{ truncate: "end" },
+				),
+			];
+			if (chart) {
+				foot.push(
+					node("spacer", { grow: 1 }),
+					node(
+						"row",
+						{ role: "omp.usage.legend", gap: "sm", align: "center" },
+						[
+							text([span("Less", "dim")]),
+							node(
+								"chart",
+								{ kind: "heatmap", cells: [[0, 0.25, 0.5, 0.75, 1]], token: "accent", size: "md" },
+								undefined,
+								"scale",
+							),
+							text([span("More", "dim")]),
+						],
+						"legend",
+					),
+				);
+			}
+			children.push(node("row", { role: "omp.usage.activity.foot", gap: "md", align: "center" }, foot, "foot"));
+		}
+		return node("col", { role: "omp.usage.activity" }, children, "activity");
+	}
+
+	/** The heatmap as a `chart`: 0–1 intensities, month columns, M/W/F rows, per-day tooltips. */
+	#heatmapChart(layout: HeatmapLayout, points: readonly DailyActivityPoint[], summary: string): NativeNode {
+		const byDay = new Map(points.map(point => [point.day, point]));
+		const cells = layout.cells.map(days => days.map(level => (level === null ? null : level / 4)));
+		const tips = layout.cells.map((days, day) =>
+			days.map((level, week) => {
+				if (level === null) return null;
+				const date = addDays(layout.start, week * 7 + day);
+				const point = byDay.get(localIso(date));
+				if (!point || (point.cost <= 0 && point.requests <= 0)) return `${shortDate(date)} · No activity`;
+				const requests = `${point.requests} request${point.requests === 1 ? "" : "s"}`;
+				const cost = point.cost >= 100 ? `$${Math.round(point.cost)}` : `$${point.cost.toFixed(2)}`;
+				return `${shortDate(date)} · ${cost} · ${requests}`;
+			}),
+		);
+		// A month label needs room: drop one whose successor starts within two columns (GitHub's rule).
+		const starts = layout.monthLabels.flatMap((label, at) => (label ? [{ at, label }] : []));
+		const cols = starts.filter((entry, index) => {
+			const next = starts[index + 1];
+			return !next || next.at - entry.at > 2;
+		});
+		return node(
+			"chart",
+			{ kind: "heatmap", cells, cols, rows: HEATMAP_ROW_LABELS, tips, token: "accent", summary, size: "md" },
+			undefined,
+			"heatmap",
+		);
+	}
+
+	/** The heatmap as a `table` of glyph cells, for terminals without `chart`. */
+	#heatmapTable(layout: HeatmapLayout, summary: string): NativeNode {
+		const cols: TspTableColumn[] = [{ id: "day", priority: NATIVE_HEATMAP_WEEKS }];
+		for (let week = 0; week < NATIVE_HEATMAP_WEEKS; week++) {
+			cols.push({ id: `w${week}`, align: "center", priority: week });
+		}
+		const rows = HEATMAP_DAY_LABELS.map((label, day) => {
+			const cells: Record<string, TspText> = { day: [span(label, "dim")] };
+			for (let week = 0; week < NATIVE_HEATMAP_WEEKS; week++) {
+				const level = layout.cells[day][week];
+				if (level === null) continue;
+				cells[`w${week}`] = level === 0 ? [span("·", "dim")] : [span("■", HEAT_LEVEL_TOKENS[level - 1])];
+			}
+			return { id: `d${day}`, cells };
+		});
+		return node(
+			"col",
+			{ gap: "sm" },
+			[mutedText(summary), node("table", { cols, rows }, undefined, "table")],
+			"heatmap",
+		);
+	}
+
+	/**
+	 * Per provider: a head like the overview's provider column, notes and
+	 * saved resets as a `kv`, the limit buckets as a `table` (one row per
+	 * account).
+	 */
+	#describeDetail(): NativeChild[] {
+		const nowMs = this.#nowMs;
+		const grouped = new Map<string, UsageReport[]>();
+		for (const report of collapseSharedUsageReports(this.#reports)) {
+			const list = grouped.get(report.provider) ?? [];
+			list.push(report);
+			grouped.set(report.provider, list);
+		}
+		const unavailable = this.#options.unavailableAccounts ?? [];
+		const sections: NativeChild[] = [];
+		for (const entry of this.#cards) {
+			const reports = grouped.get(entry.provider) ?? [];
+			const cardStatus =
+				entry.unavailableAccounts.length > 0
+					? statusWithUnavailableAccounts(entry.windows)
+					: entry.unlimited
+						? "ok"
+						: aggregateStatus(entry.windows);
+			const head: NativeChild[] = [
+				statusDot(cardStatus),
+				text([span(entry.name)], { role: "omp.usage.provider.name", truncate: "end" }),
+			];
+			if (entry.accounts > 1) {
+				head.push(text([span(`${entry.accounts} accounts`, "dim")], { role: "omp.usage.provider.meta" }));
+			}
+			const children: NativeChild[] = [
+				node("row", { role: "omp.usage.report.head", gap: "sm", align: "baseline" }, head, "head"),
+			];
+			for (const account of unavailable) {
+				if (account.provider !== entry.provider) continue;
+				children.push(mutedText(`${sanitizeDisplayLine(account.label)}: no usage data`, true));
+			}
+
+			const facts: { k: TspText; v: TspText }[] = [];
+			const notes = [...new Set(reports.flatMap(report => report.notes ?? []))];
+			if (notes.length > 0) facts.push({ k: [span("Notes", "muted")], v: sanitizeDisplayLine(notes.join(" • ")) });
+			for (const [index, report] of reports.entries()) {
+				const resets = summarizeUsageResetCredits(report.resetCredits, nowMs);
+				if (!resets || resets.bankedCount <= 0) continue;
+				const value: TspSpan[] = [
+					span(
+						`${resets.bankedCount} saved reset${resets.bankedCount === 1 ? "" : "s"}`,
+						resets.redeemableCount > 0 ? "success" : "warning",
+					),
+				];
+				if (resets.redeemableCount !== resets.bankedCount) {
+					value.push(span(` · ${resets.redeemableCount} usable now`, "muted"));
+				}
+				if (resets.soonestExpiry) {
+					const remaining = Date.parse(resets.soonestExpiry) - nowMs;
+					const date = resets.soonestExpiry.slice(0, 10);
+					value.push(
+						span(
+							remaining > 0 ? ` · expires in ${formatDuration(remaining)} (${date})` : ` · expired (${date})`,
+							"muted",
+						),
+					);
+				}
+				if (resets.redeemableCount === 0 && resets.unavailableReason) {
+					value.push(span(` · unavailable: ${sanitizeDisplayLine(resets.unavailableReason)}`, "muted"));
+				}
+				facts.push({
+					k: [span(`Resets · ${reportAccountLabel(report, report.limits[0], index)}`, "muted")],
+					v: value,
+				});
+			}
+			if (facts.length > 0) {
+				children.push(node("kv", { items: facts, layout: "grid", role: "omp.usage.facts" }, undefined, "facts"));
+			}
+
+			const buckets = new Map<string, { label: string; window?: string; rows: Record<string, TspText>[] }>();
+			const limitNotes: string[] = [];
+			for (const [index, report] of reports.entries()) {
+				for (const limit of report.limits) {
+					const label = sanitizeDisplayLine(formatLimitTitle(limit));
+					const key = `${label}|${limit.window?.id ?? limit.scope.windowId ?? "default"}`;
+					let bucket = buckets.get(key);
+					if (!bucket) {
+						bucket = { label, window: detailWindowLabel(label, limit), rows: [] };
+						buckets.set(key, bucket);
+					}
+					const fraction = resolveUsedFraction(limit);
+					const resetsAt = limit.window?.resetsAt;
+					bucket.rows.push({
+						account: [span(reportAccountLabel(report, limit, index), "muted")],
+						left:
+							fraction === undefined
+								? [span(formatAbsoluteOnlyAmount([limit]) ?? "No data", "muted")]
+								: leftSpans(fraction, limit.status),
+						reset:
+							resetsAt !== undefined && resetsAt > nowMs
+								? [
+										span(
+											`${limit.window?.resetLabel ?? "resets"} in ${formatDuration(resetsAt - nowMs)}`,
+											"dim",
+										),
+									]
+								: "",
+					});
+					for (const note of limit.notes ?? []) limitNotes.push(sanitizeDisplayLine(note));
+				}
+			}
+			if (buckets.size > 0) {
+				const rows: { id: string; cells: Record<string, TspText> }[] = [];
+				for (const bucket of buckets.values()) {
+					for (const [index, cells] of bucket.rows.entries()) {
+						const limitCell: TspSpan[] =
+							index === 0
+								? [span(bucket.label), ...(bucket.window ? [span(` ${bucket.window}`, "dim")] : [])]
+								: [];
+						rows.push({ id: `r${rows.length}`, cells: { limit: limitCell, ...cells } });
+					}
+				}
+				const cols: TspTableColumn[] = [
+					{ id: "limit", head: "Limit", grow: 1, priority: 4 },
+					{ id: "account", head: "Account", truncate: "middle", priority: 1 },
+					{ id: "left", head: "Left", align: "end", priority: 3 },
+					{ id: "reset", head: "Resets", align: "end", priority: 2 },
+				];
+				children.push(node("table", { cols, rows, role: "omp.usage.limits" }, undefined, "limits"));
+				for (const note of new Set(limitNotes)) children.push(mutedText(note, true));
+			} else if (unavailable.every(account => account.provider !== entry.provider)) {
+				children.push(mutedText("No quotas reported"));
+			}
+			sections.push(node("col", { role: "omp.usage.report", gap: "sm" }, children, entry.provider));
+		}
+		if (sections.length === 0) {
+			sections.push(text([span("No usage data available.", "muted")], { role: "omp.usage.none" }));
+		}
+		return sections;
+	}
+
+	/** Re-fetch the reports (`r` / Refresh); the last reports stay on failure, with the error in the head. */
+	async #refresh(): Promise<void> {
+		const refresh = this.#options.refresh;
+		if (!refresh || this.#refreshing || this.#closed) return;
+		this.#refreshing = true;
+		this.#refreshError = null;
+		this.#changed();
+		try {
+			const reports = await refresh();
+			if (this.#closed) return;
+			if (reports) {
+				this.#reports = reports;
+				this.#nowMs = Date.now();
+				this.#cards = buildProviderCards(reports, this.#nowMs, this.#options.unavailableAccounts);
+				this.#detailCache = null;
+			}
+		} catch (error) {
+			this.#refreshError = error instanceof Error ? error.message : String(error);
+		} finally {
+			this.#refreshing = false;
+			if (!this.#closed) this.#changed();
+		}
+	}
+
+	/** Invalidate the native description and repaint. */
+	#changed(): void {
+		this.#revision++;
+		this.#options.requestRender();
 	}
 
 	#scrollBy(delta: number): void {
@@ -921,7 +1932,7 @@ export class UsageDashboardComponent implements Component {
 	#setView(view: "overview" | "detail"): void {
 		this.#view = view;
 		this.#scroll = 0;
-		this.#options.requestRender();
+		this.#changed();
 	}
 
 	handleInput(data: string): void {
@@ -939,8 +1950,11 @@ export class UsageDashboardComponent implements Component {
 				this.#setView("overview");
 				return;
 			}
-			this.dispose();
-			this.#options.onClose();
+			this.#close();
+			return;
+		}
+		if (matchesKey(data, "r")) {
+			void this.#refresh();
 			return;
 		}
 		if (
@@ -958,5 +1972,10 @@ export class UsageDashboardComponent implements Component {
 			this.#scroll = 0;
 			this.#options.requestRender();
 		} else if (matchesKey(data, "end")) this.#scrollBy(Number.MAX_SAFE_INTEGER);
+	}
+
+	#close(): void {
+		this.dispose();
+		this.#options.onClose();
 	}
 }

@@ -97,7 +97,7 @@ describe("parseAgentFields", () => {
 			tools: ["Find", "Glob", "Search", "Grep"],
 		});
 
-		expect(fields?.tools).toEqual(["find", "glob", "grep", "yield"]);
+		expect(fields?.tools).toEqual(["find", "glob", "grep"]);
 	});
 
 	test("parses autoloadSkills from array frontmatter", () => {

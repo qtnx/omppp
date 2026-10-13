@@ -67,12 +67,12 @@ function formatActivitySummary(tool: string, detail: string | undefined): string
 function latestActivity(progress: AgentProgress | undefined): string | undefined {
 	if (!progress) return undefined;
 	if (progress.currentTool) {
-		return formatActivitySummary(progress.currentTool, progress.lastIntent ?? progress.currentToolArgs);
+		return formatActivitySummary(progress.currentTool, progress.currentToolIntent ?? progress.currentToolArgs);
 	}
 
 	const recent = progress.recentTools[0];
 	if (!recent) return undefined;
-	return formatActivitySummary(recent.tool, progress.lastIntent ?? recent.args);
+	return formatActivitySummary(recent.tool, recent.intent ?? recent.args);
 }
 
 function renderFallbackAgent(frame: AgentFrame): string[] {

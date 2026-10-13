@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [18.9.0] - 2026-10-11
+
+### Fixed
+
+- Fixed the stats dashboard favicon so dashboard tabs and bookmarks display the OMP icon correctly.
+
+## [18.8.0] - 2026-10-07
+
+### Changed
+
+- Improved dashboard responsiveness and efficiency by reducing unnecessary data refreshes and re-rendering, speeding up session synchronization, database access, package imports, and usage, model, and time-series requests, and avoiding repeated downloads of unchanged traces.
+- Dashboard requests are now cancelled when no longer needed, improving responsiveness when switching sessions or closing trace views during loading.
+
+## [18.7.0] - 2026-10-06
+
+### Fixed
+
+- Fixed Ultrafast turns not being counted toward the Premium Requests statistic.
+- Fixed the desktop stats dashboard menu button so it no longer appears unnecessarily or dims the page without opening navigation.
+
+## [18.6.0] - 2026-10-03
+
+### Fixed
+
+- Fixed the Frustration page splitting DeepSeek V4 provider variants and the V4.1 Flash alias into separate model-version rows ([#14194](https://github.com/can1357/oh-my-pi/issues/14194)).
+
+## [18.5.1] - 2026-10-03
+
+### Fixed
+
+- Fixed stats dashboard request rows for Judge and other role-model calls so they open correctly and display usage details.
+- Fixed stats and summary error-rate formatting so small nonzero percentages are displayed accurately instead of as 0.0%.
+- Fixed a visual fringe on the edges of the stats dashboard’s “Classify with judge” button.
+
+## [18.4.4] - 2026-09-29
+
+### Added
+
+- Added the `printStatsSummary` export, shared by `omp-stats --sync` and `omp stats --summary`.
+
 ## [18.4.3] - 2026-09-28
 
 ### Fixed

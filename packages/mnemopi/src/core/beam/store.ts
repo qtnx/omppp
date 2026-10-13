@@ -1,5 +1,5 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, withLoopPhase } from "@oh-my-pi/pi-utils";
 import { transaction } from "../../db";
 import { toUtcIso } from "../../util/datetime";
 import { generateId } from "../../util/ids";
@@ -147,13 +147,9 @@ function emitEvent(beam: BeamMemoryState, type: string, data: EventPayload): voi
 	void beam.pluginManager?.emit?.(event);
 }
 
+/** Drop cached recall results after a write that can change what recall returns. */
 function invalidateCaches(beam: BeamMemoryState): void {
-	const cache = beam.caches as {
-		queryCache?: { invalidate?: () => void };
-		_queryCache?: { invalidate?: () => void };
-	};
-	cache.queryCache?.invalidate?.();
-	cache._queryCache?.invalidate?.();
+	beam.caches.queryCache?.invalidate();
 }
 
 function findDuplicate(beam: BeamMemoryState, content: string): string | null {
@@ -311,9 +307,11 @@ function proactiveLinkIfEnabled(
 async function runFactExtraction(beam: BeamMemoryState, memoryId: string, content: string): Promise<void> {
 	try {
 		const extracted = await extractFactCategoriesSafe(content);
-		if (countExtractedFactCategories(extracted) === 0) return;
-		storeExtractedFactCategories(beam, extracted, 0, memoryId);
-		invalidateCaches(beam);
+		withLoopPhase("mnemopi.extract", () => {
+			if (countExtractedFactCategories(extracted) === 0) return;
+			storeExtractedFactCategories(beam, extracted, 0, memoryId);
+			invalidateCaches(beam);
+		});
 	} catch {
 		// Background fact extraction is best-effort and never surfaces to the caller.
 	}
@@ -744,7 +742,7 @@ export function updateWorking(
 export function get(beam: BeamMemoryState, memoryId: string): Row | null {
 	using workingStatement = beam.db.prepare(`
 		SELECT id, content, source, timestamp, session_id,
-			   importance, metadata_json, veracity, created_at
+			   importance, metadata_json, veracity, created_at, valid_until, superseded_by
 		FROM working_memory
 		WHERE id = ?
 	`);
@@ -753,7 +751,7 @@ export function get(beam: BeamMemoryState, memoryId: string): Row | null {
 
 	using episodicStatement = beam.db.prepare(`
 		SELECT id, content, source, timestamp, session_id,
-			   importance, metadata_json, veracity, created_at
+			   importance, metadata_json, veracity, created_at, valid_until, superseded_by
 		FROM episodic_memory
 		WHERE id = ? AND (session_id = ? OR scope = 'global')
 	`);

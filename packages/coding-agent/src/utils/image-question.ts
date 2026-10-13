@@ -6,6 +6,7 @@ import { extractTextContent } from "../commit/utils";
 import {
 	expandRoleAlias,
 	extractExplicitThinkingSelector,
+	type ExplicitThinkingSelectorOptions,
 	getModelMatchPreferences,
 	resolveModelFromString,
 } from "../config/model-resolver";
@@ -121,11 +122,22 @@ export async function askImageQuestion(
 		return `Image question timed out after ${seconds}s. Increase images.questionTimeoutMs (currently ${timeoutMs}ms; 0 disables) or check the vision model provider.`;
 	};
 
+	const thinkingSelectorOptions: ExplicitThinkingSelectorOptions = {
+		isLiteralModelId: (provider, id) => {
+			if (provider !== undefined) {
+				return availableModels.some(candidate => candidate.provider === provider && candidate.id === id);
+			}
+			const lowerId = id.toLowerCase();
+			return availableModels.some(candidate => candidate.id.toLowerCase() === lowerId);
+		},
+	};
 	const configuredThinking = concreteThinkingLevel(
-		extractExplicitThinkingSelector(selectedPattern, session.settings, {
-			isLiteralModelId: (provider, id) =>
-				availableModels.some(candidate => candidate.provider === provider && candidate.id === id),
-		}) ?? extractExplicitThinkingSelector(session.settings.getModelRole("vision"), session.settings),
+		extractExplicitThinkingSelector(selectedPattern, session.settings, thinkingSelectorOptions) ??
+			extractExplicitThinkingSelector(
+				session.settings.getModelRole("vision"),
+				session.settings,
+				thinkingSelectorOptions,
+			),
 	);
 	const reasoning = toReasoningEffort(resolveThinkingLevelForModel(model, configuredThinking));
 

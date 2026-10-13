@@ -10,6 +10,7 @@ import type * as TypeBox from "@oh-my-pi/omptype/typebox";
 import type * as zod from "@oh-my-pi/omptype/zod";
 import type {
 	AgentToolResult,
+	ApprovalDetailsOptions,
 	AgentToolUpdateCallback,
 	ToolApproval,
 	ToolApprovalDecision,
@@ -19,7 +20,7 @@ import type {
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { FetchImpl, Model, Static, TSchema } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
-import type { RenderResultOptions } from "@oh-my-pi/pi-tui/tools/renderer";
+import type { NativeToolView, RenderResultOptions } from "@oh-my-pi/pi-tui/tools/renderer";
 import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../../capability/rule";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -220,8 +221,8 @@ export interface CustomTool<TParams extends TSchema = TSchema, TDetails = any> {
 	/** Capability tier declaration used by approval gates. Omitted means "exec". */
 	approval?: ToolApproval;
 
-	/** Lines appended after the standard approval prompt header. */
-	formatApprovalDetails?: (args: unknown) => string | string[] | undefined;
+	/** Lines appended after the standard approval prompt header; see {@link ApprovalDetailsOptions} for `compact`. */
+	formatApprovalDetails?: (args: unknown, options?: ApprovalDetailsOptions) => string | string[] | undefined;
 	/**
 	 * Execute the tool.
 	 * @param toolCallId - Unique ID for this tool call
@@ -250,6 +251,16 @@ export interface CustomTool<TParams extends TSchema = TSchema, TDetails = any> {
 		theme: Theme,
 		args?: Static<TParams>,
 	) => Component;
+
+	/** Semantic call view for TSP terminals (the native counterpart of {@link renderCall}). */
+	describeCall?: (args: Static<TParams>, options: RenderResultOptions) => NativeToolView | undefined;
+
+	/** Semantic result view for TSP terminals (the native counterpart of {@link renderResult}). */
+	describeResult?: (
+		result: CustomToolResult<TDetails>,
+		options: RenderResultOptions,
+		args?: Static<TParams>,
+	) => NativeToolView | undefined;
 }
 
 /** Factory function that creates a custom tool or array of tools */

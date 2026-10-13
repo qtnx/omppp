@@ -37,11 +37,10 @@
 		"test": "bun test --parallel",
 		"fix": "oxlint --fix --fix-suggestions . && bun run fmt",
 		"fmt": "oxfmt --no-error-on-unmatched-pattern 'src/**/*.{ts,tsx}' '{test,bench,examples,scripts}/**/*.ts' '*.ts'",
-		"gen:native": "bun scripts/embed-native.ts",
-		"gen:native:reset": "bun scripts/embed-native.ts --reset",
 		"gen:npm": "bun scripts/gen-npm-packages.ts",
 		"bench": "bun bench/grep.ts",
-		"bench:text": "bun bench/text.ts"
+		"bench:text": "bun bench/text.ts",
+		"bench:ipc": "bun bench/ipc.ts"
 	},
 	"devDependencies": {
 		"@napi-rs/cli": "catalog:",

@@ -39,7 +39,11 @@ interface RunEphemeralTurnResult {
 
 type RunEphemeralTurn = (args: RunEphemeralTurnArgs) => Promise<RunEphemeralTurnResult>;
 type AddRule = (rule: Rule) => boolean;
-type ShowHookSelector = (title: string, options: string[]) => Promise<string | undefined>;
+type ShowHookSelector = (
+	title: string,
+	options: string[],
+	dialogOptions?: { inline?: boolean },
+) => Promise<string | undefined>;
 type ShowHookConfirm = (title: string, message: string) => Promise<boolean>;
 type ShowHookInput = (title: string, placeholder?: string) => Promise<string | undefined>;
 
@@ -196,6 +200,7 @@ describe("OmfgController", () => {
 		expect(harness.showHookSelector.mock.calls[0]).toEqual([
 			"Save TTSR rule where?",
 			[PROJECT_OPTION, GLOBAL_OPTION, AMEND_OPTION],
+			{ inline: true },
 		]);
 		expect(harness.ttsrAddRule.mock.calls[0]?.[0].path).toBe(savedPath);
 		const rendered = Bun.stripANSI(harness.container.render(200).join("\n"));
@@ -309,8 +314,8 @@ describe("OmfgController", () => {
 		await waitFor(() => harness.ttsrAddRule.mock.calls.length === 1);
 
 		expect(harness.showHookSelector.mock.calls).toEqual([
-			["Save TTSR rule where?", [PROJECT_OPTION, GLOBAL_OPTION, AMEND_OPTION]],
-			["Save TTSR rule where?", [PROJECT_OPTION, GLOBAL_OPTION, AMEND_OPTION]],
+			["Save TTSR rule where?", [PROJECT_OPTION, GLOBAL_OPTION, AMEND_OPTION], { inline: true }],
+			["Save TTSR rule where?", [PROJECT_OPTION, GLOBAL_OPTION, AMEND_OPTION], { inline: true }],
 		]);
 		expect(runEphemeralTurn).toHaveBeenCalledTimes(1);
 		expect(await Bun.file(savedPath).text()).toBe(

@@ -1,4 +1,4 @@
-import { type AuthStorage, isAuthRetryableError, type OAuthAccess, withOAuthAccess } from "@oh-my-pi/pi-ai";
+import { type AuthStorage, type OAuthAccess, withOAuthAccess } from "@oh-my-pi/pi-ai";
 import { getProxyForUrl, wrapFetchForProxy } from "@oh-my-pi/pi-ai/utils/proxy";
 import {
 	CODEX_BASE_URL,
@@ -105,10 +105,6 @@ function boundedErrorBody(body: string, statusText: string): string {
 	return `${normalized.slice(0, MAX_ERROR_BODY_LENGTH)}…`;
 }
 
-function isAuthError(error: unknown): boolean {
-	return isAuthRetryableError(error);
-}
-
 function abortReason(signal: AbortSignal | undefined): Error {
 	if (signal?.reason instanceof Error) return signal.reason;
 	return new DOMException("Live connection aborted", "AbortError");
@@ -172,7 +168,6 @@ export class CodexLiveTransport {
 			{
 				sessionId: this.#options.sessionId,
 				signal: this.#options.signal,
-				isAuthError,
 				missingAccessMessage: "No Codex OAuth credential is available for a live call.",
 			},
 		);

@@ -6,15 +6,44 @@ import type { SpinnerFramesOverride } from "./symbols";
 
 export type ColorValue = string | number;
 
+/**
+ * Tokens a theme is allowed to omit. They resolve to the terminal default
+ * foreground, so `Theme.fg()` stays total for callers that paint a token a theme
+ * never declared (e.g. a `modelTags.<role>.color` reference) while
+ * `Theme.hasColor()` still reports them as unset.
+ */
+export const OPTIONAL_THEME_COLOR_RECORD = {
+	assistantMessageText: true,
+} satisfies Partial<Record<ThemeColor, true>>;
+
 export interface ThemeJson {
 	$schema?: string;
 	name: string;
 	vars?: Record<string, ColorValue>;
-	colors: Omit<Record<ThemeColor | ThemeBg, ColorValue>, "thinkingMax"> & { thinkingMax?: ColorValue };
+	colors: Omit<Record<ThemeColor | ThemeBg, ColorValue>, "thinkingMax" | keyof typeof OPTIONAL_THEME_COLOR_RECORD> &
+		Partial<Record<keyof typeof OPTIONAL_THEME_COLOR_RECORD, ColorValue>> & { thinkingMax?: ColorValue };
 	export?: {
 		pageBg?: ColorValue;
 		cardBg?: ColorValue;
 		infoBg?: ColorValue;
+	};
+	/**
+	 * The terminal this theme was made for, for hosts that paint the terminal
+	 * themselves (Tern). omp never sets the terminal's colors: its TUI draws on
+	 * whatever background the terminal has. A host derives absent fields from
+	 * `colors`.
+	 */
+	terminal?: {
+		/** Terminal background. */
+		background?: ColorValue;
+		/** Default text. */
+		foreground?: ColorValue;
+		/** The window around the terminal: sidebar, tab bar, title bar. */
+		chrome?: ColorValue;
+		/** Lifted surfaces: popovers, menus, buttons. */
+		widget?: ColorValue;
+		/** ANSI colors 0–15: exactly 16. */
+		ansi?: ColorValue[];
 	};
 	symbols?: {
 		preset?: "unicode" | "nerd" | "ascii";
@@ -34,6 +63,7 @@ export type ThemeColor =
 	| "muted"
 	| "dim"
 	| "text"
+	| "assistantMessageText"
 	| "thinkingText"
 	| "userMessageText"
 	| "customMessageText"
@@ -97,6 +127,7 @@ const THEME_COLOR_RECORD = {
 	muted: true,
 	dim: true,
 	text: true,
+	assistantMessageText: true,
 	thinkingText: true,
 	userMessageText: true,
 	customMessageText: true,
@@ -164,5 +195,20 @@ export type ThemeBg =
 	| "toolSuccessBg"
 	| "toolErrorBg"
 	| "statusLineBg";
+
+const VALID_THEME_BGS: ReadonlySet<string> = new Set([
+	"selectedBg",
+	"userMessageBg",
+	"customMessageBg",
+	"toolPendingBg",
+	"toolSuccessBg",
+	"toolErrorBg",
+	"statusLineBg",
+] satisfies ThemeBg[]);
+
+/** Check if a string is a valid ThemeBg value */
+export function isValidThemeBg(color: string): color is ThemeBg {
+	return VALID_THEME_BGS.has(color);
+}
 
 export type ColorMode = "truecolor" | "256color";

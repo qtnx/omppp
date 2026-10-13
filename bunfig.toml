@@ -28,6 +28,7 @@ pathIgnorePatterns = [
   "**/target/**",
   "**/dist/**",
   "python/**",
+  "sdk/**",
   "docs/**",
   "runs/**",
   "python/robomp/data/**",

@@ -26,6 +26,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
+import { validateAgentAccountPools } from "../config/account-pools";
 import { resolveAgentModelSelection } from "../config/model-resolver";
 import { sessionLocalProtocolOptions } from "../internal-urls/context";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
@@ -57,7 +58,7 @@ import {
 } from "./lifecycle";
 import { type VibeCli } from "@oh-my-pi/pi-tui/tools/vibe";
 
-import { cfgTaskAgentModelOverrides, cfgTaskEnableLsp } from "../task/settings";
+import { cfgTaskAgentAccountPools, cfgTaskAgentModelOverrides, cfgTaskEnableLsp } from "../task/settings";
 /**
  * CLI flavor → bundled agent type. This IS the model-tier mapping: `quick_task`
  * carries `model: "@smol"` (the configured fast/low-latency role) and `task`
@@ -1282,6 +1283,9 @@ export class VibeSessionRegistry {
 		if (!sessionArtifactsDir) registerArtifactsDir(artifactsDir);
 		const contextSnapshot = await writeParentContextSnapshot(session, artifactsDir);
 		const localProtocolOptions = sessionLocalProtocolOptions(session);
+		// Same exact-name pool task dispatch and persisted revival apply, so a
+		// worker is restricted from its first turn, not only after a revive.
+		const agentAccountPools = validateAgentAccountPools(cfgTaskAgentAccountPools.get(session.settings));
 		return {
 			cwd: session.cwd,
 			agent: record.agent,
@@ -1307,6 +1311,7 @@ export class VibeSessionRegistry {
 			authStorage: session.authStorage,
 			modelRegistry: session.modelRegistry,
 			settings: session.settings,
+			asyncJobManager: session.asyncJobManager,
 			inheritedSessionAgents: session.getSessionAgents?.(),
 			mcpManager: session.mcpManager ?? MCPManager.instance(),
 			contextFiles: session.contextFiles,
@@ -1324,7 +1329,11 @@ export class VibeSessionRegistry {
 			parentMnemopiSessionState: session.getMnemopiSessionState?.(),
 			parentTelemetry: session.getTelemetry?.(),
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
+			parentPromptCacheKey: session.getPromptCacheKey?.(),
 			parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
+			oauthAccountPools: Object.hasOwn(agentAccountPools, record.agent.name)
+				? agentAccountPools[record.agent.name]
+				: undefined,
 			keepAlive: true,
 		};
 	}

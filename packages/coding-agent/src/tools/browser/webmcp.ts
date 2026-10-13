@@ -8,7 +8,8 @@ declare module "puppeteer-core" {
 	}
 }
 
-const BRIDGE_KEY = "__ompWebMcpBridge_v1";
+/** Global property under which `installWebMcpPageHook` stores its page bridge. */
+export const WEBMCP_BRIDGE_KEY = "__ompWebMcpBridge_v1";
 const MAX_RESULT_BYTES = 64 * 1024;
 const MAX_SUMMARY_BYTES = 4 * 1024;
 const MAX_SUMMARY_DESCRIPTION_BYTES = 160;
@@ -128,33 +129,93 @@ export interface WebMcpEventsResult {
 	untrusted: true;
 }
 
+/** One tool registration mirrored by the page hook. */
+export interface WebMcpHookToolRecord {
+	/** Page-defined tool name. */
+	name: string;
+	/** Page-defined description, `""` when absent. */
+	description: string;
+	/** JSON clone of the page-defined input schema. */
+	inputSchema?: unknown;
+	/** JSON clone of the page-defined annotations. */
+	annotations?: unknown;
+}
+
+/** Page-hook state of one frame, as returned by `webMcpSnapshotInPage`. */
+export interface WebMcpHookSnapshot {
+	/** Whether the page exposed a native `modelContext` before the hook installed. */
+	nativeAvailable: boolean;
+	/** Mirrored tool registrations, sorted by name. */
+	tools: WebMcpHookToolRecord[];
+	/** `location.origin` of the frame. */
+	origin: string;
+}
+
+/** Page-hook invocation outcome, as returned by `webMcpInvokeInPage`. */
+export interface WebMcpHookInvokeEnvelope {
+	/** Whether the page tool completed without throwing. */
+	ok: boolean;
+	/** JSON encoding of the tool result (`null` for `undefined`) when `ok`. */
+	encoded?: string;
+	/** Error text when not `ok`. */
+	error?: string;
+}
+
+/** Outcome of executing one native (non page-hook) WebMCP tool. */
+export type WebMcpNativeToolResult = { ok: true; output: unknown } | { ok: false; error: string };
+
+/** One frame whose page hook can be snapshotted and invoked. */
+export interface WebMcpFrameTarget {
+	/** Stable frame identifier reported as `frameId`. */
+	readonly id: string;
+	/** Read the frame's page-hook state. */
+	snapshot(): Promise<WebMcpHookSnapshot>;
+	/** Invoke a mirrored page tool with JSON-cloned params. */
+	invoke(name: string, params: unknown): Promise<WebMcpHookInvokeEnvelope>;
+}
+
+/** One tool reported by a native WebMCP implementation (Chromium CDP). */
+export interface WebMcpNativeToolEntry {
+	/** Page-defined tool name. */
+	readonly name: string;
+	/** Page-defined tool description. */
+	readonly description: string;
+	/** Page-defined JSON Schema. */
+	readonly inputSchema?: unknown;
+	/** Page-defined tool annotations. */
+	readonly annotations?: unknown;
+	/** Identifier of the owning frame. */
+	readonly frameId: string;
+	/** Origin of the owning frame. */
+	readonly origin: string;
+	/** Execute the tool with JSON-cloned params. */
+	execute(params: object): Promise<WebMcpNativeToolResult>;
+}
+
+/** Where a controller finds frames (and, for Chromium, native CDP tools). */
+export interface WebMcpHost {
+	/** Frames whose page hook should be polled. */
+	frames(): Promise<WebMcpFrameTarget[]>;
+	/** Natively registered tools; consulted only once native support is known. */
+	nativeTools(): readonly WebMcpNativeToolEntry[];
+	/** Remove the preload and uninstall the page hook from every frame. */
+	dispose(): Promise<void>;
+}
+
+/** Construction options for `WebMcpController`. */
+export interface WebMcpControllerOptions {
+	/** Whether native WebMCP was detected at install time. */
+	nativeSupported: boolean;
+	/** `reason` reported while no native support or page registrations exist; defaults to the Chromium wording. */
+	unavailableReason?: string;
+}
+
 interface IdentifiedFrame extends Frame {
 	_id: string;
 }
 
-interface HookToolRecord {
-	name: string;
-	description: string;
-	inputSchema?: unknown;
-	annotations?: unknown;
-}
-
-interface HookSnapshot {
-	nativeAvailable: boolean;
-	tools: HookToolRecord[];
-	origin: string;
-}
-
-interface CatalogEntry extends WebMcpToolRecord {
-	frame: Frame;
-	nativeTool?: WebMCPTool;
-}
-
-interface HookInvokeEnvelope {
-	ok: boolean;
-	encoded?: string;
-	error?: string;
-}
+type CatalogEntry = WebMcpToolRecord &
+	({ target: WebMcpFrameTarget; nativeTool?: undefined } | { target?: undefined; nativeTool: WebMcpNativeToolEntry });
 
 interface PageModelContextTool {
 	name: string;
@@ -179,7 +240,7 @@ interface PageModelContext {
 
 interface PageWebMcpBridge {
 	nativeAvailable: boolean;
-	snapshot(): HookToolRecord[];
+	snapshot(): WebMcpHookToolRecord[];
 	invoke(name: string, params: unknown): Promise<unknown>;
 	uninstall(): void;
 }
@@ -234,27 +295,56 @@ function boundedResult(value: unknown): WebMcpInvokeSuccess {
 	};
 }
 
-function installPageHook(key: string): void {
+/**
+ * Page function (self-contained; serialisable via `.toString()`): mirror `navigator/document.modelContext`
+ * registrations into a bridge stored at `globalThis[key]`, polyfilling `modelContext` when absent. Idempotent.
+ * The platform's `modelContext` getter is never called here: it creates the document's context, and Chromium kills
+ * a renderer whose frame creates one twice, as this hook would in an iframe's initial empty document and again in
+ * the document the iframe then loads. The platform's `ModelContext.prototype` methods are patched instead, which
+ * reaches every reference to the context, however early the page took it; a context the page put on
+ * navigator/document itself is patched directly.
+ */
+export function installWebMcpPageHook(key: string): void {
 	const realm = globalThis as typeof globalThis & Record<string, unknown>;
 	if (realm[key]) return;
 
 	const pageGlobals = globalThis as unknown as {
 		navigator: { modelContext?: PageModelContext };
 		document: { modelContext?: PageModelContext };
+		ModelContext?: { prototype: PageModelContext };
 	};
 	const nav = pageGlobals.navigator;
 	const doc = pageGlobals.document;
-	const existingContext = doc.modelContext ?? nav.modelContext;
-	const nativeAvailable = existingContext !== undefined;
+	// Chromium's getter is a native accessor on an interface prototype; anything else the page defined itself and
+	// is read now.
+	let platform = false;
+	let pageContext: PageModelContext | undefined;
+	for (const instance of [doc, nav]) {
+		let descriptor = Object.getOwnPropertyDescriptor(instance, "modelContext");
+		for (let owner = Object.getPrototypeOf(instance); !descriptor && owner; owner = Object.getPrototypeOf(owner)) {
+			descriptor = Object.getOwnPropertyDescriptor(owner, "modelContext");
+		}
+		if (
+			descriptor?.get &&
+			/^function get modelContext\(\) \{\s*\[native code\]\s*\}$/.test(
+				Function.prototype.toString.call(descriptor.get),
+			)
+		) {
+			platform = true;
+		} else {
+			// Read as `document.modelContext ?? navigator.modelContext`: a null one falls through.
+			pageContext ??= instance.modelContext;
+		}
+	}
+	const platformPrototype = platform ? pageGlobals.ModelContext?.prototype : undefined;
+	const nativeAvailable = platform || pageContext !== undefined;
 	const tools = new Map<string, PageModelContextTool>();
-	const originalDescriptor = existingContext
-		? Object.getOwnPropertyDescriptor(existingContext, "registerTool")
-		: undefined;
-	const originalUnregisterDescriptor = existingContext
-		? Object.getOwnPropertyDescriptor(existingContext, "unregisterTool")
-		: undefined;
-	const originalRegister = existingContext?.registerTool?.bind(existingContext);
-	const originalUnregister = existingContext?.unregisterTool?.bind(existingContext);
+	const patches: {
+		target: PageModelContext;
+		name: "registerTool" | "unregisterTool";
+		original?: PropertyDescriptor;
+		value: unknown;
+	}[] = [];
 	const changeTarget = new EventTarget();
 	let polyfillContext: PageModelContext | undefined;
 
@@ -293,43 +383,58 @@ function installPageHook(key: string): void {
 		}
 		notify();
 	};
-	const registerTool = async (tool: PageModelContextTool, options?: { signal?: AbortSignal }): Promise<void> => {
-		if (originalRegister) await originalRegister(tool, options);
-		remember(tool, options?.signal);
-	};
-	const unregisterTool = async (name: string): Promise<void> => {
-		if (originalUnregister) await originalUnregister(name);
+	const forget = (name: string): void => {
 		if (tools.delete(name)) notify();
 	};
 
-	if (existingContext) {
-		try {
-			Object.defineProperty(existingContext, "registerTool", {
-				configurable: true,
-				writable: true,
-				value: registerTool,
-			});
-			if (originalUnregister) {
-				Object.defineProperty(existingContext, "unregisterTool", {
-					configurable: true,
-					writable: true,
-					value: unregisterTool,
-				});
+	// Wrap the methods every registration goes through: the page's own context, called on that context as before,
+	// or the platform prototype, called on whichever context the page used.
+	const patch = (target: PageModelContext, receiver?: PageModelContext): void => {
+		const register = target.registerTool;
+		const unregister = target.unregisterTool;
+		const wrappers = {
+			async registerTool(this: unknown, tool: PageModelContextTool, options?: { signal?: AbortSignal }) {
+				if (register) await register.call(receiver ?? this, tool, options);
+				remember(tool, options?.signal);
+			},
+			async unregisterTool(this: unknown, name: string) {
+				if (unregister) await unregister.call(receiver ?? this, name);
+				forget(name);
+			},
+		};
+		for (const name of unregister ? (["registerTool", "unregisterTool"] as const) : (["registerTool"] as const)) {
+			// A native context the page exposes itself already resolves to the prototype's wrapper.
+			if (patches.some(patched => patched.value === target[name])) continue;
+			const original = Object.getOwnPropertyDescriptor(target, name);
+			// An own method keeps its attributes; an inherited one is shadowed.
+			const descriptor =
+				original && "value" in original
+					? { value: wrappers[name] }
+					: { configurable: true, writable: true, value: wrappers[name] };
+			try {
+				Object.defineProperty(target, name, descriptor);
+				patches.push({ target, name, original, value: wrappers[name] });
+			} catch {
+				// Native CDP discovery remains authoritative when this object is not patchable.
 			}
-		} catch {
-			// Native CDP discovery remains authoritative when this object is not patchable.
 		}
-	} else {
+	};
+
+	if (platformPrototype) patch(platformPrototype);
+	if (pageContext) patch(pageContext, pageContext);
+	// A page whose own modelContext is null reports the API but still gets the polyfill.
+	if (!platform && !pageContext) {
 		polyfillContext = {
-			registerTool,
-			unregisterTool,
+			registerTool: async (tool: PageModelContextTool, options?: { signal?: AbortSignal }) =>
+				remember(tool, options?.signal),
+			unregisterTool: async (name: string) => forget(name),
 			async provideContext(context: unknown): Promise<void> {
 				const record = context && typeof context === "object" ? (context as Record<string, unknown>) : undefined;
 				const provided = Array.isArray(context) ? context : record?.tools;
 				if (!Array.isArray(provided)) throw new TypeError("provideContext() expects an array or { tools: [...] }");
-				for (const tool of provided) await registerTool(tool as PageModelContextTool);
+				for (const tool of provided) remember(tool as PageModelContextTool);
 			},
-			async getTools(): Promise<HookToolRecord[]> {
+			async getTools(): Promise<WebMcpHookToolRecord[]> {
 				return bridge.snapshot();
 			},
 			async executeTool(tool: PageModelContextTool, params?: unknown): Promise<unknown> {
@@ -355,7 +460,7 @@ function installPageHook(key: string): void {
 
 	const bridge: PageWebMcpBridge = {
 		nativeAvailable,
-		snapshot(): HookToolRecord[] {
+		snapshot(): WebMcpHookToolRecord[] {
 			return [...tools.values()]
 				.map(tool => ({
 					name: tool.name,
@@ -374,19 +479,17 @@ function installPageHook(key: string): void {
 			return await execute(params, { signal: controller.signal });
 		},
 		uninstall(): void {
-			if (existingContext) {
+			for (const { target, name, original, value } of patches) {
 				try {
-					if (originalDescriptor) Object.defineProperty(existingContext, "registerTool", originalDescriptor);
-					else delete existingContext.registerTool;
-					if (originalUnregisterDescriptor) {
-						Object.defineProperty(existingContext, "unregisterTool", originalUnregisterDescriptor);
-					} else if (originalUnregister) {
-						delete existingContext.unregisterTool;
-					}
+					// Leave a method the page replaced after ours, and any attribute it changed.
+					if (Object.getOwnPropertyDescriptor(target, name)?.value !== value) continue;
+					if (!original) delete target[name];
+					else Object.defineProperty(target, name, "value" in original ? { value: original.value } : original);
 				} catch {
 					// Best-effort cleanup for attached user tabs.
 				}
-			} else if (polyfillContext) {
+			}
+			if (polyfillContext) {
 				for (const owner of [nav, doc]) {
 					try {
 						if (owner.modelContext === polyfillContext) delete owner.modelContext;
@@ -401,53 +504,127 @@ function installPageHook(key: string): void {
 	Object.defineProperty(realm, key, { configurable: true, enumerable: false, value: bridge });
 }
 
-async function hookSnapshot(frame: Frame): Promise<HookSnapshot> {
-	return await frame.mainRealm().evaluate((key: string) => {
-		const realm = globalThis as typeof globalThis & Record<string, unknown>;
-		const bridge = realm[key] as PageWebMcpBridge | undefined;
-		const pageLocation = globalThis as unknown as { location: { origin: string } };
-		return {
-			nativeAvailable: bridge?.nativeAvailable ?? false,
-			tools: bridge?.snapshot() ?? [],
-			origin: pageLocation.location.origin,
-		};
-	}, BRIDGE_KEY);
+/** Page function (self-contained): read the bridge at `globalThis[key]` into a `WebMcpHookSnapshot`. */
+export function webMcpSnapshotInPage(key: string): WebMcpHookSnapshot {
+	const realm = globalThis as typeof globalThis & Record<string, unknown>;
+	const bridge = realm[key] as PageWebMcpBridge | undefined;
+	const pageLocation = globalThis as unknown as { location: { origin: string } };
+	return {
+		nativeAvailable: bridge?.nativeAvailable ?? false,
+		tools: bridge?.snapshot() ?? [],
+		origin: pageLocation.location.origin,
+	};
 }
 
-async function invokeHook(frame: Frame, name: string, params: unknown): Promise<HookInvokeEnvelope> {
-	return await frame.mainRealm().evaluate(
-		async (key: string, toolName: string, input: unknown) => {
-			const realm = globalThis as typeof globalThis & Record<string, unknown>;
-			const bridge = realm[key] as PageWebMcpBridge | undefined;
-			if (!bridge) return { ok: false, error: "WebMCP page hook is unavailable" };
-			try {
-				const result = await bridge.invoke(toolName, input);
-				const encoded = JSON.stringify(result === undefined ? null : result);
-				return { ok: true, encoded };
-			} catch (error) {
-				return { ok: false, error: error instanceof Error ? error.message : String(error) };
+/** Page function (self-contained): invoke mirrored tool `name` through the bridge at `globalThis[key]`. */
+export async function webMcpInvokeInPage(
+	key: string,
+	name: string,
+	params: unknown,
+): Promise<WebMcpHookInvokeEnvelope> {
+	const realm = globalThis as typeof globalThis & Record<string, unknown>;
+	const bridge = realm[key] as PageWebMcpBridge | undefined;
+	if (!bridge) return { ok: false, error: "WebMCP page hook is unavailable" };
+	try {
+		const result = await bridge.invoke(name, params);
+		const encoded = JSON.stringify(result === undefined ? null : result);
+		return { ok: true, encoded };
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+/** Page function (self-contained): restore wrapped page APIs and delete the bridge at `globalThis[key]`. */
+export function uninstallWebMcpPageHook(key: string): void {
+	const realm = globalThis as typeof globalThis & Record<string, unknown>;
+	(realm[key] as PageWebMcpBridge | undefined)?.uninstall();
+}
+
+class ChromiumWebMcpFrame implements WebMcpFrameTarget {
+	readonly #frame: Frame;
+
+	constructor(frame: Frame) {
+		this.#frame = frame;
+	}
+
+	get id(): string {
+		return frameId(this.#frame);
+	}
+
+	async snapshot(): Promise<WebMcpHookSnapshot> {
+		return await this.#frame.mainRealm().evaluate(webMcpSnapshotInPage, WEBMCP_BRIDGE_KEY);
+	}
+
+	async invoke(name: string, params: unknown): Promise<WebMcpHookInvokeEnvelope> {
+		return await this.#frame.mainRealm().evaluate(webMcpInvokeInPage, WEBMCP_BRIDGE_KEY, name, params);
+	}
+}
+
+class ChromiumWebMcpHost implements WebMcpHost {
+	readonly #page: Page;
+	readonly #preload: NewDocumentScriptEvaluation;
+
+	constructor(page: Page, preload: NewDocumentScriptEvaluation) {
+		this.#page = page;
+		this.#preload = preload;
+	}
+
+	async frames(): Promise<WebMcpFrameTarget[]> {
+		return this.#page.frames().map(frame => new ChromiumWebMcpFrame(frame));
+	}
+
+	nativeTools(): readonly WebMcpNativeToolEntry[] {
+		return this.#page.webmcp.tools().map(tool => nativeToolEntry(tool));
+	}
+
+	async dispose(): Promise<void> {
+		await this.#page.removeScriptToEvaluateOnNewDocument(this.#preload.identifier).catch(() => undefined);
+		for (const frame of this.#page.frames()) {
+			await frame
+				.mainRealm()
+				.evaluate(uninstallWebMcpPageHook, WEBMCP_BRIDGE_KEY)
+				.catch(() => undefined);
+		}
+	}
+}
+
+function nativeToolEntry(tool: WebMCPTool): WebMcpNativeToolEntry {
+	return {
+		name: tool.name,
+		description: tool.description,
+		inputSchema: tool.inputSchema,
+		annotations: tool.annotations,
+		frameId: frameId(tool.frame),
+		origin: originForUrl(tool.frame.url()),
+		async execute(params: object): Promise<WebMcpNativeToolResult> {
+			const result = await tool.execute(params);
+			if (result.status !== "Completed") {
+				return {
+					ok: false,
+					error: result.errorText ?? result.exception?.description ?? `WebMCP invocation ${result.status}`,
+				};
 			}
+			return { ok: true, output: result.output };
 		},
-		BRIDGE_KEY,
-		name,
-		params,
-	);
+	};
 }
 
 /** Per-tab WebMCP discovery, invocation, and catalog-event controller. */
 export class WebMcpController {
-	readonly #page: Page;
-	readonly #preload: NewDocumentScriptEvaluation;
+	readonly #host: WebMcpHost;
+	readonly #unavailableReason: string;
 	#nativeSupported: boolean;
 	#catalog = new Map<string, CatalogEntry>();
 	#events: WebMcpCatalogEvent[] = [];
 	#sequence = 0;
 	#droppedThrough = 0;
 
-	constructor(page: Page, preload: NewDocumentScriptEvaluation, nativeSupported: boolean) {
-		this.#page = page;
-		this.#preload = preload;
-		this.#nativeSupported = nativeSupported;
+	constructor(host: WebMcpHost, options: WebMcpControllerOptions) {
+		this.#host = host;
+		this.#nativeSupported = options.nativeSupported;
+		this.#unavailableReason =
+			options.unavailableReason ??
+			"Chrome WebMCP CDP is unavailable and no page-side tool registrations were observed.";
 	}
 
 	/** Discover page-provided tools, omitting schemas unless an exact name is requested. */
@@ -531,13 +708,10 @@ export class WebMcpController {
 		try {
 			if (tool.nativeTool) {
 				const result = await tool.nativeTool.execute(this.#cloneInput(params));
-				if (result.status !== "Completed") {
-					const detail = result.errorText ?? result.exception?.description ?? `WebMCP invocation ${result.status}`;
-					return { ok: false, error: untrustedBoundary(detail), untrusted: true };
-				}
+				if (!result.ok) return { ok: false, error: untrustedBoundary(result.error), untrusted: true };
 				return boundedResult(result.output);
 			}
-			const response = await invokeHook(tool.frame, name, this.#cloneInput(params));
+			const response = await tool.target.invoke(name, this.#cloneInput(params));
 			if (!response.ok) {
 				return {
 					ok: false,
@@ -570,16 +744,7 @@ export class WebMcpController {
 
 	/** Remove the preload and restore any page API method wrapped by this controller. */
 	async dispose(): Promise<void> {
-		await this.#page.removeScriptToEvaluateOnNewDocument(this.#preload.identifier).catch(() => undefined);
-		for (const frame of this.#page.frames()) {
-			await frame
-				.mainRealm()
-				.evaluate((key: string) => {
-					const realm = globalThis as typeof globalThis & Record<string, unknown>;
-					(realm[key] as PageWebMcpBridge | undefined)?.uninstall();
-				}, BRIDGE_KEY)
-				.catch(() => undefined);
-		}
+		await this.#host.dispose();
 		this.#catalog.clear();
 		this.#events = [];
 		this.#droppedThrough = 0;
@@ -590,9 +755,7 @@ export class WebMcpController {
 	}
 
 	#reason(): { reason: string } | Record<string, never> {
-		return this.#status() === "unavailable"
-			? { reason: "Chrome WebMCP CDP is unavailable and no page-side tool registrations were observed." }
-			: {};
+		return this.#status() === "unavailable" ? { reason: this.#unavailableReason } : {};
 	}
 
 	#publicRecord(entry: CatalogEntry, full: boolean): WebMcpToolRecord {
@@ -623,11 +786,11 @@ export class WebMcpController {
 
 	async #refreshCatalog(): Promise<void> {
 		const next = new Map<string, CatalogEntry>();
-		for (const frame of this.#page.frames()) {
+		for (const target of await this.#host.frames()) {
 			try {
-				const snapshot = await hookSnapshot(frame);
+				const snapshot = await target.snapshot();
 				this.#nativeSupported ||= snapshot.nativeAvailable;
-				const id = frameId(frame);
+				const id = target.id;
 				for (const tool of snapshot.tools) {
 					const entry: CatalogEntry = {
 						name: tool.name,
@@ -637,7 +800,7 @@ export class WebMcpController {
 						inputSchema: tool.inputSchema,
 						annotations: tool.annotations,
 						untrusted: true,
-						frame,
+						target,
 					};
 					next.set(`${id}\u0000${tool.name}`, entry);
 				}
@@ -647,20 +810,18 @@ export class WebMcpController {
 		}
 
 		if (this.#nativeSupported) {
-			for (const tool of this.#page.webmcp.tools()) {
-				const id = frameId(tool.frame);
+			for (const tool of this.#host.nativeTools()) {
 				const entry: CatalogEntry = {
 					name: tool.name,
 					description: tool.description,
-					frameId: id,
-					origin: originForUrl(tool.frame.url()),
+					frameId: tool.frameId,
+					origin: tool.origin,
 					inputSchema: tool.inputSchema,
 					annotations: tool.annotations,
 					untrusted: true,
-					frame: tool.frame,
 					nativeTool: tool,
 				};
-				next.set(`${id}\u0000${tool.name}`, entry);
+				next.set(`${tool.frameId}\u0000${tool.name}`, entry);
 			}
 		}
 
@@ -707,11 +868,11 @@ export class WebMcpController {
 
 /** Install the WebMCP preload before navigation and probe native CDP support. */
 export async function installWebMcp(page: Page): Promise<WebMcpController> {
-	const preload = await page.evaluateOnNewDocument(installPageHook, BRIDGE_KEY);
+	const preload = await page.evaluateOnNewDocument(installWebMcpPageHook, WEBMCP_BRIDGE_KEY);
 	for (const frame of page.frames()) {
 		await frame
 			.mainRealm()
-			.evaluate(installPageHook, BRIDGE_KEY)
+			.evaluate(installWebMcpPageHook, WEBMCP_BRIDGE_KEY)
 			.catch(() => undefined);
 	}
 
@@ -731,5 +892,5 @@ export async function installWebMcp(page: Page): Promise<WebMcpController> {
 	} finally {
 		await session?.detach().catch(() => undefined);
 	}
-	return new WebMcpController(page, preload, nativeSupported);
+	return new WebMcpController(new ChromiumWebMcpHost(page, preload), { nativeSupported });
 }

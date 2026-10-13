@@ -45,7 +45,6 @@ import {
 	type SmitheryCliPollResponse,
 	saveSmitheryApiKey,
 } from "../../mcp/smithery-auth";
-import { SmitheryConnectError } from "../../mcp/smithery-connect";
 import {
 	SmitheryRegistryError,
 	type SmitherySearchResult,
@@ -71,6 +70,8 @@ import { MCPAddWizard } from "@oh-my-pi/pi-tui/overlays/mcp-add-wizard";
 import { TranscriptBlock } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { parseCommandArgs } from "../../utils/command-args";
 import { theme } from "@oh-my-pi/pi-tui/theme";
+import { col, span, text } from "@oh-my-pi/pi-tui/native/describe";
+import type { NativeNode } from "@oh-my-pi/pi-tui/native/node";
 import type { InteractiveModeContext } from "../types";
 import { groupBySource, parseRemoveArgs, readScopeFlag, showCommandMessage } from "./command-controller-shared";
 
@@ -229,6 +230,7 @@ export class MCPAuthorizationLinkPrompt implements Component {
 	readonly #fullUrl: string;
 	readonly #launchUrl: string | undefined;
 	readonly #tailnetLaunchUrl: string | undefined;
+	#node: NativeNode | undefined;
 
 	constructor(url: string, launchUrl?: string, tailnetLaunchUrl?: string) {
 		this.#fullUrl = url;
@@ -237,6 +239,23 @@ export class MCPAuthorizationLinkPrompt implements Component {
 	}
 
 	invalidate(): void {}
+
+	/** Prompt, clickable full URL (open + copy), and optional local shortcut; immutable, so built once. */
+	describe(): NativeNode {
+		this.#node ??= col(
+			[
+				text([span("Open authorization URL:", "success")]),
+				text([span("Click here to authorize", "link", { href: this.#fullUrl })], {
+					href: this.#fullUrl,
+					actions: { click: "open", menu: ["open", "copy"] },
+				}),
+				urlCopyRow("Copy URL:", this.#fullUrl),
+				...(this.#launchUrl ? [urlCopyRow("Local shortcut (this machine only):", this.#launchUrl)] : []),
+			],
+			{ gap: "xs" },
+		);
+		return this.#node;
+	}
 
 	render(width: number): readonly string[] {
 		const link = urlHyperlinkAlways(this.#fullUrl, "Click here to authorize");
@@ -258,6 +277,16 @@ export class MCPAuthorizationLinkPrompt implements Component {
 		}
 		return lines;
 	}
+}
+
+/** Labelled URL that copies on click and wraps anywhere so no parameter is hidden. */
+function urlCopyRow(label: string, url: string): NativeNode {
+	return text([span(`${label} `, "muted"), span(url, "mono", { href: url })], {
+		wrap: "char",
+		href: url,
+		actions: { click: "copy", menu: ["copy", "open"] },
+		title: "Copy URL",
+	});
 }
 
 /**
@@ -482,9 +511,6 @@ export class MCPCommandController {
 	 */
 	#showHelp(): void {
 		const helpText = [
-			"",
-			theme.bold("MCP Server Management"),
-			"",
 			"Manage Model Context Protocol (MCP) servers for external tool integrations.",
 			"",
 			theme.fg("accent", "Commands:"),
@@ -510,7 +536,7 @@ export class MCPCommandController {
 			"",
 		].join("\n");
 
-		this.#showMessage(helpText);
+		this.#showReport("MCP Server Management", helpText);
 	}
 
 	#parseAddCommand(text: string): MCPAddParsed {
@@ -1489,19 +1515,18 @@ export class MCPCommandController {
 				discoveredServers.length === 0 &&
 				disabledServerNames.size === 0
 			) {
-				this.#showMessage(
+				this.#showReport(
+					"MCP Servers",
 					[
-						"",
 						theme.fg("muted", "No MCP servers configured."),
 						"",
 						`Use ${theme.fg("accent", "/mcp add")} to add a server.`,
-						"",
 					].join("\n"),
 				);
 				return;
 			}
 
-			const lines: string[] = ["", theme.bold("Configured MCP Servers"), ""];
+			const lines: string[] = [];
 
 			// Show user-level servers
 			if (userServers.length > 0) {
@@ -1576,7 +1601,7 @@ export class MCPCommandController {
 				}
 				lines.push("");
 			}
-			this.#showMessage(lines.join("\n"));
+			this.#showReport("Configured MCP Servers", lines.join("\n"));
 		} catch (error) {
 			this.ctx.showError(`Failed to list servers: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -2275,7 +2300,7 @@ export class MCPCommandController {
 		}
 
 		const servers = this.ctx.mcpManager.getConnectedServers();
-		const lines: string[] = ["", theme.bold("MCP Resources"), ""];
+		const lines: string[] = [];
 		let hasAny = false;
 
 		for (const name of servers) {
@@ -2303,9 +2328,8 @@ export class MCPCommandController {
 
 		if (!hasAny) {
 			lines.push(theme.fg("muted", "No resources available on connected servers."));
-			lines.push("");
 		}
-		this.#showMessage(lines.join("\n"));
+		this.#showReport("MCP Resources", lines.join("\n"));
 	}
 
 	/**
@@ -2318,7 +2342,7 @@ export class MCPCommandController {
 		}
 
 		const servers = this.ctx.mcpManager.getConnectedServers();
-		const lines: string[] = ["", theme.bold("MCP Prompts"), ""];
+		const lines: string[] = [];
 		let hasAny = false;
 
 		for (const name of servers) {
@@ -2344,9 +2368,8 @@ export class MCPCommandController {
 
 		if (!hasAny) {
 			lines.push(theme.fg("muted", "No prompts available on connected servers."));
-			lines.push("");
 		}
-		this.#showMessage(lines.join("\n"));
+		this.#showReport("MCP Prompts", lines.join("\n"));
 	}
 
 	/**
@@ -2361,7 +2384,7 @@ export class MCPCommandController {
 		const { enabled, subscriptions } = this.ctx.mcpManager.getNotificationState();
 		const servers = this.ctx.mcpManager.getConnectedServers();
 		const statusIcon = enabled ? theme.fg("success", "enabled") : theme.fg("warning", "disabled");
-		const lines: string[] = ["", theme.bold("MCP Notifications"), ""];
+		const lines: string[] = [];
 		lines.push(`  Status: ${statusIcon}  ${theme.fg("dim", "(mcp.notifications setting)")}`);
 		lines.push("");
 
@@ -2411,9 +2434,8 @@ export class MCPCommandController {
 
 		if (!hasAny) {
 			lines.push(theme.fg("muted", "No servers support notifications."));
-			lines.push("");
 		}
-		this.#showMessage(lines.join("\n"));
+		this.#showReport("MCP Notifications", lines.join("\n"));
 	}
 
 	async #validateSmitheryApiKey(apiKey: string): Promise<void> {
@@ -2526,7 +2548,7 @@ export class MCPCommandController {
 	}
 
 	#getSmitheryErrorStatus(error: unknown): number | undefined {
-		if (error instanceof SmitheryRegistryError || error instanceof SmitheryConnectError) {
+		if (error instanceof SmitheryRegistryError) {
 			return error.status;
 		}
 		return undefined;
@@ -2735,5 +2757,10 @@ export class MCPCommandController {
 	 */
 	#showMessage(text: string): void {
 		showCommandMessage(this.ctx, text);
+	}
+
+	/** A read-only listing shown outside the transcript (see `InteractiveModeContext.showCommandReport`). */
+	#showReport(title: string, text: string): void {
+		this.ctx.showCommandReport({ title, body: new Text(text.trim(), 0, 0) });
 	}
 }

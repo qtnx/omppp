@@ -1,8 +1,9 @@
 import * as fs from "node:fs/promises";
+// node:net only serves the TCP readiness probe for user daemons (`connectPort`).
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FileLock, Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
+import { FileLock, IpcConnection, IpcServer, Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-natives";
 import { isEnoent, isRecord, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
 import { TerminalQueryResponder } from "@oh-my-pi/pi-utils/vterm";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
@@ -13,7 +14,13 @@ import {
 	truncateTailBytes,
 } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
-import { daemonBrokerEndpoint, writeDaemonScopeMeta } from "./paths";
+import {
+	DAEMON_META_FILE,
+	DAEMON_SPEC_FILE,
+	daemonBrokerEndpoint,
+	readStoredDaemonRecord,
+	writeDaemonScopeMeta,
+} from "./paths";
 import type { DaemonReadySpec, DaemonSnapshot, DaemonSpec } from "@oh-my-pi/pi-tui/tools/daemon";
 import { hasLiveDaemonProjectPresence, pruneDeadDaemonRuntimeDirs } from "./presence";
 import {
@@ -34,6 +41,7 @@ import {
 } from "./protocol";
 import { resolveDaemonSpawnOptions } from "./spawn-options";
 import { renderTerminalOutput } from "./terminal-output";
+import { quotePosixArgv } from "../utils/shell-quote";
 
 const DEFAULT_IDLE_GRACE_MS = 3_000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -57,7 +65,6 @@ const PID_FILE = "broker.pid";
 const LEASE_HANDOFF_GRACE_MS = 500;
 /** Connect budget for the endpoint probe that answers "is a broker serving this scope?". */
 const LEASE_PROBE_TIMEOUT_MS = 250;
-const META_FILE = "meta.json";
 const LOG_FILE = "output.log";
 const PREVIOUS_LOG_FILE = "output.previous.log";
 const DAEMON_SPAWN_OPTIONS = resolveDaemonSpawnOptions({
@@ -100,6 +107,10 @@ interface ManagedDaemon {
 	pendingCompletions: DaemonCompletionNotification[];
 	completionSubscriptionId?: string;
 	persistQueue: Promise<void>;
+	/** Serialized spec last written (or recovered); a write is skipped while unchanged. */
+	persistedSpec?: string;
+	/** Serialized metadata last written (or recovered); a write is skipped while unchanged. */
+	persistedMeta?: string;
 }
 
 interface BrokerLease {
@@ -112,10 +123,6 @@ interface DaemonLogRead {
 	text: string;
 	terminalOutput: string;
 	cursor: number;
-}
-
-function quoteShellArg(value: string): string {
-	return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 function terminalState(state: DaemonSnapshot["state"]): boolean {
@@ -175,6 +182,13 @@ function syncReadyPending(record: ManagedDaemon): void {
 	if (!record.logReady) pending.push("log");
 	if (!record.portReady) pending.push("port");
 	record.snapshot.readyPending = pending.length > 0 ? pending : undefined;
+}
+
+/** Replace `filePath` via a pid-scoped temp file so readers never see a partial write. */
+async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+	const tempPath = `${filePath}.${process.pid}.tmp`;
+	await Bun.write(tempPath, content);
+	await fs.rename(tempPath, filePath);
 }
 
 async function fileTextSlice(filePath: string, head: boolean): Promise<string> {
@@ -312,20 +326,14 @@ class DaemonLog {
 }
 
 /** Whether a broker is accepting connections on the scope endpoint right now. */
-function probeBrokerEndpoint(endpoint: string): Promise<boolean> {
-	const { promise, resolve } = Promise.withResolvers<boolean>();
-	const socket = net.createConnection({ path: endpoint });
-	let settled = false;
-	const finish = (connected: boolean): void => {
-		if (settled) return;
-		settled = true;
-		socket.destroy();
-		resolve(connected);
-	};
-	socket.once("connect", () => finish(true));
-	socket.once("error", () => finish(false));
-	socket.setTimeout(LEASE_PROBE_TIMEOUT_MS, () => finish(false));
-	return promise;
+async function probeBrokerEndpoint(endpoint: string): Promise<boolean> {
+	try {
+		const connection = await IpcConnection.connect(endpoint, { framing: "lines", timeoutMs: LEASE_PROBE_TIMEOUT_MS });
+		connection.destroy();
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -424,13 +432,13 @@ class DaemonBroker {
 	 * profile lock) or keeps running untracked.
 	 */
 	readonly #startingNames = new Set<string>();
-	readonly #clients = new Set<net.Socket>();
-	readonly #ownerSockets = new Map<string, { socket: net.Socket; subscriptionId: string | undefined }>();
+	readonly #clients = new Set<IpcConnection>();
+	readonly #ownerSockets = new Map<string, { socket: IpcConnection; subscriptionId: string | undefined }>();
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
 	readonly #finished = Promise.withResolvers<void>();
-	readonly #sockets = new Set<net.Socket>();
-	#server: net.Server | undefined;
+	readonly #sockets = new Set<IpcConnection>();
+	#server: IpcServer | undefined;
 	#idleTimer: NodeJS.Timeout | undefined;
 	#shuttingDown = false;
 
@@ -443,7 +451,7 @@ class DaemonBroker {
 	) {
 		this.#projectDir = projectDir;
 		this.#runtimeDir = runtimeDir;
-		this.#endpoint = daemonBrokerEndpoint(projectDir, runtimeDir);
+		this.#endpoint = daemonBrokerEndpoint(runtimeDir);
 		this.#token = token;
 		this.#idleGraceMs = idleGraceMs;
 		this.#restartBackoffBaseMs = restartBackoffBaseMs;
@@ -451,15 +459,11 @@ class DaemonBroker {
 
 	async run(onListening?: () => void): Promise<void> {
 		await this.#recoverRecords();
-		if (process.platform !== "win32") await fs.rm(this.#endpoint, { force: true });
-		const server = net.createServer(socket => this.#accept(socket));
-		this.#server = server;
-		const { promise: listening, resolve, reject } = Promise.withResolvers<void>();
-		server.once("listening", resolve);
-		server.once("error", reject);
-		server.listen(this.#endpoint);
-		await listening;
-		if (process.platform !== "win32") await fs.chmod(this.#endpoint, 0o600);
+		this.#server = await IpcServer.listen(
+			this.#endpoint,
+			{ framing: "lines", maxFrameBytes: MAX_REQUEST_BYTES },
+			socket => this.#accept(socket),
+		);
 		this.#scheduleIdleShutdown();
 		onListening?.();
 		await this.#finished.promise;
@@ -485,32 +489,16 @@ class DaemonBroker {
 		for (const socket of this.#sockets) socket.destroy();
 		this.#sockets.clear();
 		this.#clients.clear();
-		if (this.#server) {
-			const { promise, resolve } = Promise.withResolvers<void>();
-			this.#server.close(() => resolve());
-			await promise;
-		}
-		if (process.platform !== "win32") await fs.rm(this.#endpoint, { force: true });
+		await this.#server?.close();
 		this.#finished.resolve();
 	}
 
-	#accept(socket: net.Socket): void {
+	#accept(socket: IpcConnection): void {
 		this.#sockets.add(socket);
 		let authenticated = false;
-		let buffer = "";
-		socket.setEncoding("utf8");
-		socket.on("data", chunk => {
-			buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-			if (Buffer.byteLength(buffer, "utf8") > MAX_REQUEST_BYTES) {
-				socket.destroy(new Error("Daemon broker request exceeds size limit"));
-				return;
-			}
-			for (;;) {
-				const newline = buffer.indexOf("\n");
-				if (newline < 0) break;
-				const line = buffer.slice(0, newline);
-				buffer = buffer.slice(newline + 1);
-				if (!line) continue;
+		// Oversized requests (> MAX_REQUEST_BYTES) close the connection natively.
+		socket.start(
+			line => {
 				void this.#handleLine(socket, line, () => {
 					if (authenticated) return;
 					authenticated = true;
@@ -518,23 +506,20 @@ class DaemonBroker {
 					clearTimeout(this.#idleTimer);
 					this.#idleTimer = undefined;
 				});
-			}
-		});
-		socket.on("error", () => {
-			// Socket closure performs client accounting.
-		});
-		socket.on("close", () => {
-			this.#sockets.delete(socket);
-			if (!authenticated) return;
-			this.#clients.delete(socket);
-			this.#scheduleIdleShutdown();
-			for (const [owner, registration] of this.#ownerSockets) {
-				if (registration.socket === socket) this.#ownerSockets.delete(owner);
-			}
-		});
+			},
+			() => {
+				this.#sockets.delete(socket);
+				if (!authenticated) return;
+				this.#clients.delete(socket);
+				this.#scheduleIdleShutdown();
+				for (const [owner, registration] of this.#ownerSockets) {
+					if (registration.socket === socket) this.#ownerSockets.delete(owner);
+				}
+			},
+		);
 	}
 
-	async #handleLine(socket: net.Socket, line: string, onAuthenticated: () => void): Promise<void> {
+	async #handleLine(socket: IpcConnection, line: string, onAuthenticated: () => void): Promise<void> {
 		let id = "unknown";
 		try {
 			const decoded: unknown = JSON.parse(line);
@@ -603,7 +588,7 @@ class DaemonBroker {
 					});
 					if (previous?.socket === socket && !replayOwners.has(owner)) continue;
 					for (const completion of this.#pendingCompletions.get(owner)?.values() ?? []) {
-						socket.write(`${JSON.stringify(completion)}\n`);
+						socket.send(JSON.stringify(completion));
 					}
 				}
 				for (const owner of detachedOwners) {
@@ -618,11 +603,11 @@ class DaemonBroker {
 				}
 			}
 			const result = await this.#dispatch(request.operation);
-			socket.write(`${JSON.stringify({ id, ok: true, result })}\n`);
+			socket.send(JSON.stringify({ id, ok: true, result }));
 			if (request.operation.op === "shutdown") setTimeout(() => void this.shutdown(), 10);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			socket.write(`${JSON.stringify({ id, ok: false, error: message })}\n`);
+			socket.send(JSON.stringify({ id, ok: false, error: message }));
 		}
 	}
 
@@ -647,7 +632,9 @@ class DaemonBroker {
 				return this.#send(operation);
 			case "stop": {
 				const record = this.#record(operation.name);
-				await this.#stopRecord(record, operation.timeoutMs);
+				if (operation.id === undefined || operation.id === record.snapshot.id) {
+					await this.#stopRecord(record, operation.timeoutMs);
+				}
 				return { op: "stop", daemon: record.snapshot };
 			}
 			case "restart":
@@ -820,7 +807,19 @@ class DaemonBroker {
 		// Nothing plays terminal for a supervised PTY, so a program probing for
 		// cursor position or device attributes would block on the reply. Answer
 		// the queries from the output stream and write the replies to its stdin.
-		const responder = new TerminalQueryResponder();
+		//
+		// On Windows ConPTY sits in between and forwards a program's probes
+		// rather than answering them (current conhost leaves replies to the
+		// terminal; older builds answer from the console buffer and never put
+		// the probe on this stream). ConPTY also sends queries of its own and
+		// consumes their replies: device attributes at session start and cursor
+		// resyncs later, all answered here. The one exception is its
+		// INHERIT_CURSOR handshake, the first `CSI 6 n` on the stream, which the
+		// PTY layer answers before the child owns stdin
+		// (crates/pi-natives/src/pty.rs). ConPTY consumes one report for it;
+		// replying again would put a second report on the program's stdin,
+		// where the console decodes it as a keypress.
+		const responder = new TerminalQueryResponder({ hostCursorHandshake: process.platform === "win32" });
 		const onChunk = (error: Error | null, chunk: string): void => {
 			if (generation !== record.generation) return;
 			if (error) record.log?.append(`PTY output error: ${error.message}\n`);
@@ -857,7 +856,7 @@ class DaemonBroker {
 			);
 		} else {
 			const argv = [record.spec.application, ...record.spec.args];
-			const command = `exec ${argv.map(quoteShellArg).join(" ")}`;
+			const command = `exec ${quotePosixArgv(argv)}`;
 			const shell = procmgr.getShellConfig().shell;
 			run = session.start({ command, shell, ...options }, onChunk, onStart);
 		}
@@ -1034,8 +1033,8 @@ class DaemonBroker {
 		pending.set(completion.completionId, completion);
 		this.#pendingCompletions.set(completion.owner, pending);
 		const registration = this.#ownerSockets.get(completion.owner);
-		if (!registration || registration.socket.destroyed) return;
-		registration.socket.write(`${JSON.stringify(completion)}\n`);
+		if (!registration || registration.socket.closed) return;
+		registration.socket.send(JSON.stringify(completion));
 	}
 
 	async #settle(record: ManagedDaemon, generation: number, exitCode?: number, error?: string): Promise<void> {
@@ -1330,7 +1329,6 @@ class DaemonBroker {
 	#serializeMetadata(record: ManagedDaemon): string {
 		return JSON.stringify({
 			daemon: { ...record.snapshot },
-			spec: record.spec,
 			completionEvents: record.completionCapable,
 			completionSubscriptionId: record.completionSubscriptionId,
 			completionPending: record.pendingCompletions.length > 0,
@@ -1343,15 +1341,23 @@ class DaemonBroker {
 	}
 
 	#persist(record: ManagedDaemon): void {
-		const metaPath = path.join(record.dir, META_FILE);
-		const tempPath = `${metaPath}.${process.pid}.tmp`;
+		const spec = JSON.stringify(record.spec);
 		const metadata = this.#serializeMetadata(record);
+		const writeSpec = spec !== record.persistedSpec;
+		const writeMeta = metadata !== record.persistedMeta;
+		if (!writeSpec && !writeMeta) return;
+		record.persistedSpec = spec;
+		record.persistedMeta = metadata;
 		record.persistQueue = record.persistQueue
 			.then(async () => {
-				await Bun.write(tempPath, metadata);
-				await fs.rename(tempPath, metaPath);
+				// Spec first: recovery must never find metadata whose spec is not on disk.
+				if (writeSpec) await writeFileAtomic(path.join(record.dir, DAEMON_SPEC_FILE), spec);
+				if (writeMeta) await writeFileAtomic(path.join(record.dir, DAEMON_META_FILE), metadata);
 			})
 			.catch(error => {
+				// Unknown on-disk state: force the next persist to write both files.
+				record.persistedSpec = undefined;
+				record.persistedMeta = undefined;
 				logger.warn("Failed to persist daemon metadata", {
 					name: record.snapshot.name,
 					error: error instanceof Error ? error.message : String(error),
@@ -1394,12 +1400,11 @@ class DaemonBroker {
 			if (!entry.isDirectory()) continue;
 			const dir = path.join(root, entry.name);
 			try {
-				const decoded: unknown = await Bun.file(path.join(dir, META_FILE)).json();
-				if (typeof decoded !== "object" || decoded === null || !("daemon" in decoded) || !("spec" in decoded)) {
-					continue;
-				}
+				const stored = await readStoredDaemonRecord(dir);
+				if (!stored) continue;
+				const { meta: decoded, spec: storedSpec, legacyLayout } = stored;
 				const snapshot = parseDaemonSnapshot(decoded.daemon);
-				const spec = parseDaemonSpec(decoded.spec);
+				const spec = parseDaemonSpec(storedSpec);
 				const processRef = snapshot.pid === undefined ? null : Process.fromPid(snapshot.pid);
 				const recoverableExit = !terminalState(snapshot.state) && snapshot.state !== "stopping";
 				const detached = spec.detached && recoverableExit && processRef?.status() === "running";
@@ -1430,6 +1435,9 @@ class DaemonBroker {
 					readyPattern: spec.ready?.log ? new RegExp(spec.ready.log, "u") : undefined,
 					consecutiveFailures: 0,
 					persistQueue: Promise.resolve(),
+					// Legacy files are rewritten once into the split layout.
+					persistedSpec: legacyLayout ? undefined : JSON.stringify(storedSpec),
+					persistedMeta: legacyLayout ? undefined : JSON.stringify(decoded),
 					completionCapable: "completionEvents" in decoded && decoded.completionEvents === true,
 					completionSubscriptionId:
 						"completionSubscriptionId" in decoded && typeof decoded.completionSubscriptionId === "string"
@@ -1488,9 +1496,9 @@ class DaemonBroker {
 						});
 					});
 				}
-				// Recovery may only change a subset of records. In particular, a
-				// terminal record already stored in the current format needs no write.
-				if (JSON.stringify(decoded) !== this.#serializeMetadata(record)) this.#persist(record);
+				// Recovery may only change a subset of records; #persist writes only
+				// the files whose serialized form differs from what was read.
+				this.#persist(record);
 			} catch (error) {
 				logger.warn("Failed to recover daemon record", {
 					name: entry.name,
@@ -1548,14 +1556,14 @@ export async function startDaemonBrokerFromEnvironment(options: DaemonBrokerStar
 			? requestedRestartBackoffBaseMs
 			: RESTART_BACKOFF_BASE_MS;
 	await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
-	const endpoint = daemonBrokerEndpoint(projectDir, runtimeDir);
+	const endpoint = daemonBrokerEndpoint(runtimeDir);
 	// Hold the lease for the whole broker lifetime: it is a native lock the OS
 	// releases on exit, so keeping `lease` referenced keeps the scope owned.
 	const lease = await acquireBrokerLease(runtimeDir, endpoint);
 	if (!lease) return;
 	setProcessName("omp daemon broker");
 	// Record the scope's project dir so `omp ps` can map this hash-keyed runtime
-	// dir back to its project (and derive the Windows pipe name) offline.
+	// dir back to its project offline.
 	void writeDaemonScopeMeta(runtimeDir, projectDir).catch(error => {
 		logger.warn("Failed to record daemon scope metadata", {
 			error: error instanceof Error ? error.message : String(error),

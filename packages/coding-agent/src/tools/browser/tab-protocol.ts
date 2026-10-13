@@ -70,9 +70,6 @@ export type WorkerInitPayload =
 			userAgent?: string;
 			/** Ignore invalid HTTPS certificates for this page. */
 			ignoreHttpsErrors?: boolean;
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-			timeoutMs: number;
 	  }
 	| {
 			mode: "attach";
@@ -90,9 +87,6 @@ export type WorkerInitPayload =
 			userAgent?: string;
 			/** Ignore invalid HTTPS certificates for this page. */
 			ignoreHttpsErrors?: boolean;
-			url?: string;
-			waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2";
-			timeoutMs: number;
 			/**
 			 * Post-timeout recycle: before adopting the page, dismiss any open JS dialog and
 			 * stop a pending navigation so a blocked target cannot stall worker init (which
@@ -106,6 +100,11 @@ export type WorkerInitPayload =
 			 * behaves as `true`; the supervisor clears it for browsers we did not launch.
 			 */
 			activateForScreenshot?: boolean;
+			/**
+			 * The user drives this browser (connected, relay): downloads keep its one browser-wide folder and real file
+			 * names, since the user's own downloads land there too. Unset means an OMP-launched browser.
+			 */
+			userDriven?: boolean;
 	  };
 
 /** Result of one host tool requested by browser-run JavaScript. */
@@ -130,6 +129,8 @@ export interface RunResultOk {
 	displays: Array<TextContent | ImageContent>;
 	returnValue: unknown;
 	screenshots: ScreenshotResult[];
+	/** The run finished but tab-scoped browser state was not restored; the tab must be recycled. */
+	recoverTab?: boolean;
 }
 
 export interface RunErrorPayload {
@@ -140,14 +141,17 @@ export interface RunErrorPayload {
 	isAbort: boolean;
 	/** The worker could not restore tab-scoped browser state and must be recycled. */
 	recoverTab?: boolean;
+	/** `tab.goto` outlasted its budget; the page stays on what loaded. */
+	navigationTimeout?: boolean;
+	/** The page's renderer crashed; the worker runs nothing more and must be recycled. */
+	rendererCrashed?: boolean;
 }
 
 export type WorkerOutbound =
 	| {
 			/**
 			 * Puppeteer loaded, browser connected. Sent before page acquisition so the supervisor's cold-start budget
-			 * bounds only the realm setup (cold import + connect); page creation and the first navigation run under the
-			 * ready wait.
+			 * bounds only the realm setup (cold import + connect); page creation runs under the ready wait.
 			 */
 			type: "setup";
 	  }

@@ -5,8 +5,13 @@ import type { Tool as AiTool, Model } from "@oh-my-pi/pi-ai";
 import { renderToolExamples } from "@oh-my-pi/pi-ai/dialect";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { formatNumber } from "@oh-my-pi/pi-utils";
-import type { Theme } from "../theme";
+import type { Theme, ThemeColor } from "../theme";
 import type { ContextUsage } from "./types";
+import { Container } from "../tui";
+import { Text } from "../components/text";
+import type { TspSpan, TspText } from "@oh-my-pi/pi-wire";
+import type { DescribeContext, NativeNode } from "../native/node";
+import { col, node, row, span, text } from "../native/describe";
 
 interface ContextSkill {
 	readonly name: string;
@@ -95,6 +100,8 @@ export interface ContextBreakdown {
 	usedTokens: number;
 	autoCompactBufferTokens: number;
 	freeTokens: number;
+	/** Where auto-compaction fires, in tokens; undefined when compaction is off. */
+	thresholdTokens?: number;
 	/** Estimated snapcompact wire savings; set when requested and a snapcompact.* setting is enabled. */
 	snapcompact?: ContextSavingsEstimate;
 }
@@ -476,10 +483,12 @@ export function computeContextBreakdown(session: ContextUsageSession, options: C
 			: rawCategories;
 	const usedTokens = categories.reduce((sum, c) => sum + c.tokens, 0);
 	let autoCompactBufferTokens = 0;
+	let thresholdTokens: number | undefined;
 	if (contextWindow > 0) {
 		const compactionSettings = options.compaction;
 		if (compactionSettings.enabled && compactionSettings.strategy !== "off") {
 			const threshold = resolveThresholdTokens(contextWindow, compactionSettings);
+			if (threshold > 0 && threshold <= contextWindow) thresholdTokens = threshold;
 			autoCompactBufferTokens = Math.max(0, contextWindow - threshold);
 		} else {
 			autoCompactBufferTokens = 0;
@@ -500,6 +509,7 @@ export function computeContextBreakdown(session: ContextUsageSession, options: C
 		usedTokens,
 		autoCompactBufferTokens,
 		freeTokens,
+		thresholdTokens,
 		snapcompact: options.snapcompact,
 	};
 }
@@ -583,63 +593,91 @@ function percentString(part: number, whole: number, fractionDigits = 1): string 
 	return `${pct.toFixed(fractionDigits)}%`;
 }
 
-function buildLegendLines(breakdown: ContextBreakdown, theme: Theme): string[] {
-	const lines: string[] = [];
+/** One styled run of a legend line: bold (`strong`), a theme color, or plain. */
+interface LegendPart {
+	t: string;
+	s?: ThemeColor | "strong";
+}
+
+/** Legend lines as styled runs, shared by the ANSI panel and the native description. */
+function buildLegendParts(breakdown: ContextBreakdown): LegendPart[][] {
+	const lines: LegendPart[][] = [];
 	const { model, contextWindow, categories, usedTokens, autoCompactBufferTokens, freeTokens } = breakdown;
 
 	const modelName = model?.name ?? model?.id ?? "no model";
 	const modelId = model?.id ?? "unknown";
 	const windowLabel = formatNumber(contextWindow).toLowerCase();
 
-	lines.push(theme.bold(`${modelName}`) + theme.fg("dim", ` (${windowLabel} context)`));
-	lines.push(theme.fg("muted", `${modelId}[${windowLabel}]`));
-	lines.push(
-		`${theme.bold(formatNumber(usedTokens))}${theme.fg("dim", `/${windowLabel} tokens`)}` +
-			theme.fg("muted", ` (${percentString(usedTokens, contextWindow)})`),
-	);
-	lines.push("");
-	lines.push(theme.fg("muted", "Estimated usage by category"));
+	lines.push([
+		{ t: `${modelName}`, s: "strong" },
+		{ t: ` (${windowLabel} context)`, s: "dim" },
+	]);
+	lines.push([{ t: `${modelId}[${windowLabel}]`, s: "muted" }]);
+	lines.push([
+		{ t: formatNumber(usedTokens), s: "strong" },
+		{ t: `/${windowLabel} tokens`, s: "dim" },
+		{ t: ` (${percentString(usedTokens, contextWindow)})`, s: "muted" },
+	]);
+	lines.push([]);
+	lines.push([{ t: "Estimated usage by category", s: "muted" }]);
 
 	for (const category of categories) {
-		const dot = theme.fg(category.color, category.glyph);
-		const label = category.label;
-		const tokens = formatNumber(category.tokens);
 		const pct = percentString(category.tokens, contextWindow);
-		lines.push(`${dot} ${label}: ${theme.bold(tokens)} ${theme.fg("dim", `tokens (${pct})`)}`);
+		lines.push([
+			{ t: category.glyph, s: category.color },
+			{ t: ` ${category.label}: ` },
+			{ t: formatNumber(category.tokens), s: "strong" },
+			{ t: " " },
+			{ t: `tokens (${pct})`, s: "dim" },
+		]);
 	}
 
-	const freeDot = theme.fg("dim", CELL_FREE);
-	lines.push(
-		`${freeDot} Free space: ${theme.bold(formatNumber(freeTokens))} ${theme.fg("dim", `(${percentString(freeTokens, contextWindow)})`)}`,
-	);
+	lines.push([
+		{ t: CELL_FREE, s: "dim" },
+		{ t: " Free space: " },
+		{ t: formatNumber(freeTokens), s: "strong" },
+		{ t: " " },
+		{ t: `(${percentString(freeTokens, contextWindow)})`, s: "dim" },
+	]);
 
 	if (autoCompactBufferTokens > 0) {
-		const bufferDot = theme.fg("warning", CELL_BUFFER);
-		lines.push(
-			`${bufferDot} Autocompact buffer: ${theme.bold(formatNumber(autoCompactBufferTokens))} ${theme.fg(
-				"dim",
-				`tokens (${percentString(autoCompactBufferTokens, contextWindow)})`,
-			)}`,
-		);
+		lines.push([
+			{ t: CELL_BUFFER, s: "warning" },
+			{ t: " Autocompact buffer: " },
+			{ t: formatNumber(autoCompactBufferTokens), s: "strong" },
+			{ t: " " },
+			{ t: `tokens (${percentString(autoCompactBufferTokens, contextWindow)})`, s: "dim" },
+		]);
 	}
 
+	const snap = buildSnapcompactParts(breakdown);
+	if (snap.length > 0) lines.push([], ...snap);
+	return lines;
+}
+
+/** Snapcompact savings lines of the legend; empty when no snapcompact setting is on. */
+function buildSnapcompactParts(breakdown: ContextBreakdown): LegendPart[][] {
+	const lines: LegendPart[][] = [];
+	const { usedTokens } = breakdown;
 	const snap = breakdown.snapcompact;
 	if (snap) {
-		lines.push("");
 		if (!snap.visionCapable) {
-			lines.push(theme.fg("muted", "Snapcompact: inactive (model has no image input)"));
+			lines.push([{ t: "Snapcompact: inactive (model has no image input)", s: "muted" }]);
 		} else {
-			lines.push(theme.fg("muted", "Snapcompact (estimated wire savings)"));
+			lines.push([{ t: "Snapcompact (estimated wire savings)", s: "muted" }]);
 			if (snap.systemPrompt) {
 				const sp = snap.systemPrompt;
+				const scope = sp.scope === "agents-md" ? "AGENTS.md" : "all";
 				if (sp.applied) {
-					lines.push(
-						`  System prompt (${sp.scope === "agents-md" ? "AGENTS.md" : "all"}): saves ${theme.bold(`~${formatNumber(sp.savedTokens)}`)} ` +
-							theme.fg(
-								"dim",
-								`(${formatNumber(sp.textTokens)} text → ${sp.frames} frame${sp.frames === 1 ? "" : "s"} ≈ ${formatNumber(sp.imageTokens)})`,
-							),
-					);
+					lines.push([
+						{ t: `  System prompt (${scope}): saves ` },
+						{ t: `~${formatNumber(sp.savedTokens)}`, s: "strong" },
+						{ t: " " },
+						{
+							t: `(${formatNumber(sp.textTokens)} text → ${sp.frames} frame${sp.frames === 1 ? "" : "s"} ≈ ${formatNumber(sp.imageTokens)})`,
+							s: "dim",
+						},
+					]);
 				} else {
 					const reason =
 						sp.reason === "budget"
@@ -647,34 +685,311 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: Theme): string[] {
 							: sp.reason === "empty"
 								? "nothing to image"
 								: "frames would not save tokens";
-					lines.push(
-						`  System prompt (${sp.scope === "agents-md" ? "AGENTS.md" : "all"}): ${theme.fg("dim", `stays text (${reason})`)}`,
-					);
+					lines.push([{ t: `  System prompt (${scope}): ` }, { t: `stays text (${reason})`, s: "dim" }]);
 				}
 			}
 			if (snap.toolResults) {
 				const tr = snap.toolResults;
 				if (tr.swapped > 0) {
-					lines.push(
-						`  Tool results: saves ${theme.bold(`~${formatNumber(tr.savedTokens)}`)} ` +
-							theme.fg(
-								"dim",
-								`(${tr.swapped}/${tr.total} imaged, ${formatNumber(tr.textTokens)} text → ${tr.frames} frames ≈ ${formatNumber(tr.imageTokens)})`,
-							),
-					);
+					lines.push([
+						{ t: "  Tool results: saves " },
+						{ t: `~${formatNumber(tr.savedTokens)}`, s: "strong" },
+						{ t: " " },
+						{
+							t: `(${tr.swapped}/${tr.total} imaged, ${formatNumber(tr.textTokens)} text → ${tr.frames} frames ≈ ${formatNumber(tr.imageTokens)})`,
+							s: "dim",
+						},
+					]);
 				} else {
-					lines.push(`  Tool results: ${theme.fg("dim", `none imaged (${tr.total} in history)`)}`);
+					lines.push([{ t: "  Tool results: " }, { t: `none imaged (${tr.total} in history)`, s: "dim" }]);
 				}
 			}
 			if (snap.savedTokens > 0) {
-				lines.push(
-					`  Next request: ${theme.bold(`~${formatNumber(Math.max(0, usedTokens - snap.savedTokens))}`)} ${theme.fg("dim", "tokens on the wire")}`,
-				);
+				lines.push([
+					{ t: "  Next request: " },
+					{ t: `~${formatNumber(Math.max(0, usedTokens - snap.savedTokens))}`, s: "strong" },
+					{ t: " " },
+					{ t: "tokens on the wire", s: "dim" },
+				]);
 			}
 		}
 	}
 
 	return lines;
+}
+
+function buildLegendLines(breakdown: ContextBreakdown, theme: Theme): string[] {
+	return buildLegendParts(breakdown).map(line => {
+		let out = "";
+		for (const part of line) {
+			out += part.s === "strong" ? theme.bold(part.t) : part.s ? theme.fg(part.s, part.t) : part.t;
+		}
+		return out;
+	});
+}
+
+/** Stacked meter parts in grid order: the categories, free space as the empty track, then the hatched buffer. */
+function contextMeterParts(
+	breakdown: ContextBreakdown,
+): { value: number; token?: string; label?: string; hatch?: boolean }[] {
+	const window = breakdown.contextWindow;
+	const parts: { value: number; token?: string; label?: string; hatch?: boolean }[] = breakdown.categories
+		.filter(category => category.tokens > 0)
+		.map(category => ({
+			value: category.tokens / window,
+			token: category.color,
+			label: `${category.label} · ${formatNumber(category.tokens)} tokens (${percentString(category.tokens, window)})`,
+		}));
+	parts.push({
+		value: breakdown.freeTokens / window,
+		token: "track",
+		label: `Free space · ${formatNumber(breakdown.freeTokens)} tokens (${percentString(breakdown.freeTokens, window)})`,
+	});
+	if (breakdown.autoCompactBufferTokens > 0) {
+		parts.push({
+			value: breakdown.autoCompactBufferTokens / window,
+			token: "warning",
+			hatch: true,
+			label: `Autocompact buffer · ${formatNumber(breakdown.autoCompactBufferTokens)} tokens (${percentString(breakdown.autoCompactBufferTokens, window)})`,
+		});
+	}
+	return parts;
+}
+
+/**
+ * One line of the native `/context` breakdown: a swatch in the part's bar
+ * color, its name, its tokens and its share of the window; the exact count
+ * is its tooltip.
+ */
+function contextShareRow(
+	key: string,
+	role: string,
+	swatch: TspSpan,
+	label: string,
+	tokens: number,
+	window: number,
+): NativeNode {
+	return node(
+		"row",
+		{ role, align: "center", title: `${label} · ${tokens.toLocaleString("en-US")} tokens` },
+		[
+			text([swatch], { role: "omp.context.swatch", wrap: "none" }),
+			text(label, { role: "omp.context.label", grow: 1, wrap: "none", truncate: "end" }),
+			text(formatNumber(tokens), { role: "omp.context.tokens", wrap: "none" }),
+			text(percentString(tokens, window), { role: "omp.context.share", wrap: "none" }),
+		],
+		key,
+	);
+}
+
+/**
+ * The snapcompact estimate as a titled group of lines (what is imaged, how,
+ * and what it saves), or a note saying why it is inactive; `undefined` when
+ * no snapcompact setting is on.
+ */
+function describeSnapcompact(breakdown: ContextBreakdown): NativeNode | undefined {
+	const snap = breakdown.snapcompact;
+	if (!snap) return undefined;
+	const head = text([span("Snapcompact", "strong"), span(" · estimated savings on the wire", "dim")], {
+		role: "omp.context.snap.head",
+	});
+	if (!snap.visionCapable) {
+		const note = text("Inactive: the model has no image input.", { role: "omp.context.snap.note" });
+		return node("col", { role: "omp.context.snap" }, [head, note], "snapcompact");
+	}
+	const lines: { label: string; detail: string; value?: TspSpan }[] = [];
+	const sp = snap.systemPrompt;
+	if (sp) {
+		const label = `System prompt · ${sp.scope === "agents-md" ? "AGENTS.md" : "all"}`;
+		if (sp.applied) {
+			lines.push({
+				label,
+				detail: `${formatNumber(sp.textTokens)} text → ${sp.frames} frame${sp.frames === 1 ? "" : "s"} ≈ ${formatNumber(sp.imageTokens)}`,
+				value: span(`−${formatNumber(sp.savedTokens)}`, "success"),
+			});
+		} else {
+			const reason =
+				sp.reason === "budget"
+					? "image budget exhausted"
+					: sp.reason === "empty"
+						? "nothing to image"
+						: "frames would not save tokens";
+			lines.push({ label, detail: `Stays text: ${reason}` });
+		}
+	}
+	const tr = snap.toolResults;
+	if (tr) {
+		lines.push(
+			tr.swapped > 0
+				? {
+						label: "Tool results",
+						detail: `${tr.swapped} of ${tr.total} imaged · ${formatNumber(tr.textTokens)} text → ${tr.frames} frames ≈ ${formatNumber(tr.imageTokens)}`,
+						value: span(`−${formatNumber(tr.savedTokens)}`, "success"),
+					}
+				: { label: "Tool results", detail: `None imaged · ${tr.total} in history` },
+		);
+	}
+	if (snap.savedTokens > 0) {
+		lines.push({
+			label: "Next request",
+			detail: "tokens on the wire",
+			value: span(`~${formatNumber(Math.max(0, breakdown.usedTokens - snap.savedTokens))}`, "strong"),
+		});
+	}
+	const rows = lines.map((line, index) =>
+		node(
+			"row",
+			{ role: "omp.context.snap.row", align: "baseline" },
+			[
+				text(line.label, { role: "omp.context.label", wrap: "none" }),
+				text(line.detail, { role: "omp.context.detail", grow: 1, wrap: "none", truncate: "end" }),
+				...(line.value ? [text([line.value], { role: "omp.context.tokens", wrap: "none" })] : []),
+			],
+			`snap-${index}`,
+		),
+	);
+	return node("col", { role: "omp.context.snap" }, [head, ...rows], "snapcompact");
+}
+
+/**
+ * The `/context` body for terminals that draw `meter`: the tokens used as
+ * the figure that leads, beside the room left before auto-compaction; one
+ * stacked bar of the parts (categories, free space as the empty track, the
+ * hatched buffer) ticked where compaction fires; the breakdown in the bar's
+ * order with free space and the buffer under it; then the snapcompact
+ * estimate when one is on. {@link contextUsageHead} names the model.
+ */
+function describeContextFrame(breakdown: ContextBreakdown): NativeNode {
+	const { contextWindow: window, usedTokens, freeTokens, autoCompactBufferTokens, thresholdTokens } = breakdown;
+	const parts = contextMeterParts(breakdown);
+	const used = Math.min(1, usedTokens / window);
+	const room =
+		thresholdTokens === undefined
+			? `${formatNumber(freeTokens)} free`
+			: usedTokens >= thresholdTokens
+				? `Past auto-compaction at ${percentString(thresholdTokens, window, 0)}`
+				: `${formatNumber(thresholdTokens - usedTokens)} left before auto-compaction at ${percentString(thresholdTokens, window, 0)}`;
+	const summary = node(
+		"row",
+		{ role: "omp.context.summary", align: "baseline", wrap: true },
+		[
+			text(
+				[
+					span(formatNumber(usedTokens), "strong"),
+					span(` of ${formatNumber(window)} tokens · ${percentString(usedTokens, window, 0)}`, "dim"),
+				],
+				{ role: "omp.context.used", grow: 1, wrap: "none" },
+			),
+			text(room, { role: "omp.context.room", wrap: "none" }),
+		],
+		"summary",
+	);
+	const marks =
+		thresholdTokens !== undefined
+			? [
+					{
+						at: thresholdTokens / window,
+						tone: "warning" as const,
+						title: `Auto-compaction at ${percentString(thresholdTokens, window, 0)} · ${formatNumber(thresholdTokens)} tokens`,
+					},
+				]
+			: undefined;
+	const bar = node(
+		"meter",
+		{ value: used, style: "bar", size: "lg", parts, ...(marks ? { marks } : {}), aria: "Context usage by category" },
+		undefined,
+		"bar",
+	);
+	const shares = breakdown.categories.map(category =>
+		contextShareRow(
+			category.id,
+			"omp.context.cat",
+			span("■", category.color),
+			category.label,
+			category.tokens,
+			window,
+		),
+	);
+	shares.push(contextShareRow("free", "omp.context.cat.free", span("□", "dim"), "Free space", freeTokens, window));
+	if (autoCompactBufferTokens > 0) {
+		shares.push(
+			contextShareRow(
+				"buffer",
+				"omp.context.cat.buffer",
+				span("▨", "warning"),
+				"Autocompact buffer",
+				autoCompactBufferTokens,
+				window,
+			),
+		);
+	}
+	const children = [summary, bar, node("col", { role: "omp.context.cats" }, shares, "cats")];
+	const snap = describeSnapcompact(breakdown);
+	if (snap) children.push(snap);
+	return col(children, { role: "omp.context" });
+}
+
+/** The `/context` title: the model once one is selected (the body leads with its window). */
+export function contextUsageHead(breakdown: ContextBreakdown): TspText {
+	if (breakdown.contextWindow <= 0) return [span("Context usage", "strong")];
+	const modelName = breakdown.model?.name ?? breakdown.model?.id ?? "no model";
+	return [span("Context", "strong"), span(` · ${modelName}`, "muted")];
+}
+
+/**
+ * Native context-usage panel for terminals without `meter`: the cell grid as
+ * unwrapped styled rows beside the legend. The terminal places the legend
+ * beside the grid, or below it when narrow.
+ */
+export function describeContextUsage(breakdown: ContextBreakdown): NativeNode {
+	if (breakdown.contextWindow <= 0) {
+		return text([{ t: "Context usage is unavailable: no model is selected for this session.", s: "muted" }]);
+	}
+	const cells = planCells(breakdown);
+	const grid: NativeNode[] = [];
+	for (let gridRow = 0; gridRow < GRID_ROWS; gridRow++) {
+		const spans: TspSpan[] = [];
+		for (let gridCol = 0; gridCol < GRID_COLS; gridCol++) {
+			const cell = cells[gridRow * GRID_COLS + gridCol]!;
+			spans.push({ t: gridCol === 0 ? cell.glyph : ` ${cell.glyph}`, s: cell.color });
+		}
+		grid.push(node("text", { spans, wrap: "none" }, undefined, `row-${gridRow}`));
+	}
+	const legend = buildLegendParts(breakdown).map((line, index) =>
+		node("text", { spans: line.length > 0 ? line : [{ t: " " }] }, undefined, `legend-${index}`),
+	);
+	return row([col(grid), col(legend)], {
+		gap: "lg",
+		wrap: true,
+		role: "omp.context.usage",
+	});
+}
+
+/**
+ * The `/context` report body, without a frame or title of its own (the panel
+ * showing it is titled {@link contextUsageHead}): ANSI renders the cell grid
+ * beside the legend; natively it is drawn with `meter`s where the terminal has
+ * them and as the glyph grid otherwise.
+ */
+export class ContextUsageView extends Container {
+	readonly #breakdown: ContextBreakdown;
+	#native: { meter: boolean; node: NativeNode } | undefined;
+
+	constructor(breakdown: ContextBreakdown, theme: Theme) {
+		super();
+		this.#breakdown = breakdown;
+		this.addChild(new Text(renderContextUsage(breakdown, theme), 0, 0));
+	}
+
+	override describe(cx: DescribeContext): NativeNode {
+		const meter = cx.supports("meter");
+		if (this.#native?.meter === meter) return this.#native.node;
+		const breakdown = this.#breakdown;
+		const described =
+			meter && breakdown.contextWindow > 0 ? describeContextFrame(breakdown) : describeContextUsage(breakdown);
+		this.#native = { meter, node: described };
+		return described;
+	}
 }
 
 /**

@@ -1,3 +1,4 @@
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	type Component,
 	Ellipsis,
@@ -33,6 +34,12 @@ export interface ExtensionAskDialogQuestion {
 	recommended?: number;
 }
 
+/** Prompt text and the images pasted into it (custom answers and notes). */
+export interface AskDialogPromptValue {
+	text: string;
+	images?: ImageContent[];
+}
+
 /** Submitted answer to one dialog question. */
 export interface ExtensionAskDialogResultItem {
 	id: string;
@@ -41,7 +48,9 @@ export interface ExtensionAskDialogResultItem {
 	multi: boolean;
 	selectedOptions: string[];
 	customInput?: string;
+	customInputImages?: ImageContent[];
 	note?: string;
+	noteImages?: ImageContent[];
 	timedOut?: boolean;
 }
 
@@ -72,12 +81,28 @@ import {
 import { optionMarker } from "../tools/ask";
 import { CountdownTimer } from "../chrome/countdown-timer";
 import { editorKey, editorKeys } from "../chrome/keybinding-hints";
-import { formatKeyHint, formatKeyHints } from "../app-keybindings";
+import { formatKeyHint, formatKeyHints, formatTooltipKey } from "../app-keybindings";
 import { OverlayPanel, PanelDivider, PanelRows } from "../chrome/overlay-box";
 import { handleTabSwitchKey } from "../chrome/selector-helpers";
+import { col, node, span, text } from "../native/describe";
+import {
+	type DescribeContext,
+	leafKey,
+	type NativeChild,
+	type NativeNode,
+	type NativeUiEvent,
+	type TspSpan,
+} from "../native/node";
+import { actionBar, actionButton } from "../native/overlay";
+import { getKeybindings } from "../keybindings";
+import { plainText } from "../native/spans";
 
 const OTHER_OPTION = "Other (type your own)";
 const SUBMIT_OPTION = "Submit";
+const RECOMMENDED_SUFFIX = " (Recommended)";
+/** Native labels: the free-text row and the answers-review tab. */
+const OTHER_LABEL = "Other…";
+const REVIEW_TAB = "Review";
 
 // Action rows appended by the guest race participant. An option sanitizing
 // to one of these must disambiguate identically on both sides, or the same
@@ -92,43 +117,32 @@ const DIALOG_HEIGHT_RATIO = 0.7;
 const MIN_DIALOG_ROWS = 12;
 const MIN_BODY_ROWS = 5;
 const MAX_HEADER_CHIP_WIDTH = 16;
-/** Maximum number of title lines shown in the prompt editor overlay, so a
- *  long or multi-line question cannot push the input row off-screen. Mirrors
- *  the bounded-title pattern from the legacy ask path without its option-window
- *  coupling. */
-const MAX_PROMPT_TITLE_ROWS = 3;
-/** Border (2) + padX (2) columns consumed by the HookEditor chrome. */
-const PROMPT_TITLE_CHROME_COLUMNS = 4;
 /** Maximum number of wrapped lines for an in-body question header, so a long
  *  or multi-line question cannot push the option list off-screen. Mirrors the
- *  row-cap pattern used by boundPromptTitle for the prompt editor overlay. */
+ *  row-cap pattern of the prompt editor's title (`boundPromptTitle`). */
 const MAX_HEADER_ROWS = 4;
 /** Maximum number of wrapped lines shown for an option description before
  *  Ctrl+O expansion. Mirrors the header row-cap above so long descriptions
  *  cannot push later options off-screen. */
 const MAX_DESC_ROWS = 2;
 
-function promptTitleContentWidth(): number {
-	const cols = process.stdout.columns ?? 80;
-	return Math.max(1, cols - PROMPT_TITLE_CHROME_COLUMNS);
-}
-
-/** Bound a prompt editor title to a fixed row/width budget so long or
- *  multi-line questions stay usable inside the small prompt overlay. */
-export function boundPromptTitle(prefix: string, question: string): string {
-	const width = promptTitleContentWidth();
-	const flat = normalizedInlineInput(`${prefix}${question}`);
-	const wrapped = wrapTextWithAnsi(flat, width);
-	if (wrapped.length <= MAX_PROMPT_TITLE_ROWS) return wrapped.join("\n");
-	const kept = wrapped.slice(0, MAX_PROMPT_TITLE_ROWS - 1);
-	const last = truncateToWidth(wrapped[MAX_PROMPT_TITLE_ROWS - 1] ?? "", width, Ellipsis.Unicode);
-	return [...kept, last].join("\n");
+/** What a custom-answer or note prompt asks: the host shows `title` over `question` (`HookEditorOptions.question`). */
+export interface AskDialogPrompt {
+	/** `Custom answer`, `Note for <option>`. */
+	title: string;
+	/** The question being answered, verbatim. */
+	question: string;
 }
 
 interface AskDialogCallbacks {
 	onSubmit(result: ExtensionAskDialogSubmitResult): void;
 	onCancel(): void;
-	onPrompt(title: string, prefill?: string): Promise<string | undefined>;
+	onPrompt(prompt: AskDialogPrompt, prefill?: string): Promise<string | undefined>;
+	/** Prompt that accepts pasted images; without it, prompts use `onPrompt`. */
+	onImagePrompt?(
+		prompt: AskDialogPrompt,
+		prefill: AskDialogPromptValue | undefined,
+	): Promise<AskDialogPromptValue | undefined>;
 }
 
 interface AskDialogInputGuard {
@@ -151,7 +165,9 @@ interface AskDialogOptions {
 interface QuestionState {
 	selectedOptions: Set<string>;
 	customInput: string | undefined;
+	customInputImages: ImageContent[] | undefined;
 	note: string | undefined;
+	noteImages: ImageContent[] | undefined;
 	noteRowKey: string | undefined;
 	cursorIndex: number;
 	scrollOffset: number;
@@ -186,17 +202,17 @@ function clamp(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(value, max));
 }
 
+/** Full tab label; the ANSI tab strip and review list clip it to a chip. */
+function questionTabName(question: ExtensionAskDialogQuestion, index: number): string {
+	return replaceTabs(question.header?.trim() || sanitizeCarriageReturns(question.id) || `Q${index + 1}`);
+}
+
 function questionTabLabel(question: ExtensionAskDialogQuestion, index: number): string {
-	const base = question.header?.trim() || sanitizeCarriageReturns(question.id) || `Q${index + 1}`;
-	return truncateToWidth(replaceTabs(base), MAX_HEADER_CHIP_WIDTH, Ellipsis.Unicode);
+	return truncateToWidth(questionTabName(question, index), MAX_HEADER_CHIP_WIDTH, Ellipsis.Unicode);
 }
 
 function wrapQuestionTitle(question: ExtensionAskDialogQuestion, width: number): string[] {
-	const mdTheme = getMarkdownTheme();
-	const questionText = renderInlineMarkdown(replaceTabs(sanitizeCarriageReturns(question.question)), mdTheme, t =>
-		theme.fg("text", t),
-	);
-	return wrapTextWithAnsi(questionText, Math.max(1, width));
+	return renderPreviewContent(sanitizeCarriageReturns(question.question), Math.max(1, width), "text");
 }
 
 function renderQuestionTitle(question: ExtensionAskDialogQuestion, width: number, maxRows = MAX_HEADER_ROWS): string[] {
@@ -279,10 +295,10 @@ function splitPreviewSegments(preview: string): PreviewSegment[] {
 	return segments;
 }
 
-function renderPreviewContent(preview: string, width: number): string[] {
+function renderPreviewContent(preview: string, width: number, textColor: "muted" | "text" = "muted"): string[] {
 	const out: string[] = [];
 	const mdTheme = getMarkdownTheme();
-	const accentStyle = { color: (text: string) => theme.fg("muted", text) };
+	const accentStyle = { color: (text: string) => theme.fg(textColor, text) };
 	for (const segment of splitPreviewSegments(preview)) {
 		if (segment.kind === "code") {
 			const highlighted = highlightCode(segment.text, segment.language);
@@ -323,10 +339,11 @@ function normalizedInlineInput(input: string): string {
  * participant answers. State and results keep originals.
  */
 function displayOptionLabels(question: ExtensionAskDialogQuestion): string[] {
-	const recommendedSuffix = " (Recommended)";
 	const badged = question.options.map((option, index) => {
 		const base = sanitizeCarriageReturns(option.label);
-		return question.recommended === index && !base.endsWith(recommendedSuffix) ? `${base}${recommendedSuffix}` : base;
+		return question.recommended === index && !base.endsWith(RECOMMENDED_SUFFIX)
+			? `${base}${RECOMMENDED_SUFFIX}`
+			: base;
 	});
 	return disambiguateDisplayLabels(badged, [OTHER_OPTION, ...GUEST_ACTION_LABELS]);
 }
@@ -350,8 +367,76 @@ function renderAnswerSummary(question: ExtensionAskDialogQuestion, state: Questi
 	return selected[0] ?? theme.fg("warning", "unanswered");
 }
 
+/** Inline markdown code (`` `x` ``) as mono `code` spans, the rest plain, as the ANSI rows render it. */
+function inlineCodeSpans(value: string): TspSpan[] {
+	return value
+		.split(/(`[^`]+`)/)
+		.flatMap(piece =>
+			piece === ""
+				? []
+				: piece.length > 2 && piece.startsWith("`") && piece.endsWith("`")
+					? [span(piece.slice(1, -1), "code")]
+					: [span(piece)],
+		);
+}
+
+/** An option's native label: the `(Recommended)` suffix goes (the row's badge says it), inline code runs mono. */
+function optionLabelSpans(question: ExtensionAskDialogQuestion, optionIndex: number, label: string): TspSpan[] {
+	const recommended = question.recommended === optionIndex && label.endsWith(RECOMMENDED_SUFFIX);
+	return inlineCodeSpans(recommended ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
+}
+
+function isAnswered(state: QuestionState): boolean {
+	return state.selectedOptions.size > 0 || state.customInput !== undefined;
+}
+
+/** The answer to one question for the Review tab: the chosen labels (code mono), the custom answer, the note. */
+function describeAnswer(question: ExtensionAskDialogQuestion, state: QuestionState): readonly TspSpan[] {
+	if (!isAnswered(state)) return [span("Unanswered", "warning")];
+	const labels = displayOptionLabels(question);
+	const spans: TspSpan[] = [];
+	const push = (parts: readonly TspSpan[]): void => {
+		if (spans.length > 0) spans.push(span(", ", "dim"));
+		spans.push(...parts);
+	};
+	question.options.forEach((option, index) => {
+		if (state.selectedOptions.has(option.label))
+			push(optionLabelSpans(question, index, labels[index] ?? option.label));
+	});
+	if (state.customInput !== undefined) push([span(`“${normalizedInlineInput(state.customInput)}”`)]);
+	const note = noteForSubmittedAnswer(question, state)?.trim();
+	if (note) spans.push(span("  ✎ ", "dim"), span(normalizedInlineInput(note), "em"));
+	return spans;
+}
+
+/** Native `item.detail` of an option row: its description or the typed custom answer, then its note (`em`). */
+function describeRowDetail(
+	rowItem: QuestionRow,
+	question: ExtensionAskDialogQuestion,
+	state: QuestionState,
+): readonly TspSpan[] | undefined {
+	const spans: TspSpan[] = [];
+	if (rowItem.kind === "option") {
+		const description = question.options[rowItem.optionIndex ?? -1]?.description?.trim();
+		if (description) spans.push(...inlineCodeSpans(normalizedInlineInput(description)));
+	} else if (state.customInput !== undefined) {
+		spans.push(span(`“${normalizedInlineInput(state.customInput)}”`));
+	}
+	if (state.note && state.noteRowKey === rowItem.key) {
+		spans.push(span(`${spans.length > 0 ? "  " : ""}✎ `, "dim"), span(normalizedInlineInput(state.note), "em"));
+	}
+	return spans.length > 0 ? spans : undefined;
+}
+
+/** Normalize the result of either prompt callback. */
+function splitPromptInput(input: string | AskDialogPromptValue): { text: string; images: ImageContent[] | undefined } {
+	if (typeof input === "string") return { text: input, images: undefined };
+	return { text: input.text, images: input.images?.length ? input.images : undefined };
+}
+
 function clearNote(state: QuestionState): void {
 	state.note = undefined;
+	state.noteImages = undefined;
 	state.noteRowKey = undefined;
 }
 
@@ -490,6 +575,16 @@ export class AskDialogComponent implements Component {
 	#contentWidth = 76;
 	#headerExpandable = false;
 	#descExpandable = false;
+	/** Collapsed to one line (`app.ask.hide` / the Hide button) while the question stays pending. */
+	#hidden = false;
+	/** Memoized native description; dropped whenever dialog state may have changed. */
+	#native: NativeNode | undefined;
+	/** Input-guard blocked state {@link #native} was described with (the guard flips outside this dialog). */
+	#nativeBlocked = false;
+	/** When the countdown runs out (epoch ms), for the native ring. */
+	#countdownDeadline = 0;
+	/** Once-a-second re-describe while the native countdown ring is shown. */
+	#ringTick: NodeJS.Timeout | undefined;
 	readonly #panel: OverlayPanel;
 	readonly #headerRegion: PanelRows;
 	readonly #bodyRegion: PanelRows;
@@ -508,7 +603,9 @@ export class AskDialogComponent implements Component {
 			return {
 				selectedOptions: new Set<string>(),
 				customInput: undefined,
+				customInputImages: undefined,
 				note: undefined,
+				noteImages: undefined,
 				noteRowKey: undefined,
 				cursorIndex: clamp(recommended ?? 0, 0, maxIndex),
 				scrollOffset: 0,
@@ -522,6 +619,8 @@ export class AskDialogComponent implements Component {
 				options.tui,
 				seconds => {
 					this.#remainingSeconds = seconds;
+					// Fires on every (re)start: the native ring's deadline.
+					this.#countdownDeadline = Date.now() + seconds * 1000;
 				},
 				() => this.#handleTimeout(),
 			);
@@ -539,6 +638,7 @@ export class AskDialogComponent implements Component {
 	}
 
 	invalidate(): void {
+		this.#native = undefined;
 		this.#stableHeight = undefined;
 		this.#previewCache.clear();
 		this.#overflowLayouts = new WeakMap();
@@ -549,6 +649,7 @@ export class AskDialogComponent implements Component {
 	dispose(): void {
 		this.#closed = true;
 		this.#countdown?.dispose();
+		this.#stopRingTick();
 		this.#panel.dispose();
 	}
 	/**
@@ -557,16 +658,22 @@ export class AskDialogComponent implements Component {
 	 * expand transcript tools.
 	 */
 	toggleQuestionExpansion(): boolean {
-		if (this.#closed || this.#isSubmitTab()) return false;
-		const question = this.#questions[this.#currentQuestionIndex()];
-		if (!question) return false;
-		const headerOverflows = wrapQuestionTitle(question, this.#contentWidth).length > MAX_HEADER_ROWS;
-		const descOverflows = questionDescriptionsOverflow(question, this.#contentWidth);
-		if (!headerOverflows && !descOverflows && !this.#expanded) return false;
+		if (!this.#canToggleExpansion()) return false;
 		this.#expanded = !this.#expanded;
 		this.invalidate();
 		this.#requestRender();
 		return true;
+	}
+
+	#canToggleExpansion(): boolean {
+		if (this.#closed || this.#hidden || this.#isSubmitTab()) return false;
+		const question = this.#questions[this.#currentQuestionIndex()];
+		if (!question) return false;
+		if (this.#expanded) return true;
+		return (
+			wrapQuestionTitle(question, this.#contentWidth).length > MAX_HEADER_ROWS ||
+			questionDescriptionsOverflow(question, this.#contentWidth)
+		);
 	}
 
 	handleInput(keyData: string): void {
@@ -574,8 +681,13 @@ export class AskDialogComponent implements Component {
 		// Reset the inactivity countdown on any key that reaches past the
 		// closed/prompt guards, matching HookSelector/HookInput semantics.
 		this.#countdown?.reset();
+		this.#native = undefined;
 		if (matchesSelectCancel(keyData)) {
 			this.#finishCancel();
+			return;
+		}
+		if (getKeybindings().matches(keyData, "app.ask.hide")) {
+			this.#setHidden(!this.#hidden);
 			return;
 		}
 		// Expand before the draft-input guard so Ctrl+O can reveal a truncated
@@ -588,6 +700,12 @@ export class AskDialogComponent implements Component {
 		if (inputGuard?.isBlocked()) {
 			inputGuard.handleInput(keyData);
 			this.#requestRender();
+			return;
+		}
+		if (this.#hidden) {
+			if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
+				this.#setHidden(false);
+			}
 			return;
 		}
 		if (this.#hasSubmitTab() && handleTabSwitchKey(keyData, direction => this.#switchTab(direction))) {
@@ -606,6 +724,7 @@ export class AskDialogComponent implements Component {
 		// renders as the next sibling in the same container, so this lands in the
 		// same frame).
 		this.options.inputGuard?.syncPresentation?.();
+		if (this.#hidden) return this.#renderHidden(width);
 		const innerWidth = Math.max(1, width - 4);
 		this.#contentWidth = innerWidth;
 		// Fixed panel height: measured from the tallest tab at spawn and
@@ -634,6 +753,356 @@ export class AskDialogComponent implements Component {
 		this.#bodyRegion.setHeight(bodyRows);
 		this.#footerRegion.setLines([theme.fg("dim", footer)]);
 		return this.#panel.render(width);
+	}
+
+	/**
+	 * In the dock, in the composer's place and framed as the composer is: a
+	 * `col` with an `omp.editor.*` root role (`omp.editor.ask`, collapsed
+	 * `omp.editor.ask.hidden`), so the terminal draws the composer's shell
+	 * around it. Not a modal `overlay` sheet: one anchored at the bottom
+	 * covered the transcript rows that explain the question and blocked
+	 * scrolling until the question was answered.
+	 *
+	 * Anatomy: the question tabs (several questions), the question, its
+	 * answers as radio/check rows, and the action bar as the footer (the
+	 * countdown, Hide, then Note, Skip and the primary Submit/Next).
+	 */
+	describe(cx: DescribeContext): NativeNode {
+		const inputGuard = this.options.inputGuard;
+		// Same draft-cursor mirroring as render(): the proxied draft describes itself next to this dialog.
+		inputGuard?.syncPresentation?.();
+		const blocked = inputGuard?.isBlocked() ?? false;
+		const ring = this.#countdown !== undefined && cx.supports("meter");
+		if (ring) this.#startRingTick();
+		if (this.#native && this.#nativeBlocked === blocked) return this.#native;
+		if (this.#hidden) {
+			this.#native = this.#describeHidden(ring);
+			this.#nativeBlocked = blocked;
+			return this.#native;
+		}
+		const children: NativeChild[] = [];
+		const head = this.#describeHead();
+		if (head) children.push(head);
+		if (this.#isSubmitTab()) this.#describeSubmitBody(children);
+		else this.#describeQuestionBody(children);
+		children.push(this.#describeActions(blocked, ring));
+		this.#native = col(children, { role: "omp.editor.ask", gap: "md" });
+		this.#nativeBlocked = blocked;
+		return this.#native;
+	}
+
+	/** The question tabs, an answered one checked, then Review; none for a lone single-choice question. */
+	#describeHead(): NativeNode | undefined {
+		if (!this.#hasSubmitTab()) return undefined;
+		const items = this.#questions.map((question, index) => {
+			const name = questionTabName(question, index);
+			const state = this.#states[index];
+			return {
+				id: String(index),
+				label: state && isAnswered(state) ? [span("✓ ", "success"), span(name)] : [span(name)],
+			};
+		});
+		items.push({ id: "submit", label: [span(REVIEW_TAB)] });
+		const active = this.#isSubmitTab() ? "submit" : String(this.#activeTabIndex);
+		return node(
+			"row",
+			{ role: "omp.ask.head", align: "center" },
+			[
+				node(
+					"tabs",
+					{
+						items,
+						active,
+						role: "omp.ask.questions",
+						title: "Next question  tab · Previous  shift+tab",
+						actions: { click: "select" },
+					},
+					undefined,
+					"tabs",
+				),
+			],
+			"head",
+		);
+	}
+
+	/** The countdown: a ring when the terminal draws meters, else a clocked `elapsed`. */
+	#describeTimer(countdown: CountdownTimer, ring: boolean): NativeNode {
+		if (!ring) return countdown.describe();
+		const total = Math.max(1, this.options.timeout ?? 1);
+		const left = Math.max(0, this.#countdownDeadline - Date.now());
+		return node(
+			"meter",
+			{
+				value: Math.round((left / total) * 1000) / 1000,
+				style: "ring",
+				size: "sm",
+				label: `${Math.ceil(left / 1000)}s`,
+				title: "Answers the recommended option when the time runs out",
+			},
+			undefined,
+			"timer",
+		);
+	}
+
+	/** Hidden: one row in the composer's place — the countdown, the question clipped to a line, Skip and Show. */
+	#describeHidden(ring: boolean): NativeNode {
+		const question = this.#questions[this.#currentQuestionIndex()];
+		const more = this.#questions.length > 1 ? `  +${this.#questions.length - 1} more` : "";
+		const summary = text(
+			[
+				span("Question  ", "muted"),
+				span(normalizedInlineInput(sanitizeCarriageReturns(question?.question ?? ""))),
+				...(more ? [span(more, "muted")] : []),
+			],
+			{ truncate: "end", role: "omp.ask.summary" },
+		);
+		const hideKey = getKeybindings().getKeys("app.ask.hide")[0];
+		const show = actionButton("Show", "show", {
+			tone: "accent",
+			...(hideKey ? { keys: hideKey } : {}),
+			title: `Show the question${hideKey ? `  ${formatTooltipKey(hideKey)}` : ""}`,
+		});
+		const cancelKey = getKeybindings().getKeys("tui.select.cancel")[0];
+		const skip = actionButton("Skip", "cancel", cancelKey ? { keys: cancelKey } : {});
+		const items: (NativeNode | null)[] = [];
+		if (this.#countdown) items.push(this.#describeTimer(this.#countdown, ring));
+		// The summary grows (`omp.ask.summary`), end-aligning Skip and Show.
+		items.push(summary, skip, show);
+		return col([actionBar(items)], { role: "omp.editor.ask.hidden", gap: "md" });
+	}
+
+	/** Question tab: the question as markdown and its answers as radio/check rows (label, description, badge). */
+	#describeQuestionBody(children: NativeChild[]): void {
+		const active = this.#activeQuestionState();
+		if (!active) return;
+		const { question, state } = active;
+		const rows = this.#questionRows(question);
+		state.cursorIndex = clamp(state.cursorIndex, 0, Math.max(0, rows.length - 1));
+		children.push(
+			node(
+				"md",
+				{ text: replaceTabs(sanitizeCarriageReturns(question.question)), role: "omp.ask.question" },
+				undefined,
+				"question",
+			),
+		);
+		// Radios (`omp.ask.option`, `omp.ask.other`) or checks (`omp.ask.check`, `omp.ask.other.check`); a chosen
+		// row is `accent`-toned (a check also carries the check glyph), apart from the highlighted row (`selected`).
+		const items = rows.map(rowItem => {
+			const option = rowItem.kind === "option" ? question.options[rowItem.optionIndex ?? -1] : undefined;
+			const checked =
+				rowItem.kind === "other"
+					? state.customInput !== undefined
+					: option !== undefined && state.selectedOptions.has(option.label);
+			const recommended = rowItem.kind === "option" && question.recommended === rowItem.optionIndex;
+			const detail =
+				describeRowDetail(rowItem, question, state) ??
+				(rowItem.kind === "other" ? [span("Type your own answer")] : undefined);
+			const role =
+				rowItem.kind === "other"
+					? question.multi
+						? "omp.ask.other.check"
+						: "omp.ask.other"
+					: question.multi
+						? "omp.ask.check"
+						: "omp.ask.option";
+			return node(
+				"item",
+				{
+					// The badge replaces the ANSI `(Recommended)` suffix.
+					label:
+						rowItem.kind === "other"
+							? [span(OTHER_LABEL)]
+							: optionLabelSpans(question, rowItem.optionIndex ?? -1, rowItem.label),
+					role,
+					...(detail ? { detail } : {}),
+					...(recommended ? { value: [span("Recommended")] } : {}),
+					...(checked ? { tone: "accent" as const, ...(question.multi ? { icon: "check" } : {}) } : {}),
+				},
+				undefined,
+				rowItem.key,
+			);
+		});
+		// Keyed per question: a click aimed at one question's list never lands on the next after it advances.
+		children.push(
+			node(
+				"list",
+				{ selected: rows[state.cursorIndex]?.key ?? null, role: "omp.ask.options" },
+				items,
+				`q${this.#currentQuestionIndex()}`,
+			),
+		);
+		const highlighted = rows[state.cursorIndex];
+		const option = highlighted?.kind === "option" ? question.options[highlighted.optionIndex ?? -1] : undefined;
+		if (option?.preview?.trim()) {
+			children.push(
+				node("md", { text: replaceTabs(option.preview), role: "omp.ask.preview" }, undefined, "preview"),
+			);
+		}
+	}
+
+	/** Review tab: what is still unanswered, then every answer as question/answer pairs; Submit sends them. */
+	#describeSubmitBody(children: NativeChild[]): void {
+		const unanswered = this.#unansweredCount();
+		const notice =
+			unanswered > 0
+				? [
+						span(`${unanswered} unanswered`, "warning"),
+						span(` · Submit still sends ${unanswered === this.#questions.length ? "the questions" : "the rest"}`),
+					]
+				: [span("All answered · Submit sends them")];
+		children.push(node("text", { spans: notice, role: "omp.ask.notice" }, undefined, "notice"));
+		const answers: { k: string; v: readonly TspSpan[] }[] = [];
+		for (let index = 0; index < this.#questions.length; index++) {
+			const question = this.#questions[index];
+			const state = this.#states[index];
+			if (!question || !state) continue;
+			answers.push({ k: questionTabName(question, index), v: describeAnswer(question, state) });
+		}
+		children.push(node("kv", { items: answers, role: "omp.ask.answers" }, undefined, "answers"));
+	}
+
+	/**
+	 * The action bar, the sheet's footer: the countdown and Hide (apart from
+	 * the answer actions), then Note, Skip and the primary Submit (Enter's
+	 * action on this tab; `Next` while more questions follow). Buttons say
+	 * what they do; their keys live in their tooltips. A draft that owns input
+	 * shows its hint in place of the answer actions.
+	 */
+	#describeActions(blocked: boolean, ring: boolean): NativeNode {
+		const cancelKey = getKeybindings().getKeys("tui.select.cancel")[0];
+		const skip = actionButton("Skip", "cancel", {
+			...(cancelKey ? { keys: cancelKey } : {}),
+			title: `Skip without answering${cancelKey ? `  ${formatTooltipKey(cancelKey)}` : ""}`,
+		});
+		const hideKey = getKeybindings().getKeys("app.ask.hide")[0];
+		const hide = actionButton("Hide", "hide", {
+			...(hideKey ? { keys: hideKey } : {}),
+			title: `Hide until you are ready to answer${hideKey ? `  ${formatTooltipKey(hideKey)}` : ""}`,
+		});
+		const lead: NativeNode[] = this.#countdown ? [this.#describeTimer(this.#countdown, ring), hide] : [hide];
+		const inputGuard = this.options.inputGuard;
+		if (blocked && inputGuard) {
+			return actionBar([
+				...lead,
+				text([span(plainText(inputGuard.hint), "muted")], { truncate: "end", role: "omp.ask.summary" }),
+				skip,
+			]);
+		}
+		if (this.#isSubmitTab()) {
+			const submit = actionButton("Submit", "submit", {
+				keys: "enter",
+				tone: "accent",
+				title: "Submit answers  enter",
+			});
+			return actionBar([...lead, null, skip, submit]);
+		}
+		const question = this.#questions[this.#currentQuestionIndex()];
+		const last = this.#questions.length === 1;
+		const enterLabel = last ? "Submit" : "Next";
+		// A multi-select toggles on Space; Enter moves on.
+		const submit = actionButton(enterLabel, "submit", {
+			keys: "enter",
+			tone: "accent",
+			title: question?.multi ? `${enterLabel}  enter · Toggle  space` : `${enterLabel}  enter`,
+		});
+		const note = actionButton("Note", "note", { keys: "n", title: "Add a note to the highlighted answer  n" });
+		return actionBar([...lead, null, note, skip, submit]);
+	}
+
+	/**
+	 * Pointer actions: a tab click switches to it; a click on an answer row is
+	 * Enter on it (Space for a multi-select option, so it toggles; its
+	 * double-click `activate` is Enter); the action bar's Submit, Note and Skip
+	 * run exactly what Enter, `n` and Esc run on the highlighted row; Hide/Show
+	 * collapse and restore the dialog.
+	 */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (this.#closed || this.#promptActive) return;
+		if (event.type === "action") {
+			if (event.act === "cancel") {
+				this.#finishCancel();
+				return;
+			}
+			if (event.act === "hide" || event.act === "show") {
+				this.#setHidden(event.act === "hide");
+				return;
+			}
+			if (this.#hidden || this.options.inputGuard?.isBlocked()) return;
+			if (event.act === "submit") this.#pressEnter();
+			else if (event.act === "note") this.#pressNote();
+			return;
+		}
+		if (event.type !== "select" && event.type !== "activate") return;
+		if (this.#hidden || this.options.inputGuard?.isBlocked()) return;
+		const key = leafKey(event.key);
+		if (key === "tabs") {
+			if (!this.#hasSubmitTab()) return;
+			const index = event.item === "submit" ? this.#submitTabIndex() : Number(event.item);
+			if (!Number.isInteger(index) || index < 0 || index > this.#submitTabIndex()) return;
+			this.#countdown?.reset();
+			this.#activeTabIndex = index;
+			this.#submitScrollOffset = 0;
+			this.#requestRender();
+			return;
+		}
+		if (this.#isSubmitTab() || key !== `q${this.#currentQuestionIndex()}`) return;
+		const active = this.#activeQuestionState();
+		if (!active) return;
+		const { question, state } = active;
+		const rows = this.#questionRows(question);
+		const index = rows.findIndex(rowItem => rowItem.key === event.item);
+		const rowItem = rows[index];
+		if (!rowItem) return;
+		this.#countdown?.reset();
+		state.cursorIndex = index;
+		state.manualScroll = false;
+		const toggles = event.type === "select" && question.multi === true && rowItem.kind === "option";
+		this.#commitRow(question, state, rowItem, !toggles);
+		this.#requestRender();
+	}
+
+	/** Enter: submit on the Review tab, else commit the highlighted row. */
+	#pressEnter(): void {
+		this.#countdown?.reset();
+		if (this.#isSubmitTab()) {
+			this.#finishSubmit();
+			return;
+		}
+		const active = this.#activeQuestionState();
+		const rowItem = active ? this.#questionRows(active.question)[active.state.cursorIndex] : undefined;
+		if (!active || !rowItem) return;
+		this.#commitRow(active.question, active.state, rowItem, true);
+		this.#requestRender();
+	}
+
+	/** `n`: a note on the highlighted row (questions only). */
+	#pressNote(): void {
+		if (this.#isSubmitTab()) return;
+		this.#countdown?.reset();
+		const active = this.#activeQuestionState();
+		const rowItem = active ? this.#questionRows(active.question)[active.state.cursorIndex] : undefined;
+		if (!active || !rowItem) return;
+		void this.#promptForNote(active.question, active.state, rowItem);
+	}
+
+	/** Re-describe once a second while a countdown ring is shown (the ring's value is data, not a terminal clock). */
+	#startRingTick(): void {
+		if (this.#ringTick || this.#closed) return;
+		this.#ringTick = setInterval(() => {
+			if (this.#closed) {
+				this.#stopRingTick();
+				return;
+			}
+			this.#requestRender();
+		}, 1000);
+		this.#ringTick.unref?.();
+	}
+
+	#stopRingTick(): void {
+		if (!this.#ringTick) return;
+		clearInterval(this.#ringTick);
+		this.#ringTick = undefined;
 	}
 
 	#dialogHeight(width: number, termRows: number): number {
@@ -693,6 +1162,35 @@ export class AskDialogComponent implements Component {
 		return this.#remainingSeconds === undefined ? "Ask" : `Ask (${this.#remainingSeconds}s)`;
 	}
 
+	#setHidden(hidden: boolean): void {
+		if (this.#hidden === hidden) return;
+		this.#hidden = hidden;
+		this.#countdown?.reset();
+		this.#requestRender();
+	}
+
+	/** Hidden: one line in the composer's place — title (with countdown), the question clipped to fit, and how to bring it back. */
+	#renderHidden(width: number): readonly string[] {
+		const hideKey = editorKey("app.ask.hide");
+		const enter = formatKeyHint("enter");
+		const inputGuard = this.options.inputGuard;
+		const blocked = inputGuard?.isBlocked() ?? false;
+		// While a draft owns input, Enter goes to the draft, so only the hide key restores.
+		const show = blocked ? hideKey : hideKey ? `${hideKey}/${enter}` : enter;
+		const hints: string[] = [];
+		if (blocked && inputGuard) hints.push(inputGuard.hint);
+		if (show) hints.push(`${show} show`);
+		hints.push(`${editorKey("tui.select.cancel")} cancel`);
+		const hint = theme.fg("dim", ` · ${hints.join(" · ")}`);
+		const label = theme.fg("accent", `${this.#titleText()} hidden:`);
+		const question = this.#questions[this.#currentQuestionIndex()];
+		const more = this.#questions.length > 1 ? theme.fg("dim", ` (+${this.#questions.length - 1} more)`) : "";
+		const summary = normalizedInlineInput(sanitizeCarriageReturns(question?.question ?? ""));
+		const summaryWidth = Math.max(1, width - visibleWidth(label) - visibleWidth(more) - visibleWidth(hint) - 1);
+		const clipped = truncateToWidth(summary, summaryWidth, Ellipsis.Unicode);
+		return [truncateToWidth(`${label} ${theme.fg("muted", clipped)}${more}${hint}`, width, Ellipsis.Unicode)];
+	}
+
 	#hasSubmitTab(): boolean {
 		// Multi questions confirm on the Submit tab (Enter toggles, never
 		// submits), so any multi question forces the tab even when there is
@@ -713,6 +1211,7 @@ export class AskDialogComponent implements Component {
 	}
 
 	#requestRender(): void {
+		this.#native = undefined;
 		this.options.tui?.requestRender();
 	}
 
@@ -757,7 +1256,9 @@ export class AskDialogComponent implements Component {
 	}
 
 	#footerHintText(indicator: string): string {
-		const cancel = `${editorKey("tui.select.cancel")} cancel`;
+		// Hide rides along with cancel: both leave the question view without answering.
+		const hideKey = editorKey("app.ask.hide");
+		const cancel = `${editorKey("tui.select.cancel")} cancel${hideKey ? ` · ${hideKey} hide` : ""}`;
 		const enter = formatKeyHint("enter");
 		const upDown = editorKeys("tui.select.up", "tui.select.down");
 		const inputGuard = this.options.inputGuard;
@@ -772,7 +1273,7 @@ export class AskDialogComponent implements Component {
 		const action = question?.multi
 			? `${formatKeyHint("space")} toggle · ${enter} ${enterAction}`
 			: `${enter} select · ${formatKeyHint("n")} note`;
-		const tabs = this.#hasSubmitTab() ? ` · ${formatKeyHints(["tab", "left", "right"])}` : "";
+		const tabs = this.#hasSubmitTab() ? ` · ${formatKeyHints(["tab", "left", "right"])} question` : "";
 		const expand = this.#expandHint();
 		if (this.#questionCanPage && indicator) {
 			const pageKeys = editorKeys("tui.select.pageUp", "tui.select.pageDown");
@@ -841,6 +1342,16 @@ export class AskDialogComponent implements Component {
 		const isEnter = matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n";
 		const isSpace = matchesKey(keyData, "space") || keyData === " ";
 		if (!isEnter && !(question.multi && isSpace)) return;
+		this.#commitRow(question, state, rowItem, isEnter);
+	}
+
+	/** Enter (`isEnter`) or multi-select Space on a row: toggle, select, or prompt for its answer. */
+	#commitRow(
+		question: ExtensionAskDialogQuestion,
+		state: QuestionState,
+		rowItem: QuestionRow,
+		isEnter: boolean,
+	): void {
 		if (rowItem.kind === "other") {
 			void this.#promptForCustomInput(question, state, rowItem);
 			return;
@@ -867,6 +1378,7 @@ export class AskDialogComponent implements Component {
 		}
 		state.selectedOptions = new Set([option.label]);
 		state.customInput = undefined;
+		state.customInputImages = undefined;
 		clearNoteUnlessRow(state, rowItem.key);
 		this.#advanceAfterQuestion();
 	}
@@ -904,6 +1416,19 @@ export class AskDialogComponent implements Component {
 		this.#requestRender();
 	}
 
+	/**
+	 * Open the host prompt, image-capable when available. Returns the callback's promise so each
+	 * caller keeps one `await` before clearing `#promptActive`, which the host's restore relies on.
+	 */
+	#openPrompt(
+		prompt: AskDialogPrompt,
+		prefill: AskDialogPromptValue | undefined,
+	): Promise<string | AskDialogPromptValue | undefined> {
+		return this.callbacks.onImagePrompt
+			? this.callbacks.onImagePrompt(prompt, prefill)
+			: this.callbacks.onPrompt(prompt, prefill?.text);
+	}
+
 	async #promptForCustomInput(
 		question: ExtensionAskDialogQuestion,
 		state: QuestionState,
@@ -911,18 +1436,20 @@ export class AskDialogComponent implements Component {
 	): Promise<void> {
 		this.#promptActive = true;
 		try {
-			const input = await this.callbacks.onPrompt(
-				boundPromptTitle("Custom answer: ", question.question),
-				state.customInput,
-			);
-			if (input === undefined || this.#closed) return;
-			if (input.trim() === "") {
+			const prefill =
+				state.customInput === undefined ? undefined : { text: state.customInput, images: state.customInputImages };
+			const result = await this.#openPrompt({ title: "Custom answer", question: question.question }, prefill);
+			if (result === undefined || this.#closed) return;
+			const input = splitPromptInput(result);
+			if (input.text.trim() === "") {
 				// Submitting an empty value unselects the custom answer.
 				state.customInput = undefined;
+				state.customInputImages = undefined;
 				clearNoteIfRow(state, rowItem.key);
 				return;
 			}
-			state.customInput = input;
+			state.customInput = input.text;
+			state.customInputImages = input.images;
 			if (!question.multi) {
 				state.selectedOptions.clear();
 				clearNoteUnlessRow(state, rowItem.key);
@@ -947,12 +1474,17 @@ export class AskDialogComponent implements Component {
 	): Promise<void> {
 		this.#promptActive = true;
 		try {
-			const input = await this.callbacks.onPrompt(
-				boundPromptTitle(`Note for ${rowItem.label}: `, question.question),
-				state.noteRowKey === rowItem.key ? state.note : undefined,
+			const isReedit = state.noteRowKey === rowItem.key;
+			const prefill =
+				isReedit && state.note !== undefined ? { text: state.note, images: state.noteImages } : undefined;
+			const result = await this.#openPrompt(
+				{ title: `Note for ${rowItem.label}`, question: question.question },
+				prefill,
 			);
-			if (input === undefined || this.#closed) return;
-			state.note = input;
+			if (result === undefined || this.#closed) return;
+			const note = splitPromptInput(result);
+			state.note = note.text;
+			state.noteImages = note.images;
 			state.noteRowKey = rowItem.key;
 		} finally {
 			this.#promptActive = false;
@@ -1162,6 +1694,7 @@ export class AskDialogComponent implements Component {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#countdown?.dispose();
+		this.#stopRingTick();
 		this.callbacks.onSubmit({ kind: "submit", results: this.#buildResults() });
 	}
 
@@ -1169,6 +1702,7 @@ export class AskDialogComponent implements Component {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#countdown?.dispose();
+		this.#stopRingTick();
 		this.callbacks.onCancel();
 	}
 
@@ -1181,6 +1715,7 @@ export class AskDialogComponent implements Component {
 			const selectedOptions = question.options
 				.map(option => option.label)
 				.filter(label => state.selectedOptions.has(label));
+			const note = noteForSubmittedAnswer(question, state);
 			results.push({
 				id: question.id,
 				question: question.question,
@@ -1188,7 +1723,9 @@ export class AskDialogComponent implements Component {
 				multi: question.multi ?? false,
 				selectedOptions,
 				customInput: state.customInput,
-				note: noteForSubmittedAnswer(question, state),
+				customInputImages: state.customInputImages,
+				note,
+				noteImages: note === undefined ? undefined : state.noteImages,
 				timedOut: state.timedOut || undefined,
 			});
 		}

@@ -30,10 +30,10 @@ const compiledPath = path.join(tempRoot, "compiled-template-probe");
 let bundlePath: string;
 const bundledDependencyStubs: Record<string, string> = {
 	"@oh-my-pi/pi-utils":
-		'export const APP_NAME = "omp"; export const getBlobsDir = () => ""; export const isEnoent = () => false; export const logger = { debug() {} };',
+		'export const APP_NAME = "omp"; export const getBlobsDir = () => ""; export const isEexist = () => false; export const isEnoent = () => false; export const Snowflake = {}; export const logger = { debug() {} };',
 	"@oh-my-pi/pi-tui/theme":
 		"export const getResolvedThemeColors = async () => ({}); export const getThemeExportColors = async () => ({});",
-	"../../session/session-loader": "export const loadEntriesFromFile = async () => [];",
+	"../../session/sub-sessions": "export const collectSubSessions = async () => ({});",
 	"../../session/session-manager":
 		"export class SessionManager { static async open() { return new SessionManager(); } }",
 	"./args": "export const parseExportArgs = () => undefined;",

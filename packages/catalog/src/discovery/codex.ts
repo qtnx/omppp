@@ -74,8 +74,8 @@ const codexModelEntrySchema = type({
 	"priority?": "unknown",
 	"prefer_websockets?": "unknown",
 	"use_responses_lite?": "unknown",
-	"tool_mode?": "unknown",
 	"available_access_programs?": "unknown",
+	"service_tiers?": "unknown",
 });
 
 const codexModelsResponseSchema = type({
@@ -305,8 +305,9 @@ interface ParsedCodexModelEntry {
 	input: ("text" | "image")[];
 	preferWebsockets: boolean;
 	useResponsesLite: boolean;
-	toolMode: boolean;
 	priority: number;
+	/** Advertised tier ids; `undefined` when the entry has no `service_tiers` array. */
+	serviceTiers: string[] | undefined;
 }
 
 function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
@@ -336,6 +337,17 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 		}
 	}
 
+	// codex-rs `ModelServiceTier { id, name, description }`; only the id reaches the wire.
+	// An explicit empty array is kept: it means the model offers no optional tier.
+	let serviceTiers: string[] | undefined;
+	if (Array.isArray(payload.service_tiers)) {
+		serviceTiers = [];
+		for (const tier of payload.service_tiers) {
+			const id = tier !== null && typeof tier === "object" && "id" in tier ? toNonEmptyString(tier.id) : null;
+			if (id && !serviceTiers.includes(id)) serviceTiers.push(id);
+		}
+	}
+
 	return {
 		slug,
 		cyberPrograms,
@@ -345,8 +357,8 @@ function parseCodexModelEntry(entry: unknown): ParsedCodexModelEntry | null {
 		input: normalizeInputModalities(payload.input_modalities),
 		preferWebsockets: toBoolean(payload.prefer_websockets) === true,
 		useResponsesLite: toBoolean(payload.use_responses_lite) === true,
-		toolMode: payload.tool_mode === "code_mode_only",
 		priority: toFiniteNumber(payload.priority) ?? Number.MAX_SAFE_INTEGER,
+		serviceTiers,
 	};
 }
 
@@ -397,7 +409,7 @@ function buildNormalizedCodexModel(
 			maxTokens,
 			...(parsed.preferWebsockets ? { preferWebsockets: true } : {}),
 			...(parsed.useResponsesLite ? { useResponsesLite: true } : {}),
-			...(parsed.toolMode ? { toolMode: "code_mode_only" as const } : {}),
+			...(parsed.serviceTiers !== undefined ? { serviceTiers: parsed.serviceTiers } : {}),
 			...(parsed.priority !== Number.MAX_SAFE_INTEGER ? { priority: parsed.priority } : {}),
 		},
 	};

@@ -7,7 +7,7 @@
  * - Convenience helpers: captureText / execText, AbortSignal, timeouts.
  */
 
-import { Process } from "@oh-my-pi/pi-natives";
+import { Process, type ProcessTerminateOptions } from "@oh-my-pi/pi-natives";
 import { terminateProcess } from "@oh-my-pi/pi-natives/process";
 import type { Spawn, Subprocess } from "bun";
 
@@ -184,10 +184,12 @@ export class ChildProcess<In extends InMask = InMask> {
 	#stderrDone: Promise<void>;
 	#exited: Promise<number>;
 	#openPipeReaders = 1;
-	// Pipe reads race this cutoff only when attachTimeout() configures a
-	// command deadline. Untimed commands preserve complete EOF-based capture.
-	#drainCutoff: Promise<void>;
-	#resolveDrainCutoff: () => void;
+	// Set by attachTimeout() at the command deadline; untimed commands keep
+	// complete EOF-based capture. Active pipe readers are cancelled at cutoff so
+	// their pending read() settles as done and partial output is kept.
+	#cutoff = false;
+	/** Readers of piped stdio; the timeout cancels them so pending reads settle. */
+	#pipeReaders = new Set<{ cancel(reason?: unknown): Promise<void> }>();
 	#timeoutTimer?: NodeJS.Timeout;
 	#stderrStream?: ReadableStream<Uint8Array>;
 	// Termination in flight after kill(); aborted exits await it before reporting.
@@ -225,31 +227,24 @@ export class ChildProcess<In extends InMask = InMask> {
 		// Normalize Bun's exited promise into our exitReason / exitedCleanly model.
 		const { promise, resolve, reject } = Promise.withResolvers<number>();
 		this.#exited = promise;
-		const drainCutoff = Promise.withResolvers<void>();
-		this.#drainCutoff = drainCutoff.promise;
-		this.#resolveDrainCutoff = drainCutoff.resolve;
-		// The cutoff remains pending for untimed commands, preserving complete
-		// EOF-based capture. attachTimeout() resolves it at the command deadline.
 
-		const pipeCutoff = this.#drainCutoff;
 		this.#stderrDone = (async () => {
 			const reader = stderrStream.getReader();
+			this.#pipeReaders.add(reader);
 			try {
 				for (;;) {
-					const chunk = await Promise.race([
-						reader.read().then(r => ({ cutoff: false as const, r })),
-						pipeCutoff.then(() => ({ cutoff: true as const })),
-					]);
-					if (chunk.cutoff) {
+					if (this.#cutoff) {
 						await reader.cancel().catch(() => {});
 						break;
 					}
-					if (chunk.r.done) break;
-					this.#stderrChunks?.push(chunk.r.value);
-					this.#stderrTail += dec.decode(chunk.r.value, { stream: true });
+					const r = await reader.read();
+					if (r.done) break;
+					this.#stderrChunks?.push(r.value);
+					this.#stderrTail += dec.decode(r.value, { stream: true });
 					trim();
 				}
 			} catch {}
+			this.#pipeReaders.delete(reader);
 			this.#openPipeReaders--;
 			this.#stderrTail += dec.decode();
 			trim();
@@ -393,10 +388,38 @@ export class ChildProcess<In extends InMask = InMask> {
 						? { group: true }
 						: undefined
 					: { gracefulMs, group: this.#terminateGroup };
-			this.#terminating = (this.#windowsRootProcess ?? Process.fromPid(this.proc.pid))
-				?.terminate(options)
-				?.catch(e => void e);
+			this.#terminating = this.#terminateTree(options);
 		}
+	}
+
+	/**
+	 * Native tree termination. A native handle that cannot be resolved or used
+	 * — the PID left the process table, or a `bun test --isolate` realm whose
+	 * napi classes another realm superseded ("Value is not an instance of class
+	 * `Process`") — must not leave the child running, so signal it directly.
+	 */
+	#terminateTree(options: ProcessTerminateOptions | undefined): Promise<boolean | void> {
+		const gracefulMs = options?.gracefulMs ?? 1000;
+		try {
+			const root = this.#windowsRootProcess ?? Process.fromPid(this.proc.pid);
+			if (root) return root.terminate(options).catch(() => this.#signalChild(gracefulMs));
+		} catch {}
+		return this.#signalChild(gracefulMs);
+	}
+
+	/** SIGTERM the child (its group when it leads one), then SIGKILL if it outlives `gracefulMs`. */
+	async #signalChild(gracefulMs: number): Promise<void> {
+		const signal = (name: NodeJS.Signals) => {
+			try {
+				if (this.#terminateGroup && process.platform !== "win32") process.kill(-this.proc.pid, name);
+				else this.proc.kill(name);
+			} catch {}
+		};
+		if (gracefulMs >= 0) {
+			signal("SIGTERM");
+			await Promise.race([this.proc.exited, Bun.sleep(gracefulMs)]);
+		}
+		if (this.proc.exitCode === null && this.proc.signalCode === null) signal("SIGKILL");
 	}
 
 	async #hardKillSubreaperTree(root: Process): Promise<void> {
@@ -450,24 +473,23 @@ export class ChildProcess<In extends InMask = InMask> {
 	async #readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
 		this.#openPipeReaders++;
 		const reader = stream.getReader();
+		this.#pipeReaders.add(reader);
 		const dec = new TextDecoder();
 		let out = "";
 		try {
 			for (;;) {
-				const chunk = await Promise.race([
-					reader.read().then(r => ({ cutoff: false as const, r })),
-					this.#drainCutoff.then(() => ({ cutoff: true as const })),
-				]);
-				if (chunk.cutoff) {
+				if (this.#cutoff) {
 					await reader.cancel().catch(() => {});
 					break;
 				}
-				if (chunk.r.done) break;
-				out += dec.decode(chunk.r.value, { stream: true });
+				const r = await reader.read();
+				if (r.done) break;
+				out += dec.decode(r.value, { stream: true });
 			}
 		} catch {
 			// A cancelled or failed read keeps whatever was already collected.
 		}
+		this.#pipeReaders.delete(reader);
 		this.#openPipeReaders--;
 		return out + dec.decode();
 	}
@@ -475,29 +497,27 @@ export class ChildProcess<In extends InMask = InMask> {
 	async #readBytes(): Promise<Uint8Array<ArrayBuffer>> {
 		const reader = this.proc.stdout.getReader();
 		this.#openPipeReaders++;
+		this.#pipeReaders.add(reader);
 		const chunks: Uint8Array[] = [];
 		let length = 0;
 		try {
 			for (;;) {
-				const chunk = await Promise.race([
-					reader.read().then(r => ({ cutoff: false as const, r })),
-					this.#drainCutoff.then(() => ({ cutoff: true as const })),
-				]);
-				if (chunk.cutoff) {
+				if (this.#cutoff) {
 					await reader.cancel().catch(() => {});
 					break;
 				}
-				if (chunk.r.done) break;
-				chunks.push(chunk.r.value);
-				length += chunk.r.value.byteLength;
+				const r = await reader.read();
+				if (r.done) break;
+				chunks.push(r.value);
+				length += r.value.byteLength;
 			}
 		} catch {
 			// A cancelled or failed read keeps whatever was already collected.
 		} finally {
+			this.#pipeReaders.delete(reader);
 			this.#openPipeReaders--;
 			reader.releaseLock();
 		}
-
 		const bytes = new Uint8Array(length);
 		let offset = 0;
 		for (const chunk of chunks) {
@@ -607,7 +627,8 @@ export class ChildProcess<In extends InMask = InMask> {
 			) {
 				this.kill(new TimeoutError(ms, this.#stderrTail), -1);
 			}
-			this.#resolveDrainCutoff();
+			this.#cutoff = true;
+			for (const reader of this.#pipeReaders) reader.cancel().catch(() => {});
 		}, ms);
 		timer.unref?.();
 		this.#timeoutTimer = timer;

@@ -52,6 +52,7 @@ function createMaintenance(options: {
 			"compaction.topicSwitchThreshold": 0.7,
 			...options.settings,
 		}),
+		model: () => undefined,
 		isStreaming: () => false,
 		isDisposed: () => false,
 		messages: () => messages,
@@ -71,7 +72,7 @@ describe("idle topic-switch compaction", () => {
 
 		expect(await maintenance.runTopicSwitchCompactionIfNeeded("Set up the billing webhook")).toBe(true);
 		expect(compact.mock.calls[0]?.[0]).toBe("topic-switch");
-		expect(compact.mock.calls[0]?.[4]).toMatchObject({ phase: "pre_turn", suppressContinuation: true });
+		expect(compact.mock.calls[0]?.[2]).toMatchObject({ phase: "pre_turn", suppressContinuation: true });
 		expect(state?.new_request).toBe("Set up the billing webhook");
 		expect(state?.prior_context).toBe("Title: refactor parser\n\nRecent requests:\n- fix the tokenizer");
 	});

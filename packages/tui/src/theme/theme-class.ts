@@ -2,7 +2,13 @@ import { colorLuma, relativeLuminance } from "@oh-my-pi/pi-utils/color";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { bgAnsi, colorToAnsi, fgAnsi, resolveToHex } from "./color";
-import { type ColorMode, isValidThemeColor, type ThemeBg, type ThemeColor } from "./schema";
+import {
+	type ColorMode,
+	isValidThemeColor,
+	OPTIONAL_THEME_COLOR_RECORD,
+	type ThemeBg,
+	type ThemeColor,
+} from "./schema";
 import type { SessionAccentTheme } from "./session-color";
 import {
 	type SlashCommandIconName,
@@ -140,6 +146,26 @@ const underlineStyler = chalk.underline;
 const strikethroughStyler = chalk.strikethrough;
 const inverseStyler = chalk.inverse;
 
+/** Theme token of a thinking/effort level name (`off`…`max`); unknown levels (`auto`) map to `thinkingOff`. */
+export function thinkingLevelToken(level: string): ThemeColor {
+	switch (level) {
+		case "minimal":
+			return "thinkingMinimal";
+		case "low":
+			return "thinkingLow";
+		case "medium":
+			return "thinkingMedium";
+		case "high":
+			return "thinkingHigh";
+		case "xhigh":
+			return "thinkingXhigh";
+		case "max":
+			return "thinkingMax";
+		default:
+			return "thinkingOff";
+	}
+}
+
 export class Theme {
 	#fgColors: Record<ThemeColor, string>;
 	#bgColors: Record<ThemeBg, string>;
@@ -183,6 +209,14 @@ export class Theme {
 			const hex = resolveToHex(value, slIsLight);
 			this.#fgColors[key] = fgAnsi(value, mode);
 			this.#hexFgColors[key] = hex;
+		}
+		// A theme may omit an optional token, but callers can still name it (a
+		// `modelTags.<role>.color` reference is validated against the theme color
+		// list). Resolve those to the terminal default so `fg()` stays total while
+		// `hasColor()` reports them as unset.
+		for (const key of Object.keys(OPTIONAL_THEME_COLOR_RECORD) as ThemeColor[]) {
+			this.#fgColors[key] ??= "\x1b[39m";
+			this.#hexFgColors[key] ??= "";
 		}
 		this.#bgColors = {} as Record<ThemeBg, string>;
 		this.#hexBgColors = {} as Record<ThemeBg, string>;
@@ -302,6 +336,17 @@ export class Theme {
 		return this.#sessionAccentInputs;
 	}
 
+	/**
+	 * True when the theme paints `color` with a real foreground — i.e. the token
+	 * exists and is not the empty string (terminal default, `\x1b[39m`). Optional
+	 * tokens absent from the theme JSON are also false. Callers use this to keep
+	 * terminal-default behavior byte-for-byte when an optional token is unset.
+	 */
+	hasColor(color: ThemeColor): boolean {
+		const ansi = this.#fgColors[color];
+		return ansi !== undefined && ansi !== "\x1b[39m";
+	}
+
 	fg(color: ThemeColor, text: string): string {
 		const ansi = this.#fgColors[color];
 		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
@@ -419,25 +464,10 @@ export class Theme {
 
 	/** Border color for a thinking/effort level name (`off`…`max`); unknown levels fall back to `thinkingOff`. */
 	getThinkingBorderColor(level: string): (str: string) => string {
-		switch (level) {
-			case "off":
-				return (str: string) => this.fg("thinkingOff", str);
-			case "minimal":
-				return (str: string) => this.fg("thinkingMinimal", str);
-			case "low":
-				return (str: string) => this.fg("thinkingLow", str);
-			case "medium":
-				return (str: string) => this.fg("thinkingMedium", str);
-			case "high":
-				return (str: string) => this.fg("thinkingHigh", str);
-			case "xhigh":
-				return (str: string) => this.fg("thinkingXhigh", str);
-			case "max":
-				// thinkingMax is optional; themes without it resolve to the xhigh color.
-				return (str: string) => this.fg(this.#fgColors.thinkingMax ? "thinkingMax" : "thinkingXhigh", str);
-			default:
-				return (str: string) => this.fg("thinkingOff", str);
-		}
+		const token = thinkingLevelToken(level);
+		// thinkingMax is optional; themes without it resolve to the xhigh color.
+		const color = token === "thinkingMax" && !this.#fgColors.thinkingMax ? "thinkingXhigh" : token;
+		return (str: string) => this.fg(color, str);
 	}
 
 	getBashModeBorderColor(): (str: string) => string {

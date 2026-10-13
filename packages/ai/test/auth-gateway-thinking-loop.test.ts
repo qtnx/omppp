@@ -60,7 +60,7 @@ async function storeAnthropicCredentialPair(storage: AuthStorage): Promise<void>
 function postChat(handleUrl: string, model: string, stream: boolean): Promise<Response> {
 	return fetch(`${handleUrl}/v1/chat/completions`, {
 		method: "POST",
-		headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+		headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 		body: JSON.stringify({
 			model,
 			messages: [{ role: "user", content: "hi" }],
@@ -107,7 +107,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const waitSpy = spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -115,7 +115,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/chat/completions`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					model: "google/gemini-3.5-flash",
 					messages: [{ role: "user", content: "hi" }],
@@ -145,7 +145,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		mock.push({ throw: "upstream exploded" });
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -153,7 +153,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/chat/completions`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					model: "google/gemini-3.5-flash",
 					messages: [{ role: "user", content: "hi" }],
@@ -205,7 +205,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -248,7 +248,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -298,7 +298,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -334,7 +334,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const debugSpy = spyOn(logger, "debug").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -342,7 +342,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/responses`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					model: "claude-test",
 					input: "hi",
@@ -397,7 +397,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -405,7 +405,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/chat/completions`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					model: "claude-test",
 					messages: [{ role: "user", content: "hi" }],
@@ -444,7 +444,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -452,7 +452,7 @@ describe("auth-gateway non-streaming thinking-loop retries", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/pi/stream`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					modelId: "claude-test",
 					context: { messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }] },
@@ -491,7 +491,7 @@ describe("auth-gateway completion audit logs", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -499,7 +499,7 @@ describe("auth-gateway completion audit logs", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/chat/completions`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					model: "audit-chat-non-stream",
 					messages: [{ role: "user", content: AUDIT_PROMPT }],
@@ -544,7 +544,7 @@ describe("auth-gateway completion audit logs", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -552,7 +552,7 @@ describe("auth-gateway completion audit logs", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/pi/stream`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					modelId: "audit-pi-native-non-stream",
 					context: { messages: [{ role: "user", content: [{ type: "text", text: AUDIT_PROMPT }] }] },
@@ -596,7 +596,7 @@ describe("auth-gateway completion audit logs", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -604,7 +604,7 @@ describe("auth-gateway completion audit logs", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/chat/completions`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					model: "audit-chat-stream",
 					messages: [{ role: "user", content: "hi" }],
@@ -645,7 +645,7 @@ describe("auth-gateway completion audit logs", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -653,7 +653,7 @@ describe("auth-gateway completion audit logs", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/chat/completions`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					model: "audit-chat-upstream-failure",
 					messages: [{ role: "user", content: AUDIT_PROMPT }],
@@ -713,7 +713,7 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 		const debugSpy = spyOn(logger, "debug").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -789,7 +789,7 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 		const invalidateSpy = spyOn(storage.limits, "invalidateMatching");
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -871,7 +871,7 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 		const infoSpy = spyOn(logger, "info").mockImplementation(() => undefined);
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -931,7 +931,7 @@ describe("auth-gateway Anthropic low-credit credential failover", () => {
 		const invalidateSpy = spyOn(storage.limits, "invalidateMatching");
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -980,7 +980,7 @@ describe("auth-gateway auth retry", () => {
 		});
 		const handle = startAuthGateway({
 			bind: "127.0.0.1:0",
-			bearerTokens: ["t"],
+			bearerTokens: ["gw-test-token"],
 			storage,
 			resolveModel: () => mock.model,
 			version: "test",
@@ -988,7 +988,7 @@ describe("auth-gateway auth retry", () => {
 		try {
 			const res = await fetch(`${handle.url}/v1/chat/completions`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: "Bearer t" },
+				headers: { "Content-Type": "application/json", Authorization: "Bearer gw-test-token" },
 				body: JSON.stringify({
 					model: "gateway-quota-model",
 					messages: [{ role: "user", content: "hi" }],

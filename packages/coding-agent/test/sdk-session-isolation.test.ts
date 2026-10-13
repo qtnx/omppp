@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -38,6 +39,10 @@ function createTtsrRule(name: string): Rule {
 
 const SECRET_ENV_PATTERNS = /(?:KEY|SECRET|TOKEN|PASSWORD|PASS|AUTH|CREDENTIAL|PRIVATE|OAUTH)(?:_|$)/i;
 const CONTEXT_GC_HEADING = "## Context GC\n\n";
+
+function initPromptText(init: SessionInitEntry | undefined): string {
+	return [init?.systemPrompt ?? []].flat().join("\n\n");
+}
 
 async function withClearedSecretEnv<T>(run: () => Promise<T>): Promise<T> {
 	const removed: Array<[string, string]> = [];
@@ -79,7 +84,10 @@ async function withTempConfigRoot<T>(run: () => Promise<T>): Promise<T> {
 			process.env.PI_CODING_AGENT_DIR = originalAgentDir;
 		}
 		setProfile(originalProfile);
-		fs.rmSync(configRoot, { recursive: true, force: true });
+		// The model registry opened the shared `<configRoot>/agent/models.db` cache while the
+		// temp root was active; release it so Windows can delete the root.
+		closeModelCache();
+		removeSyncWithRetries(configRoot);
 	}
 }
 
@@ -189,7 +197,7 @@ describe("createAgentSession session storage isolation", () => {
 				.find((entry): entry is SessionInitEntry => entry.type === "session_init");
 			expect(init).toBeDefined();
 			expect(init?.task).toBe("Root interactive session");
-			expect(init?.systemPrompt).toBe("# Root prompt\n\nUse Markdown.");
+			expect(init?.systemPrompt).toEqual(["# Root prompt\n\nUse Markdown."]);
 			expect(init?.tools).toContain("read");
 		} finally {
 			await session.dispose();
@@ -222,8 +230,8 @@ describe("createAgentSession session storage isolation", () => {
 				.find((entry): entry is SessionInitEntry => entry.type === "session_init");
 			const systemPromptText = session.systemPrompt.join("\n\n");
 			expect(systemPromptText).toContain(CONTEXT_GC_HEADING);
-			expect(init?.systemPrompt).toContain(CONTEXT_GC_HEADING);
-			expect(init?.systemPrompt).toContain("context_unload");
+			expect(initPromptText(init)).toContain(CONTEXT_GC_HEADING);
+			expect(initPromptText(init)).toContain("context_unload");
 			expect(countOccurrences(systemPromptText, CONTEXT_GC_HEADING)).toBe(1);
 
 			const beforeResult = await session.extensionRunner?.emitBeforeAgentStart(
@@ -265,7 +273,7 @@ describe("createAgentSession session storage isolation", () => {
 			expect(systemPromptText).toContain("## System Context Reminder");
 			expect(systemPromptText).toContain("forgot the system prompt");
 			expect(systemPromptText).toContain("follow the full system prompt");
-			expect(init?.systemPrompt).toContain("## System Context Reminder");
+			expect(initPromptText(init)).toContain("## System Context Reminder");
 			expect(countOccurrences(systemPromptText, "## System Context Reminder")).toBe(1);
 
 			const beforeResult = await session.extensionRunner?.emitBeforeAgentStart(

@@ -380,6 +380,32 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 		terminal.stop();
 	});
 
+	// Herdr classifies before tmux, but the refresh follows whichever session
+	// caches OSC 11; a multiplexer without a cache keeps the refresh direct.
+	it.each([
+		["tmux nested inside a Herdr pane", "/tmp/tmux-1000/default,1234,0", true],
+		["a Herdr pane without tmux", undefined, false],
+	] as const)("routes an explicit refresh inside %s by the caching session", (_label, tmux, passthrough) => {
+		const originalHerdrPane = Bun.env.HERDR_PANE_ID;
+		Bun.env.HERDR_PANE_ID = "w1:p1";
+		if (tmux !== undefined) Bun.env.TMUX = tmux;
+		try {
+			const { terminal, writes, queryCount } = setupTerminal();
+			process.stdin.emit("data", "\x1b]11;rgb:ffff/ffff/ffff\x07");
+			for (let i = 0; i < 8; i++) process.stdin.emit("data", "\x1b[?1;2c");
+			const before = queryCount();
+			terminal.refreshAppearance?.();
+			terminal.stop();
+
+			expect(writes.includes("\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\")).toBe(passthrough);
+			// A cache refresh defers its direct read; a direct refresh queries now.
+			expect(queryCount()).toBe(passthrough ? before : before + 1);
+		} finally {
+			if (originalHerdrPane === undefined) delete Bun.env.HERDR_PANE_ID;
+			else Bun.env.HERDR_PANE_ID = originalHerdrPane;
+		}
+	});
+
 	it("reads tmux's refreshed cache without passing a DA1 reply through tmux", () => {
 		vi.useFakeTimers();
 		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
@@ -789,17 +815,43 @@ describe("ProcessTerminal DECRQM + in-band resize (DEC 2026/2048)", () => {
 		terminal.stop();
 	});
 
-	it("reasserts confirmed bracketed paste after a terminal resets mode 2004", () => {
+	it("emits no output while idle after confirming bracketed paste", () => {
 		vi.useFakeTimers();
 		const { terminal, writes } = setup();
 		process.stdin.emit("data", "\x1b[?2004;1$y");
-		const before = writes.filter(write => write.includes("\x1b[?2004h")).length;
+		// Let the one-shot keyboard fallback finish before measuring idle output.
 		vi.advanceTimersByTime(1000);
-		expect(writes.filter(write => write.includes("\x1b[?2004h")).length).toBe(before + 1);
+		writes.length = 0;
+		vi.advanceTimersByTime(15000);
+		expect(writes).toEqual([]);
 		terminal.stop();
 		const stopped = writes.length;
 		vi.advanceTimersByTime(1000);
 		expect(writes).toHaveLength(stopped);
+	});
+
+	it("rearms bracketed paste on input so a subsequent multiline paste stays one input", () => {
+		const { terminal, writes, received } = setup();
+		process.stdin.emit("data", "\x1b[?2004;1$y");
+		writes.length = 0;
+		process.stdin.emit("data", "x");
+		expect(writes).toEqual(["\x1b[?2004h"]);
+		process.stdin.emit("data", "\x1b[200~first\nsecond\x1b[201~");
+		expect(received).toEqual(["x", "\x1b[200~first\nsecond\x1b[201~"]);
+		terminal.stop();
+	});
+
+	it("rearms confirmed bracketed paste in the same write as a render, only while active", () => {
+		const { terminal, writes } = setup();
+		terminal.write("before confirmation");
+		expect(writes.at(-1)).toBe("before confirmation");
+		process.stdin.emit("data", "\x1b[?2004;1$y");
+		writes.length = 0;
+		terminal.write("frame");
+		expect(writes).toEqual(["\x1b[?2004hframe"]);
+		terminal.stop();
+		terminal.write("after stop");
+		expect(writes.at(-1)).toBe("after stop");
 	});
 
 	it("coalesces an unbracketed multiline burst when bracketed paste is unconfirmed (#12540)", () => {

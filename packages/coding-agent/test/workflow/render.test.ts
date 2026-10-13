@@ -63,7 +63,7 @@ describe("renderWorkflowTree", () => {
 			description: "Discovery agent",
 			currentTool: "read",
 			currentToolArgs: "packages/coding-agent/src/workflow/render.ts",
-			lastIntent: "Inspect workflow renderer",
+			currentToolIntent: "Inspect workflow renderer",
 			currentToolStartMs: Date.now(),
 			recentTools: [],
 			recentOutput: [],

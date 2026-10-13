@@ -63,6 +63,7 @@ function createYieldingSession(onCustomMessage?: (message: CapturedCustomMessage
 		model: undefined,
 		extensionRunner: undefined,
 		sessionManager: { appendSessionInit: () => {} },
+		addDisposer: () => {},
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
 		setActiveToolsByName: async () => {},
@@ -143,6 +144,8 @@ function createMcpManager(toolNames: string[]): MCPManager {
 				mcpServerName: "server",
 				mcpToolName: originalMcpToolName(name),
 			})),
+		// followMCPTools subscribes to manager changes; no reloads happen in these tests.
+		addToolsChangedListener: () => () => {},
 	} as unknown as MCPManager;
 }
 
@@ -253,14 +256,14 @@ describe("subagent resource profile", () => {
 			"bash",
 			"web_search",
 			"irc",
-			"yield",
 			"wait",
 		]);
 		expect(capturedOptions?.toolNames).not.toContain("context_debug");
 		expect(capturedOptions?.minimalExtensionRuntime).toBe(true);
 		expect(capturedOptions?.respectToolNamesForCustomTools).toBe(true);
 		expect(capturedOptions?.enableMCP).toBe(false);
-		expect(capturedOptions?.mcpManager).toBeUndefined();
+		expect(capturedOptions?.mcpManager).toBeDefined();
+		expect(capturedOptions?.mcpTools).toBeUndefined();
 		expect(capturedOptions?.customTools ?? []).toEqual([]);
 	});
 
@@ -407,7 +410,7 @@ describe("subagent resource profile", () => {
 		expect(capturedOptions?.minimalExtensionRuntime).toBe(false);
 		expect(capturedOptions?.mcpManager).toBe(mcpManager);
 		expect(
-			capturedOptions?.customTools?.map(tool => ({
+			capturedOptions?.mcpTools?.map(tool => ({
 				name: tool.name,
 				server: tool.mcpServerName,
 				tool: tool.mcpToolName,
@@ -448,7 +451,8 @@ describe("subagent resource profile", () => {
 
 		expect(capturedOptions?.toolNames).toEqual(["yield"]);
 		expect(capturedOptions?.minimalExtensionRuntime).toBe(true);
-		expect(capturedOptions?.mcpManager).toBeUndefined();
+		expect(capturedOptions?.mcpManager).toBeDefined();
+		expect(capturedOptions?.mcpTools).toBeUndefined();
 		expect(capturedOptions?.customTools ?? []).toEqual([]);
 	});
 
@@ -851,15 +855,17 @@ describe("subagent resource profile", () => {
 		const restricted = capturedOptions[0];
 		const explicit = capturedOptions[1];
 		expect(restricted?.enableMCP).toBe(false);
-		expect(restricted?.mcpManager).toBeUndefined();
-		expect(restricted?.customTools?.map(tool => tool.name) ?? []).toEqual([]);
+		expect(restricted?.mcpManager).toBe(mcpManager);
+		expect(restricted?.mcpTools).toBeUndefined();
+		expect(restricted?.customTools).toBeUndefined();
 		expect(restricted?.respectToolNamesForCustomTools).toBe(true);
 		expect(restricted?.minimalExtensionRuntime).toBe(true);
 		expect(explicit?.enableMCP).toBe(false);
-		expect(explicit?.mcpManager).toBeUndefined();
-		expect(explicit?.customTools?.map(tool => tool.name)).toEqual(["mcp__server__allowed"]);
+		expect(explicit?.mcpManager).toBe(mcpManager);
+		expect(explicit?.customTools).toBeUndefined();
+		expect(explicit?.mcpTools?.map(tool => tool.name)).toEqual(["mcp__server__allowed"]);
 		expect(
-			explicit?.customTools?.map(tool => ({ name: tool.name, server: tool.mcpServerName, tool: tool.mcpToolName })),
+			explicit?.mcpTools?.map(tool => ({ name: tool.name, server: tool.mcpServerName, tool: tool.mcpToolName })),
 		).toEqual([{ name: "mcp__server__allowed", server: "server", tool: "allowed" }]);
 		expect(explicit?.respectToolNamesForCustomTools).toBe(true);
 		expect(explicit?.minimalExtensionRuntime).toBe(true);
@@ -893,8 +899,9 @@ describe("subagent resource profile", () => {
 		const options = capturedOptions[0];
 		expect(options?.enableMCP).toBe(true);
 		expect(options?.mcpManager).toBe(mcpManager);
+		expect(options?.customTools).toBeUndefined();
 		expect(
-			options?.customTools?.map(tool => ({ name: tool.name, server: tool.mcpServerName, tool: tool.mcpToolName })),
+			options?.mcpTools?.map(tool => ({ name: tool.name, server: tool.mcpServerName, tool: tool.mcpToolName })),
 		).toEqual([
 			{ name: "mcp__server__one", server: "server", tool: "one" },
 			{ name: "mcp__server__two", server: "server", tool: "two" },

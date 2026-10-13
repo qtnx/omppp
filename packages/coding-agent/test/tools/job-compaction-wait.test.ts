@@ -124,6 +124,7 @@ function createAgentSession(manager: AsyncJobManager): AgentSession {
 	}) as unknown as Agent;
 	const sessionManager = createNoopProxy({
 		getBranch: () => [] as SessionEntry[],
+		getBranchView: () => [] as SessionEntry[],
 		getEntries: () => [] as SessionEntry[],
 		getSessionFile: () => undefined,
 		getCredentialPins: () => [],
@@ -138,7 +139,7 @@ function createAgentSession(manager: AsyncJobManager): AgentSession {
 		agent,
 		sessionManager,
 		settings: createSettings(),
-		modelRegistry: createNoopProxy<ModelRegistry>({}),
+		modelRegistry: createNoopProxy<ModelRegistry>({ drainConfigWarnings: () => [] }),
 		asyncJobManager: manager,
 		persistInitialMCPToolSelection: false,
 	});

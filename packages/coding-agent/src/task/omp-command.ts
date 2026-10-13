@@ -6,7 +6,6 @@ import process from "node:process";
 import { YAML } from "bun";
 import "../cli/preload-env";
 import { APP_NAME, APP_STORAGE_NAME, CONFIG_DIR_NAME, getAgentDir, getConfigRootDir } from "@oh-my-pi/pi-utils/dirs";
-import { $env } from "@oh-my-pi/pi-utils/env";
 import { $which } from "@oh-my-pi/pi-utils/which";
 import { INTERNAL_WORKER_ENTRY_ARGS } from "../cli/worker-selectors";
 import {
@@ -63,8 +62,6 @@ interface LinuxPodmanMount {
 	readOnly: boolean;
 }
 
-const DEFAULT_CMD = process.platform === "win32" ? `${APP_NAME}.cmd` : APP_NAME;
-const DEFAULT_SHELL = process.platform === "win32";
 const MACOS_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 export const MACOS_SANDBOX_ACTIVE_ENV = "PI_OMPX_MACOS_SANDBOX_ACTIVE";
 const MACOS_SANDBOX_ACTIVE_INHERITED_ENV = "PI_OMPX_MACOS_SANDBOX_ACTIVE_INHERITED";
@@ -273,20 +270,6 @@ const RELAUNCH_UNSUPPORTED_SUBCOMMANDS = new Set([
 	"wt",
 	"q",
 ]);
-
-export function resolveOmpCommand(): OmpxCommand {
-	const envCmd = $env.PI_SUBPROCESS_CMD;
-	if (envCmd?.trim()) {
-		return { cmd: envCmd, args: [], shell: DEFAULT_SHELL };
-	}
-
-	const entry = process.argv[1];
-	if (entry && (entry.endsWith(".ts") || entry.endsWith(".js"))) {
-		return { cmd: process.execPath, args: [entry], shell: false };
-	}
-
-	return { cmd: DEFAULT_CMD, args: [], shell: DEFAULT_SHELL };
-}
 
 function isDisabledEnvValue(value: string | undefined): boolean {
 	return value !== undefined && DISABLE_SANDBOX_VALUES.has(value.trim().toLowerCase());

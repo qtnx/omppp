@@ -1,26 +1,33 @@
+pub(crate) mod menus;
+mod popup;
+
 use std::{
 	collections::{HashSet, VecDeque},
 	ffi::c_void,
 	mem,
+	ops::Range,
 	ptr::{self, NonNull},
 	sync::{LazyLock, Mutex},
 	thread,
 	time::Duration,
 };
 
-use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
+use objc2_application_services::{
+	AXCopyMultipleAttributeOptions, AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType,
+};
 use objc2_core_foundation::{
-	CFArray, CFBoolean, CFRange, CFRetained, CFString, CFType, CGPoint, CGSize, Type,
+	CFArray, CFBoolean, CFDate, CFIndex, CFNull, CFNumber, CFRange, CFRetained, CFString,
+	CFTimeZone, CFType, CGPoint, CGSize, Type,
 };
 
 use super::{
 	super::{
-		ax::{AxBounds, AxHandle, AxProps, normalize_role_macos},
+		ax::{AxBounds, AxHandle, AxProps, WalkBounds, normalize_role_macos},
 		backend::AxBackend,
 		error::{CoreResult, DesktopError},
 		types::DesktopWindow,
 	},
-	process, skylight,
+	date, process, skylight,
 };
 
 const AX_TIMEOUT_SECONDS: f32 = 2.0;
@@ -33,6 +40,165 @@ const MAX_ANCESTRY_DEPTH: usize = 40;
 /// not list, matching the snapshot walk's own node and depth budget.
 const MAX_ATTACHED_SEARCH_NODES: usize = 5_000;
 const MAX_ATTACHED_SEARCH_DEPTH: usize = 24;
+
+/// The attributes read of every element a tree walk or `props` visits, all in
+/// one `AXUIElementCopyMultipleAttributeValues` round trip rather than one
+/// message each. Ordered so every [`NodeRead`] is a contiguous range: a walk
+/// that skips bounds drops the last two, and `props` drops `AXChildren`,
+/// whose count `AXUIElementGetAttributeValueCount` reads without copying the
+/// array.
+const NODE_ATTRIBUTES: [&str; 9] = [
+	"AXChildren",
+	"AXRole",
+	"AXTitle",
+	"AXValue",
+	"AXDescription",
+	"AXEnabled",
+	"AXFocused",
+	"AXPosition",
+	"AXSize",
+];
+const CHILDREN: usize = 0;
+const ROLE: usize = 1;
+const TITLE: usize = 2;
+const VALUE: usize = 3;
+const DESCRIPTION: usize = 4;
+const ENABLED: usize = 5;
+const FOCUSED: usize = 6;
+const POSITION: usize = 7;
+const SIZE: usize = 8;
+
+/// Which slice of [`NODE_ATTRIBUTES`] one element read requests.
+#[derive(Clone, Copy)]
+enum NodeRead {
+	Walk,
+	WalkWithBounds,
+	Props,
+}
+
+impl NodeRead {
+	const ALL: [Self; 3] = [Self::Walk, Self::WalkWithBounds, Self::Props];
+
+	const fn attributes(self) -> Range<usize> {
+		match self {
+			Self::Walk => CHILDREN..POSITION,
+			Self::WalkWithBounds => CHILDREN..NODE_ATTRIBUTES.len(),
+			Self::Props => ROLE..NODE_ATTRIBUTES.len(),
+		}
+	}
+}
+
+thread_local! {
+	/// Each [`NodeRead`]'s attribute names as the `CFArray` it sends, indexed by
+	/// the read and built once per session thread.
+	static NODE_REQUESTS: [CFRetained<CFArray<CFString>>; 3] = NodeRead::ALL.map(|read| {
+		let names: Vec<_> = NODE_ATTRIBUTES[read.attributes()]
+			.iter()
+			.map(|name| CFString::from_static_str(name))
+			.collect();
+		CFArray::from_retained_objects(&names)
+	});
+}
+
+/// One element's [`NODE_ATTRIBUTES`] from a single batched read.
+struct NodeValues {
+	values: NodeBatch,
+	/// [`NODE_ATTRIBUTES`] index of the first value.
+	first:  usize,
+}
+
+enum NodeBatch {
+	/// The values in request order.
+	Read(CFRetained<CFArray<CFType>>),
+	/// One lone read per requested attribute, in request order.
+	Lone(Vec<Result<Option<CFRetained<CFType>>, AXError>>),
+	/// The element is gone, so every attribute fails with this error.
+	Gone(AXError),
+}
+
+impl NodeValues {
+	fn read(element: &AXUIElement, read: NodeRead) -> Self {
+		let mut output: *const CFArray = ptr::null();
+		let error = NODE_REQUESTS.with(|requests| {
+			// SAFETY: The request is a CFArray of CFString attribute names and
+			// `output` is writable; a successful call stores a +1 CFArray there.
+			unsafe {
+				element.copy_multiple_attribute_values(
+					requests[read as usize].as_opaque(),
+					AXCopyMultipleAttributeOptions::empty(),
+					NonNull::from(&mut output),
+				)
+			}
+		});
+		let batch = if error == AXError::Success {
+			NonNull::new(output.cast_mut())
+				.ok_or(AXError::Failure)
+				.map(|pointer| {
+					// SAFETY: The successful copy returned this array at +1; its
+					// entries are attribute values or AXError-typed AXValues.
+					let array: CFRetained<CFArray> = unsafe { CFRetained::from_raw(pointer) };
+					// SAFETY: Every entry is a CF object.
+					unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) }
+				})
+		} else {
+			Err(error)
+		};
+		Self::from_batch(batch, read.attributes(), |index| {
+			copy_attribute_result(element, NODE_ATTRIBUTES[index])
+		})
+	}
+
+	/// The batch's values, or `lone` reads of each attribute when the batch
+	/// failed as a whole for a live element: a messaging timeout gives the
+	/// batch one deadline for every attribute, and one slow attribute must
+	/// not lose the element's role and children.
+	fn from_batch(
+		batch: Result<CFRetained<CFArray<CFType>>, AXError>,
+		attributes: Range<usize>,
+		lone: impl FnMut(usize) -> Result<Option<CFRetained<CFType>>, AXError>,
+	) -> Self {
+		let first = attributes.start;
+		let values = match batch {
+			Ok(values) => NodeBatch::Read(values),
+			Err(error) if error == AXError::InvalidUIElement => NodeBatch::Gone(error),
+			Err(_) => NodeBatch::Lone(attributes.map(lone).collect()),
+		};
+		Self { values, first }
+	}
+
+	/// `NODE_ATTRIBUTES[index]` as a lone `AXUIElementCopyAttributeValue`
+	/// reports it: the attribute's error, or `None` when it has no value.
+	fn get(&self, index: usize) -> Result<Option<CFRetained<CFType>>, AXError> {
+		let offset = index.checked_sub(self.first);
+		let values = match &self.values {
+			NodeBatch::Read(values) => values,
+			NodeBatch::Lone(values) => {
+				return offset
+					.and_then(|offset| values.get(offset))
+					.cloned()
+					.unwrap_or(Err(AXError::Failure));
+			},
+			NodeBatch::Gone(error) => return Err(*error),
+		};
+		let value = offset
+			.and_then(|offset| values.get(offset))
+			.ok_or(AXError::Failure)?;
+		if value.downcast_ref::<CFNull>().is_some() {
+			return Ok(None);
+		}
+		if let Some(ax_value) = value.downcast_ref::<AXValue>()
+			// SAFETY: Reading the type of a live AXValue has no preconditions.
+			&& unsafe { ax_value.r#type() } == AXValueType::AXError
+		{
+			let mut error = AXError::Failure;
+			// SAFETY: An AXError-typed AXValue holds exactly one AXError, which
+			// `error` has room for.
+			unsafe { ax_value.value(AXValueType::AXError, NonNull::from(&mut error).cast()) };
+			return Err(error);
+		}
+		Ok(Some(value))
+	}
+}
 
 type GetWindowIdFn = unsafe extern "C" fn(&AXUIElement, *mut u32) -> AXError;
 
@@ -417,26 +583,48 @@ impl AxBackend for MacAx {
 
 	fn props(&mut self, h: &AxHandle) -> CoreResult<AxProps> {
 		let element = mac_handle(h)?;
-		let native_role = copy_required_string(element, "AXRole")?;
-		let actions = copy_strings_from_action_names(element).unwrap_or_default();
-		let child_count = copy_elements_optional(element, "AXChildren")
-			.map_or(0, |children| u32::try_from(children.len()).unwrap_or(u32::MAX));
-		Ok(AxProps {
-			role: normalize_role_macos(&native_role),
-			native_role,
-			title: nonempty(copy_string(element, "AXTitle")),
-			value: nonempty(copy_value_string(element, "AXValue")),
-			description: nonempty(copy_string(element, "AXDescription")),
-			enabled: copy_bool(element, "AXEnabled").unwrap_or(true),
-			focused: copy_bool(element, "AXFocused").unwrap_or(false),
-			bounds: bounds(element),
-			actions,
-			child_count,
-		})
+		let values = NodeValues::read(element, NodeRead::Props);
+		let mut count: CFIndex = 0;
+		// SAFETY: `count` is writable and the retained element outlives the
+		// query.
+		let counted = unsafe {
+			element.attribute_value_count(
+				&CFString::from_static_str("AXChildren"),
+				NonNull::from(&mut count),
+			)
+		};
+		let child_count = if counted == AXError::Success {
+			usize::try_from(count).unwrap_or(0)
+		} else {
+			0
+		};
+		element_props(element, &values, child_count, WalkBounds::Read)
+	}
+
+	fn walk_node(
+		&mut self,
+		h: &AxHandle,
+		read_bounds: WalkBounds,
+	) -> CoreResult<(AxProps, Vec<AxHandle>)> {
+		let element = mac_handle(h)?;
+		let read = match read_bounds {
+			WalkBounds::Read => NodeRead::WalkWithBounds,
+			WalkBounds::Skip => NodeRead::Walk,
+		};
+		let values = NodeValues::read(element, read);
+		let children = values
+			.get(CHILDREN)
+			.ok()
+			.flatten()
+			.and_then(element_array)
+			.unwrap_or_default();
+		let props = element_props(element, &values, children.len(), read_bounds)?;
+		Ok((props, children.into_iter().map(AxHandle::Mac).collect()))
 	}
 
 	fn children(&mut self, h: &AxHandle) -> CoreResult<Vec<AxHandle>> {
-		Ok(copy_elements_optional(mac_handle(h)?, "AXChildren")
+		Ok(copy_held_attribute(mac_handle(h)?, "AXChildren")?
+			.and_then(element_array)
 			.unwrap_or_default()
 			.into_iter()
 			.map(AxHandle::Mac)
@@ -444,7 +632,9 @@ impl AxBackend for MacAx {
 	}
 
 	fn parent(&mut self, h: &AxHandle) -> CoreResult<Option<AxHandle>> {
-		Ok(copy_element(mac_handle(h)?, "AXParent").map(AxHandle::Mac))
+		Ok(copy_held_attribute(mac_handle(h)?, "AXParent")?
+			.and_then(|value| value.downcast::<AXUIElement>().ok())
+			.map(AxHandle::Mac))
 	}
 
 	fn perform(&mut self, h: &AxHandle, action: &str) -> CoreResult<()> {
@@ -457,13 +647,7 @@ impl AxBackend for MacAx {
 				actions.join(", "),
 			)));
 		}
-		let action = CFString::from_str(&native);
-		let perform = || {
-			// SAFETY: The retained element and action CFString remain valid for the
-			// synchronous AX request.
-			let error = unsafe { element.perform_action(&action) };
-			ax_result(error, format!("AX action '{native}' failed"))
-		};
+		let perform = || element_action_result(&native, send_action(element, &native));
 		// AXRaise is an explicit request to change stacking, including the
 		// takeover preparation path. Other semantic actions must stay background.
 		if native == "AXRaise" {
@@ -475,13 +659,27 @@ impl AxBackend for MacAx {
 
 	fn set_value(&mut self, h: &AxHandle, value: &str) -> CoreResult<()> {
 		let element = mac_handle(h)?;
+		// A popup's value is chosen from its menu, not written. This runs before
+		// the text-target refusals: nothing is typed or written, and the verdict
+		// is the popup's own read-back after a real menu press.
+		let role = copy_held_attribute(element, "AXRole")?
+			.and_then(|value| value.downcast::<CFString>().ok());
+		if role.is_some_and(|role| role.to_string() == "AXPopUpButton") {
+			return skylight::with_background_guard(element_pid(element)?, || {
+				popup::choose(element, value)
+			});
+		}
 		// Web AXValue can echo a write without the renderer accepting it. The
-		// API has no "unverified" outcome, so refuse before mutating that surface.
+		// API has no "unverified" outcome, so refuse before mutating that
+		// surface.
 		ensure_native_text_target(element)?;
 		if !attribute_settable(element, "AXValue") {
 			return Err(DesktopError::ax_failed(
 				"AXValue is not settable; no typing fallback was attempted",
 			));
+		}
+		if let Some(current) = copy_date(element, "AXValue") {
+			return set_date_value(element, value, current);
 		}
 		skylight::with_background_guard(element_pid(element)?, || {
 			set_string_value(element, "AXValue", value)?;
@@ -493,8 +691,8 @@ impl AxBackend for MacAx {
 		let element = mac_handle(h)?;
 		let attribute = CFString::from_str("AXFocused");
 		skylight::with_background_guard(element_pid(element)?, || {
-			// SAFETY: The singleton CFBoolean and retained element remain valid for
-			// the synchronous setter call.
+			// SAFETY: The singleton CFBoolean and retained element remain valid
+			// for the synchronous setter call.
 			let error = unsafe { element.set_attribute_value(&attribute, CFBoolean::new(true)) };
 			ax_result(error, "setting AXFocused=true failed")
 		})
@@ -552,6 +750,44 @@ impl AxBackend for MacAx {
 		}
 		Ok(result)
 	}
+}
+
+fn element_props(
+	element: &AXUIElement,
+	values: &NodeValues,
+	child_count: usize,
+	read_bounds: WalkBounds,
+) -> CoreResult<AxProps> {
+	let native_role = required_string(values.get(ROLE), "AXRole")?;
+	let actions = copy_strings_from_action_names(element).unwrap_or_default();
+	let read = |index| values.get(index).ok().flatten();
+	let string = |index| {
+		read(index)
+			.and_then(|value| value.downcast::<CFString>().ok())
+			.map(|value| value.to_string())
+	};
+	let boolean = |index| {
+		read(index)
+			.and_then(|value| value.downcast::<CFBoolean>().ok())
+			.map(|value| value.as_bool())
+	};
+	Ok(AxProps {
+		role: normalize_role_macos(&native_role),
+		native_role,
+		title: nonempty(string(TITLE)),
+		value: nonempty(read(VALUE).map(|value| stringify_value(&value))),
+		description: nonempty(string(DESCRIPTION)),
+		enabled: boolean(ENABLED).unwrap_or(true),
+		focused: boolean(FOCUSED).unwrap_or(false),
+		bounds: match read_bounds {
+			WalkBounds::Read => read(POSITION)
+				.zip(read(SIZE))
+				.and_then(|(position, size)| frame(&position, &size)),
+			WalkBounds::Skip => None,
+		},
+		actions,
+		child_count: u32::try_from(child_count).unwrap_or(u32::MAX),
+	})
 }
 
 fn element_pid(element: &AXUIElement) -> CoreResult<libc::pid_t> {
@@ -635,6 +871,45 @@ fn verify_text_value(element: &AXUIElement, expected: &str) -> CoreResult<()> {
 	}
 }
 
+/// Date and time controls publish `AXValue` as a `CFDate` and refuse the same
+/// date written as a `CFString`, so an ISO-8601 value is written as a `CFDate`
+/// in the system time zone the control displays, then read back as one.
+fn set_date_value(element: &AXUIElement, text: &str, current: f64) -> CoreResult<()> {
+	// CF caches the system zone per process; the target app follows changes to
+	// it.
+	CFTimeZone::reset_system();
+	let zone = CFTimeZone::system()
+		.ok_or_else(|| DesktopError::ax_failed("the system time zone is unavailable"))?;
+	let offset_at = |at: f64| zone.seconds_from_gmt(at) as i64;
+	let Some(request) = date::parse(text) else {
+		return Err(DesktopError::ax_failed(format!(
+			"AXValue is a date and {text:?} is not ISO-8601: write {}; it reads {} now; nothing was \
+			 written",
+			date::ACCEPTED_FORMS,
+			date::format_local(current, offset_at),
+		)));
+	};
+	let target = request
+		.absolute_time(current, offset_at)
+		.map_err(|reason| DesktopError::ax_failed(format!("{reason}; nothing was written")))?;
+	let value = CFDate::new(None, target)
+		.ok_or_else(|| DesktopError::ax_failed("creating the CFDate to write failed"))?;
+	let attribute = CFString::from_str("AXValue");
+	skylight::with_background_guard(element_pid(element)?, || {
+		// SAFETY: The element, attribute and date remain retained for the setter.
+		let error = unsafe { element.set_attribute_value(&attribute, &value) };
+		ax_result(error, "setting AXValue to a date failed")?;
+		match copy_date(element, "AXValue") {
+			Some(actual) if (actual - target).abs() < 1e-3 => Ok(()),
+			actual => Err(DesktopError::ax_failed(format!(
+				"AX accepted the date write but the control reads {} instead of {}",
+				actual.map_or_else(|| "no date".to_owned(), |at| date::format_local(at, offset_at)),
+				date::format_local(target, offset_at),
+			))),
+		}
+	})
+}
+
 /// Inserts into a native field only when its focused element belongs to this
 /// exact window. `false` means no write was attempted; an attempted write never
 /// falls through to keystrokes, including timeouts or partial delivery.
@@ -650,7 +925,8 @@ pub(super) fn insert_native_text(pid: libc::pid_t, wid: u32, text: &str) -> Core
 		|| !matches!(
 			copy_string(&element, "AXRole").as_deref(),
 			Some("AXTextField" | "AXTextArea" | "AXComboBox")
-		) || !attribute_settable(&element, "AXSelectedText")
+		)
+		|| !attribute_settable(&element, "AXSelectedText")
 	{
 		return Ok(false);
 	}
@@ -712,6 +988,32 @@ fn replace_utf16_selection(
 	result.push_str(text);
 	result.push_str(&before[end_byte..]);
 	Some(result)
+}
+
+fn perform_action(element: &AXUIElement, action: &str) -> CoreResult<()> {
+	ax_result(send_action(element, action), format!("AX action '{action}' failed"))
+}
+
+fn send_action(element: &AXUIElement, action: &str) -> AXError {
+	let name = CFString::from_str(action);
+	// SAFETY: The retained element and action CFString remain valid for the
+	// synchronous AX request.
+	unsafe { element.perform_action(&name) }
+}
+
+/// `CannotComplete` from `AXPerformAction` means messaging failed or the app
+/// did not reply in time, e.g. while the action runs a modal dialog. The
+/// request was made, so its outcome is unknown rather than failed.
+fn element_action_result(action: &str, error: AXError) -> CoreResult<()> {
+	if error == AXError::CannotComplete {
+		return Err(DesktopError::ax_unconfirmed(format!(
+			"AX action '{action}' was requested, but its outcome could not be confirmed: the app did \
+			 not reply in time or messaging failed ({error:?}), for example because the action \
+			 opened a modal dialog. It may already have taken effect: observe the window before \
+			 retrying"
+		)));
+	}
+	ax_result(error, format!("AX action '{action}' failed"))
 }
 
 fn ensure_trusted() -> CoreResult<()> {
@@ -803,6 +1105,26 @@ fn copy_attribute(element: &AXUIElement, attribute: &str) -> Option<CFRetained<C
 	copy_attribute_result(element, attribute).ok().flatten()
 }
 
+/// Reads an optional attribute of an element a ref names: a destroyed element
+/// is a stale ref, any other failure reads as no value.
+fn copy_held_attribute(
+	element: &AXUIElement,
+	attribute: &str,
+) -> CoreResult<Option<CFRetained<CFType>>> {
+	match copy_attribute_result(element, attribute) {
+		Err(AXError::InvalidUIElement) => Err(element_gone()),
+		result => Ok(result.ok().flatten()),
+	}
+}
+
+/// The attribute's value as a `CFAbsoluteTime`, when it is a `CFDate`.
+fn copy_date(element: &AXUIElement, attribute: &str) -> Option<f64> {
+	let value = copy_attribute(element, attribute)?
+		.downcast::<CFDate>()
+		.ok()?;
+	Some(value.absolute_time())
+}
+
 fn copy_string(element: &AXUIElement, attribute: &str) -> Option<String> {
 	let value = copy_attribute(element, attribute)?;
 	if let Ok(value) = value.downcast::<CFString>() {
@@ -812,17 +1134,20 @@ fn copy_string(element: &AXUIElement, attribute: &str) -> Option<String> {
 	}
 }
 fn copy_required_string(element: &AXUIElement, attribute: &str) -> CoreResult<String> {
-	let value = copy_attribute_result(element, attribute)
-		.map_err(|error| DesktopError::ax_failed(format!("copying {attribute} failed ({error:?})")))?
-		.ok_or_else(|| DesktopError::ax_failed(format!("copying {attribute} returned no value")))?;
+	required_string(copy_attribute_result(element, attribute), attribute)
+}
+
+/// A read of `attribute` that must be a string.
+fn required_string(
+	value: Result<Option<CFRetained<CFType>>, AXError>,
+	attribute: &str,
+) -> CoreResult<String> {
 	value
+		.map_err(|error| ax_error(error, format!("copying {attribute} failed")))?
+		.ok_or_else(|| DesktopError::ax_failed(format!("copying {attribute} returned no value")))?
 		.downcast::<CFString>()
 		.map(|value| value.to_string())
 		.map_err(|_| DesktopError::ax_failed(format!("{attribute} was not a string")))
-}
-
-fn copy_value_string(element: &AXUIElement, attribute: &str) -> Option<String> {
-	copy_attribute(element, attribute).map(|value| stringify_value(&value))
 }
 
 fn copy_bool(element: &AXUIElement, attribute: &str) -> Option<bool> {
@@ -850,9 +1175,11 @@ fn copy_elements_optional(
 	element: &AXUIElement,
 	attribute: &str,
 ) -> Option<Vec<CFRetained<AXUIElement>>> {
-	let array = copy_attribute(element, attribute)?
-		.downcast::<CFArray>()
-		.ok()?;
+	element_array(copy_attribute(element, attribute)?)
+}
+
+fn element_array(value: CFRetained<CFType>) -> Option<Vec<CFRetained<AXUIElement>>> {
+	let array = value.downcast::<CFArray>().ok()?;
 	// SAFETY: AXWindows/AXChildren are documented CFArray<AXUIElement> values.
 	let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
 	Some(
@@ -904,12 +1231,15 @@ fn copy_strings_from_action_names(element: &AXUIElement) -> CoreResult<Vec<Strin
 }
 
 fn bounds(element: &AXUIElement) -> Option<AxBounds> {
-	let position = copy_attribute(element, "AXPosition")?
-		.downcast::<AXValue>()
-		.ok()?;
-	let size = copy_attribute(element, "AXSize")?
-		.downcast::<AXValue>()
-		.ok()?;
+	let position = copy_attribute(element, "AXPosition")?;
+	let size = copy_attribute(element, "AXSize")?;
+	frame(&position, &size)
+}
+
+/// The bounds an `AXPosition` and `AXSize` value pair describe.
+fn frame(position: &CFType, size: &CFType) -> Option<AxBounds> {
+	let position = position.downcast_ref::<AXValue>()?;
+	let size = size.downcast_ref::<AXValue>()?;
 	let mut point = CGPoint { x: 0.0, y: 0.0 };
 	let mut dimensions = CGSize { width: 0.0, height: 0.0 };
 	// SAFETY: The output pointer targets a live CGPoint and the requested type
@@ -938,17 +1268,17 @@ fn retained_element(pointer: *const AXUIElement) -> CoreResult<CFRetained<AXUIEl
 	Ok(unsafe { CFRetained::from_raw(pointer) })
 }
 
-// The test-only handle variant makes this fallible under `cfg(test)`; keep one
+// The test-only handle variants make this fallible under `cfg(test)`; keep one
 // call contract.
 #[cfg_attr(
 	not(test),
-	allow(clippy::unnecessary_wraps, reason = "the test-only handle variant is fallible")
+	allow(clippy::unnecessary_wraps, reason = "the test-only handle variants are fallible")
 )]
 fn mac_handle(handle: &AxHandle) -> CoreResult<&AXUIElement> {
 	match handle {
 		AxHandle::Mac(element) => Ok(element),
 		#[cfg(test)]
-		AxHandle::Test(_) => Err(DesktopError::ax_failed("non-macOS AX handle passed to MacAx")),
+		_ => Err(DesktopError::ax_failed("non-macOS AX handle passed to MacAx")),
 	}
 }
 
@@ -969,6 +1299,13 @@ fn action_name(action: &str) -> String {
 	}
 }
 
+/// Renders an AX attribute value as stable, agent-readable text for
+/// [`AxProps::value`] and `attributes()`.
+///
+/// Numbers print as numbers (checkbox/radio state, slider position) and an
+/// element reference (a radio group's selected button) prints as that
+/// element's title or description, so snapshots never carry CF debug text
+/// whose pointer addresses change between otherwise identical reads.
 fn stringify_value(value: &CFType) -> String {
 	if let Some(string) = value.downcast_ref::<CFString>() {
 		return string.to_string();
@@ -976,7 +1313,28 @@ fn stringify_value(value: &CFType) -> String {
 	if let Some(boolean) = value.downcast_ref::<CFBoolean>() {
 		return boolean.as_bool().to_string();
 	}
+	if let Some(number) = value.downcast_ref::<CFNumber>() {
+		return stringify_number(number);
+	}
+	if let Some(element) = value.downcast_ref::<AXUIElement>() {
+		return nonempty(copy_string(element, "AXTitle"))
+			.or_else(|| nonempty(copy_string(element, "AXDescription")))
+			.unwrap_or_default();
+	}
 	format!("{value:?}")
+}
+
+/// Formats a `CFNumber` at its stored precision: `Float32` values read back
+/// as `f32` so `0.185` does not widen to `0.18500000238418579`.
+fn stringify_number(number: &CFNumber) -> String {
+	let text = if !number.is_float_type() {
+		number.as_i64().map(|value| value.to_string())
+	} else if number.byte_size() <= 4 {
+		number.as_f32().map(|value| value.to_string())
+	} else {
+		number.as_f64().map(|value| value.to_string())
+	};
+	text.unwrap_or_default()
 }
 
 fn nonempty(value: Option<String>) -> Option<String> {
@@ -996,13 +1354,128 @@ fn ax_result(error: AXError, context: impl Into<String>) -> CoreResult<()> {
 	if error == AXError::Success {
 		Ok(())
 	} else {
-		Err(DesktopError::ax_failed(format!("{} ({error:?})", context.into())))
+		Err(ax_error(error, context))
 	}
+}
+
+/// `InvalidUIElement` means the element itself is gone (its view was removed
+/// or its window closed), so the ref that named it is stale.
+fn ax_error(error: AXError, context: impl Into<String>) -> DesktopError {
+	if error == AXError::InvalidUIElement {
+		element_gone()
+	} else {
+		DesktopError::ax_failed(format!("{} ({error:?})", context.into()))
+	}
+}
+
+fn element_gone() -> DesktopError {
+	DesktopError::stale_ref("the element no longer exists; re-run ax()/find()")
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{AttachedCandidate, replace_utf16_selection, select_attached};
+	use std::ptr::NonNull;
+
+	use objc2_application_services::{AXError, AXValue, AXValueType};
+	use objc2_core_foundation::{CFArray, CFNumber, CFString, CFType, Type, kCFNull};
+
+	use super::{
+		AttachedCandidate, CHILDREN, DESCRIPTION, ENABLED, NodeRead, NodeValues, ROLE, TITLE, VALUE,
+		ax_result, element_action_result, replace_utf16_selection, required_string, select_attached,
+		stringify_value,
+	};
+	use crate::desktop::error::ErrorCode;
+
+	#[test]
+	fn batched_values_read_like_lone_reads() {
+		let mut no_value = AXError::NoValue;
+		// SAFETY: An AXError-typed AXValue copies the one AXError it points at.
+		let error =
+			unsafe { AXValue::new(AXValueType::AXError, NonNull::from(&mut no_value).cast()) }
+				.unwrap();
+		let title = CFString::from_static_str("Save");
+		// SAFETY: kCFNull is a process-lifetime constant.
+		let null = unsafe { kCFNull }.unwrap();
+		let entries: [&CFType; 3] = [&title, &error, null];
+		let values =
+			NodeValues::from_batch(Ok(CFArray::from_objects(&entries)), TITLE..ENABLED, |_| {
+				unreachable!("an answered batch needs no lone reads")
+			});
+		let title = values
+			.get(TITLE)
+			.unwrap()
+			.unwrap()
+			.downcast::<CFString>()
+			.unwrap();
+		assert_eq!(title.to_string(), "Save");
+		assert_eq!(values.get(VALUE).unwrap_err(), AXError::NoValue);
+		assert!(values.get(DESCRIPTION).unwrap().is_none());
+		assert_eq!(values.get(CHILDREN).unwrap_err(), AXError::Failure);
+
+		let gone = NodeValues::from_batch(
+			Err(AXError::InvalidUIElement),
+			NodeRead::Walk.attributes(),
+			|_| unreachable!("a destroyed element needs no lone reads"),
+		);
+		assert_eq!(gone.get(TITLE).unwrap_err(), AXError::InvalidUIElement);
+		let role = required_string(gone.get(ROLE), "AXRole").unwrap_err();
+		assert_eq!(role.code, ErrorCode::StaleRef);
+	}
+
+	#[test]
+	fn unanswered_batch_falls_back_to_lone_reads() {
+		let role = CFString::from_static_str("AXTextArea");
+		let role: &CFType = &role;
+		let mut asked = Vec::new();
+		let values = NodeValues::from_batch(
+			Err(AXError::CannotComplete),
+			NodeRead::Walk.attributes(),
+			|index| {
+				asked.push(index);
+				match index {
+					ROLE => Ok(Some(role.retain())),
+					VALUE => Err(AXError::CannotComplete),
+					_ => Ok(None),
+				}
+			},
+		);
+		assert_eq!(asked, NodeRead::Walk.attributes().collect::<Vec<_>>());
+		assert_eq!(required_string(values.get(ROLE), "AXRole").unwrap(), "AXTextArea");
+		assert_eq!(values.get(VALUE).unwrap_err(), AXError::CannotComplete);
+		assert!(values.get(TITLE).unwrap().is_none());
+	}
+
+	#[test]
+	fn destroyed_element_is_a_stale_ref() {
+		let code = |error| {
+			ax_result(error, "AX action 'AXPress' failed")
+				.unwrap_err()
+				.code
+		};
+		assert_eq!(code(AXError::InvalidUIElement), ErrorCode::StaleRef);
+		assert_eq!(code(AXError::CannotComplete), ErrorCode::AxFailed);
+		assert_eq!(code(AXError::ActionUnsupported), ErrorCode::AxFailed);
+	}
+
+	#[test]
+	fn cannot_complete_reports_the_action_as_unconfirmed_not_failed() {
+		let unconfirmed = element_action_result("AXPress", AXError::CannotComplete).unwrap_err();
+		assert_eq!(unconfirmed.code, ErrorCode::AxUnconfirmed);
+		assert!(unconfirmed.message.contains("could not be confirmed"), "{}", unconfirmed.message);
+		assert!(unconfirmed.message.contains("before retrying"), "{}", unconfirmed.message);
+		let code = |error| element_action_result("AXPress", error).unwrap_err().code;
+		assert_eq!(code(AXError::InvalidUIElement), ErrorCode::StaleRef);
+		assert_eq!(code(AXError::ActionUnsupported), ErrorCode::AxFailed);
+		assert!(element_action_result("AXPress", AXError::Success).is_ok());
+	}
+
+	#[test]
+	fn numeric_values_render_as_numbers_at_stored_precision() {
+		assert_eq!(stringify_value(&CFNumber::new_i32(1)), "1");
+		assert_eq!(stringify_value(&CFNumber::new_i64(-3)), "-3");
+		assert_eq!(stringify_value(&CFNumber::new_f64(0.185)), "0.185");
+		assert_eq!(stringify_value(&CFNumber::new_f32(0.185)), "0.185");
+	}
 
 	#[test]
 	fn selected_text_replaces_utf16_selection_without_losing_surrounding_text() {
