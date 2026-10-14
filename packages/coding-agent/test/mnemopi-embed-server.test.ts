@@ -11,7 +11,7 @@ import type {
 	MnemopiEmbedWorkerInbound,
 	MnemopiEmbedWorkerOutbound,
 } from "@oh-my-pi/pi-coding-agent/mnemopi/embed-protocol";
-import { startMnemopiEmbedServer } from "@oh-my-pi/pi-coding-agent/mnemopi/embed-server";
+import { startMnemopiEmbedServer } from "@oh-my-pi/pi-coding-agent/mnemopi/embed-http-server";
 
 /** Fake worker whose vectors are `[text.length, marker]`, so tests can tell who embedded. */
 function markedWorker(marker: number, stats: { spawns: number }): () => MnemopiEmbedWorkerHandle {

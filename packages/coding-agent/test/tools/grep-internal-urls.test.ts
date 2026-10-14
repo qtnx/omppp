@@ -316,6 +316,27 @@ describe("GrepTool internal URL resolution", () => {
 		expect(formatOutputNotice(result.details?.meta)).toContain("Some lines truncated to 512 bytes");
 	});
 
+	it("shows a match far into a long line instead of only the line's start", async () => {
+		const line = `${"a".repeat(12_000)}deadline [s120]${"b".repeat(2_400)}`;
+		registerVirtualDocs(new Map([["long.md", `${line}\n`]]));
+		const result = await new GrepTool(createSession()).execute("long-line", {
+			pattern: "deadline \\[s120\\]",
+			path: "virtual://long.md",
+		});
+		const text = getResultText(result);
+		expect(text).toMatch(/\.\.\.a+deadline \[s120\]b+\.\.\. \[col 12001\]/);
+		expect(result.details?.meta?.limits?.columnTruncated).toEqual({ maxColumn: 512, unit: "bytes" });
+	});
+
+	it("windows a long line around a cross-line look-ahead match", async () => {
+		registerVirtualDocs(new Map([["ahead.md", `${"a".repeat(12_000)}needle\nend\n`]]));
+		const result = await new GrepTool(createSession()).execute("long-line-ahead", {
+			pattern: "needle(?=\\nend)",
+			path: "virtual://ahead.md",
+		});
+		expect(getResultText(result)).toMatch(/\.\.\.a+needle \[col 12001\]/);
+	});
+
 	it("rejects a malformed selector on a selector-capable internal URL instead of widening the search", async () => {
 		const session = createSession();
 		const tool = new GrepTool(session);
@@ -708,8 +729,9 @@ describe("GrepTool internal URL resolution", () => {
 			},
 		});
 		const tool = new GrepTool(createSession());
+		// Unix natives surface the real errno text; elsewhere the provider message rides along.
 		await expect(tool.execute("dir-search", { pattern: "x", path: "dirstub://host/dir" })).rejects.toThrow(
-			/dirstub:\/\/host\/dir: Operation not supported/,
+			/dirstub:\/\/host\/dir(: Operation not supported| lists only through the read tool)/,
 		);
 	});
 
@@ -725,7 +747,7 @@ describe("GrepTool internal URL resolution", () => {
 		const listSpy = vi.spyOn(sshFileTransfer, "listRemoteDir").mockResolvedValue([]);
 		const tool = new GrepTool(createSession());
 		await expect(tool.execute("ssh-dir-search", { pattern: "x", path: "ssh://h/etc" })).rejects.toThrow(
-			/ssh:\/\/h\/etc: Operation not supported/,
+			/ssh:\/\/h\/etc(: Operation not supported| lists only through the read tool)/,
 		);
 		expect(listSpy).not.toHaveBeenCalled();
 	});

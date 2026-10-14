@@ -56,7 +56,6 @@ describe("bundled task agents", () => {
 			"bash",
 			"web_search",
 			"irc",
-			"yield",
 		]);
 		expect(explore?.tools).toContain("web_search");
 		expect(explore?.systemPrompt).toContain("Target at most 8 tool calls");
@@ -128,7 +127,7 @@ describe("bundled task agents", () => {
 		expect(presenter?.model).toEqual(FRONTEND_AGENT_MODELS);
 		expect(presenter?.autoloadSkills).toEqual(["preview-templates"]);
 		expect(presenter?.tools ?? []).toEqual(
-			expect.arrayContaining(["read", "grep", "glob", "bash", "edit", "write", "browser", "irc", "yield"]),
+			expect.arrayContaining(["read", "grep", "glob", "bash", "edit", "write", "browser", "irc"]),
 		);
 		expect(presenter?.tools ?? []).not.toContain("task");
 		expect(presenter?.description).toMatch(/\.canvas\.json|canvas/i);
@@ -194,7 +193,7 @@ describe("bundled task agents", () => {
 		const qa = getBundledAgent("qa");
 
 		expect(qa).toBeDefined();
-		expect(qa?.tools).toEqual(["read", "grep", "glob", "bash", "lsp", "jev_scout", "irc", "yield"]);
+		expect(qa?.tools).toEqual(["read", "grep", "glob", "bash", "lsp", "jev_scout", "irc"]);
 		expect(qa?.tools).not.toContain("edit");
 		expect(qa?.tools).not.toContain("write");
 		expect(qa?.spawns).toEqual(["browser_qa"]);

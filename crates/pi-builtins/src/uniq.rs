@@ -18,7 +18,10 @@ use uucore::{
 	posix::{OBSOLETE, posix_version},
 };
 
-use crate::host::{Host, StreamWriter, Utility, format_usage, matches_parser, util};
+use crate::{
+	host::{Host, StreamWriter, Utility, format_usage, matches_parser, strip_errno, util},
+	locale::shell_locale,
+};
 
 mod options {
 	pub static ALL_REPEATED: &str = "all-repeated";
@@ -69,11 +72,7 @@ struct LineMeta {
 type PortResult<T> = Result<T, String>;
 
 fn io_error(context: &str, error: std::io::Error) -> String {
-	let mut message = error.to_string();
-	if let Some(pos) = message.find(" (os error ") {
-		message.truncate(pos);
-	}
-	format!("{context}: {message}")
+	format!("{context}: {}", strip_errno(&error))
 }
 
 macro_rules! write_line_terminator {
@@ -881,14 +880,7 @@ fn operand_path(host: &Host, operand: Option<&std::ffi::OsStr>) -> Option<PathBu
 }
 
 fn is_c_locale(host: &Host) -> bool {
-	for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
-		if let Some(value) = host.var(key)
-			&& !value.is_empty()
-		{
-			return value == "C" || value == "POSIX";
-		}
-	}
-	true
+	shell_locale(host, "LC_CTYPE").is_none_or(|locale| locale == "C" || locale == "POSIX")
 }
 
 fn app() -> Command {

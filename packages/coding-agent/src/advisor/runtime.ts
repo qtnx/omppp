@@ -15,13 +15,14 @@ import {
 	obfuscateToolArguments,
 } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import { SecretValueSet } from "../secrets/placeholder";
 import {
 	formatExecutionSourcePreview,
 	formatSessionHistoryMarkdown,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
 import type { TurnSignals, TurnSignalService } from "../signals/index";
-import { ADVISOR_RENDER_OPTIONS } from "./delta-split";
+import { ADVISOR_RENDER_OPTIONS, advisorToolIOTransform } from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
 
 /**
@@ -176,8 +177,15 @@ const ADVISOR_OUTPUT_ONLY_HAZARDS: readonly AdvisorOutputHazard[] = [
  * transcript as model-visible context. Calls to tools the advisor was not
  * granted are not a quarantine matter: the loop answers them with a
  * self-correcting `Tool <name> not found` result.
+ *
+ * `sourceText` may be a thunk; it is resolved at most once, synchronously, and
+ * only when generated text matches a hazard, so the common clean turn never
+ * builds the provenance string.
  */
-export function quarantineAdvisorUnsafeOutput(message: AssistantMessage, sourceText = ""): string | undefined {
+export function quarantineAdvisorUnsafeOutput(
+	message: AssistantMessage,
+	sourceText: string | (() => string) = "",
+): string | undefined {
 	const reasons: string[] = [];
 	const generatedParts: string[] = [];
 	for (const block of message.content) {
@@ -191,10 +199,12 @@ export function quarantineAdvisorUnsafeOutput(message: AssistantMessage, sourceT
 	if (generatedText) {
 		const labels: string[] = [];
 		const matchedLabels: string[] = [];
+		let resolvedSource: string | undefined;
 		for (const hazard of ADVISOR_OUTPUT_ONLY_HAZARDS) {
 			if (!hazard.pattern.test(generatedText)) continue;
 			matchedLabels.push(hazard.label);
-			if (!hazard.pattern.test(sourceText)) labels.push(hazard.label);
+			resolvedSource ??= typeof sourceText === "string" ? sourceText : sourceText();
+			if (!hazard.pattern.test(resolvedSource)) labels.push(hazard.label);
 		}
 		if (
 			matchedLabels.includes("destructive shell command") &&
@@ -267,6 +277,12 @@ interface PendingDelta {
 	signals?: Promise<TurnSignals | undefined>;
 	/** The advisor gate deferred this delta; it stays queued for a later flush. */
 	deferred?: boolean;
+}
+
+/** Updates a review cadence captured but has not sent, and the primary cursor they end at. */
+export interface AdvisorHeldUpdates {
+	readonly cursor: number;
+	readonly deltas: readonly PendingDelta[];
 }
 
 /** One actual advisor model prompt attempt for a blocking consult. */
@@ -382,7 +398,7 @@ function passesFableAdvisorImageGate(text: string, model: Model, shape: snapcomp
 	if (textTokens < MIN_FABLE_ADVISOR_IMAGE_TOKENS) return false;
 	const frameCount = snapcompact.frames(text, { shape });
 	if (frameCount <= 0) return false;
-	if (frameCount > snapcompact.providerImageBudget(model.provider)) return false;
+	if (frameCount > snapcompact.providerImageBudget(model)) return false;
 	return frameCount * shape.frameTokenEstimate <= textTokens * FABLE_ADVISOR_IMAGE_SAVINGS_MARGIN;
 }
 
@@ -394,7 +410,7 @@ async function prepareFableAdvisorPromptPayload(batch: string, model: Model): Pr
 		if (!passesFableAdvisorImageGate(imageMaterial, model, shape)) return { text: batch };
 		const frames = await snapcompact.renderMany(imageMaterial, {
 			shape,
-			maxFrames: snapcompact.providerImageBudget(model.provider),
+			maxFrames: snapcompact.providerImageBudget(model),
 		});
 		if (frames.length === 0) return { text: batch };
 		const note = prompt.render(fableNormalMessageFramesNote).trim();
@@ -424,6 +440,22 @@ export function isSafeguardRefusal(err: unknown): boolean {
 	const message = getSafeguardRefusalMessage(err);
 	return message === "Content flagged by safety filters" || /^Refusal\b/.test(message ?? "");
 }
+/**
+ * Gate input for a merged review: any part lacking a classification means
+ * "review this" (fail open), otherwise the highest `needsReview` part decides.
+ */
+function mergeTurnSignals(parts: readonly PendingDelta[]): Promise<TurnSignals | undefined> | undefined {
+	if (parts.every(part => part.signals === undefined)) return undefined;
+	return Promise.all(parts.map(part => part.signals ?? Promise.resolve(undefined))).then(all => {
+		let strongest: TurnSignals | undefined;
+		for (const signals of all) {
+			if (!signals) return undefined;
+			if (!strongest || signals.needsReview > strongest.needsReview) strongest = signals;
+		}
+		return strongest;
+	});
+}
+
 export class AdvisorRuntime {
 	#lastCount = 0;
 	/**
@@ -440,8 +472,14 @@ export class AdvisorRuntime {
 	/** Incremented after re-prime so queued raw deltas can be rendered against fresh dedupe state. */
 	#renderRevision = 0;
 	/** Regex secret values observed in primary deltas and retained until advisor context resets. */
-	#advisorRegexSecretValues = new Set<string>();
+	#advisorRegexSecretValues = new SecretValueSet();
 	#pending: PendingItem[] = [];
+	/**
+	 * Deltas captured at boundaries the review cadence skipped. Their cursor
+	 * span already counts as delivered (so in-place prunes realign instead of
+	 * resetting); the next dispatch sends them ahead of its own delta.
+	 */
+	#held: PendingDelta[] = [];
 	#busy = false;
 	#paused = false;
 	#sessionTransitionPaused = false;
@@ -609,20 +647,35 @@ export class AdvisorRuntime {
 
 	/**
 	 * Called after each primary turn ends. Renders the incremental delta and
-	 * queues it for the advisor model. `willContinue` marks a tool-in-progress
-	 * update so the advisor does not critique partial work as terminal output.
+	 * queues it for the advisor model.
+	 *
+	 * @param messages - Live primary transcript snapshot (defaults to `snapshotMessages()`).
+	 * @param opts.willContinue - `true` when the primary is mid-turn (more tool-call
+	 *   steps follow): the update is marked in-progress so the advisor does not
+	 *   critique partial work as terminal output.
+	 * @param opts.signals - Shared classification the session started for this step.
+	 * @param opts.dispatch - `false` when review cadence skips this boundary: the
+	 *   delta is still captured now, as the primary saw it, and held until the
+	 *   next dispatching boundary sends every held delta as one review.
 	 */
 	onTurnEnd(
 		messages?: AgentMessage[],
-		opts?: { willContinue?: boolean; signals?: Promise<TurnSignals | undefined> },
+		opts?: { willContinue?: boolean; dispatch?: boolean; signals?: Promise<TurnSignals | undefined> },
 	): void {
 		if (this.disposed || this.#quotaExhausted || this.#halted) return;
 		const all = messages ?? this.host.snapshotMessages();
 		this.#latestMessages = all;
 		const wip = opts?.willContinue ?? false;
+		// #renderDelta advances the cursor/prefix/dedup state before formatting
+		// can throw; snapshot them so a formatter bug loses NOTHING — the next
+		// turn re-renders this delta (a prefix change mid-render self-heals via
+		// the fingerprint scan, at worst costing one full replay). Snapshots are
+		// by reference: #renderDelta only appends to the live prefix (or swaps in
+		// a fresh array on reset), and reset swaps in a fresh #seenContext map.
 		const cursorBefore = this.#lastCount;
-		const prefixBefore = this.#deliveredPrefix.slice();
-		const seenBefore = [...this.#seenContext];
+		const prefixBefore = this.#deliveredPrefix;
+		const prefixLengthBefore = prefixBefore.length;
+		const seenBefore = this.#seenContext;
 		try {
 			const pending = this.#renderPendingDelta(all, 1, wip);
 			if (!pending) return;
@@ -649,21 +702,83 @@ export class AdvisorRuntime {
 						});
 				}
 			}
-			this.#pending.push(pending);
-			this.#backlog++;
-			this.#notifyWaiters();
-			void this.#drain();
+			if (opts?.dispatch === false) {
+				// The batch renders from `rawMessages` only when a later boundary
+				// dispatches it, after the primary's per-turn prune may have elided
+				// these tool results in place. Detach the held copies so the review
+				// sees what the primary saw at this boundary.
+				this.#held.push({ ...pending, rawMessages: pending.rawMessages.map(message => ({ ...message })) });
+				return;
+			}
+			this.#dispatch(pending);
 		} catch (err) {
 			// A malformed transcript must never break the primary turn or advance
 			// this cursor: a replacement message can be rendered on the next turn.
 			this.#lastCount = cursorBefore;
+			prefixBefore.length = prefixLengthBefore;
 			this.#deliveredPrefix = prefixBefore;
-			this.#seenContext.clear();
-			for (const [key, value] of seenBefore) this.#seenContext.set(key, value);
+			this.#seenContext = seenBefore;
 			this.#failing = true;
 			this.#releaseFailureWaiters();
 			logger.warn("advisor delta render failed", { err: String(err) });
 		}
+	}
+
+	/**
+	 * Send every held delta as one review without capturing a new boundary.
+	 * Headless callers flush before draining, so a final yield the review
+	 * cadence skipped is still reviewed before disposal.
+	 */
+	flushHeld(): void {
+		if (this.disposed || this.#quotaExhausted || this.#halted) return;
+		this.#dispatch(undefined);
+	}
+
+	/**
+	 * Detach captured-but-unsent updates so a replacement runtime reviews them
+	 * ({@link adoptHeld}); `undefined` when the cadence holds nothing.
+	 */
+	releaseHeld(): AdvisorHeldUpdates | undefined {
+		if (this.#held.length === 0) return undefined;
+		const held: AdvisorHeldUpdates = { cursor: this.#lastCount, deltas: this.#held };
+		this.#held = [];
+		return held;
+	}
+
+	/**
+	 * Resume at a replaced runtime's cursor with its held updates queued ahead
+	 * of this runtime's next dispatch, instead of seeding past them.
+	 */
+	adoptHeld(held: AdvisorHeldUpdates): void {
+		this.seedTo(held.cursor);
+		this.#held = [...held.deltas];
+	}
+
+	/** Queue held deltas plus `latest` as ONE review: one backlog unit, however many updates it carries. */
+	#dispatch(latest: PendingDelta | undefined): void {
+		const parts = latest ? [...this.#held, latest] : this.#held;
+		this.#held = [];
+		if (parts.length === 0) return;
+		const last = parts[parts.length - 1]!;
+		if (parts.length === 1) {
+			this.#pending.push(last);
+		} else {
+			const merged: PendingDelta = {
+				kind: "delta",
+				text: parts.map(part => part.text).join("\n\n"),
+				rawMessages: parts.flatMap(part => part.rawMessages),
+				// Revisions only grow; the oldest part decides whether the drain re-renders.
+				renderRevision: Math.min(...parts.map(part => part.renderRevision)),
+				turns: 1,
+				wip: last.wip,
+			};
+			const signals = mergeTurnSignals(parts);
+			if (signals) merged.signals = signals;
+			this.#pending.push(merged);
+		}
+		this.#backlog++;
+		this.#notifyWaiters();
+		void this.#drain();
 	}
 
 	/**
@@ -814,7 +929,8 @@ export class AdvisorRuntime {
 	 * Wait until the advisor backlog falls below `threshold`.
 	 *
 	 * Returns `false` when the deadline, abort signal, or a runtime failure releases
-	 * the waiter before the requested backlog was drained.
+	 * the waiter before the requested backlog was drained. An omitted `maxMs` waits
+	 * without a wall-clock deadline; abort, failure, and disposal still release it.
 	 *
 	 * By default a failing advisor turn releases the waiter at once, so the primary
 	 * agent never parks on a broken advisor. `waitThroughRecovery` is for callers
@@ -825,7 +941,7 @@ export class AdvisorRuntime {
 	 * reset, session transition, dispose).
 	 */
 	waitForCatchup(
-		maxMs: number,
+		maxMs: number | undefined,
 		threshold: number,
 		signal?: AbortSignal,
 		options?: { waitThroughRecovery?: boolean },
@@ -850,17 +966,16 @@ export class AdvisorRuntime {
 		const finish = (caughtUp: boolean): void => {
 			const idx = this.#waiters.indexOf(waiter);
 			if (idx >= 0) this.#waiters.splice(idx, 1);
-			clearTimeout(waiter.timer);
+			if (waiter.timer !== undefined) {
+				clearTimeout(waiter.timer);
+				waiter.timer = undefined;
+			}
 			signal?.removeEventListener("abort", abort);
 			resolve(caughtUp);
 		};
 		const abort = (): void => finish(false);
-		const waiter: CatchupWaiter = {
-			threshold,
-			waitThroughRecovery,
-			finish,
-			timer: setTimeout(abort, maxMs),
-		};
+		const waiter: CatchupWaiter = { threshold, waitThroughRecovery, finish };
+		if (maxMs !== undefined) waiter.timer = setTimeout(abort, maxMs);
 		this.#waiters.push(waiter);
 		signal?.addEventListener("abort", abort, { once: true });
 		if (signal?.aborted) {
@@ -874,6 +989,7 @@ export class AdvisorRuntime {
 		this.disposed = true;
 		this.#epoch++;
 		this.#clearPending("dispose");
+		this.#held = [];
 		if (this.#inFlightConsult) {
 			this.#inFlightConsult.resolve(this.#clearedResult(this.#inFlightConsult.attempts));
 			this.#inFlightConsult = undefined;
@@ -894,6 +1010,7 @@ export class AdvisorRuntime {
 		}
 		this.#lastCount = 0;
 		this.#clearPending("reset");
+		this.#held = [];
 		this.#consecutiveFailures = 0;
 		if (this.#onFallbackModel) {
 			this.#restorePrimaryModel();
@@ -916,7 +1033,9 @@ export class AdvisorRuntime {
 
 	#clearContextReplayState(): void {
 		this.#deliveredPrefix = [];
-		this.#seenContext.clear();
+		// Swap rather than clear(): onTurnEnd's render-failure rollback holds the
+		// previous map by reference.
+		this.#seenContext = new Map();
 		this.#advisorRegexSecretValues.clear();
 		this.#renderRevision++;
 		// The next rendered full-context replay is the host's chance to re-seed
@@ -925,7 +1044,7 @@ export class AdvisorRuntime {
 	}
 
 	#invalidateRenderedContext(): void {
-		this.#seenContext.clear();
+		this.#seenContext = new Map();
 		this.#advisorRegexSecretValues.clear();
 		this.#renderRevision++;
 		this.#primeSeedPending = true;
@@ -970,7 +1089,7 @@ export class AdvisorRuntime {
 				renderThinking: this.host.renderThinking,
 				errorResultLines: 10,
 				expandAsyncResults: true,
-				transformExpandedToolIO: text => obfuscator.obfuscate(text, this.#advisorRegexSecretValues),
+				transformExpandedToolIO: advisorToolIOTransform(obfuscator, this.#advisorRegexSecretValues),
 			},
 		);
 		return obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
@@ -1045,6 +1164,7 @@ export class AdvisorRuntime {
 	 */
 	seedTo(count: number): void {
 		this.#clearPending("seedTo");
+		this.#held = [];
 		this.#clearContextReplayState();
 		const messages = this.host.snapshotMessages().slice(0, count);
 		this.#lastCount = messages.length;
@@ -1186,17 +1306,15 @@ export class AdvisorRuntime {
 	}
 
 	/** Re-strip friendly placeholder prefixes on every queued delta after new
-	 *  secret values were discovered. Consult items hold no rendered text, so
-	 *  they pass through untouched. */
+	 *  secret values were discovered, plus every held delta. Consult items hold
+	 *  no rendered text, so they pass through untouched. */
 	#refreshPendingSecretPrefixes(obfuscator: SecretObfuscator): void {
-		this.#pending = this.#pending.map(item =>
-			item.kind === "delta"
-				? {
-						...item,
-						text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(item.text, this.#advisorRegexSecretValues),
-					}
-				: item,
-		);
+		const strip = (delta: PendingDelta): PendingDelta => ({
+			...delta,
+			text: obfuscator.stripUnsafeFriendlyPlaceholderPrefixes(delta.text, this.#advisorRegexSecretValues),
+		});
+		this.#pending = this.#pending.map(item => (item.kind === "delta" ? strip(item) : item));
+		this.#held = this.#held.map(strip);
 	}
 
 	#renderDelta(messages?: AgentMessage[], wip = false): string | null {
@@ -1864,6 +1982,38 @@ export class AdvisorRuntime {
 						? this.#fallbackModel
 						: undefined;
 					if (fallbackModel) {
+						// The host's retry-fallback chain owns refusal recovery; the
+						// runtime-level fallback model is the last resort when the host
+						// has no candidate (or no hook at all).
+						let hostRecovered = false;
+						if (this.host.onTurnError) {
+							const refusalModel = this.host.getModelIdentity?.() ?? this.#modelIdentity ?? "";
+							try {
+								if (!classifierRefusal || !this.#refusalModelsTried.has(refusalModel)) {
+									if (classifierRefusal) this.#refusalModelsTried.add(refusalModel);
+									hostRecovered = await this.#invokeTurnError(err, failedMessages, iterationAbort.signal);
+								}
+							} catch (hookErr) {
+								logger.debug("advisor onTurnError hook failed", { err: String(hookErr) });
+							}
+							if (this.#epoch !== epoch) {
+								restoreEscalationIfNeeded();
+								if (consult) consult.resolve(this.#clearedResult(consult.attempts));
+								continue;
+							}
+							if (this.#sessionTransitionPaused) {
+								restoreEscalationIfNeeded();
+								requeue();
+								continue;
+							}
+							if (hostRecovered) {
+								this.#consecutiveFailures = 0;
+								this.#failureNotified = false;
+								requeue();
+								logger.debug("advisor refusal recovered by host fallback chain");
+								continue;
+							}
+						}
 						restoreEscalationIfNeeded();
 						this.agent.setModel?.(fallbackModel);
 						this.#onFallbackModel = true;
@@ -1949,7 +2099,7 @@ export class AdvisorRuntime {
 						this.#refusalModelsTried.clear();
 						restoreEscalationIfNeeded();
 						this.#notifyFailureOnce(err);
-						this.#seenContext.clear();
+						this.#seenContext = new Map();
 						if (consult && !consult.terminated) {
 							consult.resolve({
 								status: "provider_error",
@@ -2001,6 +2151,7 @@ export class AdvisorRuntime {
 						this.#notifyTurnAbandoned();
 						this.#halted = true;
 						this.#clearPending("terminal advisor failure");
+						this.#held = [];
 						this.#backlog = 0;
 						this.#consecutiveFailures = 0;
 						this.#invalidateRenderedContext();
@@ -2053,7 +2204,11 @@ export class AdvisorRuntime {
 							this.#notifyTurnAbandoned();
 							this.#consecutiveFailures = 0;
 							this.#droppedBacklogs++;
-							if (isPermanentAdvisorError(err) || this.#droppedBacklogs >= 3) this.#halted = true;
+							const halting = isPermanentAdvisorError(err) || this.#droppedBacklogs >= 3;
+							if (halting) {
+								this.#halted = true;
+								this.#held = [];
+							}
 							this.#clearPending("advisor failure backlog dropped");
 							this.#backlog = 0;
 							this.#invalidateRenderedContext();
@@ -2136,7 +2291,7 @@ export class AdvisorRuntime {
 }
 
 /** Mirrors turn recovery's refusal classification without treating account eligibility as a model refusal. */
-function isClassifierRefusal(message: AssistantMessage): boolean {
+export function isClassifierRefusal(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error") return false;
 	const id = AIError.classifyMessage(message);
 	if (AIError.is(id, AIError.Flag.AccountPolicy)) return false;
@@ -2267,12 +2422,18 @@ function obfuscateAdvisorMessage(
 		}
 		case "bashExecution": {
 			const msg = message as AgentMessage & { command: string };
-			const command = obfuscator.obfuscate(formatExecutionSourcePreview(msg.command), sharedRegexSecretValues);
+			const command = formatExecutionSourcePreview(
+				msg.command,
+				advisorToolIOTransform(obfuscator, sharedRegexSecretValues),
+			);
 			return command === msg.command ? message : ({ ...(message as object), command } as AgentMessage);
 		}
 		case "pythonExecution": {
 			const msg = message as AgentMessage & { code: string };
-			const code = obfuscator.obfuscate(formatExecutionSourcePreview(msg.code), sharedRegexSecretValues);
+			const code = formatExecutionSourcePreview(
+				msg.code,
+				advisorToolIOTransform(obfuscator, sharedRegexSecretValues),
+			);
 			return code === msg.code ? message : ({ ...(message as object), code } as AgentMessage);
 		}
 		case "branchSummary": {

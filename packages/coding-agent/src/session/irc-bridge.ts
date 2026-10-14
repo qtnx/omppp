@@ -8,6 +8,7 @@ import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { typ
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "./agent-session-events";
+import { escapeHarnessTags } from "./harness-tags";
 import type { CustomMessage } from "./messages";
 import { triageChildQuestion } from "../task/jev-triage";
 import type { SessionManager } from "./session-manager";
@@ -48,6 +49,11 @@ export class IrcBridge {
 	/** Whether an incoming peer message can interrupt a wait. */
 	hasInterrupts(): boolean {
 		return this.#interrupts.length > 0;
+	}
+
+	/** Whether an aside is ready for step-boundary injection (not a parked wake). */
+	hasAsides(): boolean {
+		return this.#asides.length > 0;
 	}
 
 	/** Whether any undelivered IRC record remains queued. */
@@ -191,6 +197,7 @@ export class IrcBridge {
 		const planModeIdle = !streaming && this.#host.planModeEnabled();
 		const autoReply =
 			(opts?.expectsReply ?? false) && ((streaming && !cfgAsyncEnabled.get(this.#host.settings)) || planModeIdle);
+		const fromParent = AgentRegistry.global().get(msg.to)?.parentId === msg.from;
 		// An idle subagent runs a monitored wake turn whose output is relayed
 		// back to the sender (task executor `relayWakeTurnOutput`); the main
 		// agent and mid-turn asides have no such relay.
@@ -204,13 +211,18 @@ export class IrcBridge {
 				logger.debug("Jev child-question triage failed", { error: String(error) });
 			}
 		}
+		// The body is agent-authored (a peer's message, or a wake relay's
+		// `<task-result>` around a subagent's output), so it must not close the
+		// harness envelope it is rendered into or open a forged one, e.g. a parent
+		// steer. `details.message` keeps the raw body for the transcript card and inbox.
+		const envelopeBody = escapeHarnessTags(msg.body);
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
 			content: prompt.render(ircIncomingTemplate, {
 				from: msg.from,
 				autoReplied: autoReply,
-				message: msg.body,
+				message: envelopeBody,
 				replyTo: msg.replyTo ?? "",
 				interrupting: streaming,
 				relayOnStop,
@@ -224,19 +236,19 @@ export class IrcBridge {
 				message: msg.body,
 				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
 				...(msg.wakeRelay ? { wakeRelay: true } : {}),
+				...(fromParent ? { fromParent: true } : {}),
 			},
 			attribution: "agent",
 			timestamp: msg.ts,
 		};
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 		if (streaming) {
-			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
-			if (recipientParentId === msg.from) {
+			if (fromParent) {
 				this.#host.agent.steer({
 					role: "user",
 					content: prompt.render(parentIrcSteerTemplate, {
 						from: msg.from,
-						message: msg.body,
+						message: envelopeBody,
 						triage,
 						triageStatus: triage === "status",
 					}),

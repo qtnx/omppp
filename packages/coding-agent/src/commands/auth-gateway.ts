@@ -40,6 +40,9 @@ export default class AuthGateway extends Command {
 			description:
 				"Use local SQLite/env/config credentials even when an auth broker is configured (serve/status/check).",
 		}),
+		"trust-proxy-headers": Flags.boolean({
+			description: "Trust forwarded peer IP headers from a reverse proxy (serve); off by default.",
+		}),
 		strict: Flags.boolean({
 			description:
 				"For `check`: additionally probe each credential against its provider's chat-completion endpoint. Slower; consumes a tiny amount of quota per credential.",
@@ -49,9 +52,10 @@ export default class AuthGateway extends Command {
 	static examples = [
 		`# Boot the gateway from broker credentials when configured, otherwise local credentials\n  ${APP_NAME} auth-gateway serve`,
 		`# Boot the gateway in the background and return after /healthz is ready\n  ${APP_NAME} auth-gateway serve --daemon`,
-		`# Stream structured gateway request/debug logs in the terminal
-  ${APP_NAME} auth-gateway serve --verbose`,
+		`# Stream structured gateway request/debug logs in the terminal\n  ${APP_NAME} auth-gateway serve --verbose`,
 		`# Force this machine's local credentials even when a broker is configured\n  ${APP_NAME} auth-gateway serve --local`,
+		`# Serve the same routes as JSON lines on stdin/stdout with your own credentials\n  echo '{"id":1,"path":"/v1/chat/completions","body":{"model":"@smol","messages":[{"role":"user","content":"hi"}]}}' | ${APP_NAME} auth-gateway stdio`,
+		`# Trust client IP headers from a trusted reverse proxy\n  ${APP_NAME} auth-gateway serve --trust-proxy-headers`,
 		`# Print the gateway bearer token (creates one on first run)\n  ${APP_NAME} auth-gateway token`,
 		`# Rotate the gateway bearer token\n  ${APP_NAME} auth-gateway token --regenerate`,
 		`# Run on loopback without any bearer (anyone on this host can call)\n  ${APP_NAME} auth-gateway serve --no-auth`,
@@ -74,6 +78,7 @@ export default class AuthGateway extends Command {
 				bind: flags.bind,
 				regenerate: flags.regenerate,
 				noAuth: flags["no-auth"],
+				trustProxyHeaders: flags["trust-proxy-headers"],
 				strict: flags.strict,
 				local: flags.local,
 				daemon: flags.daemon,

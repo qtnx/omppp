@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { carriesReasoning } from "@oh-my-pi/pi-catalog/compat/reasoning-carry";
 import { renderDemotedThinking } from "../dialect/demotion";
 import type {
 	Api,
@@ -10,7 +11,13 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "../types";
-import { isDemotedThinking, kDemotedThinking, kSyntheticUser, type SyntheticUserCarrier } from "../utils/block-symbols";
+import {
+	isDemotedThinking,
+	kCarriedReasoning,
+	kDemotedThinking,
+	kSyntheticUser,
+	type SyntheticUserCarrier,
+} from "../utils/block-symbols";
 
 const enum ToolCallStatus {
 	/** A tool result has already been emitted for this tool call; later duplicates must be skipped. */
@@ -28,7 +35,7 @@ const enum ToolCallStatus {
  * `convertAnthropicMessages` (and friends) unchanged, so the `_dupN` suffix
  * MUST not push a normalized id past this bound.
  */
-const MAX_TOOL_CALL_ID_LENGTH = 64;
+export const MAX_TOOL_CALL_ID_LENGTH = 64;
 
 /**
  * OpenAI Responses-family APIs mint composite tool ids (`call_id|item_id`);
@@ -36,7 +43,7 @@ const MAX_TOOL_CALL_ID_LENGTH = 64;
  * ids verbatim as provider correlation tokens), so ONLY these origins may be
  * canonicalized to their `call_` component for pairing.
  */
-function isResponsesFamilyApi(api: Api | undefined): boolean {
+export function isResponsesFamilyApi(api: Api | undefined): boolean {
 	return api === "openai-responses" || api === "openai-codex-responses" || api === "azure-openai-responses";
 }
 
@@ -46,7 +53,7 @@ function isResponsesFamilyApi(api: Api | undefined): boolean {
  * index 0) keeps its full id so unrelated empty-half ids never collapse onto
  * one empty-string bucket.
  */
-function responsesCallComponent(id: string): string {
+export function responsesCallComponent(id: string): string {
 	const pipe = id.indexOf("|");
 	return pipe <= 0 ? id : id.slice(0, pipe);
 }
@@ -75,19 +82,27 @@ interface ToolCallOriginScope {
 	opaqueCompositeCallIds: ReadonlySet<string>;
 }
 
-function collectToolCallOriginScope(messages: readonly Message[]): ToolCallOriginScope {
-	const responsesComponents = new Set<string>();
-	const opaqueCompositeCallIds = new Set<string>();
-	for (const msg of messages) {
-		if (msg.role !== "assistant") continue;
-		const responsesOrigin = isResponsesFamilyApi(msg.api);
-		for (const block of msg.content) {
-			if (block.type !== "toolCall") continue;
-			if (responsesOrigin) responsesComponents.add(responsesCallComponent(block.id));
-			else if (block.id.includes("|")) opaqueCompositeCallIds.add(block.id);
-		}
+/**
+ * Record one assistant turn's tool-call ids into the origin-scope sets.
+ *
+ * Called from the normalization map (`transformMessages`) in document order, on
+ * the SAME post-transform content that message emits, so the two sets cover
+ * every assistant turn exactly once and hold its post-normalization, pre-dedup
+ * ids (`_dupN` replacements minted later by dedup are never scope members).
+ * Both sets are only read via `.has`, so ordering is inert.
+ */
+function recordToolCallOriginScope(
+	msg: AssistantMessage,
+	content: Readonly<AssistantMessage["content"]>,
+	responsesComponents: Set<string>,
+	opaqueCompositeCallIds: Set<string>,
+): void {
+	const responsesOrigin = isResponsesFamilyApi(msg.api);
+	for (const block of content) {
+		if (block.type !== "toolCall") continue;
+		if (responsesOrigin) responsesComponents.add(responsesCallComponent(block.id));
+		else if (block.id.includes("|")) opaqueCompositeCallIds.add(block.id);
 	}
-	return { responsesComponents, opaqueCompositeCallIds };
 }
 
 /**
@@ -128,7 +143,7 @@ function toolCallPairingKey(id: string, originScope: ToolCallOriginScope): strin
 	return originScope.responsesComponents.has(prefix) ? prefix : id;
 }
 
-function appendDuplicateSuffix(originalId: string, suffix: string, maxLength: number): string {
+export function appendDuplicateSuffix(originalId: string, suffix: string, maxLength: number): string {
 	// Responses-family ids are composites (`callId|itemId`): the wire call_id is
 	// the FIRST segment (normalizeResponsesToolCallId splits on `|`), so the
 	// suffix must land on every segment or the duplicate collapses back onto the
@@ -151,16 +166,70 @@ function appendSegmentDuplicateSuffix(segment: string, suffix: string, maxLength
 
 type PendingToolResultRewrite = { replacementId: string } | undefined;
 
+/** A real (non-synthetic) tool result filed at its position in the transformed transcript. */
+interface IndexedToolResult {
+	index: number;
+	msg: ToolResultMessage;
+	consumed: boolean;
+}
+
+/**
+ * File a SURVIVING (post-dedup) tool result into the request-wide index.
+ *
+ * Called from the dedup pass, once per tool result message, at the position the
+ * message occupies in that pass's output array — so the entries and their order
+ * describe the transcript the request will actually carry.
+ * The caller passes the pairing key for the id that survived the pass (a `_dup`
+ * rewrite changes it), which is what the consumers downstream must pair against.
+ */
+function indexToolResult(
+	msg: ToolResultMessage,
+	index: number,
+	key: string,
+	realToolResultsById: Map<string, IndexedToolResult[]>,
+): void {
+	const entry: IndexedToolResult = { index, msg, consumed: false };
+	const entries = realToolResultsById.get(key);
+	if (entries) entries.push(entry);
+	else realToolResultsById.set(key, [entry]);
+}
+
+/**
+ * Outputs of {@link deduplicateToolCallIds}.
+ *
+ * Both indexes describe the pass's OWN output — a `_dup` rewrite changes ids — so
+ * callers read them only after the pass completes, and no caller can hand in a
+ * pre-filled container.
+ */
+interface DeduplicatedToolCallIds {
+	messages: Message[];
+	/** Every real tool result filed at its position, keyed by pairing key. */
+	realToolResultsById: Map<string, IndexedToolResult[]>;
+	/** Pairing key of every `tool_use` id the pass left standing. */
+	validToolUseIds: Set<string>;
+}
+
 function deduplicateToolCallIds(
 	messages: Message[],
 	originScope: ToolCallOriginScope,
-	maxToolCallIdLength = MAX_TOOL_CALL_ID_LENGTH,
-	duplicateSuffixPrefix = "_dup",
-): Message[] {
+	maxToolCallIdLength: number,
+	duplicateSuffixPrefix: string,
+): DeduplicatedToolCallIds {
 	const seenToolCallIds = new Map<string, number>();
 	const pendingToolResultRewrites = new Map<string, PendingToolResultRewrite[]>();
+	const realToolResultsById = new Map<string, IndexedToolResult[]>();
+	const validToolUseIds = new Set<string>();
 
-	return messages.map(msg => {
+	const enqueueToolResultRewrite = (id: string, rewrite: PendingToolResultRewrite): void => {
+		const rewrites = pendingToolResultRewrites.get(id);
+		if (rewrites) {
+			rewrites.push(rewrite);
+			return;
+		}
+		pendingToolResultRewrites.set(id, [rewrite]);
+	};
+
+	const transformed = messages.map((msg, index) => {
 		if (msg.role === "toolResult") {
 			// Pair on the call_ component: a composite result id
 			// (`call_X|fc_Y`) must find the rewrite enqueued under its assistant
@@ -169,29 +238,34 @@ function deduplicateToolCallIds(
 			// result is dropped downstream.
 			const key = toolCallPairingKey(msg.toolCallId, originScope);
 			const rewrites = pendingToolResultRewrites.get(key);
-			if (!rewrites || rewrites.length === 0) return msg;
+			if (!rewrites || rewrites.length === 0) {
+				indexToolResult(msg, index, key, realToolResultsById);
+				return msg;
+			}
 
 			const rewrite = rewrites.shift();
 			if (rewrites.length === 0) pendingToolResultRewrites.delete(key);
-			if (rewrite) return { ...msg, toolCallId: rewrite.replacementId };
+			if (rewrite) {
+				const rewritten = { ...msg, toolCallId: rewrite.replacementId };
+				indexToolResult(
+					rewritten,
+					index,
+					toolCallPairingKey(rewritten.toolCallId, originScope),
+					realToolResultsById,
+				);
+				return rewritten;
+			}
+			indexToolResult(msg, index, key, realToolResultsById);
 			return msg;
 		}
 
 		if (msg.role !== "assistant") return msg;
 
-		const enqueueToolResultRewrite = (id: string, rewrite: PendingToolResultRewrite): void => {
-			const rewrites = pendingToolResultRewrites.get(id);
-			if (rewrites) {
-				rewrites.push(rewrite);
-				return;
-			}
-			pendingToolResultRewrites.set(id, [rewrite]);
-		};
-
-		// Ids this turn has already touched; used to scope the "drop carried-over
-		// pending rewrites" semantics to the FIRST occurrence per turn so multiple
-		// blocks of the same id within one turn still accumulate as duplicates.
-		const idsTouchedInTurn = new Set<string>();
+		// Ids this turn has already touched; scopes the "drop carried-over pending
+		// rewrites" step to an id's FIRST occurrence per turn, so multiple blocks
+		// of the same id within one turn still accumulate as duplicates. Empty
+		// sets always miss `.has`, so turns with no tool call allocate nothing.
+		let idsTouchedInTurn: Set<string> | undefined;
 		let contentChanged = false;
 		const content = msg.content.map(block => {
 			if (block.type !== "toolCall") return block;
@@ -210,9 +284,9 @@ function deduplicateToolCallIds(
 			// "No result provided" for it, and the upcoming real result(id) must
 			// route to one of THIS turn's calls. Without this guard the older
 			// `_dup` id would steal the next result.
-			if (!idsTouchedInTurn.has(blockKey)) {
+			if (!idsTouchedInTurn?.has(blockKey)) {
+				(idsTouchedInTurn ??= new Set()).add(blockKey);
 				pendingToolResultRewrites.delete(blockKey);
-				idsTouchedInTurn.add(blockKey);
 			}
 
 			const previousCount = seenToolCallIds.get(blockKey) ?? 0;
@@ -243,13 +317,51 @@ function deduplicateToolCallIds(
 			return { ...block, id: replacementId };
 		});
 
+		// Surviving `tool_use` pairing keys, read off the SAME post-dedup content the
+		// pass emits — a rewrite changes the id, so the keys must come from here and
+		// not from the input message. Recorded before the early-out because
+		// `!contentChanged` still returns element-identical content.
+		for (const block of content) {
+			if (block.type !== "toolCall") continue;
+			validToolUseIds.add(toolCallPairingKey(block.id, originScope));
+		}
+
 		if (!contentChanged) return msg;
 		return { ...msg, content };
 	});
+
+	return { messages: transformed, realToolResultsById, validToolUseIds };
+}
+
+const MAX_TOOL_CALL_NAME_LENGTH = 128;
+const TOOL_CALL_NAME_SEPARATOR_RE = /[\s\p{Cc}]/u;
+
+/**
+ * Whether a tool-call name cannot belong to any declared tool: missing, empty,
+ * longer than OpenAI's 128-character replay limit, or containing whitespace or
+ * control characters (tool schemas never allow them; their presence means the
+ * name slot carries invocation text).
+ */
+export function isMalformedToolCallName(name: unknown): boolean {
+	return (
+		typeof name !== "string" ||
+		name.length === 0 ||
+		name.length > MAX_TOOL_CALL_NAME_LENGTH ||
+		TOOL_CALL_NAME_SEPARATOR_RE.test(name)
+	);
+}
+
+function isMalformedToolCallId(id: string | undefined): boolean {
+	return !id || id.trim().length === 0;
+}
+
+function isMalformedToolCall(block: { id: string; name: string }): boolean {
+	return isMalformedToolCallId(block.id) || isMalformedToolCallName(block.name);
 }
 
 /**
- * Drop assistant `toolCall` blocks whose `id` or `name` is empty / whitespace-only,
+ * Drop assistant `toolCall` blocks with an empty / whitespace-only `id` or a `name`
+ * no provider could have declared (see {@link isMalformedToolCallName}),
  * the `toolResult` messages they point at, and any assistant turn that has no
  * replayable content left.
  *
@@ -262,24 +374,15 @@ function deduplicateToolCallIds(
  * Anthropic 400s on `tool_use.name` / `tool_use.id` (alongside an orphan
  * `tool_result`), OpenAI Chat Completions 400s on malformed
  * `tool_calls[i].function.*` — wedging the session in a 400 loop until manual
- * `/clear`.
+ * `/clear`. Gateways also hand back the model's whole invocation text as the
+ * name (observed: a 9654-char script and a NUL-separated `bash\0arg\0…` string
+ * from GLM-5.3); OpenAI Responses rejects any replayed `input[N].name` over
+ * 128 characters with `string_above_max_length`.
  *
  * Run before any other transform so the rest of the pipeline never sees a
  * malformed call. Idempotent: a re-run on an already-sanitized list returns
  * the input untouched. Provider-agnostic — any wire model could surface this.
  */
-function isMalformedToolCallName(name: string | undefined): boolean {
-	return !name || name.trim().length === 0;
-}
-
-function isMalformedToolCallId(id: string | undefined): boolean {
-	return !id || id.trim().length === 0;
-}
-
-function isMalformedToolCall(block: { id: string; name: string }): boolean {
-	return isMalformedToolCallId(block.id) || isMalformedToolCallName(block.name);
-}
-
 function sanitizeMalformedToolCalls(messages: Message[]): Message[] {
 	// Fast path: skip the rewrite entirely when nothing is malformed.
 	let hasMalformed = false;
@@ -340,7 +443,11 @@ function sanitizeMalformedToolCalls(messages: Message[]): Message[] {
 	return result;
 }
 
-function shouldDropTruncatedThinkingOnlyAssistant(msg: AssistantMessage): boolean {
+/**
+ * Whether {@link transformMessages} drops `msg` from every replay: a turn cut
+ * off by `length` / `error` / `aborted` that carries no text and no tool call.
+ */
+export function shouldDropTruncatedThinkingOnlyAssistant(msg: AssistantMessage): boolean {
 	const isTruncatedStop = msg.stopReason === "length" || msg.stopReason === "error" || msg.stopReason === "aborted";
 	return isTruncatedStop && !msg.content.some(block => block.type === "toolCall" || block.type === "text");
 }
@@ -374,6 +481,47 @@ function targetReadsForeignThinking(model: Model, compat: Model["compat"]): bool
 	if (!("thinkingFormat" in compat)) return false;
 	if (compat.requiresThinkingAsText) return false;
 	return model.reasoning && compat.thinkingFormat === "zai";
+}
+
+/**
+ * Whether the target's encoder already replays the target's own plaintext
+ * reasoning in a native slot. Reasoning carried from another host of the same
+ * model (`carriesReasoning`) takes exactly that path, so this is derived from
+ * the flags the encoders branch on rather than declared per host:
+ * - chat completions writes a reasoning field or content part for thinking
+ *   blocks only under these flags; otherwise it drops them.
+ * - the Responses wire replays reasoning items unless history is filtered, and
+ *   hosts that require reasoning replay already receive id-less plaintext
+ *   items from omp (the `requiresReasoningContent*` safety net). OpenRouter's
+ *   chat fallback shares the tool-call flag.
+ * - Devin sends every turn's thinking in the prompt's `thinking` field.
+ * Anthropic-format targets that accept unsigned thinking already read it via
+ * `targetReadsForeignThinking`; Bedrock and Google reject or ignore unsigned
+ * reasoning, and Codex hosts no portable family.
+ */
+function targetReplaysPlaintextReasoning(model: Model, compat: Model["compat"]): boolean {
+	if (!model.reasoning || compat === undefined) return false;
+	if (model.api === "devin-agent") return true;
+	if (!("requiresReasoningContentForToolCalls" in compat)) return false;
+	switch (model.api) {
+		case "openai-completions":
+			return (
+				!compat.requiresThinkingAsText &&
+				(compat.mistralReasoningContentParts === true ||
+					compat.requiresReasoningContentForToolCalls ||
+					compat.thinkingFormat === "zai" ||
+					compat.replayReasoningContent)
+			);
+		case "openrouter":
+			return !compat.filterReasoningHistory && compat.requiresReasoningContentForToolCalls;
+		case "openai-responses":
+			return (
+				!compat.filterReasoningHistory &&
+				(compat.requiresReasoningContentForToolCalls || compat.requiresReasoningContentForAllAssistantTurns)
+			);
+		default:
+			return false;
+	}
 }
 
 const ANTHROPIC_TOOL_CALL_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -500,24 +648,28 @@ export function redactSensitiveInObject(val: unknown): { result: unknown; change
 		const redacted = redactSensitiveCredentials(val);
 		return { result: redacted, changed: redacted !== val };
 	}
+	// Copy-on-write: history is re-redacted on every request and almost never
+	// contains a credential, so unchanged subtrees are returned as-is.
 	if (Array.isArray(val)) {
-		let changed = false;
-		const result = val.map(item => {
-			const res = redactSensitiveInObject(item);
-			if (res.changed) changed = true;
-			return res.result;
-		});
-		return { result, changed };
+		let result: unknown[] | undefined;
+		for (let i = 0; i < val.length; i++) {
+			const sub = redactSensitiveInObject(val[i]);
+			if (!sub.changed) continue;
+			result ??= val.slice();
+			result[i] = sub.result;
+		}
+		return result ? { result, changed: true } : { result: val, changed: false };
 	}
 	if (val !== null && typeof val === "object") {
-		let changed = false;
-		const res: Record<string, unknown> = {};
-		for (const [k, v] of Object.entries(val)) {
+		const entries = Object.entries(val);
+		let result: Record<string, unknown> | undefined;
+		for (const [k, v] of entries) {
 			const sub = redactSensitiveInObject(v);
-			if (sub.changed) changed = true;
-			res[k] = sub.result;
+			if (!sub.changed) continue;
+			result ??= Object.fromEntries(entries);
+			result[k] = sub.result;
 		}
-		return { result: res, changed };
+		return result ? { result, changed: true } : { result: val, changed: false };
 	}
 	return { result: val, changed: false };
 }
@@ -657,6 +809,12 @@ export function transformMessages<TApi extends Api>(
 			}
 		}
 	}
+	const targetHasReasoningSlot = targetReplaysPlaintextReasoning(model, targetCompat);
+	// Origin-scope sets, accumulated by the normalization map itself (below) so
+	// the scope needs no second transcript walk. Only read via `.has`, so
+	// iteration order is inert.
+	const responsesComponents = new Set<string>();
+	const opaqueCompositeCallIds = new Set<string>();
 	// First pass: transform messages (thinking blocks, tool call ID normalization)
 	const normalizedMessages = messages.map((msg, index) => {
 		// User and developer messages pass through unchanged
@@ -685,6 +843,24 @@ export function transformMessages<TApi extends Api>(
 				assistantMsg.provider === model.provider &&
 				assistantMsg.api === model.api &&
 				assistantMsg.model === model.id;
+			// The same model on another host (or another id of the same model):
+			// its full plaintext reasoning replays natively where the target has
+			// a native slot, exactly as the target replays its own turns. Errored
+			// turns keep the text fallback: Responses encoders skip their reasoning.
+			// A router's reported serving model is the identity that produced the
+			// reasoning, so it is what must match.
+			const carriesSameModelReasoning =
+				!isSameModel &&
+				assistantMsg.stopReason !== "error" &&
+				targetHasReasoningSlot &&
+				carriesReasoning(
+					{
+						provider: assistantMsg.provider,
+						api: assistantMsg.api,
+						model: assistantMsg.upstreamModel ?? assistantMsg.model,
+					},
+					model,
+				);
 
 			const isAnthropicTarget = isAnthropicMessagesModel(model);
 			// Anthropic's all-or-none contract on prior-turn thinking blocks
@@ -875,6 +1051,13 @@ export function transformMessages<TApi extends Api>(
 					if (targetReadsForeignThinking(model, targetCompat)) {
 						return sanitized.thinkingSignature ? { ...sanitized, thinkingSignature: undefined } : sanitized;
 					}
+					// Same model from another host: keep the full trace natively, minus
+					// the signature and item id bound to the host that minted them.
+					// Only blocks their parser confirmed as the model's own trace carry;
+					// summaries and blocks of unknown provenance keep the text fallback.
+					if (carriesSameModelReasoning && sanitized.summary === false) {
+						return { type: "thinking" as const, thinking: sanitized.thinking, [kCarriedReasoning]: true };
+					}
 					// Other cross-API targets (openai-responses encrypted blobs, google
 					// thought parts, anthropic-target from a non-Anthropic source, or any
 					// reasoning-disabled target) can't replay an unsigned thinking block:
@@ -1027,6 +1210,13 @@ export function transformMessages<TApi extends Api>(
 				transformedContent[transformedContent.length - 1] = { ...finalBlock, text: finalBlock.text.trimEnd() };
 			}
 
+			// Record this turn's tool-call ids into the origin scope. Origin scope
+			// must be complete before dedup reads it: filled here off the SAME
+			// post-transform content this map emits, in document order, and never
+			// read inside the map — so by the time the dedup pass consults it the
+			// sets hold every assistant id, never a partial build.
+			recordToolCallOriginScope(assistantMsg, transformedContent, responsesComponents, opaqueCompositeCallIds);
+
 			return {
 				...assistantMsg,
 				content: transformedContent,
@@ -1037,31 +1227,32 @@ export function transformMessages<TApi extends Api>(
 	// Per-concrete-id origin classification — the only scope `toolCallPairingKey`
 	// consults to decide whether a pipe-bearing id is a canonicalizable Responses
 	// composite or an opaque Chat Completions token that pairs by raw equality.
-	const originScope = collectToolCallOriginScope(normalizedMessages);
-	const transformed = deduplicateToolCallIds(
+	// The normalization map above fills both; naming the pair is all this does.
+	const originScope: ToolCallOriginScope = { responsesComponents, opaqueCompositeCallIds };
+	// All real tool results, keyed by pairing key, in document order. One id can
+	// map to more than one result: compaction can fold an assistant `tool_use`
+	// into a summary string while its `tool_result` survives, and a later turn may
+	// reuse the id. The dedup pass files them at each result's position in its own
+	// output array, so `takeRealToolResult` below pulls the earliest unconsumed
+	// result positioned AFTER the call's assistant turn (an orphaned earlier
+	// result is never pulled forward onto a later call).
+	//
+	// The set carries the `tool_use` pairing keys the dedup pass left standing.
+	// Anthropic rejects `tool_result` blocks whose `tool_use_id` does not appear in
+	// a prior `tool_use` block. After handoff/compaction folds an assistant turn
+	// into a summary string, the user-side `toolResult` for that turn can survive
+	// while the originating `tool_use` disappears — leaving an orphan that
+	// triggers HTTP 400, which the second pass drops as unreplayable.
+	const {
+		messages: transformed,
+		realToolResultsById,
+		validToolUseIds,
+	} = deduplicateToolCallIds(
 		normalizedMessages,
 		originScope,
 		maxNormalizedToolCallIdLength,
 		duplicateToolCallIdSuffixPrefix,
 	);
-	// All real tool results, keyed by id, in document order. One id can map to
-	// more than one result: compaction can fold an assistant `tool_use` into a
-	// summary string while its `tool_result` survives, and a later turn may reuse
-	// the id. `takeRealToolResult` pulls the earliest unconsumed result positioned
-	// AFTER the call's assistant turn, so an orphaned earlier result is never
-	// pulled forward onto a later call (which would surface a prior turn's output).
-	type IndexedToolResult = { index: number; msg: ToolResultMessage; consumed: boolean };
-	const realToolResultsById = new Map<string, IndexedToolResult[]>();
-	for (let index = 0; index < transformed.length; index++) {
-		const msg = transformed[index];
-		if (msg.role === "toolResult") {
-			const entry: IndexedToolResult = { index, msg, consumed: false };
-			const key = toolCallPairingKey(msg.toolCallId, originScope);
-			const entries = realToolResultsById.get(key);
-			if (entries) entries.push(entry);
-			else realToolResultsById.set(key, [entry]);
-		}
-	}
 	const takeRealToolResult = (id: string, afterIndex: number): ToolResultMessage | undefined => {
 		const entries = realToolResultsById.get(toolCallPairingKey(id, originScope));
 		if (!entries) return undefined;
@@ -1072,19 +1263,6 @@ export function transformMessages<TApi extends Api>(
 		}
 		return undefined;
 	};
-
-	// Anthropic rejects `tool_result` blocks whose `tool_use_id` does not appear in a prior
-	// `tool_use` block. After handoff/compaction folds an assistant turn into a summary
-	// string, the user-side `toolResult` for that turn can survive while the originating
-	// `tool_use` disappears — leaving an orphan that triggers HTTP 400. Track the set of
-	// `tool_use` ids that survive transformation so the second pass can drop orphans cleanly.
-	const validToolUseIds = new Set<string>();
-	for (const msg of transformed) {
-		if (msg.role !== "assistant") continue;
-		for (const block of msg.content) {
-			if (block.type === "toolCall") validToolUseIds.add(toolCallPairingKey(block.id, originScope));
-		}
-	}
 
 	// Second pass: ensure each surviving assistant tool call is immediately
 	// followed by exactly one corresponding tool result.

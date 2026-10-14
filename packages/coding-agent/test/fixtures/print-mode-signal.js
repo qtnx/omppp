@@ -12,7 +12,9 @@ const session = {
 		buildSessionContext: () => ({ messages: [] }),
 		getEntries: () => [],
 		onPersistenceError: () => () => {},
+		onPersistenceNotice: () => () => {},
 	},
+	disableStopTimeTodoReminders() {},
 	setTextOutputCommitted() {},
 	async prompt() {
 		process.kill(process.pid, "SIGTERM");

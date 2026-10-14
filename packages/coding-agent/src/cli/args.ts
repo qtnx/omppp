@@ -35,6 +35,8 @@ export interface Args {
 	smol?: string;
 	slow?: string;
 	plan?: string;
+	/** Objective for a fresh interactive goal session. */
+	goal?: string;
 	prewalk?: boolean;
 	noPrewalk?: boolean;
 	prewalkInto?: string;
@@ -53,6 +55,11 @@ export interface Args {
 	externalThinking?: boolean;
 	continue?: boolean;
 	resume?: string | true;
+	/**
+	 * `--restore`: resume the session {@link resume} names, then go on with what its last
+	 * process left unfinished (the turn it was in, the subagents it was running).
+	 */
+	restore?: boolean;
 	fromClaude?: boolean;
 	fromCodex?: boolean;
 	help?: boolean;
@@ -84,7 +91,7 @@ export interface Args {
 	skills?: string[];
 	noRules?: boolean;
 	noTitle?: boolean;
-	/** `--mode rpc` only: run extensions without a UI so no `extension_ui_request` dialogs reach the host. */
+	/** RPC modes only: run extensions without a UI; `rpc-ui` tool UI remains enabled. */
 	noUi?: boolean;
 	autoApprove?: boolean;
 	approvalMode?: "always-ask" | "write" | "yolo";
@@ -119,6 +126,77 @@ export interface Args {
 	 * {@link reportInvalidFlagValues}.
 	 */
 	invalidFlagValues: string[];
+}
+
+/**
+ * Reject a `--goal` launch whose mode or session shape cannot host a fresh
+ * interactive goal. Judged on the startup parse, before session resolution:
+ * resume, fork, and import act on these same flags as they resolve, opening
+ * pickers and persisting forked or imported transcripts, so a rejection after
+ * them would leave those side effects behind.
+ */
+export function validateGoalLaunch(args: Args, interactive: boolean): void {
+	if (args.goal === undefined) return;
+	if (!interactive) {
+		throw new CliUsageError("--goal requires an interactive terminal (not --print or --mode).");
+	}
+	if (args.continue || args.resume || args.fork || args.fromClaude || args.fromCodex) {
+		throw new CliUsageError("--goal requires a fresh session (no resume, continue, fork, or import).");
+	}
+}
+
+/**
+ * Reject a `--restore` launch that cannot go on with an interrupted session: it
+ * needs the interactive TUI and exactly the session it names. Judged on the
+ * startup parse, before session resolution, like {@link validateGoalLaunch}.
+ */
+export function validateRestoreLaunch(args: Args, interactive: boolean): void {
+	if (!args.restore) return;
+	if (!interactive) {
+		throw new CliUsageError("--restore requires an interactive terminal (not --print or --mode).");
+	}
+	if (args.continue || args.fork || args.fromClaude || args.fromCodex || args.noSession || args.goal !== undefined) {
+		throw new CliUsageError(
+			"--restore resumes one existing session (no continue, fork, import, goal, or --no-session).",
+		);
+	}
+}
+
+/**
+ * Reject a `--restore` launch that also carries a prompt: the restored session
+ * goes on with its interrupted turn instead. Runs on the extension-aware
+ * reparse, where positionals are settled.
+ */
+export function validateRestorePrompt(args: Args): void {
+	if (args.restore && (args.messages.length > 0 || args.fileArgs.length > 0)) {
+		throw new CliUsageError("--restore takes no prompt: the session goes on with its interrupted turn.");
+	}
+}
+
+/**
+ * Reject conflicting startup inputs before constructing an interactive goal
+ * session. Runs on the extension-aware reparse: an extension flag's value can
+ * look like a positional prompt to the startup parse.
+ */
+export function validateGoalStartup(
+	args: Args,
+	goalEnabled: boolean,
+	pipedInput?: string,
+	planStartsOnStartup = false,
+): void {
+	if (args.goal === undefined) return;
+	if (args.messages.length > 0 || args.fileArgs.length > 0 || pipedInput !== undefined) {
+		throw new CliUsageError("--goal cannot be combined with a positional message, @file, or stdin prompt.");
+	}
+	if (args.planYolo || args.noTools) {
+		throw new CliUsageError("--goal cannot be combined with --plan-yolo or --no-tools.");
+	}
+	if (planStartsOnStartup) {
+		throw new CliUsageError("--goal cannot be combined with plan.defaultOnStartup; disable startup plan mode first.");
+	}
+	if (!goalEnabled) {
+		throw new CliUsageError("--goal requires goal.enabled to be enabled.");
+	}
 }
 
 /**
@@ -233,6 +311,18 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			// boundary sentinel: an extension-shadowable built-in like `--plan` (parsed
 			// here only when its boolean extension is NOT loaded) would otherwise swallow
 			// the marker as its value and drop the user's trailing message.
+			if (
+				arg === "--goal" &&
+				(i + 1 >= args.length ||
+					args[i + 1] === PROFILE_BOOTSTRAP_BOUNDARY_ARG ||
+					(equalsValueIndex === -1 && args[i + 1].startsWith("-")))
+			) {
+				result.invalidFlagValues.push("--goal requires an objective.");
+				// Like every string flag, a flag-looking token after `--goal` is its (rejected)
+				// value, never a flag of its own: `--goal --profile work` must not activate a profile.
+				if (i + 1 < args.length && args[i + 1] !== PROFILE_BOOTSTRAP_BOUNDARY_ARG) i++;
+				continue;
+			}
 			if (i + 1 < args.length && args[i + 1] !== PROFILE_BOOTSTRAP_BOUNDARY_ARG) {
 				const consumed = consumeBuiltInStringValue(arg, args, i + 1);
 				i = consumed.index;

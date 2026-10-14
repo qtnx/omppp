@@ -56,6 +56,14 @@ export class SessionCompletion {
 		for (const entry of host.sessionManager.getBranch()) if (entry.type === "message") this.observe(entry.message);
 	}
 
+	/** Drops retained assessment state so a disposed session pins no assistant reply. */
+	release(): void {
+		this.#settle = undefined;
+		this.#assessment = undefined;
+		this.#requests = [];
+		this.#audited.clear();
+	}
+
 	observe(message: AgentMessage): void {
 		const id = this.#host.sessionManager.getSessionId();
 		if (id !== this.#sessionId) {

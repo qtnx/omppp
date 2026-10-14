@@ -298,7 +298,7 @@ function passesSnapcompactGate(text: string, model: Model<Api>, shape: snapcompa
 	if (textTokens < MIN_SNAPCOMPACT_TOKENS) return false;
 	const frameCount = snapcompact.frames(text, { shape });
 	if (frameCount <= 0) return false;
-	if (frameCount > snapcompact.providerImageBudget(model.provider)) return false;
+	if (frameCount > snapcompact.providerImageBudget(model)) return false;
 	return frameCount * shape.frameTokenEstimate <= textTokens * SNAPCOMPACT_SAVINGS_MARGIN;
 }
 
@@ -314,7 +314,7 @@ async function renderReviewContent(
 	if (!passesSnapcompactGate(imageMaterial, model, shape)) return [{ type: "text", text: textPrompt }];
 	const frames = await snapcompact.renderMany(imageMaterial, {
 		shape,
-		maxFrames: snapcompact.providerImageBudget(model.provider),
+		maxFrames: snapcompact.providerImageBudget(model),
 	});
 	if (frames.length === 0) return [{ type: "text", text: textPrompt }];
 	const metadataPrompt = renderReviewPrompt({ ...params, content: undefined }, attachmentPromptMetadata(attachments));

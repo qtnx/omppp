@@ -35,7 +35,7 @@ import writeDeviceOnlyDescription from "../prompts/tools/write-device-only.md" w
 import type { ToolSession } from "../sdk";
 
 import { routeWriteThroughBridge, shouldRouteWriteThroughBridge } from "./acp-bridge";
-import { resolveToolTier, truncateForPrompt } from "./approval";
+import { type ApprovalDetailsOptions, resolveToolTier, truncateApprovalDetail, truncateForPrompt } from "./approval";
 import { REPORT_ISSUE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/report-tool-issue";
 import { isResolutionDeviceName } from "@oh-my-pi/pi-tui/tools/resolve";
 import { parseXdUrl } from "@oh-my-pi/pi-tui/tools/xd-url";
@@ -57,7 +57,7 @@ import { withFileWriteLock } from "./file-write-lock";
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 
 import { outputMeta } from "./output-meta";
-import { formatPathRelativeToCwd, probeLiteralPathExists } from "./path-utils";
+import { formatPathRelativeToCwd, probeLiteralPathExists, specialFileKind } from "./path-utils";
 import { splitPathAndSel } from "@oh-my-pi/pi-tui/tools/read";
 import {
 	enforcePlanModeWrite,
@@ -236,8 +236,27 @@ function lfNormalizedLength(text: string): number {
 	return length;
 }
 
+/**
+ * `readTruncationNoticeStart(normalizeToLF(content)) !== -1` without normalizing the
+ * payload: only the last non-blank line is inspected, bounded in the raw text by CR or LF
+ * (exactly the line normalization would produce).
+ */
 function endsWithReadTruncationNotice(content: string): boolean {
-	return readTruncationNoticeStart(normalizeToLF(content)) !== -1;
+	const contentEnd = content.trimEnd().length;
+	if (contentEnd === 0) return false;
+	let start = contentEnd;
+	while (start > 0) {
+		const ch = content.charCodeAt(start - 1);
+		if (ch === 0x0a || ch === 0x0d) break;
+		start--;
+	}
+	let end = contentEnd;
+	while (end < content.length) {
+		const ch = content.charCodeAt(end);
+		if (ch === 0x0a || ch === 0x0d) break;
+		end++;
+	}
+	return isReadTruncationNotice(content.slice(start, end));
 }
 
 async function readCurrentWriteSource(
@@ -335,7 +354,7 @@ function appendNoteToResult(result: AgentToolResult<WriteToolDetails>, note: str
 
 function emitWriteProgress(
 	onUpdate: AgentToolUpdateCallback<WriteToolDetails> | undefined,
-	content: string,
+	byteLength: number,
 	displayPath: string,
 	resolvedPath?: string,
 ): void {
@@ -343,7 +362,7 @@ function emitWriteProgress(
 		content: [
 			{
 				type: "text",
-				text: `Writing ${Buffer.byteLength(content, "utf8")} bytes to ${shortenPath(displayPath)}...`,
+				text: `Writing ${byteLength} bytes to ${shortenPath(displayPath)}...`,
 			},
 		],
 		details: resolvedPath ? { resolvedPath } : {},
@@ -356,7 +375,8 @@ function emitWriteProgress(
  * Mirrors `chmod a+x` (adds user/group/other execute bits to existing mode).
  * Errors are swallowed: chmod failure (e.g. Windows ACL, read-only mount)
  * MUST NOT fail an otherwise successful write. Returns whether the mode
- * actually changed so the caller can surface a note.
+ * actually changed so the caller can surface a note — re-read after the chmod,
+ * since Windows (and some mounts) accept it while keeping no execute bits.
  */
 async function maybeMarkExecutableForShebang(absolutePath: string, content: string): Promise<boolean> {
 	if (!content.startsWith("#!")) return false;
@@ -366,7 +386,7 @@ async function maybeMarkExecutableForShebang(absolutePath: string, content: stri
 		const newMode = currentMode | 0o111;
 		if (newMode === currentMode) return false;
 		await fs.chmod(absolutePath, newMode);
-		return true;
+		return ((await fs.stat(absolutePath)).mode & 0o111) === 0o111;
 	} catch {
 		return false;
 	}
@@ -495,11 +515,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			this.session,
 		);
 	};
-	readonly formatApprovalDetails = (args: unknown): string[] => {
+	readonly formatApprovalDetails = (args: unknown, options?: ApprovalDetailsOptions): string[] => {
 		const params = args as Partial<WriteParams>;
 		const targetPath = typeof params.path === "string" ? params.path : "(missing)";
 		const content = typeof params.content === "string" ? params.content : "";
-		return [`Path: ${truncateForPrompt(targetPath)}`, `Content:\n${truncateForPrompt(content)}`];
+		return [`Path: ${truncateForPrompt(targetPath)}`, `Content:\n${truncateApprovalDetail(content, options)}`];
 	};
 	readonly label = "Write";
 	get description(): string {
@@ -579,6 +599,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 	async #writeArchiveEntry(
 		content: string,
+		contentBytes: number,
 		rawContent: string,
 		resolvedArchivePath: ResolvedArchiveWritePath,
 	): Promise<AgentToolResult<WriteToolDetails>> {
@@ -655,9 +676,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			resolvedArchivePath.archiveSubPath
 		}`;
 		return {
-			content: [
-				{ type: "text", text: `Successfully wrote ${Buffer.byteLength(content, "utf8")} bytes to ${outputPath}` },
-			],
+			content: [{ type: "text", text: `Successfully wrote ${contentBytes} bytes to ${outputPath}` }],
 			details: { resolvedPath: resolvedArchivePath.absolutePath },
 		};
 	}
@@ -686,6 +705,12 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				const stat = await Bun.file(absolutePath).stat();
 				if (stat.isDirectory()) {
 					continue;
+				}
+				const kind = specialFileKind(stat);
+				if (kind) {
+					throw new ToolError(
+						`Cannot write '${candidate.sqlitePath}': it is a ${kind}, not a regular file or directory.`,
+					);
 				}
 				if (!(await isSqliteFile(absolutePath))) {
 					sawExistingNonSqlite = true;
@@ -1101,22 +1126,22 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			throw new ToolError(`content is required for ${path}.`);
 		}
 		const content = rawContent ?? "";
+		// Coordination writes (peer messages, background-work cancellation) touch no
+		// files, so neither gate below applies to them.
+		const coordination =
+			policy?.scope === "coordination" || (target !== undefined && policy?.cancels?.(target.url) === true);
 		// A device-only session grants `write` purely as the device transport (see
-		// createTools): device dispatches and coordination messages proceed, every
-		// other target is rejected before any handler, guard, conflict resolver, or
-		// bridge sees it. Active plan mode additionally permits its sandbox, but does
-		// not relax the restriction for working-tree or other internal URLs.
+		// createTools): device dispatches, coordination writes, and the session's
+		// local:// sandbox proceed; every other target is rejected before any
+		// handler, guard, conflict resolver, or bridge sees it.
 		if (
 			this.session.deviceOnlyWrite === true &&
 			policy?.scope !== "device" &&
-			policy?.scope !== "coordination" &&
-			!(
-				this.session.getPlanModeState?.()?.enabled === true &&
-				(await targetsLocalSandbox(this.session, path, signal))
-			)
+			!coordination &&
+			!(await targetsLocalSandbox(this.session, path, signal))
 		) {
 			throw new ToolError(
-				"This `write` tool is limited to the xd:// device transport: call it with path `xd://<tool>` and the device's JSON arguments in `content` (`read xd://` lists mounted devices). Active plan mode additionally permits local:// sandbox drafts. Filesystem writes are not available elsewhere.",
+				"This `write` tool is limited to the xd:// device transport and local:// session scratch: call it with path `xd://<tool>` and the device's JSON arguments in `content` (`read xd://` lists mounted devices), or write a `local://<name>` file. Filesystem writes are not available elsewhere.",
 			);
 		}
 		return untilAborted(signal, async () => {
@@ -1127,6 +1152,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			const { text: cleanContent, stripped } = verbatim
 				? { text: content, stripped: false }
 				: stripWriteContent(this.session, content);
+			// One UTF-8 scan per call, shared by the progress and result lines.
+			const cleanBytes = Buffer.byteLength(cleanContent, "utf8");
 			assertWriteTargetAddressable(path, router);
 			if (target) {
 				if (policy?.via === "handler") {
@@ -1136,14 +1163,14 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						const currentResource = await router.resolve(path, sessionResolveContext(this.session, { signal }));
 						assertNotShorterReadProjection(path, content, currentResource.content, cleanContent);
 					}
-					// Handler-owned writes mutate state outside the sandbox unless the
-					// scheme is coordination (peer messages) or a device (which keeps each
-					// dispatched tool's own tier and policy).
+					// Handler-owned writes mutate state outside the sandbox unless they
+					// coordinate (peer messages, background-work cancellation) or dispatch a
+					// device (which keeps each dispatched tool's own tier and policy).
 					if (policy?.scope !== "device") {
-						if (policy?.scope !== "coordination" && !path.startsWith("conflict://")) {
+						if (!coordination && !path.startsWith("conflict://")) {
 							await enforcePlanModeWrite(this.session, path, { op: "update", signal });
 						}
-						emitWriteProgress(onUpdate, cleanContent, path);
+						emitWriteProgress(onUpdate, cleanBytes, path);
 					}
 					const handlerResult = await router.write(
 						path,
@@ -1163,7 +1190,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						if (recovered.note) appendNoteToResult(result, recovered.note);
 						return result;
 					}
-					let resultText = `Successfully wrote ${Buffer.byteLength(cleanContent, "utf8")} bytes to ${path}`;
+					let resultText = `Successfully wrote ${cleanBytes} bytes to ${path}`;
 					if (stripped) {
 						resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
 					}
@@ -1181,7 +1208,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						`Conflict URI scope '/${conflictUri.scope}' is read-only — read \`conflict://${conflictUri.id}/${conflictUri.scope}\` to inspect that side. To write, drop the scope (\`conflict://${conflictUri.id}\`) and put the chosen content (or shorthand like \`@${conflictUri.scope}\`) in \`content\`.`,
 					);
 				}
-				emitWriteProgress(onUpdate, cleanContent, path);
+				emitWriteProgress(onUpdate, cleanBytes, path);
 				const result =
 					conflictUri.id === "*"
 						? await this.#resolveAllConflicts(cleanContent, stripped, signal, content)
@@ -1198,14 +1225,14 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 				emitWriteProgress(
 					onUpdate,
-					cleanContent,
+					cleanBytes,
 					`${formatPathRelativeToCwd(resolvedArchivePath.absolutePath, this.session.cwd)}:${
 						resolvedArchivePath.archiveSubPath
 					}`,
 					resolvedArchivePath.absolutePath,
 				);
 				const archiveResult = await withFileWriteLock(resolvedArchivePath.absolutePath, signal, () =>
-					this.#writeArchiveEntry(cleanContent, content, resolvedArchivePath),
+					this.#writeArchiveEntry(cleanContent, cleanBytes, content, resolvedArchivePath),
 				);
 				if (stripped) {
 					const firstText = archiveResult.content.find(
@@ -1223,7 +1250,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (resolvedSqlitePath) {
 				await enforcePlanModeWrite(this.session, resolvedSqlitePath.sqlitePath, { op: "update", signal });
 
-				emitWriteProgress(onUpdate, cleanContent, path, resolvedSqlitePath.absolutePath);
+				emitWriteProgress(onUpdate, cleanBytes, path, resolvedSqlitePath.absolutePath);
 				const sqliteResult = await withFileWriteLock(resolvedSqlitePath.absolutePath, signal, () =>
 					this.#writeSqliteRow(path, cleanContent, resolvedSqlitePath),
 				);
@@ -1251,6 +1278,10 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				if (target && existing?.isDirectory()) {
 					throw new ToolError(`${target.url.protocol}// URL must resolve to a file: ${path}`);
 				}
+				const kind = existing && specialFileKind(existing);
+				if (kind) {
+					throw new ToolError(`Cannot write '${path}': it is a ${kind}, not a regular file or directory.`);
+				}
 				// Check if file exists and is auto-generated before overwriting.
 				if (existing) {
 					await assertEditableFile(absolutePath, path, this.session.settings);
@@ -1264,7 +1295,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					cleanContent,
 				);
 
-				emitWriteProgress(onUpdate, cleanContent, displayPath, absolutePath);
+				emitWriteProgress(onUpdate, cleanBytes, displayPath, absolutePath);
 
 				// Try ACP bridge first for editor-visible filesystem paths. Internal
 				// artifacts such as local:// plans are owned by OMP, not the editor.
@@ -1277,7 +1308,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					// hands back a tag that matches what's actually on disk.
 					const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, bridgeWrite.text);
 					const header = maybeWriteSnapshotHeader(this.session, absolutePath, bridgeWrite.text, displayPath);
-					const writeLine = `Successfully wrote ${Buffer.byteLength(cleanContent, "utf8")} bytes to ${displayPath}`;
+					const writeLine = `Successfully wrote ${cleanBytes} bytes to ${displayPath}`;
 					let resultText = header ? `${header}\n${writeLine}` : writeLine;
 					if (stripped) {
 						resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
@@ -1303,7 +1334,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, finalContent);
 
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, finalContent, displayPath);
-				const writeLine = `Successfully wrote ${Buffer.byteLength(finalContent, "utf8")} bytes to ${displayPath}`;
+				const writeLine = `Successfully wrote ${finalContent === cleanContent ? cleanBytes : Buffer.byteLength(finalContent, "utf8")} bytes to ${displayPath}`;
 				let resultText = header ? `${header}\n${writeLine}` : writeLine;
 				if (stripped) {
 					resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;

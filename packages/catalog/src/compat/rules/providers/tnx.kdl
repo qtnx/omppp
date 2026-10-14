@@ -10,4 +10,6 @@ provider "tnx" {
 	env "TNX_API_KEY"
 	allow-unauthenticated #true
 	discovery label="TNX"
+	// Fork policy carried over from the removed snapcompact PROVIDER_IMAGE_BUDGETS table.
+	image-count-budget 200
 }

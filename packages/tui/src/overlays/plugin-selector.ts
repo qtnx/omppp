@@ -8,6 +8,9 @@ import { type SelectItem, SelectList, type SgrMouseEvent } from "../index";
 import { getSelectListTheme } from "../theme/theme";
 import { OverlayPanel } from "../chrome/overlay-box";
 import { routeSelectListMouseWithTopBorder } from "../chrome/select-list-mouse-routing";
+import type { DescribeContext, NativeNode, NativeUiEvent } from "../native/node";
+import { SelectListSheet } from "../native/picker";
+import type { TspPickerItem } from "@oh-my-pi/pi-wire";
 
 export interface PluginSelectorCallbacks {
 	onSelect: (pluginName: string, marketplace: string, scope?: "user" | "project") => void;
@@ -23,6 +26,7 @@ export interface PluginItem {
 
 export class PluginSelectorComponent extends OverlayPanel {
 	#selectList: SelectList;
+	#sheet: SelectListSheet;
 
 	constructor(
 		marketplaceCount: number,
@@ -30,8 +34,10 @@ export class PluginSelectorComponent extends OverlayPanel {
 		installedIds: Set<string>,
 		callbacks: PluginSelectorCallbacks,
 	) {
-		super("Plugins");
+		super("Plugins", "omp.overlay.plugins");
 
+		// The sheet draws version, install state and scope as badges instead of bracketed label text.
+		const badgesByValue = new Map<string, NonNullable<TspPickerItem["badges"]>>();
 		const items: SelectItem[] = plugins.map(({ plugin, marketplace, scope }) => {
 			// Encode scope into the value so onSelect can recover it without a parallel Map.
 			// Format: "name@marketplace" or "name@marketplace#scope"
@@ -40,6 +46,11 @@ export class PluginSelectorComponent extends OverlayPanel {
 			const version = plugin.version ? `@${plugin.version}` : "";
 			const status = installed ? " [installed]" : "";
 			const scopeTag = scope ? ` [${scope}]` : "";
+			badgesByValue.set(id, [
+				...(plugin.version ? [{ text: plugin.version }] : []),
+				...(installed ? [{ text: "installed", tone: "success" as const }] : []),
+				...(scope ? [{ text: scope, tone: "accent" as const }] : []),
+			]);
 
 			return {
 				value: id,
@@ -75,6 +86,31 @@ export class PluginSelectorComponent extends OverlayPanel {
 		};
 
 		this.addChild(this.#selectList);
+		this.#sheet = new SelectListSheet(this.#selectList, {
+			title: "Plugins",
+			icon: "plus",
+			noun: "plugins",
+			confirm: "Install",
+			decorate: item => {
+				const [name] = splitPluginId(item.value);
+				if (!name) return undefined;
+				return {
+					label: name,
+					badges: badgesByValue.get(item.value) ?? [],
+					...(item.hint ? { facts: { marketplace: item.hint } } : {}),
+				};
+			},
+			columns: [{ id: "marketplace", format: "dim" }],
+		});
+	}
+
+	override describe(cx: DescribeContext): NativeNode | null {
+		return cx.supports("picker") ? this.#sheet.describe() : super.describe(cx);
+	}
+
+	/** Picker pointer events drive the list exactly as its keys do. */
+	handleNativeEvent(event: NativeUiEvent): void {
+		this.#sheet.handle(event);
 	}
 
 	getSelectList(): SelectList {

@@ -2,7 +2,7 @@
  * Contract: a vibe worker's spawn options carry the pre-expansion model role.
  *
  * `#resolveWorker` expands the bundled worker's role alias (`good` -> `task` ->
- * `@task`, `fast` -> `sonic` -> `@smol`) into concrete patterns, so the role
+ * `@task`, `fast` -> `quick_task` -> `@smol`) into concrete patterns, so the role
  * survives only as a separate field forwarded across `ResolvedVibeWorker` ->
  * `VibeRecord` -> `#buildSpawnOptions` -> `runSubprocess`. The executor keys the
  * child's inherited `retry.fallbackChains` entry off it; drop any link in that
@@ -125,5 +125,21 @@ describe("vibe worker spawn model role", () => {
 		expect(await Bun.file(options.parentContextFile as string).text()).toBe("compact parent context");
 		expect(options.contextFiles).toContainEqual(contextFiles[0]);
 		expect(options.contextFiles?.some(entry => entry.path === options.parentContextFile)).toBeFalse();
+	});
+
+	it("restricts the first spawn to the worker agent's account pool, as revival does", async () => {
+		// Without it a worker runs unrestricted until it is parked and revived.
+		const options = await spawnAndCaptureOptions(
+			"good",
+			Settings.isolated({
+				modelRoles: { default: "anthropic/opus", task: "anthropic/sonnet" },
+				"task.agentAccountPools": {
+					task: { anthropic: ["email:a@example.com|org:org-a"] },
+					quick_task: { anthropic: [] },
+				},
+			}),
+		);
+
+		expect(options.oauthAccountPools).toEqual({ anthropic: ["email:a@example.com|org:org-a"] });
 	});
 });

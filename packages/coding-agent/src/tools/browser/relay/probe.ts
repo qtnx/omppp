@@ -5,16 +5,19 @@
  * ({@link RelayUnavailableInfo}) says whether an extension has ever done so.
  * That splits the two reasons for a 503 that used to look identical:
  * - Extension seen before: Chrome reaped its MV3 service worker; the
- *   extension's 30s keepalive alarm revives it, so waiting one alarm period
- *   pays off.
+ *   extension's 30s keepalive alarm revives it, so waiting out one alarm
+ *   period after the disconnect pays off. Past that, Chrome itself is gone
+ *   (quit, profile closed) and the open fails at once.
  * - Extension never seen: an installed extension dials within one alarm
  *   period of the server starting, so once the server has been up that long
  *   nothing is coming and the open fails at once instead of burning the
  *   whole window every call.
  */
+import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import { throwIfAborted } from "../../tool-errors";
 import { probeCdpResponse } from "../attach";
 import type { RelayUnavailableInfo } from "./server";
+import { DISCARDED_TABS_PROTOCOL_VERSION } from "./protocol";
 
 /**
  * One extension keepalive alarm period (30s, `background.js`) plus the dial
@@ -26,14 +29,45 @@ const POLL_INTERVAL_MS = 150;
 
 /** Outcome of {@link waitForRelayExtension}. */
 export type RelayWaitOutcome =
-	/** `/json/version` answered 200: puppeteer can connect. */
+	/** `/json/version` has the required relay and extension capabilities. */
 	| "ready"
 	/** Nothing (or something that is not a relay) is serving the endpoint. */
 	| "unreachable"
 	/** The relay is serving but no extension connected within the dial window. */
-	| "no-extension";
+	| "no-extension"
+	/** An extension connected earlier but has stayed away past the redial window (e.g. Chrome quit). */
+	| "extension-gone"
+	/** An older relay server is still running. */
+	| "outdated-relay"
+	/** A compatible relay from an older OMP is ready and reports no CDP client connected to it. */
+	| "idle-older-relay"
+	/** The relay extension is older than the running server. */
+	| "outdated-extension";
 
-function parseUnavailableInfo(body: string): RelayUnavailableInfo | null {
+/** The OMP version a parsed `/json/version` body (ready or waiting) reports; empty when it reports none. */
+export function relayVersionOf(parsed: object): string {
+	return "ompRelayVersion" in parsed && typeof parsed.ompRelayVersion === "string" ? parsed.ompRelayVersion : "";
+}
+
+/** CDP clients a parsed `/json/version` body (ready or waiting) reports; null for a relay too old to report them. */
+export function relayCdpClientsOf(parsed: object): number | null {
+	return "ompRelayCdpClients" in parsed && typeof parsed.ompRelayCdpClients === "number"
+		? parsed.ompRelayCdpClients
+		: null;
+}
+
+/** Whether a relay reporting `version` predates this OMP; one reporting none predates version markers. */
+export function isOlderRelayVersion(version: string): boolean {
+	if (version === "") return true;
+	try {
+		return Bun.semver.order(version, VERSION) < 0;
+	} catch {
+		// Unparseable: not provably older, so leave it to its owner.
+		return false;
+	}
+}
+
+function parseUnavailableInfo(body: string): Omit<RelayUnavailableInfo, "ompRelayCdpClients"> | null {
 	try {
 		const parsed: unknown = JSON.parse(body);
 		if (
@@ -44,7 +78,15 @@ function parseUnavailableInfo(body: string): RelayUnavailableInfo | null {
 			"uptimeMs" in parsed &&
 			typeof parsed.uptimeMs === "number"
 		) {
-			return { error: "", extensionSeen: parsed.extensionSeen, uptimeMs: parsed.uptimeMs };
+			const disconnectedMs =
+				"disconnectedMs" in parsed && typeof parsed.disconnectedMs === "number" ? parsed.disconnectedMs : undefined;
+			return {
+				error: "",
+				extensionSeen: parsed.extensionSeen,
+				uptimeMs: parsed.uptimeMs,
+				ompRelayVersion: relayVersionOf(parsed),
+				disconnectedMs,
+			};
 		}
 	} catch {
 		// Not a relay body (older relay or foreign server); treated as opaque 503 below.
@@ -52,28 +94,63 @@ function parseUnavailableInfo(body: string): RelayUnavailableInfo | null {
 	return null;
 }
 
+function readyOutcome(body: string): RelayWaitOutcome {
+	try {
+		const parsed: unknown = JSON.parse(body);
+		if (
+			typeof parsed !== "object" ||
+			parsed === null ||
+			!("ompRelayDiscardedTabsProtocol" in parsed) ||
+			parsed.ompRelayDiscardedTabsProtocol !== String(DISCARDED_TABS_PROTOCOL_VERSION)
+		) {
+			return "outdated-relay";
+		}
+		if (
+			!("ompExtensionDiscardedTabsProtocol" in parsed) ||
+			parsed.ompExtensionDiscardedTabsProtocol !== String(DISCARDED_TABS_PROTOCOL_VERSION)
+		) {
+			// A relay from another OMP version is the likelier culprit than the extension.
+			if (relayVersionOf(parsed) !== VERSION) return "outdated-relay";
+			return "outdated-extension";
+		}
+		if (isOlderRelayVersion(relayVersionOf(parsed)) && relayCdpClientsOf(parsed) === 0) return "idle-older-relay";
+		return "ready";
+	} catch {
+		return "outdated-relay";
+	}
+}
+
 /**
  * Poll the relay at `cdpUrl` until its extension is connected. Gives up
- * immediately when nothing serves the endpoint, after one dial window when
- * an extension has connected before (service-worker revival), or as soon as
- * the server has been up a full dial window without ever seeing one.
+ * immediately when nothing serves the endpoint, once one dial window has
+ * passed since a previously connected extension went away (service-worker
+ * revival), or as soon as the server has been up a full dial window without
+ * ever seeing one.
  */
 export async function waitForRelayExtension(cdpUrl: string, signal?: AbortSignal): Promise<RelayWaitOutcome> {
 	const probeUrl = `${cdpUrl}/json/version`;
 	let deadline = Date.now() + EXTENSION_DIAL_WINDOW_MS;
+	let staleRelay = false;
 	for (;;) {
 		throwIfAborted(signal);
 		const response = await probeCdpResponse(probeUrl, { timeoutMs: PROBE_TIMEOUT_MS, signal });
 		throwIfAborted(signal);
 		if (response === null) return "unreachable";
-		if (response.status >= 200 && response.status < 300) return "ready";
+		if (response.status >= 200 && response.status < 300) return readyOutcome(response.body);
 		if (response.status !== 503) return "unreachable";
 		const info = parseUnavailableInfo(response.body);
+		// Past the dial window a relay from another version reads as outdated even
+		// with CDP clients connected: no extension, so no browser, is behind them.
+		staleRelay = info !== null && info.ompRelayVersion !== VERSION;
 		if (info && !info.extensionSeen) {
 			// Never connected: the window is measured from server start, not from now.
 			deadline = Math.min(deadline, Date.now() - info.uptimeMs + EXTENSION_DIAL_WINDOW_MS);
+		} else if (info?.disconnectedMs !== undefined) {
+			// Seen, then gone: the redial window is measured from the disconnect.
+			deadline = Math.min(deadline, Date.now() - info.disconnectedMs + EXTENSION_DIAL_WINDOW_MS);
+			if (Date.now() >= deadline) return staleRelay ? "outdated-relay" : "extension-gone";
 		}
-		if (Date.now() >= deadline) return "no-extension";
+		if (Date.now() >= deadline) return staleRelay ? "outdated-relay" : "no-extension";
 		await Bun.sleep(POLL_INTERVAL_MS);
 	}
 }

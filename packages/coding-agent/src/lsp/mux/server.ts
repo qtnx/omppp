@@ -1,7 +1,6 @@
-import * as fs from "node:fs/promises";
-import * as net from "node:net";
+import { type IpcConnection, IpcServer } from "@oh-my-pi/pi-natives";
 import { isRecord, logger, postmortem, ptree, setProcessName } from "@oh-my-pi/pi-utils";
-import { MessageFramer } from "../../jsonrpc/message-framing";
+import { encodeMessageFrame, MessageFramer } from "../../jsonrpc/message-framing";
 import type { LspJsonRpcId, LspJsonRpcNotification, LspJsonRpcRequest, LspJsonRpcResponse } from "../types";
 import {
 	LSP_MUX_PROJECT_DIR_ENV,
@@ -62,7 +61,7 @@ interface TextDocumentParams {
 }
 
 class Session {
-	readonly socket: net.Socket;
+	readonly connection: IpcConnection;
 	readonly framer = new MessageFramer(Buffer.alloc(0));
 	readonly openUris = new Set<string>();
 	readonly forwardedIds = new Map<LspJsonRpcId, LspJsonRpcId>();
@@ -73,8 +72,8 @@ class Session {
 	closed = false;
 	lastActivity = Date.now();
 
-	constructor(socket: net.Socket) {
-		this.socket = socket;
+	constructor(connection: IpcConnection) {
+		this.connection = connection;
 	}
 }
 
@@ -124,11 +123,6 @@ function hasRequestId(message: LspJsonRpcRequest | LspJsonRpcNotification): mess
 	return "id" in message && (typeof message.id === "number" || typeof message.id === "string");
 }
 
-function frame(message: RpcMessage): string {
-	const body = JSON.stringify(message);
-	return `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`;
-}
-
 function rpcResult(id: LspJsonRpcId, result: unknown): LspJsonRpcResponse {
 	return { jsonrpc: "2.0", id, result };
 }
@@ -168,10 +162,6 @@ function parseProgress(params: unknown): ProgressParams | undefined {
 	return params as unknown as ProgressParams;
 }
 
-function cloneParams<T>(params: T): T {
-	return structuredClone(params);
-}
-
 /**
  * Broker-owned, in-process-testable multiplexer for shared language-server children.
  */
@@ -180,8 +170,7 @@ export class LspMuxServer {
 	onIdle?: () => void;
 	readonly #servers = new Set<ServerInstance>();
 	readonly #sessions = new Set<Session>();
-	#netServer?: net.Server;
-	#endpoint?: string;
+	#ipcServer?: IpcServer;
 	#idleTimer?: NodeJS.Timeout;
 	#activityClock = Date.now();
 	#shuttingDown = false;
@@ -199,19 +188,8 @@ export class LspMuxServer {
 
 	/** Listen for Content-Length framed mux links at a Unix socket or named pipe. */
 	async listen(endpoint: string): Promise<void> {
-		if (this.#netServer) throw new Error("LSP mux is already listening");
-		if (process.platform !== "win32") await this.#clearStaleSocket(endpoint);
-		const server = net.createServer(socket => this.#accept(socket));
-		this.#netServer = server;
-		this.#endpoint = endpoint;
-		const { promise, resolve, reject } = Promise.withResolvers<void>();
-		const onError = (error: Error) => reject(error);
-		server.once("error", onError);
-		server.listen(endpoint, () => {
-			server.off("error", onError);
-			resolve();
-		});
-		await promise;
+		if (this.#ipcServer) throw new Error("LSP mux is already listening");
+		this.#ipcServer = await IpcServer.listen(endpoint, { framing: "raw" }, connection => this.#accept(connection));
 		this.#armMuxIdle();
 	}
 
@@ -224,61 +202,20 @@ export class LspMuxServer {
 	async #performShutdown(): Promise<void> {
 		this.#shuttingDown = true;
 		clearTimeout(this.#idleTimer);
-		for (const session of Array.from(this.#sessions)) session.socket.destroy();
+		for (const session of Array.from(this.#sessions)) session.connection.destroy();
 		await Promise.all([...this.#servers].map(server => this.#stopServer(server)));
-		const listener = this.#netServer;
-		this.#netServer = undefined;
-		if (listener) {
-			const { promise, resolve } = Promise.withResolvers<void>();
-			listener.close(() => resolve());
-			await promise;
-		}
-		if (process.platform !== "win32" && this.#endpoint) {
-			try {
-				await fs.unlink(this.#endpoint);
-			} catch {
-				// The socket may already have been removed by process cleanup.
-			}
-		}
+		const listener = this.#ipcServer;
+		this.#ipcServer = undefined;
+		await listener?.close();
 	}
 
-	async #clearStaleSocket(endpoint: string): Promise<void> {
-		try {
-			await fs.stat(endpoint);
-		} catch {
-			return;
-		}
-		const alive = await this.#probe(endpoint);
-		if (alive) throw new Error(`LSP mux already listening on ${endpoint}`);
-		try {
-			await fs.unlink(endpoint);
-		} catch (error) {
-			logger.warn("Failed to remove stale LSP mux socket", { endpoint, error: String(error) });
-			throw error;
-		}
-	}
-
-	async #probe(endpoint: string): Promise<boolean> {
-		const { promise, resolve } = Promise.withResolvers<boolean>();
-		const socket = net.createConnection(endpoint);
-		socket.once("connect", () => {
-			socket.destroy();
-			resolve(true);
-		});
-		socket.once("error", () => {
-			socket.destroy();
-			resolve(false);
-		});
-		return promise;
-	}
-
-	#accept(socket: net.Socket): void {
-		const session = new Session(socket);
+	#accept(connection: IpcConnection): void {
+		const session = new Session(connection);
 		this.#sessions.add(session);
 		this.#disarmMuxIdle();
-		socket.on("data", chunk => {
+		const onChunk = (chunk: Uint8Array): void => {
 			try {
-				session.framer.push(Buffer.from(chunk));
+				session.framer.push(chunk);
 				for (const text of session.framer.drain(header => {
 					logger.warn("LSP mux client framing resync", { header: header.slice(0, 200) });
 				})) {
@@ -294,11 +231,13 @@ export class LspMuxServer {
 				}
 			} catch (error) {
 				logger.warn("LSP mux client framing failed", { error: String(error) });
-				socket.destroy();
+				connection.destroy();
 			}
+		};
+		connection.startRaw(onChunk, reason => {
+			if (reason) logger.warn("LSP mux session connection error", { error: reason });
+			void this.#closeSession(session);
 		});
-		socket.on("error", error => logger.warn("LSP mux session socket error", { error: error.message }));
-		socket.on("close", () => void this.#closeSession(session));
 	}
 
 	async #fromSession(session: Session, message: RpcMessage): Promise<void> {
@@ -372,7 +311,7 @@ export class LspMuxServer {
 			return;
 		}
 		if (message.method === "exit" && !request) {
-			session.socket.destroy();
+			session.connection.destroy();
 			return;
 		}
 		if (message.method === "textDocument/didOpen" && !request) {
@@ -470,7 +409,7 @@ export class LspMuxServer {
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) break;
-				framer.push(Buffer.from(value));
+				framer.push(value);
 				for (const text of framer.drain(header => {
 					logger.warn("LSP mux server framing resync", { server: server.key, header: header.slice(0, 200) });
 				})) {
@@ -503,20 +442,19 @@ export class LspMuxServer {
 		if (message.method === "textDocument/publishDiagnostics") {
 			const params = parseDiagnostics(message.params);
 			if (!params) return;
+			// Freshly parsed and never mutated: stored as-is for replay to later sessions.
 			server.diagnostics.set(params.uri, params);
-			const data = frame({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params });
-			for (const session of server.sessions) if (session.initialized) this.#writeSession(session, data);
+			this.#broadcast(server, { jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params });
 			return;
 		}
 		if (message.method === "$/progress") {
 			const params = parseProgress(message.params);
 			if (params) {
-				if (params.value?.kind === "begin") server.progress.set(params.token, cloneParams(params));
+				if (params.value?.kind === "begin") server.progress.set(params.token, params);
 				else if (params.value?.kind === "end") server.progress.delete(params.token);
 			}
 		}
-		const data = frame(message);
-		for (const session of server.sessions) if (session.initialized) this.#writeSession(session, data);
+		this.#broadcast(server, message);
 	}
 
 	#handleServerResponse(server: ServerInstance, message: LspJsonRpcResponse): void {
@@ -562,7 +500,7 @@ export class LspMuxServer {
 						(registration): registration is Registration =>
 							isRecord(registration) && typeof registration.id === "string",
 					);
-					server.registrations.push({ registrations: cloneParams(valid) });
+					server.registrations.push({ registrations: valid });
 				}
 			} else if (message.method === "client/unregisterCapability" && isRecord(message.params)) {
 				const raw = message.params.unregisterations ?? message.params.unregistrations;
@@ -610,14 +548,6 @@ export class LspMuxServer {
 		void this.#writeServer(session.server, { ...message, id: pending.serverId });
 	}
 
-	#sendDiagnostics(session: Session, params: DiagnosticsParams): void {
-		this.#sendSession(session, {
-			jsonrpc: "2.0",
-			method: "textDocument/publishDiagnostics",
-			params,
-		});
-	}
-
 	#replayState(session: Session, server: ServerInstance): void {
 		for (const batch of server.registrations) {
 			if (batch.registrations.length === 0) continue;
@@ -625,28 +555,36 @@ export class LspMuxServer {
 				jsonrpc: "2.0",
 				id: "replaced",
 				method: "client/registerCapability",
-				params: cloneParams(batch),
+				params: batch,
 			});
 		}
-		for (const params of server.diagnostics.values()) this.#sendDiagnostics(session, params);
+		for (const params of server.diagnostics.values()) {
+			this.#sendSession(session, { jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params });
+		}
 		for (const params of server.progress.values()) {
-			this.#sendSession(session, { jsonrpc: "2.0", method: "$/progress", params: cloneParams(params) });
+			this.#sendSession(session, { jsonrpc: "2.0", method: "$/progress", params });
+		}
+	}
+
+	/** Serialize a server notification once and write the same frame to every initialized session. */
+	#broadcast(server: ServerInstance, message: RpcMessage): void {
+		let data: Buffer | undefined;
+		for (const session of server.sessions) {
+			if (!session.initialized || session.closed || session.connection.closed) continue;
+			data ??= encodeMessageFrame(message);
+			session.connection.send(data);
 		}
 	}
 
 	#sendSession(session: Session, message: RpcMessage): void {
-		this.#writeSession(session, frame(message));
-	}
-
-	#writeSession(session: Session, data: string): void {
-		if (!session.closed && !session.socket.destroyed) session.socket.write(data);
+		if (!session.closed && !session.connection.closed) session.connection.send(encodeMessageFrame(message));
 	}
 
 	#writeServer(server: ServerInstance, message: RpcMessage): Promise<void> {
 		const write = server.writeQueue
 			.catch(() => {})
 			.then(async () => {
-				const data = frame(message);
+				const data = encodeMessageFrame(message);
 				const pendingWrite = Promise.resolve(server.proc.stdin.write(data));
 				void pendingWrite.catch(() => {});
 				await Promise.all([pendingWrite, Promise.resolve(server.proc.stdin.flush())]);
@@ -666,7 +604,7 @@ export class LspMuxServer {
 			// Teardown writes are best-effort: the language server may already
 			// have exited (crash or mux restart) and writing its stdin then
 			// rejects. #writeServer already logs those failures — a rejection
-			// escaping here runs from the socket "close" handler with no caller
+			// escaping here runs from the connection close handler with no caller
 			// to catch it, and the unhandled rejection would kill the daemon.
 			const writeBestEffort = (message: RpcMessage): Promise<void> =>
 				this.#writeServer(server, message).catch(() => {});
@@ -701,7 +639,7 @@ export class LspMuxServer {
 		this.#servers.delete(server);
 		if (server.lingerTimer) clearTimeout(server.lingerTimer);
 		server.pending.clear();
-		for (const session of Array.from(server.sessions)) session.socket.destroy();
+		for (const session of Array.from(server.sessions)) session.connection.destroy();
 		server.sessions.clear();
 	}
 

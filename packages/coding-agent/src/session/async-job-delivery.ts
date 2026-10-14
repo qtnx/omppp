@@ -12,6 +12,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobType } from "../async";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
+import { escapeHarnessTags } from "./harness-tags";
 import type { CustomMessage } from "./messages";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { truncateMiddle } from "@oh-my-pi/pi-tui/tools/streaming-output";
@@ -50,6 +51,8 @@ export interface AsyncResultEntry {
 export type AsyncResultJobDetails = {
 	jobId: string;
 	type?: AsyncJobType;
+	status?: AsyncJob["status"];
+	agentId?: string;
 	label?: string;
 	durationMs?: number;
 	/** Source capture metadata belongs to this job, not to the enclosing delivery report. */
@@ -96,6 +99,10 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 		const structured = entry.job?.structured;
 		const hasStructuredData = structured ? Object.hasOwn(structured, "data") : false;
 		const structuredJson = structured && structured.status !== "valid" ? renderStructuredJson(structured) : undefined;
+		// Job output (a command's output, or a task's `<task-result>` around a
+		// subagent's output), a subagent's payload and its validation error are
+		// text the job controls: it must not close the `<system-notice>` it renders
+		// into or open a forged harness block.
 		return {
 			jobId: entry.jobId,
 			// The job manager disambiguates a requested job id when it collides
@@ -105,17 +112,19 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			// advertised `agent://` URL from that, or the delivery would point
 			// at an id with no backing `<id>.md`/`.json` on disk.
 			agentUrlId: entry.job?.agentId ?? entry.jobId,
-			result: entry.result,
+			result: escapeHarnessTags(entry.result),
 			type: entry.job?.type,
+			status: entry.job?.status,
+			agentId: entry.job?.agentId,
 			label: entry.job?.label,
 			durationMs: entry.durationMs,
 			meta: entry.job?.latestDetails?.meta,
 			structured,
-			structuredJson,
+			structuredJson: structuredJson === undefined ? undefined : escapeHarnessTags(structuredJson),
 			hasStructuredData,
 			schemaStatus: structured?.status,
 			schemaStatusLabel: structured ? structuredStatusLabel(structured.status) : undefined,
-			schemaError: structured?.error,
+			schemaError: structured?.error === undefined ? undefined : escapeHarnessTags(structured.error),
 			schemaValid: structured?.status === "valid",
 		};
 	});
@@ -124,6 +133,8 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 		jobs: jobs.map(job => ({
 			jobId: job.jobId,
 			type: job.type,
+			status: job.status,
+			agentId: job.agentId,
 			label: job.label,
 			durationMs: job.durationMs,
 			...(job.meta ? { meta: job.meta } : {}),

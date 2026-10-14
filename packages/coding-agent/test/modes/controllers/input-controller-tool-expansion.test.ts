@@ -169,6 +169,7 @@ describe("InputController streaming escape cancellation", () => {
 			handleOmfgEscape: vi.fn(() => false),
 			hasActiveUsagePanel: vi.fn(() => false),
 			dismissUsagePanel: vi.fn(() => false),
+			dismissCommandReport: vi.fn(() => false),
 			cancelPendingSubmission: vi.fn(() => false),
 			dictationSpaceHold: vi.fn(() => vi.fn()),
 			locallySubmittedUserSignatures: new Set(),

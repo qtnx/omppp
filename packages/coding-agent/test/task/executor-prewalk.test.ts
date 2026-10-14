@@ -296,7 +296,7 @@ describe("runSubprocess per-agent prewalk", () => {
 		cfgTaskPrewalk.set(settings, true);
 		const otherAgent = await runSubprocess({
 			...baseOptions("subagent-prewalk-setting-other-agent", settings),
-			agent: { ...baseAgent, name: "sonic", model: [`${primary.provider}/${primary.id}`] },
+			agent: { ...baseAgent, name: "quick_task", model: [`${primary.provider}/${primary.id}`] },
 		});
 		expect(otherAgent.exitCode).toBe(0);
 		expect(spy.mock.calls[1]?.[0]?.prewalk).toBeUndefined();

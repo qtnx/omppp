@@ -14,7 +14,7 @@ import { sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import {
 	denyError,
-	formatApprovalPrompt,
+	requestApproval,
 	resolveApproval,
 	resolveApprovalFromContext,
 	truncateForPrompt,
@@ -24,7 +24,7 @@ import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
 import { applyToolProxy } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
-import type { RegisteredTool, ToolCallEventResult } from "./types";
+import type { ExtensionAgentIdentity, RegisteredTool, ToolCallEventResult } from "./types";
 
 /**
  * Second `renderCall` argument that satisfies both the omp and the upstream-pi
@@ -185,6 +185,11 @@ function safetyCheckLines(checks: readonly ComputerSafetyCheck[]): string[] {
  * Wraps a tool with extension callbacks for interception.
  * - Emits tool_call event before execution (can block)
  * - Emits tool_result event after execution (can modify result)
+ *
+ * `agent` overrides the runner's own `ctx.agent` for those events when the tool
+ * runs on behalf of a different agent than the runner's session — the advisor's
+ * toolset shares the primary session's runner (for approval enforcement) but
+ * must not be reported as the primary agent.
  */
 export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetails = unknown> implements AgentTool<
 	TParameters,
@@ -195,11 +200,14 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 	declare parameters: TParameters;
 	declare label: string;
 	declare strict: boolean;
+	readonly #agent: ExtensionAgentIdentity | undefined;
 
 	constructor(
 		private tool: AgentTool<TParameters, TDetails>,
 		private runner: ExtensionRunner,
+		agent?: ExtensionAgentIdentity,
 	) {
+		this.#agent = agent;
 		applyToolProxy(tool, this);
 	}
 
@@ -270,6 +278,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 						),
 					},
 					signal,
+					this.#agent,
 				)) as ToolCallEventResult | undefined;
 
 				if (callResult?.block) {
@@ -391,20 +400,16 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			}
 
 			const uiContext = this.runner.getUIContext();
-			const basePrompt = formatApprovalPrompt(this.tool, resolvedArgs, approvalCheck.reason);
-			const safetyPrompt =
-				pendingSafetyChecks.length > 0
-					? `${basePrompt}\nProvider safety checks:\n${safetyCheckLines(pendingSafetyChecks).join("\n")}`
-					: basePrompt;
-			let choice: string | undefined;
+			const safetyAppendix =
+				pendingSafetyChecks.length > 0 ? ["Provider safety checks:", ...safetyCheckLines(pendingSafetyChecks)] : [];
+			let approved: boolean;
 			try {
-				choice = await uiContext.select(safetyPrompt, ["Approve", "Deny"]);
+				approved = await requestApproval(uiContext, this.tool, resolvedArgs, approvalCheck.reason, safetyAppendix);
 			} catch (err) {
 				await emitApprovalResolved(false, err instanceof Error ? err.message : "approval aborted");
 				cancelPreflight();
 				throw err;
 			}
-			const approved = choice === "Approve";
 			await emitApprovalResolved(approved, approved ? undefined : "denied by user");
 			if (!approved) {
 				cancelPreflight();
@@ -447,21 +452,32 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 
 		// Emit tool_result event - extensions can modify the result and error status
 		if (this.runner.hasHandlers("tool_result")) {
-			const resultResult = await this.runner.emitToolResult({
-				type: "tool_result",
-				toolName: this.tool.name,
-				toolCallId,
-				input: normalizeToolEventInput(
-					this.tool.name,
-					resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
-				),
-				content: result.content,
-				details: result.details,
-				isError: !!executionError || result.isError === true,
-			});
+			const resultResult = await this.runner.emitToolResult(
+				{
+					type: "tool_result",
+					toolName: this.tool.name,
+					toolCallId,
+					input: normalizeToolEventInput(
+						this.tool.name,
+						resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
+					),
+					content: result.content,
+					details: result.details,
+					isError: !!executionError || result.isError === true,
+				},
+				this.#agent,
+			);
 
-			if (resultResult) {
-				const modifiedContent: (TextContent | ImageContent)[] = resultResult.content ?? result.content;
+			// Handler context reports into this call's sink like tool-authored
+			// context: it is delivered even for a failed call (the handler saw
+			// `isError`), and precedes any pending `tool_call` context.
+			if (resultResult?.additionalContext !== undefined) {
+				context?.addAdditionalContext?.(resultResult.additionalContext);
+			}
+
+			// `content` is present only when a handler modified the result.
+			if (resultResult?.content !== undefined) {
+				const modifiedContent: (TextContent | ImageContent)[] = resultResult.content;
 				const modifiedDetails = (resultResult.details ?? result.details) as TDetails;
 
 				// Effective error state: an explicit handler override wins; otherwise the

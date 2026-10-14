@@ -1,5 +1,6 @@
 import type { Model } from "@oh-my-pi/pi-ai";
-import type { SessionState } from "@oh-my-pi/pi-wire";
+import type { SessionState, TspSpan, TspTone } from "@oh-my-pi/pi-wire";
+import type { NativeNode, NativeUiEvent } from "../native/node";
 import type { ContextLineMode, StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "./schema";
 import type { ActiveRepoContext, StatusLineSession } from "./host";
 import type { LoopConditionConfig, LoopLimitRuntime } from "./loop";
@@ -137,7 +138,7 @@ export interface SegmentContext {
 	} | null;
 	/** Modal editing state, or null when `tui.vimMode` is off. */
 	vim: {
-		mode: "insert" | "normal" | "visual" | "visual-line";
+		mode: "insert" | "normal" | "visual" | "visual-line" | "replace";
 		/** Half-typed operator/count (`"2d"`), empty when nothing is pending. */
 		pending: string;
 		/** Lines spanned by the active Visual selection; 0 outside Visual modes. */
@@ -163,6 +164,8 @@ export interface SegmentContext {
 		orchestrationCacheRead: number;
 		premiumRequests: number;
 		cost: number;
+		/** Portion of `cost` carried by completed subagent task results. */
+		subagentCost?: number;
 		tokensPerSecond: number | null;
 	};
 	/** Context usage percent, or null when unknown (e.g. right after compaction). */
@@ -175,6 +178,11 @@ export interface SegmentContext {
 	/** Blink phase for the running-speculation pulse; toggled by the component's timer. */
 	speculationBlinkOn: boolean;
 	subagentCount: number;
+	/**
+	 * Spend of every subagent under the main session (descendants included),
+	 * from the Agent Hub projection; 0 while a subagent is focused or unknown.
+	 */
+	subagentTreeCost?: number;
 	/**
 	 * Active processing time accumulated this session, in ms — the union of
 	 * every `agent_start`→`agent_end` window plus the currently-streaming
@@ -220,8 +228,18 @@ export interface SegmentContext {
 			expiryHours?: number;
 			expired?: boolean;
 			unavailableReason?: string;
+			expiring?: StatusResetExpiry;
 		};
 	} | null;
+}
+
+/** How close an account's saved resets are to expiring, when it is worth a warning. */
+export interface StatusResetExpiry {
+	/** `soon`: within 7 days; `imminent`: within 24 hours. */
+	tier: "soon" | "imminent";
+	count: number;
+	/** Expiry of the reset the warning is about (epoch ms); it can be later than the soonest banked one. */
+	expiresAtMs: number;
 }
 
 export interface RenderedSegment {
@@ -229,9 +247,54 @@ export interface RenderedSegment {
 	visible: boolean; // Whether to render (e.g., git hidden when not in repo)
 }
 
+/**
+ * A segment described for a TSP terminal: styled spans (theme/semantic
+ * tokens, no ANSI), a named icon, a tone, and terminal-clocked nodes
+ * (`spinner`, `elapsed`, `rate`) laid out after the spans.
+ */
+export interface SegmentView {
+	readonly spans: readonly TspSpan[];
+	readonly icon?: string;
+	readonly tone?: TspTone;
+	readonly motion?: readonly NativeNode[];
+	/** Tooltip on the segment. */
+	readonly title?: string;
+}
+
+/**
+ * The status line's facts for the native composer. A TSP terminal shows no
+ * status strip: the tab title carries the session, the pane header the path,
+ * and the composer the rest (the git branch among its facts).
+ */
+export interface ComposerFacts {
+	/**
+	 * `meter` (role `omp.composer.context`): context usage along the composer's top edge,
+	 * the whole window wide, with the speculation and compaction points as icon marks,
+	 * the share as `label` and the window as `total`.
+	 */
+	readonly context: NativeNode;
+	/** The model chip's label: name plus the advisor, fast-mode and slow-mode marks. */
+	readonly model: SegmentView;
+	/**
+	 * `status` (role `omp.composer.extras`, `grow: 1`) of the other configured
+	 * segments as `seg`s; the bar's flexible space, so present even when empty.
+	 */
+	readonly extras: NativeNode;
+	/** `text` (role `omp.composer.usage`): the session cost (empty when there is none). */
+	readonly usage: NativeNode;
+}
+
+/** Supplies {@link ComposerFacts} and takes the clicks on them (`status.*` actions). */
+export interface ComposerFactsSource {
+	describeComposerFacts(): ComposerFacts;
+	handleNativeEvent(event: NativeUiEvent): void;
+}
+
 export interface StatusLineSegment {
 	id: StatusLineSegmentId;
 	render(ctx: SegmentContext): RenderedSegment;
+	/** Native description; null when the segment is hidden. */
+	describe(ctx: SegmentContext): SegmentView | null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

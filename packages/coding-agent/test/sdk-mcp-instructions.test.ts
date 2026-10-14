@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { AuthStorage } from "@oh-my-pi/pi-ai";
+import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -31,8 +32,9 @@ const MCP_TOOL_NAME = "mcp__instr_do_thing";
 const MCP_MAPPING_FALLBACK =
 	"Additional mounted MCP tool mappings were omitted to keep this prompt bounded. Inspect `xd://` for the exact current paths.";
 const MCP_EXECUTION_GUIDANCE = "Execute each mounted tool by writing JSON arguments to its mounted path.";
+/** Route line for the fixture's backtick-named tool: escaped label, normalized mount path. */
+const DO_THING_ROUTE = '- "do\\u0060thing" → `xd://mcp__instr_do_thing`';
 const MCP_ROUTE_SECTION = "## MCP Tool Routes";
-const DEFAULT_MCP_ROUTE = '- "do\\u0060thing" → `xd://mcp__instr_do_thing`';
 const CONTEXT_MODE_ROUTE = '- "ctx_execute" → `xd://mcp__context_mode_ctx_execute`';
 const CONTEXT_MODE_MCP_TOOL_NAME = "mcp__context_mode_ctx_execute";
 /** Sentinel proving the user's append prompt stays a block of its own. */
@@ -48,6 +50,22 @@ function routeSection(prompt: string): string {
 	if (start === -1) return "";
 	const end = prompt.indexOf("\n#", start + MCP_ROUTE_SECTION.length);
 	return prompt.slice(start, end === -1 ? undefined : end);
+}
+
+/**
+ * Polls `read` every 10ms until `done` accepts its value or 12s elapse, returning
+ * the last value. Deferred discovery is a real child-process handshake with no
+ * completion signal, so fake timers cannot drive it. A server's instructions land
+ * on connect, before its tools mount, so callers wait on the exact state they assert.
+ */
+async function eventually<T>(read: () => T, done: (value: T) => boolean): Promise<T> {
+	const deadline = Date.now() + 12_000;
+	let value = read();
+	while (!done(value) && Date.now() < deadline) {
+		await Bun.sleep(10);
+		value = read();
+	}
+	return value;
 }
 
 describe("createAgentSession MCP server instructions (deferred UI)", () => {
@@ -74,6 +92,9 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 
 	afterAll(() => {
 		authStorage.close();
+		// The model registry opened the shared `<isolatedAgentDir>/models.db` cache;
+		// release it so Windows can delete the isolated home.
+		closeModelCache();
 		setAgentDir(originalAgentDir);
 		for (const dir of [isolatedHome]) {
 			if (dir && fs.existsSync(dir)) {
@@ -198,24 +219,20 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			// instructions are not yet present.
 			expect(session.systemPrompt.join("\n")).not.toContain(SERVER_INSTRUCTIONS);
 
-			// Background connect publishes server instructions before
-			// `refreshMCPTools` commits the mounted route. Poll the route itself:
-			// it is the observable completion condition this assertion needs.
-			const deadline = Date.now() + 12_000;
-			let prompt = session.systemPrompt.join("\n");
-			while (!prompt.includes(DEFAULT_MCP_ROUTE) && Date.now() < deadline) {
-				await Bun.sleep(10);
-				prompt = session.systemPrompt.join("\n");
-			}
+			// Background connect + `refreshMCPTools` rebuild must surface the
+			// instructions and the mounted tool's route.
+			const prompt = await eventually(
+				() => session.systemPrompt.join("\n"),
+				text => text.includes(SERVER_INSTRUCTIONS) && text.includes(DO_THING_ROUTE),
+			);
 
 			expect(prompt).toContain(SERVER_INSTRUCTIONS);
 			// The instructions are framed under the MCP section, and guidance keeps
 			// the escaped original tool name while routing through the exact
 			// normalized name actually mounted in the live xd:// registry.
 			expect(prompt).toContain("MCP Server Instructions");
-			expect(prompt).toContain(DEFAULT_MCP_ROUTE);
+			expect(prompt).toContain(DO_THING_ROUTE);
 			expect(prompt).toContain(MCP_EXECUTION_GUIDANCE);
-			expect(prompt).toContain('- "do\\u0060thing" → `xd://mcp__instr_do_thing`');
 		} finally {
 			await session.dispose();
 		}
@@ -290,16 +307,12 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 		try {
 			// Context Mode advertises mounted MCP tools but currently supplies no
 			// `connection.instructions`. Deferred discovery must still rebuild the
-			// prompt with the globally rendered route guidance. The SDK exposes no
-			// completion signal for this real child-process handshake, and fake
-			// timers cannot drive it, so poll only until the route becomes visible.
-			let prompt = session.systemPrompt.join("\n");
-			expect(prompt).not.toContain(CONTEXT_MODE_ROUTE);
-			const deadline = Date.now() + 12_000;
-			while (!prompt.includes(CONTEXT_MODE_ROUTE) && Date.now() < deadline) {
-				await Bun.sleep(10);
-				prompt = session.systemPrompt.join("\n");
-			}
+			// prompt with the globally rendered route guidance.
+			expect(session.systemPrompt.join("\n")).not.toContain(CONTEXT_MODE_ROUTE);
+			const prompt = await eventually(
+				() => session.systemPrompt.join("\n"),
+				text => text.includes(CONTEXT_MODE_ROUTE),
+			);
 
 			expect(prompt).toContain(CONTEXT_MODE_ROUTE);
 			expect(session.getXdevToolEntries().map(entry => entry.name)).toContain(CONTEXT_MODE_MCP_TOOL_NAME);
@@ -345,14 +358,12 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 		});
 		try {
 			// Server instructions become observable before the deferred tool refresh
-			// commits its route projection. Poll for the bounded-route fallback so
+			// commits its route projection. Wait for the bounded-route fallback so
 			// assertions cannot observe that valid intermediate prompt.
-			const deadline = Date.now() + 12_000;
-			let prompt = session.systemPrompt.join("\n");
-			while (!prompt.includes(MCP_MAPPING_FALLBACK) && Date.now() < deadline) {
-				await Bun.sleep(10);
-				prompt = session.systemPrompt.join("\n");
-			}
+			const prompt = await eventually(
+				() => session.systemPrompt.join("\n"),
+				text => text.includes(SERVER_INSTRUCTIONS) && text.includes(MCP_MAPPING_FALLBACK),
+			);
 
 			expect(prompt).toContain(SERVER_INSTRUCTIONS);
 			const renderedMappings = prompt.split("\n").filter(line => line.startsWith('- "row_'));
@@ -405,7 +416,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			// mapping and the section asks for no discovery read.
 			const prompt = session.systemPrompt.join("\n");
 			expect(prompt).toContain("## mcp__instr_do_thing");
-			expect(prompt.split("\n")).toContain('- "do\\u0060thing" → `xd://mcp__instr_do_thing`');
+			expect(prompt.split("\n")).toContain(DO_THING_ROUTE);
 			expect(routeSection(prompt)).not.toContain(READ_FIRST_CLAUSE);
 		} finally {
 			await session.dispose();
@@ -446,9 +457,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			// route line, and the section asks for a read before first use.
 			const prompt = session.systemPrompt.join("\n");
 			expect(prompt).not.toContain("## mcp__instr_do_thing");
-			expect(prompt.split("\n")).toContain(
-				'- "do\\u0060thing" → `xd://mcp__instr_do_thing` — Fixture tool returning a deterministic sentinel.',
-			);
+			expect(prompt.split("\n")).toContain(`${DO_THING_ROUTE} — Fixture tool returning a deterministic sentinel.`);
 			expect(prompt.split("xd://mcp__instr_do_thing")).toHaveLength(2);
 			expect(routeSection(prompt)).toContain(READ_FIRST_CLAUSE);
 		} finally {
@@ -481,19 +490,16 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			// A device-only write supplies the xd:// execution half without granting
 			// filesystem mutation, so deferred MCP tools mount after connection
 			// instead of shipping their full schemas top-level.
-			// Real stdio discovery is fire-and-forget with no completion signal;
-			// fake timers cannot drive the child-process handshake.
 			// Mount state lands before the awaited system-prompt rebuild while
 			// agent tools land after it, so poll for the whole applied selection
 			// (mounted MCP tool AND transport write) — not the mount alone.
-			const deadline = Date.now() + 12_000;
-			let mountedNames = session.getXdevToolEntries().map(entry => entry.name);
-			let activeNames = session.getActiveToolNames();
-			while ((!mountedNames.includes(MCP_TOOL_NAME) || !activeNames.includes("write")) && Date.now() < deadline) {
-				await Bun.sleep(10);
-				mountedNames = session.getXdevToolEntries().map(entry => entry.name);
-				activeNames = session.getActiveToolNames();
-			}
+			const { mountedNames, activeNames } = await eventually(
+				() => ({
+					mountedNames: session.getXdevToolEntries().map(entry => entry.name),
+					activeNames: session.getActiveToolNames(),
+				}),
+				state => state.mountedNames.includes(MCP_TOOL_NAME) && state.activeNames.includes("write"),
+			);
 			expect(activeNames).toContain("read");
 			expect(activeNames).toContain("write");
 			expect(activeNames).not.toContain(MCP_TOOL_NAME);
@@ -527,13 +533,14 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			toolNames: ["read", MCP_TOOL_NAME],
 		});
 		try {
-			const deadline = Date.now() + 12_000;
-			let prompt = session.systemPrompt.join("\n");
-			while (!prompt.includes(SERVER_INSTRUCTIONS) && Date.now() < deadline) {
-				await Bun.sleep(10);
-				prompt = session.systemPrompt.join("\n");
-			}
-			const activeNames = session.getActiveToolNames();
+			const activeNames = await eventually(
+				() => session.getActiveToolNames(),
+				names => names.includes(MCP_TOOL_NAME),
+			);
+			const prompt = await eventually(
+				() => session.systemPrompt.join("\n"),
+				text => text.includes(SERVER_INSTRUCTIONS),
+			);
 
 			expect(activeNames).toContain(MCP_TOOL_NAME);
 			expect(session.getXdevToolEntries().map(entry => entry.name)).not.toContain(MCP_TOOL_NAME);
@@ -565,17 +572,10 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			toolNames: ["bash"],
 		});
 		try {
-			const deadline = Date.now() + 12_000;
-			let prompt = session.systemPrompt.join("\n");
-			while (!prompt.includes(SERVER_INSTRUCTIONS) && Date.now() < deadline) {
-				await Bun.sleep(10);
-				prompt = session.systemPrompt.join("\n");
-			}
-			let activeNames = session.getActiveToolNames();
-			while (!activeNames.includes(MCP_TOOL_NAME) && Date.now() < deadline) {
-				await Bun.sleep(10);
-				activeNames = session.getActiveToolNames();
-			}
+			const activeNames = await eventually(
+				() => session.getActiveToolNames(),
+				names => names.includes(MCP_TOOL_NAME),
+			);
 
 			expect(activeNames).not.toContain("read");
 			expect(activeNames).toContain(MCP_TOOL_NAME);

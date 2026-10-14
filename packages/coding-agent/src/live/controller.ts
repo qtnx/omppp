@@ -65,6 +65,11 @@ export interface LiveSessionControllerOptions {
 	 * choice — a guest's `live-offer` `lang`, or `ompx live --language` — wins.
 	 */
 	language?: string;
+	/**
+	 * Handlebars template replacing the bundled live instructions; rendered with
+	 * `{ username, firstName, language }` like the bundled prompt.
+	 */
+	instructions?: string;
 	/** Control-plane factory; defaults to the Codex live transport. Overridable for tests. */
 	createTransport?: (options: LiveTransportOptions) => LiveControlTransport;
 }
@@ -97,6 +102,7 @@ export class LiveSessionController {
 	readonly #callbacks: LiveSessionCallbacks;
 	readonly #voice: string;
 	readonly #language: string;
+	readonly #instructionsTemplate: string;
 	readonly #createTransport: (options: LiveTransportOptions) => LiveControlTransport;
 
 	#transport: LiveControlTransport | undefined;
@@ -126,6 +132,7 @@ export class LiveSessionController {
 		this.#callbacks = options.callbacks;
 		this.#voice = options.voice?.trim() || DEFAULT_LIVE_VOICE;
 		this.#language = options.language?.trim() || DEFAULT_LANGUAGE;
+		this.#instructionsTemplate = options.instructions ?? liveInstructionsTemplate;
 		this.#createTransport = options.createTransport ?? (opts => new CodexLiveTransport(opts));
 	}
 
@@ -162,7 +169,7 @@ export class LiveSessionController {
 			);
 			this.#agent.onDelegationEnd(delegationId => this.#guardEvent(() => this.#handleDelegationEnd(delegationId)));
 
-			const instructions = prompt.render(liveInstructionsTemplate, {
+			const instructions = prompt.render(this.#instructionsTemplate, {
 				firstName: this.#identity.firstName,
 				username: this.#identity.username,
 				language: describeLanguage(this.#language),

@@ -14,7 +14,11 @@ import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_
 import { CREDENTIAL_DISABLED_NOTICE_SOURCE } from "../session/credential-disabled-notice";
 import { isSilentAbort } from "../session/messages";
 import { flushTelemetryExport } from "../telemetry-export";
-import { formatPersistenceDurabilityFailure, formatPersistenceFailure } from "./persistence-failure";
+import {
+	formatPersistenceDurabilityFailure,
+	formatPersistenceFailure,
+	formatPersistenceNotice,
+} from "./persistence-failure";
 import { initializeExtensions } from "./runtime-init";
 
 import { cfgPlanDefaultOnStartup, cfgPlanEnabled } from "../plan-mode/settings";
@@ -127,6 +131,7 @@ async function runPrintModeCore(
 	signalTeardownActive: () => boolean,
 ): Promise<number> {
 	const { mode, messages = [], initialMessage, initialImages, printThoughts, planYolo = false } = options;
+	session.disableStopTimeTodoReminders();
 
 	// process.stdout.write is fire-and-forget: a large final record (e.g. a
 	// multi-MB agent_end) can be dropped when the process exits before the pipe
@@ -219,6 +224,9 @@ async function runPrintModeCore(
 	session.sessionManager.onPersistenceError(error => {
 		persistenceFailure = error;
 		writeStderrLine(formatPersistenceFailure(error.message));
+	});
+	session.sessionManager.onPersistenceNotice(notice => {
+		writeStderrLine(`Warning: ${formatPersistenceNotice(notice)}`);
 	});
 
 	// Always subscribe to enable session persistence via _handleAgentEvent
@@ -338,10 +346,11 @@ async function runPrintModeCore(
 	// A turn-fatal exit cannot hold automation for the full normal drain budget.
 	if (!strictMCPFailure) {
 		// Print mode's drain budget covers a fallback-chain switch; the reviewer's
-		// verdict is the point of a headless advisor run, so wait through recovery.
+		// verdict is the point of a headless advisor run, so wait through recovery,
+		// and wait on `strict` reviewers past the budget like every primary boundary.
 		await session.waitForAdvisorCatchup(
 			terminalFailure ? PRINT_MODE_ERROR_ADVISOR_DRAIN_TIMEOUT_MS : PRINT_MODE_ADVISOR_DRAIN_TIMEOUT_MS,
-			{ waitThroughRecovery: true },
+			{ waitThroughRecovery: true, strictWithoutDeadline: true },
 		);
 	}
 	// Error spans must reach the exporter; the postmortem `exit` handler can't await.

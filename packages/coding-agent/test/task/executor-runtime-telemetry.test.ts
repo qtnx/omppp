@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
@@ -86,6 +87,8 @@ function createSessionHarness(lastAssistantMessage?: AssistantMessage): SessionH
 		} as never,
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
+		getToolByName: () => undefined,
+		addDisposer: () => {},
 		setActiveToolsByName: async () => {},
 		subscribeRunState: () => () => {},
 		subscribe: listener => {
@@ -164,6 +167,12 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe("subagent early-yield notice", () => {
+	// The rotating log file schedules its own flush timer on the first debug write; silence it so
+	// getTimerCount() reflects only timers the executor failed to clear.
+	beforeEach(() => {
+		vi.spyOn(logger, "debug").mockImplementation(() => {});
+	});
+
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.useRealTimers();

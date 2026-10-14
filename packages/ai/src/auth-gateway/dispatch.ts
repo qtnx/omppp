@@ -20,8 +20,9 @@ import type { AuthGatewayServerOptions } from "./types";
 
 export type ModelResolver = (modelId: string) => Model<Api> | undefined;
 
-export interface AuthGatewayBootOptions extends AuthGatewayServerOptions {
-	/** Source of credentials. Caller wires this to a broker-backed AuthStorage. */
+/** What the gateway's routes need, whatever transport carries the requests. */
+export interface AuthGatewayRouteOptions {
+	/** Source of credentials: broker-backed for `serve`, the CLI's own for `stdio`. */
 	storage: AuthStorage;
 	/**
 	 * Resolve a client-requested model id to a pi-ai Model. Caller supplies
@@ -31,9 +32,14 @@ export interface AuthGatewayBootOptions extends AuthGatewayServerOptions {
 	resolveModel: ModelResolver;
 	/** Optional supplier for `/v1/models` listing. Returns the full model array. */
 	listModels?: () => Iterable<Model<Api>>;
+	/** Providers the host does not serve; `/v1/usage` and `/v1/credentials/check` leave their accounts out. */
+	excludeProviders?: ReadonlySet<string>;
 	/** Upstream transport for every provider call; defaults to global `fetch`. Test seam. */
 	fetch?: FetchImpl;
 }
+
+/** The HTTP server's options: the routes' plus its listener and inbound auth. */
+export interface AuthGatewayBootOptions extends AuthGatewayServerOptions, AuthGatewayRouteOptions {}
 
 /**
  * The client's own session key, or `undefined` when it sent none. A blank key
@@ -78,10 +84,10 @@ export function resolveGatewayAccount(
  * Resolve the credential for one request from broker-backed storage.
  *
  * pi-ai clients never consult `AuthStorage`; the gateway resolves the bearer
- * (an OAuth access token refreshed through the broker when needed) and hands
- * it to the client. Returns the key, or the error classification the route
- * should encode in its own envelope: storage failures map through
- * {@link classifyGatewayError}, a provider without any credential is a 401.
+ * and its OAuth identity together (refreshing through the broker when needed).
+ * Keep this selection snapshot intact even if another request replaces the
+ * stored token before dispatch. Storage failures map through
+ * {@link classifyGatewayError}; a provider without any credential is a 401.
  */
 export async function resolveGatewayApiKeyWithOrigin(
 	storage: AuthStorage,
@@ -130,7 +136,7 @@ export async function resolveGatewayApiKeyWithOrigin(
  * - **auth-failure** → {@link AuthStorage.limits.invalidateMatching}.
  *   Suspect/delete the row so it doesn't get re-picked next request.
  *
- * In both branches we return the next `getApiKey` result (sticky on the
+ * In both branches we return the next `getWithCredential` result (sticky on the
  * same `sessionId`) so the client can transparently retry the pre-emit
  * failure with a fresh credential. Returning `undefined` aborts the retry
  * and surfaces the original error to the caller.
@@ -199,9 +205,11 @@ function modelKeyOptions(model: Model<Api>, signal: AbortSignal): AuthApiKeyOpti
  *
  * `lastResolution` tracks both the most recent bearer and its origin so the
  * switch step invalidates the credential that failed, never re-hands a bearer
- * the client already rejected, and audits the replacement. `onResolution`
- * observes every rotation; routes that retain provider session state use it to
- * re-key the account lease, one-shot routes pass `undefined`.
+ * the client already rejected, and audits the replacement; a retry context's
+ * `previousKey` wins for the invalidation, since concurrent operations sharing
+ * one resolver (split judgment chunks) each know the bearer they sent.
+ * `onResolution` observes every rotation; routes that retain provider session
+ * state use it to re-key the account lease, one-shot routes pass `undefined`.
  */
 export function buildGatewayApiKeyResolver(
 	storage: AuthStorage,
@@ -215,20 +223,21 @@ export function buildGatewayApiKeyResolver(
 ): ApiKeyResolver {
 	let lastResolution = initialResolution;
 	const attemptedKeys = new Set<string>();
-	const select = (resolution: AuthApiKeyResolution | undefined): string | undefined => {
+	const select = (resolution: AuthApiKeyResolution | undefined): AuthApiKeyResolution | undefined => {
 		if (!resolution || attemptedKeys.has(resolution.apiKey)) return undefined;
 		lastResolution = resolution;
 		onResolution?.(resolution);
-		return resolution.apiKey;
+		return resolution;
 	};
-	return async ({ lastChance, error, signal }) => {
+	return async ({ lastChance, error, signal, previousKey }) => {
 		const sig = signal ?? requestSignal;
 		if (error === undefined) {
 			lastResolution = initialResolution;
 			attemptedKeys.clear();
-			return initialResolution.apiKey;
+			return initialResolution;
 		}
 		attemptedKeys.add(lastResolution.apiKey);
+		if (previousKey !== undefined) attemptedKeys.add(previousKey);
 		if (!lastChance) {
 			const refreshed = await storage.keys.withOrigin(model.provider, sessionId, {
 				...modelKeyOptions(model, sig),
@@ -243,7 +252,7 @@ export function buildGatewayApiKeyResolver(
 			model,
 			sessionId,
 			model.provider,
-			lastResolution.apiKey,
+			previousKey ?? lastResolution.apiKey,
 			error,
 			sig,
 			format,

@@ -31,6 +31,7 @@ import * as autonomySettings from "../autonomy/settings";
 import * as workflowSettings from "../workflow/settings";
 import * as planModeSettings from "../plan-mode/settings";
 import * as goalsSettings from "../goals/settings";
+import * as titleSettings from "../utils/title-settings";
 import * as extensibilitySettings from "../extensibility/settings";
 import * as webSettings from "../web/settings";
 import * as toolsBrowserSettings from "../tools/browser/settings";
@@ -81,6 +82,7 @@ const DOMAINS: readonly Readonly<Record<string, unknown>>[] = [
 	workflowSettings,
 	planModeSettings,
 	goalsSettings,
+	titleSettings,
 	extensibilitySettings,
 	feedbackSettings,
 	webSettings,

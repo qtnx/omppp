@@ -103,6 +103,7 @@ function createScriptedSession(script: RoleScript): AgentSession {
 		getEnabledToolNames: () => ["yield", "report_finding"],
 		setActiveToolsByName: async () => {},
 		subscribeRunState: () => () => {},
+		addDisposer: () => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			listeners.push(listener);
 			return () => {
@@ -282,7 +283,7 @@ function mockIsolation(options: { captureError?: Error; captureResults?: DeltaPa
 	}
 	const commitToBranch = vi
 		.spyOn(worktreeModule, "commitToBranch")
-		.mockResolvedValue({ branchName: "omp/task/FixBug", nestedPatches: [] });
+		.mockResolvedValue({ branchName: "omp/task/FixBug", rootPatch: "diff --git a/x b/x\n", nestedPatches: [] });
 	const cleanupIsolation = vi.spyOn(worktreeModule, "cleanupIsolation").mockResolvedValue();
 
 	return { captureDeltaPatch, commitToBranch, cleanupIsolation };
@@ -311,7 +312,9 @@ async function initUnbornStatsRepo(): Promise<string> {
 	return repo;
 }
 
-const configuredModels = getBundledModels("openai-codex").filter(model => ["gpt-5.4", "gpt-5.5"].includes(model.id));
+const configuredModels = getBundledModels("openai-codex").filter(model =>
+	["gpt-5.6-luna", "gpt-5.6-sol"].includes(model.id),
+);
 if (configuredModels.length !== 2) throw new Error("Expected bundled reviewer test models");
 function createSession(overrides: Partial<Record<string, unknown>> = {}, cwd = "/tmp"): ToolSession {
 	const authStorage = {
@@ -658,7 +661,7 @@ describe("task review gate", () => {
 				reviewGate: {
 					enabled: true,
 					reviewerAgent: REVIEWER_AGENT,
-					reviewerModel: ["openai-codex/gpt-5.5:xhigh"],
+					reviewerModel: ["openai-codex/gpt-5.6-sol:xhigh"],
 					fixerAgent: FIXER_AGENT,
 					maxFixIterations: 2,
 					failOnPriorities: [0, 1],
@@ -710,7 +713,7 @@ describe("task review gate", () => {
 				reviewGate: {
 					enabled: true,
 					reviewerAgent: REVIEWER_AGENT,
-					reviewerModel: ["openai-codex/gpt-5.5:xhigh"],
+					reviewerModel: ["openai-codex/gpt-5.6-sol:xhigh"],
 					fixerAgent: FIXER_AGENT,
 					maxFixIterations: 2,
 					failOnPriorities: [0, 1],
@@ -737,7 +740,7 @@ describe("task review gate", () => {
 		const tool = await TaskTool.create(
 			createSession({
 				"task.agentModelOverrides": {
-					[REVIEWER_AGENT]: "openai-codex/gpt-5.4",
+					[REVIEWER_AGENT]: "openai-codex/gpt-5.6-luna",
 				},
 			}),
 		);
@@ -747,7 +750,7 @@ describe("task review gate", () => {
 			isolated: true,
 		});
 
-		expect(runSpy.mock.calls[1]?.[0].modelOverride).toEqual(["openai-codex/gpt-5.4"]);
+		expect(runSpy.mock.calls[1]?.[0].modelOverride).toEqual(["openai-codex/gpt-5.6-luna"]);
 		expect(runSpy.mock.calls[1]?.[0].modelSelectorFromUserConfig).toBe(true);
 		expect(firstResult(result).exitCode).toBe(0);
 	});

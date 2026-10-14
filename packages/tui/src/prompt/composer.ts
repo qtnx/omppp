@@ -15,12 +15,14 @@ import {
 	type TUIOptions,
 	type ViewportSize,
 } from "../tui";
-import { sliceWithWidth, visibleWidth } from "../utils";
+import { wrapLiteralLine } from "../utils";
+import type { NativeChild, NativeSurface, NativeSurfaceProvider } from "../native/node";
+import { sameItems } from "../native/memo";
 import { postmortem } from "@oh-my-pi/pi-utils";
 import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
-import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./welcome";
+import { WelcomeComponent } from "./welcome";
 import { ensureThemeSync, getEditorTheme, theme } from "../theme/theme";
 
 const DOUBLE_INTERRUPT_MS = 500;
@@ -56,11 +58,6 @@ export const COMPOSER_DEFAULTS: ComposerPreferences = {
 /** Welcome data that can be supplied initially or patched as startup resolves it. */
 export interface ComposerWelcomeUpdate {
 	readonly version?: string;
-	readonly modelName?: string;
-	readonly providerName?: string;
-	readonly recentSessions?: readonly RecentSession[];
-	/** Detected project servers; `null` means LSP is disabled and hides the welcome section. */
-	readonly lspServers?: readonly LspServerInfo[] | null;
 }
 
 /**
@@ -89,16 +86,15 @@ export interface ComposerOptions {
 	readonly now?: () => number;
 }
 
-/** How {@link Composer.setRuntimeChildren} bills below-transcript roots against transcript retirement. */
+/** How {@link Composer.setRuntimeChildren} lays out the roots below the transcript. */
 export interface RuntimeChildrenOptions {
 	/**
-	 * Below-transcript roots whose growth is momentary (inline dialogs, a tall
-	 * multi-line editor). They are billed at their smallest height so expansion
-	 * clips the live tail instead of retiring rows a later shrink could not
-	 * reclaim (#11007). Every other root is billed at its current height, so
-	 * settled rows it displaces retire to native scrollback.
+	 * Dock order on a TSP terminal (no status strip; the composer carries its
+	 * facts): the native dock stacks HUD pills, the working row and queued messages over
+	 * the composer in its own order, and may add describe-only roots. Defaults
+	 * to the roots below the transcript in render order.
 	 */
-	readonly transient?: readonly Component[];
+	readonly nativeDock?: readonly Component[];
 }
 
 /** Controls the first terminal paint for a composer that does not already own the terminal. */
@@ -114,7 +110,11 @@ export interface ComposerStartOptions {
 	readonly deferInput?: boolean;
 }
 
-/** Mount slot below the editor: the startup status line, then the session-aware one. */
+/**
+ * Mount slot below the editor: the startup status line, then the session-aware
+ * one. ANSI only: a TSP terminal has no status strip, the composer carries the
+ * status line's facts ({@link StatusLineComponent.describeComposerFacts}).
+ */
 class StatusHost implements Component {
 	#component: Component | undefined;
 
@@ -189,7 +189,7 @@ function rowTargetCandidates(target: Component): ((local: number) => string[]) |
  * It owns the terminal, welcome header, and editor; InteractiveMode later supplies authoritative
  * data and mounts the session-aware runtime children without replacing the visible header.
  */
-export class Composer implements TerminalFrameProvider {
+export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	readonly ui: TUI;
 	#editor: CustomEditor;
 	readonly #header = new Container();
@@ -200,13 +200,10 @@ export class Composer implements TerminalFrameProvider {
 	#preferences: ComposerPreferences;
 	#welcome: WelcomeComponent | undefined;
 	#version = "";
-	#modelName = "";
-	#providerName = "";
-	#recentSessions: RecentSession[] = [];
-	#lspServers: LspServerInfo[] | null = [];
 	#headerBefore: readonly Component[] = [];
 	#headerAfter: readonly Component[] = [];
 	#runtimeChildren: readonly Component[] = [];
+	#nativeDock: readonly Component[] | undefined;
 	/** Cache-driven status line shown until {@link setStatusComponent} mounts the session's. */
 	#startupStatus: StatusLineComponent | undefined;
 	#runtimeMounted = false;
@@ -250,19 +247,22 @@ export class Composer implements TerminalFrameProvider {
 	#retiredHeaderStart = 0;
 	#resizeRetiredHeaderStart: number | undefined;
 	#lastNormalRows = 0;
-	// Roots from `RuntimeChildrenOptions.transient`, and the smallest height
-	// they have rendered at since mount. Retirement bills transient roots at
-	// this floor, never their peak, so a dialog or tall editor that later
-	// shrinks never leaves committed transcript rows the live viewport cannot
-	// reclaim (#11007). Persistent roots (loader, todo/subagent HUDs) bill at
-	// their current height: they stay up for a whole turn, and billing them at
-	// an idle floor hid the settled rows they displaced until the turn ended.
-	// The floor is terminal-height independent — editor and dialog heights do
-	// not scale with rows — so it is retained across resizes rather than
-	// rediscovered from whatever chrome is expanded when the height changes.
-	#transientChrome: ReadonlySet<Component> = new Set();
-	#transientChromeFloor: number | undefined;
+	// The smallest height the chrome below the transcript has rendered at since
+	// mount. Retirement bills that chrome at this floor, never its current
+	// height: a dialog, report, HUD or tall draft that grows clips the live tail
+	// instead of committing rows it displaces, so when it shrinks those rows
+	// refill the screen rather than leaving a band no frame can fill (#11007).
+	// Displaced rows reach scrollback once newer output pushes them past the
+	// floor, or when the chrome shrinks back and they scroll off normally.
+	// The floor is terminal-height independent — chrome heights do not scale
+	// with rows — so it is retained across resizes rather than rediscovered
+	// from whatever chrome is expanded when the height changes.
+	#chromeFloor: number | undefined;
+	/** Rows the chrome below each below-transcript root took in the last frame (see {@link rowsBelow}). */
+	#rowsBelow = new Map<Component, number>();
 	#lastInterruptAt = 0;
+	/** Last described surface; its arrays are reused while their children are unchanged. */
+	#nativeSurface: NativeSurface = { main: [], dock: [] };
 	#started = false;
 	#stopped = false;
 	#transferred = false;
@@ -328,6 +328,15 @@ export class Composer implements TerminalFrameProvider {
 		this.ui.addChild(this.#statusHost);
 		this.ui.setFocus(this.editor);
 	}
+	/**
+	 * Rows the below-transcript chrome under `root` (editor, status line, …)
+	 * took in the last frame, so a root that grows upward can cap itself to
+	 * the screen rows left above them; `undefined` before `root` was laid out.
+	 */
+	rowsBelow(root: Component): number | undefined {
+		return this.#rowsBelow.get(root);
+	}
+
 	/** Compose the bounded mutable viewport and the next ordered history append. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
@@ -351,24 +360,18 @@ export class Composer implements TerminalFrameProvider {
 		const afterRoots = roots.slice(transcriptIndex + 1);
 		const after: string[] = [];
 		const afterSpans: ViewportClickSpan[] = [];
-		let transientRows = 0;
+		const ends: { root: Component; end: number }[] = [];
 		for (const root of afterRoots) {
-			const start = after.length;
 			this.#renderBelowRoot(root, width, after, afterSpans);
-			if (this.#transientChrome.has(root)) transientRows += after.length - start;
+			ends.push({ root, end: after.length });
 		}
+		this.#rowsBelow = new Map(ends.map(({ root, end }) => [root, after.length - end]));
 		// Offer history under capacity pressure only: blocks stay live (and keep
 		// reflowing to the current width) while the screen has room. A batch
 		// leaves the mutable viewport in the same frame it is appended, so its
 		// rows are never painted twice.
-		//
-		// Retirement bills transient roots at their floor, not their peak: a
-		// confirmation dialog or a tall multi-line editor clips the live tail for
-		// its lifetime, but must not permanently commit transcript rows to native
-		// history — otherwise a later shrink cannot refill the freed rows and the
-		// editor drifts up above a band of blank rows (#11007).
-		this.#transientChromeFloor = Math.min(this.#transientChromeFloor ?? transientRows, transientRows);
-		const belowFloor = after.length - transientRows + this.#transientChromeFloor;
+		this.#chromeFloor = Math.min(this.#chromeFloor ?? after.length, after.length);
+		const belowFloor = this.#chromeFloor;
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
 		// Retirement measures the same live blocks the viewport lays out below;
@@ -381,8 +384,8 @@ export class Composer implements TerminalFrameProvider {
 		// The live tail is laid out against the same baseline retirement is
 		// billed against, so its compaction allocator (one row per block, no
 		// inter-block blanks) engages only when a block genuinely cannot retire.
-		// Rows the transient chrome peak displaces are clipped from the top by
-		// the `drop` slice below, which is what scrollback would have done.
+		// Rows the chrome above its floor displaces are clipped from the top by
+		// the `drop` slice below; they stay live until the chrome shrinks.
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
@@ -392,6 +395,25 @@ export class Composer implements TerminalFrameProvider {
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
 		const mutable = [...before, ...active, ...after].slice(drop);
+		// Once a paint reaches the bottom row over committed history, rows above
+		// it may already be in native scrollback, which no later frame can pull
+		// back down. Keep the input on the bottom row instead of stranding a
+		// band of blank rows under it whenever the frame shrinks — a closing
+		// dialog, report or HUD, or a live block collapsing. The band sits
+		// between the history still on screen and the live rows; replaying
+		// those rows would duplicate them, clearing history would lose them.
+		// Replays position themselves.
+		// Without native history the live viewport is the whole document and
+		// shrinks in place.
+		const filledHistoryRows =
+			history?.kind === "replay" || !(history !== undefined || this.ui.hasProviderHistory())
+				? undefined
+				: this.ui.getFilledHistoryRows();
+		const topPadding =
+			filledHistoryRows === undefined
+				? 0
+				: Math.max(0, rows - Math.min(rows, filledHistoryRows + (history?.rows.length ?? 0)) - mutable.length);
+		if (topPadding > 0) mutable.unshift(...Array<string>(topPadding).fill(""));
 		const viewportLength = mutable.length;
 		const spans: ViewportClickSpan[] = [];
 		const shift = (span: ViewportClickSpan, base: number): void => {
@@ -405,14 +427,49 @@ export class Composer implements TerminalFrameProvider {
 				spans.push({ start: clamped, end, candidates: (local: number) => span.candidates(local + skew) });
 			}
 		};
-		for (const span of activeSpans) shift(span, before.length - drop);
-		for (const span of afterSpans) shift(span, before.length + active.length - drop);
+		for (const span of activeSpans) shift(span, topPadding + before.length - drop);
+		for (const span of afterSpans) shift(span, topPadding + before.length + active.length - drop);
 		this.#lastClickSpans = spans;
 		if (history !== undefined && this.#offeredHistory?.source === "header") {
 			const visibleHeaderRows = Math.max(0, rows - (mutable.length + drop));
 			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
 		}
 		return { history, viewport: this.#paintHoverBand(mutable, spans) };
+	}
+
+	/**
+	 * Describe the whole surface for a TSP terminal. `main` is the flowing
+	 * document: the header (welcome, extras) and every transcript block as its
+	 * own component child. `dock` is the live chrome below the transcript in
+	 * render order: pending messages, HUDs, the working row, the editor and the
+	 * status line. There is no history/viewport split: retirement, resize
+	 * replay and hover bands are ANSI concerns.
+	 */
+	describeSurface(): NativeSurface {
+		if (!this.#started || this.#stopped) return this.#nativeSurface;
+		const main: NativeChild[] = [...this.#header.children];
+		const dock: NativeChild[] = [];
+		if (!this.#runtimeMounted) {
+			// The bootstrap gap is row spacing; the terminal owns the dock layout.
+			dock.push(this.editor);
+		} else {
+			const roots = this.#runtimeChildren;
+			const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
+			if (transcriptIndex < 0) {
+				dock.push(...roots);
+			} else {
+				const transcript = roots[transcriptIndex] as TranscriptContainer;
+				main.push(...roots.slice(0, transcriptIndex), ...transcript.nativeBlocks());
+				dock.push(...(this.#nativeDock ?? roots.slice(transcriptIndex + 1)));
+			}
+		}
+		const previous = this.#nativeSurface;
+		const nextMain = sameItems(previous.main, main) ? previous.main : main;
+		const nextDock = sameItems(previous.dock, dock) ? previous.dock : dock;
+		if (nextMain !== previous.main || nextDock !== previous.dock) {
+			this.#nativeSurface = { main: nextMain, dock: nextDock };
+		}
+		return this.#nativeSurface;
 	}
 
 	/**
@@ -712,20 +769,8 @@ export class Composer implements TerminalFrameProvider {
 		if (!lines) return [];
 		if (isInsideTerminalMultiplexer()) return lines.slice(start);
 		const reflowed: string[] = [];
-		const columns = Math.max(1, width);
 		for (let index = start; index < lines.length; index++) {
-			const line = lines[index]!;
-			const lineWidth = visibleWidth(line);
-			if (lineWidth === 0) {
-				reflowed.push("");
-				continue;
-			}
-			for (let column = 0; column < lineWidth;) {
-				let slice = sliceWithWidth(line, column, columns, true);
-				if (slice.width === 0) slice = sliceWithWidth(line, column, columns);
-				reflowed.push(slice.text);
-				column += Math.max(1, slice.width);
-			}
+			reflowed.push(...wrapLiteralLine(lines[index]!, width));
 		}
 		return reflowed;
 	}
@@ -797,7 +842,7 @@ export class Composer implements TerminalFrameProvider {
 		this.ui.requestRender();
 	}
 
-	/** Patch welcome data in place as model, session, and project discovery complete. */
+	/** Patch welcome data in place as version, session, and project discovery complete. */
 	updateWelcome(update: ComposerWelcomeUpdate): void {
 		if (this.#stopped) return;
 		this.#applyWelcomeUpdate(update);
@@ -806,11 +851,6 @@ export class Composer implements TerminalFrameProvider {
 		const welcome = this.#welcome;
 		if (!welcome) return;
 		if (update.version !== undefined) welcome.setVersion(this.#version);
-		if (update.modelName !== undefined || update.providerName !== undefined) {
-			welcome.setModel(this.#modelName, this.#providerName);
-		}
-		if (update.recentSessions !== undefined) welcome.setRecentSessions(this.#recentSessions);
-		if (update.lspServers !== undefined) welcome.setLspServers(this.#lspServers);
 		this.ui.requestRender();
 	}
 
@@ -825,6 +865,7 @@ export class Composer implements TerminalFrameProvider {
 
 	/** Update the canonical editor reference after InteractiveMode remounts a custom editor. */
 	setEditor(editor: CustomEditor): void {
+		this.ui.replaceHeldFocus(this.#editor, editor);
 		this.#editor = editor;
 	}
 
@@ -838,6 +879,7 @@ export class Composer implements TerminalFrameProvider {
 		this.#disposeStartupStatus();
 		this.#statusHost.setComponent(component);
 		this.editor.setTopBorderProvider(undefined);
+		this.editor.composerFacts = component;
 	}
 
 	#disposeStartupStatus(): void {
@@ -848,8 +890,8 @@ export class Composer implements TerminalFrameProvider {
 	/** Mount or replace session-aware root children while preserving the header and status hosts. */
 	setRuntimeChildren(children: readonly Component[], options: RuntimeChildrenOptions = {}): void {
 		if (this.#stopped) return;
-		this.#transientChrome = new Set(options.transient);
-		this.#transientChromeFloor = undefined;
+		this.#chromeFloor = undefined;
+		this.#nativeDock = options.nativeDock;
 		this.ui.removeChild(this.#statusHost);
 		if (this.#runtimeMounted) {
 			for (const child of this.#runtimeChildren) this.ui.removeChild(child);
@@ -888,20 +930,10 @@ export class Composer implements TerminalFrameProvider {
 
 	#applyWelcomeUpdate(update: ComposerWelcomeUpdate): void {
 		if (update.version !== undefined) this.#version = update.version;
-		if (update.modelName !== undefined) this.#modelName = update.modelName;
-		if (update.providerName !== undefined) this.#providerName = update.providerName;
-		if (update.recentSessions !== undefined) this.#recentSessions = [...update.recentSessions];
-		if (update.lspServers !== undefined) this.#lspServers = update.lspServers && [...update.lspServers];
 	}
 
 	#ensureWelcome(): void {
-		this.#welcome ??= new WelcomeComponent(
-			this.#version,
-			this.#modelName,
-			this.#providerName,
-			this.#recentSessions,
-			this.#lspServers,
-		);
+		this.#welcome ??= new WelcomeComponent(this.#version);
 	}
 
 	#rebuildHeader(): void {

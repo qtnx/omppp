@@ -1,11 +1,21 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $which, getPuppeteerDir, logger, removeWithRetries } from "@oh-my-pi/pi-utils";
+import {
+	$which,
+	getPuppeteerDir,
+	isEnoent,
+	isRecord,
+	logger,
+	removeWithRetries,
+	toError,
+	untilAborted,
+} from "@oh-my-pi/pi-utils";
 import type * as BrowsersNs from "@oh-my-pi/pi-utils/browsers";
 import type {
 	Browser,
 	CDPSession,
+	ConnectOptions,
 	Device,
 	JSHandle,
 	NetworkConditions,
@@ -181,6 +191,20 @@ export async function loadPuppeteerInWorker(safeDir: string): Promise<typeof Pup
 	const loaded = await loadPuppeteerImport(safeDir, false);
 	puppeteerModuleWorker = loaded;
 	return loaded;
+}
+
+/** Normalize transport event rejections before they cross browser or worker boundaries. */
+export async function connectPuppeteer(puppeteer: typeof Puppeteer, options: ConnectOptions): Promise<Browser> {
+	try {
+		return await puppeteer.connect(options);
+	} catch (error) {
+		// The WebSocket transports can reject with ErrorEvent rather than Error.
+		// Its message includes the actual debugger endpoint and handshake failure.
+		if (!(error instanceof Error) && isRecord(error) && typeof error.message === "string") {
+			throw new Error(error.message, { cause: error });
+		}
+		throw toError(error);
+	}
 }
 
 /** Return device descriptors from the already-loaded Puppeteer module. */
@@ -578,6 +602,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 		}
 	}
 	try {
+		if (userDataDir) await seedOwnedProfilePreferences(userDataDir);
 		const executablePath = await ensureChromiumExecutable();
 		const browser = await puppeteer.launch({
 			headless: opts.headless,
@@ -593,6 +618,71 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 	} catch (error) {
 		if (userDataDir) await removeUserDataDir(userDataDir);
 		throw error;
+	}
+}
+
+/**
+ * Pin automation-safe preferences in a Chromium profile OMP owns. Password leak
+ * detection answers a password form submit with a tab-modal "Change your
+ * password" dialog; while it is open Chromium drops `Input.dispatchMouseEvent`
+ * input for the tab, and a hidden browser offers no way to close it. Chromium
+ * reads `Preferences` only at startup and rewrites it from memory, so call this
+ * before a Chromium process starts on the profile. Best-effort: the preference
+ * only suppresses a dialog, so a failure is logged and never blocks the launch.
+ */
+export async function seedOwnedProfilePreferences(userDataDir: string): Promise<void> {
+	try {
+		await writeOwnedProfilePreferences(path.join(userDataDir, "Default", "Preferences"));
+	} catch (error) {
+		logger.warn("Could not seed browser profile preferences", {
+			userDataDir,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
+async function writeOwnedProfilePreferences(file: string): Promise<void> {
+	let prefs: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(await fs.promises.readFile(file, "utf8"));
+		if (isRecord(parsed)) prefs = parsed;
+	} catch (error) {
+		// Fresh profiles have no file yet; Chromium discards an unparseable one on startup anyway.
+		if (!isEnoent(error) && !(error instanceof SyntaxError)) throw error;
+	}
+	const profile = isRecord(prefs.profile) ? prefs.profile : {};
+	if (profile.password_manager_leak_detection === false) return;
+	profile.password_manager_leak_detection = false;
+	prefs.profile = profile;
+	const staged = `${file}.omp-${process.pid}`;
+	try {
+		await Bun.write(staged, JSON.stringify(prefs));
+		await fs.promises.rename(staged, file);
+	} catch (error) {
+		await fs.promises.rm(staged, { force: true });
+		throw error;
+	}
+}
+
+/**
+ * Discard Chromium's session-restore state in a persistent profile OMP owns.
+ * When the first window of a new Chromium process opens, it reopens every page
+ * recorded in `Default/Sessions`, however the previous process exited. On the
+ * project-shared browser that resurrects whatever was open when its
+ * predecessor stopped or was killed, and no omp process owns those pages:
+ * target ownership dies with the browser instance, so neither idle-close nor
+ * the orphan reaper ever closes them. Call this before a Chromium process
+ * starts on the profile. Best-effort: a failure is logged and never blocks the
+ * launch.
+ */
+export async function discardOwnedProfileSessions(userDataDir: string): Promise<void> {
+	try {
+		await removeWithRetries(path.join(userDataDir, "Default", "Sessions"));
+	} catch (error) {
+		logger.warn("Could not discard browser profile session state", {
+			userDataDir,
+			error: error instanceof Error ? error.message : String(error),
+		});
 	}
 }
 
@@ -664,6 +754,24 @@ export async function applyViewport(
 		height: viewport.height,
 		deviceScaleFactor: viewport.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
 	});
+}
+
+/**
+ * The emulated viewport, else the window's own: connected and visible browsers emulate none, and an
+ * emulated scale of 0 keeps the window's own device scale.
+ */
+export async function readPageViewport(
+	page: Page,
+	signal?: AbortSignal,
+): Promise<{ width: number; height: number; deviceScaleFactor?: number }> {
+	const emulated = page.viewport();
+	if (emulated && emulated.deviceScaleFactor !== 0) return emulated;
+	return await untilAborted(signal, () =>
+		page.evaluate(() => {
+			const win = globalThis as unknown as { innerWidth: number; innerHeight: number; devicePixelRatio: number };
+			return { width: win.innerWidth, height: win.innerHeight, deviceScaleFactor: win.devicePixelRatio };
+		}),
+	);
 }
 
 // =====================================================================

@@ -22,17 +22,28 @@ const RUNTIME_ONLY_PROVIDERS = new Set([
 	// including its tariff and effort ladder, comes from the live /v1/models
 	// snapshot, so no bundled rows are frozen into models.json.
 	"charm-hyper",
+	// Factory has no public model-listing endpoint. Its CLI roster is a
+	// `bundle="never"` KDL seed; factoryDroidModelManagerOptions serves it
+	// offline and narrows it by account flags/org policy live.
+	"factory-droid",
 	// Both SingularityAPI rosters are live and credential-scoped (one key sees
 	// only its own product's models — the pay-as-you-go catalog or the reserved
 	// lanes), so no rows are frozen into models.json.
 	"singularityapi-dev",
 	"singularityapi-tech",
+	// Clef judges are a `bundle="always"` KDL seed that
+	// cloudflareWorkersAiModelManagerOptions serves at runtime; models.json
+	// gains the rows at the next regeneration.
+	"cloudflare-workers-ai",
 	// User-configured LiteLLM proxy (models.yml provider or litellm auth flow;
 	// PROXY_OPENAI_COMPAT_PROVIDERS) that forwards upstream chat templates.
 	"litellm",
 	// User-configured models.yml provider pointing at
 	// https://inference-api.nousresearch.com/v1 (NousResearch inference API).
 	"nous",
+	// OMPx-only gateway whose rows come from live discovery
+	// (tnxModelManagerOptions); only its KDL image-count budget is referenced.
+	"tnx",
 ]);
 
 function collectReferencedProviders(): Map<string, string> {

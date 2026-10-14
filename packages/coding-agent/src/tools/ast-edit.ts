@@ -20,8 +20,15 @@ import { formatHashlineHeader } from "@oh-my-pi/pi-tui/tools/hashline-format";
 import astEditDescription from "../prompts/tools/ast-edit.md" with { type: "text" };
 
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
+import { missingGrammarsNote, rerunWithGrammars } from "../utils/grammars";
 import type { ToolSession } from ".";
-import { resolveToolTier, strictestApproval, truncateForPrompt } from "./approval";
+import {
+	type ApprovalDetailsOptions,
+	resolveToolTier,
+	strictestApproval,
+	truncateApprovalDetail,
+	truncateForPrompt,
+} from "./approval";
 import { parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath, resultSnapshotPath } from "./file-recorder";
 import { formatGroupedFiles } from "@oh-my-pi/pi-tui/tools/grouped-file-output";
@@ -66,6 +73,7 @@ interface AstEditAggregatedResult {
 	applied: boolean;
 	limitReached: boolean;
 	parseErrors?: string[];
+	missingGrammars?: string[];
 }
 
 async function runAstEditTargets(
@@ -76,6 +84,7 @@ async function runAstEditTargets(
 	const aggregatedChanges: AstReplaceChange[] = [];
 	const fileCounts = new Map<string, number>();
 	const parseErrors: string[] = [];
+	const missingGrammars = new Set<string>();
 	let totalReplacements = 0;
 	let filesSearched = 0;
 	let limitReached = false;
@@ -96,6 +105,7 @@ async function runAstEditTargets(
 		limitReached = limitReached || targetResult.limitReached;
 		applied = applied && targetResult.applied;
 		if (targetResult.parseErrors) parseErrors.push(...targetResult.parseErrors);
+		for (const language of targetResult.missingGrammars ?? []) missingGrammars.add(language);
 		for (const change of targetResult.changes) {
 			const absolute = resolveSearchResultPath(target.basePath, change.path);
 			aggregatedChanges.push({ ...change, path: relativeSearchResultPath(commonBasePath, absolute) });
@@ -119,6 +129,7 @@ async function runAstEditTargets(
 		applied,
 		limitReached,
 		parseErrors: parseErrors.length > 0 ? parseErrors : undefined,
+		missingGrammars: missingGrammars.size > 0 ? [...missingGrammars] : undefined,
 	};
 }
 
@@ -165,14 +176,14 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 		}
 		return strictestApproval(decisions);
 	};
-	readonly formatApprovalDetails = (args: unknown): string[] => {
+	readonly formatApprovalDetails = (args: unknown, options?: ApprovalDetailsOptions): string[] => {
 		const params = args && typeof args === "object" ? (args as AstEditCompatParams) : {};
 		const lines: string[] = [];
 		const ops = Array.isArray(params.ops) ? params.ops : [];
 		const firstOp = ops[0];
 		if (firstOp) {
-			lines.push(`Pattern: ${truncateForPrompt(firstOp.pat)}`);
-			lines.push(`Replacement: ${truncateForPrompt(firstOp.out)}`);
+			lines.push(`Pattern: ${truncateApprovalDetail(firstOp.pat, options)}`);
+			lines.push(`Replacement: ${truncateApprovalDetail(firstOp.out, options)}`);
 			if (ops.length > 1) lines.push(`+${ops.length - 1} more op${ops.length === 2 ? "" : "s"}`);
 		}
 		const paths = astEditPathList(params);
@@ -281,14 +292,18 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 			});
 			const { searchPath: resolvedSearchPath, scopePath, isDirectory, multiTargets, globFilter } = scope;
 
-			const result = await runAstEditOnce(multiTargets, resolvedSearchPath, globFilter, {
-				rewrites: normalizedRewrites,
-				dryRun: true,
-				maxFiles,
-				failOnParseError: false,
-				signal,
-				filesystem: urlFilesystem.shellFilesystem(),
-			});
+			// Dry run, so a re-run after installing missing grammars cannot double-apply.
+			const result = await rerunWithGrammars(() =>
+				runAstEditOnce(multiTargets, resolvedSearchPath, globFilter, {
+					rewrites: normalizedRewrites,
+					dryRun: true,
+					maxFiles,
+					failOnParseError: false,
+					signal,
+					filesystem: urlFilesystem.shellFilesystem(),
+				}),
+			);
+			const grammarNote = result.missingGrammars?.length ? missingGrammarsNote(result.missingGrammars) : undefined;
 
 			const { errors: cappedParseErrors, total: parseErrorsTotal } = capParseErrors(result.parseErrors);
 			const formatPath = (filePath: string): string =>
@@ -329,7 +344,8 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 				const parseMessage = cappedParseErrors.length
 					? `\n${formatParseErrors(cappedParseErrors, parseErrorsTotal).join("\n")}`
 					: "";
-				return toolResult(baseDetails).text(`No replacements made${parseMessage}`).done();
+				const grammarMessage = grammarNote ? `\n${grammarNote}` : "";
+				return toolResult(baseDetails).text(`No replacements made${parseMessage}${grammarMessage}`).done();
 			}
 
 			const useHashLines = resolveFileDisplayMode(this.session).hashLines;
@@ -417,6 +433,9 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 			}
 			if (cappedParseErrors.length) {
 				outputLines.push("", ...formatParseErrors(cappedParseErrors, parseErrorsTotal));
+			}
+			if (grammarNote) {
+				outputLines.push("", grammarNote);
 			}
 
 			// Register pending action so `resolve` can apply or discard these previewed changes

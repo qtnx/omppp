@@ -4,8 +4,14 @@ import type { SgrMouseEvent } from "../../mouse";
 import type { ComposerPreviewStatusSource } from "../../overlays/composer-shape-preview";
 import type { ComposerShape } from "../../overlays/composer-shape-registry";
 import type { ModelBrowserSource } from "../../overlays/model-browser";
-import type { SymbolPreset } from "../../theme/theme";
+import type { SymbolPreset, ThemeColor } from "../../theme/theme";
 import type { Component, TUI } from "../../tui";
+
+/** One line of status copy kept as raw text plus its theme colour, never as pre-styled ANSI. */
+export interface StyledLine {
+	readonly text: string;
+	readonly color: ThemeColor;
+}
 
 /** Terminal capabilities used by setup overlays and the startup splash. */
 export interface SetupUiHost {
@@ -23,6 +29,7 @@ export interface SetupHost extends SetupUiHost {
 	readonly disabledProviders: readonly string[];
 	readonly authStorage: AuthStorage;
 	readonly modelSource: ModelBrowserSource;
+	/** Available and catalog models of every kind; role chips resolve over all of them, rows list chat models. */
 	getModels(): { available: Model[]; all: Model[]; current: Model | undefined };
 	refreshModels(): Promise<void>;
 	selectModel(model: Model, selector: string): Promise<void>;

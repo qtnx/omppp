@@ -208,10 +208,16 @@ export class RemoteConfigSync {
 			return "failed";
 		}
 
-		await writeRemoteConfigCache(path.join(this.#settings.getAgentDir(), REMOTE_CONFIG_DIRNAME), bundle);
-		this.#etag = response.headers.get("etag") ?? undefined;
-		await this.#settings.reloadFromDisk();
-		await this.#options.onAgentsChanged?.();
+		try {
+			await writeRemoteConfigCache(path.join(this.#settings.getAgentDir(), REMOTE_CONFIG_DIRNAME), bundle);
+			this.#etag = response.headers.get("etag") ?? undefined;
+			await this.#settings.reloadFromDisk();
+			await this.#options.onAgentsChanged?.();
+		} catch (error) {
+			// Fire-and-forget callers (start's timer) must never see a rejection; the cached copy keeps applying.
+			logger.warn("Remote config: failed to apply bundle, keeping cached config", { url, error: String(error) });
+			return "failed";
+		}
 		logger.info("Remote config: applied bundle", { url, agents: bundle.agents.size });
 		return "updated";
 	}

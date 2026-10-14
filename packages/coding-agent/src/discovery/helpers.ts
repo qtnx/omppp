@@ -7,6 +7,8 @@ import {
 	getAgentDir,
 	getConfigDirName,
 	getPluginsDir,
+	logger,
+	normalizePathForComparison,
 	parseFrontmatter,
 	tryParseJson,
 } from "@oh-my-pi/pi-utils";
@@ -149,6 +151,7 @@ export function createSourceMeta(
 	filePath: string,
 	level: "user" | "project",
 	origin?: string,
+	pluginName?: string,
 ): SourceMeta {
 	return {
 		provider,
@@ -156,6 +159,7 @@ export function createSourceMeta(
 		path: path.resolve(filePath),
 		level,
 		...(origin !== undefined && { origin }),
+		...(pluginName !== undefined && { pluginName }),
 	};
 }
 
@@ -374,12 +378,6 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	}
 	if (tools) tools = normalizeToolNames(tools);
 
-	// Non-empty explicit tool lists always need yield. Preserve `tools: []`
-	// until runtime so it stays distinguishable from an omitted tools field.
-	if (tools && tools.length > 0 && !tools.includes("yield")) {
-		tools = [...tools, "yield"];
-	}
-
 	// Parse spawns field (array, "*", or CSV)
 	let spawns: string[] | "*" | undefined;
 	if (frontmatter.spawns === "*") {
@@ -483,6 +481,13 @@ export interface ScanSkillsFromDirOptions {
 	 * installs (`omp`, `plugin-dir`) from the foreign Claude tree (`claude`).
 	 */
 	origin?: string;
+	/**
+	 * Plugin name supplying these skills, forwarded to {@link SourceMeta.pluginName}
+	 * so `skillNamespace` in `extensibility/skills.ts` can namespace by plugin
+	 * identity instead of parsing a path segment that may only hold a version
+	 * (Claude Code's own plugin cache layout).
+	 */
+	pluginName?: string;
 }
 
 // Stable ordering used for skill lists in prompts: name (case-insensitive), then name, then path.
@@ -526,13 +531,19 @@ export async function scanSkillsFromDir(
 			const skillDirName = path.basename(path.dirname(skillPath));
 			const rawName = frontmatter.name;
 			const name = typeof rawName === "string" ? rawName.trim() || skillDirName : skillDirName;
+			// `/` is reserved for collision namespaces (`<namespace>/<name>`) and
+			// path resolution in skill:// URLs; a raw name must never claim one.
+			if (/[\\/]/.test(name)) {
+				warnings.push(`Skill name "${name}" contains a path separator, skipping: ${skillPath}`);
+				return;
+			}
 			items.push({
 				name,
 				path: skillPath,
 				content: body,
 				frontmatter: frontmatter as SkillFrontmatter,
 				level,
-				_source: createSourceMeta(providerId, skillPath, level, options.origin),
+				_source: createSourceMeta(providerId, skillPath, level, options.origin, options.pluginName),
 			});
 		} catch {
 			warnings.push(`Failed to read skill file: ${skillPath}`);
@@ -1062,6 +1073,14 @@ export function parseClaudePluginsRegistry(content: string): ClaudePluginsRegist
 	return data;
 }
 
+function isUserConfigRoot(root: string): boolean {
+	const configDir = normalizePathForComparison(path.join(root, getConfigDirName()));
+	return (
+		configDir === normalizePathForComparison(path.join(os.homedir(), getConfigDirName())) ||
+		configDir === normalizePathForComparison(path.dirname(getPluginsDir()))
+	);
+}
+
 /**
  * Resolve the active project registry path by walking up from `cwd`.
  *
@@ -1078,12 +1097,12 @@ export function parseClaudePluginsRegistry(content: string): ClaudePluginsRegist
 export async function resolveActiveProjectRegistryPath(cwd: string): Promise<string | null> {
 	// Pass 1: walk up looking for an existing .omp/ directory (nearest wins).
 	// Stop before os.homedir() — ~/.omp/ is the user-level config dir, not a project root.
-	const homeDir = os.homedir();
+	const homeDir = normalizePathForComparison(os.homedir());
 	let dir = path.resolve(cwd);
-	while (dir !== homeDir) {
+	while (normalizePathForComparison(dir) !== homeDir) {
 		try {
 			const stat = await fs.promises.stat(path.join(dir, getConfigDirName()));
-			if (stat.isDirectory()) {
+			if (stat.isDirectory() && !isUserConfigRoot(dir)) {
 				return path.join(dir, getConfigDirName(), "plugins", "installed_plugins.json");
 			}
 		} catch {
@@ -1096,10 +1115,10 @@ export async function resolveActiveProjectRegistryPath(cwd: string): Promise<str
 
 	// Pass 2: walk up looking for .git as a fallback anchor.
 	dir = path.resolve(cwd);
-	while (dir !== homeDir) {
+	while (normalizePathForComparison(dir) !== homeDir) {
 		try {
 			await fs.promises.stat(path.join(dir, ".git"));
-			return path.join(dir, getConfigDirName(), "plugins", "installed_plugins.json");
+			if (!isUserConfigRoot(dir)) return path.join(dir, getConfigDirName(), "plugins", "installed_plugins.json");
 		} catch {
 			// not found at this level — continue up
 		}
@@ -1128,7 +1147,8 @@ export async function resolveOrDefaultProjectRegistryPath(cwd: string): Promise<
 	// Home directory must not be treated as a project root: the fallback path would alias
 	// getInstalledPluginsRegistryPath(), causing MarketplaceManager to load the same file
 	// as both user and project registry and producing duplicates / disambiguation errors.
-	if (path.resolve(cwd) === os.homedir()) return undefined;
+	if (normalizePathForComparison(cwd) === normalizePathForComparison(os.homedir()) || isUserConfigRoot(cwd))
+		return undefined;
 	return path.join(cwd, getConfigDirName(), "plugins", "installed_plugins.json");
 }
 
@@ -1174,7 +1194,9 @@ async function readClaudeEnabledPlugins(
 	return { enabled, sources };
 }
 
-const pluginRootsCache = new Map<string, { roots: ClaudePluginRoot[]; warnings: string[] }>();
+type PluginRootsResult = { roots: ClaudePluginRoot[]; warnings: string[] };
+
+const pluginRootsCache = new Map<string, Promise<PluginRootsResult>>();
 
 interface ClaudePluginSettingsSnapshot {
 	disabledPluginIds: Set<string>;
@@ -1321,7 +1343,11 @@ export async function listClaudePluginRoots(
 ): Promise<{ roots: ClaudePluginRoot[]; warnings: string[] }> {
 	const claudeConfigDir = resolveClaudePaths(home).configDir;
 	const ompRegistryPath = path.join(getPluginsDir(home), "installed_plugins.json");
-	const resolvedProjectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
+	const projectPath = cwd ? await resolveActiveProjectRegistryPath(cwd) : null;
+	const resolvedProjectPath =
+		projectPath && normalizePathForComparison(projectPath) !== normalizePathForComparison(ompRegistryPath)
+			? projectPath
+			: null;
 	const projectRoot = resolvedProjectPath ? getProjectRootFromRegistryPath(resolvedProjectPath) : cwd;
 	const activeClaudeProjectPath = projectRoot ? await canonicalClaudeProjectPath(projectRoot) : null;
 	const settingsSnapshot = await loadClaudePluginSettings(home, cwd, projectRoot);
@@ -1347,6 +1373,48 @@ export async function listClaudePluginRoots(
 	const cached = pluginRootsCache.get(cacheKey);
 	if (cached) return cached;
 
+	// Cache the in-flight promise so concurrent callers share one computation.
+	const pending = loadClaudePluginRoots({
+		registryPath,
+		content,
+		ompRegistryPath,
+		ompContent,
+		resolvedProjectPath,
+		projectContent,
+		activeClaudeProjectPath,
+		enabledOverrides,
+		settingsSnapshot,
+	});
+	pluginRootsCache.set(cacheKey, pending);
+	try {
+		return await pending;
+	} catch (error) {
+		if (pluginRootsCache.get(cacheKey) === pending) pluginRootsCache.delete(cacheKey);
+		throw error;
+	}
+}
+
+async function loadClaudePluginRoots({
+	registryPath,
+	content,
+	ompRegistryPath,
+	ompContent,
+	resolvedProjectPath,
+	projectContent,
+	activeClaudeProjectPath,
+	enabledOverrides,
+	settingsSnapshot,
+}: {
+	registryPath: string;
+	content: string | null;
+	ompRegistryPath: string;
+	ompContent: string | null;
+	resolvedProjectPath: string | null;
+	projectContent: string | null;
+	activeClaudeProjectPath: string | null;
+	enabledOverrides: { enabled: Map<string, boolean>; sources: string[] };
+	settingsSnapshot: ClaudePluginSettingsSnapshot;
+}): Promise<PluginRootsResult> {
 	const roots: ClaudePluginRoot[] = [];
 	const warnings: string[] = [];
 	const projectRoots: ClaudePluginRoot[] = [];
@@ -1451,9 +1519,9 @@ export async function listClaudePluginRoots(
 		roots.push(...injectedPluginDirRoots, ...filtered);
 	}
 
-	const result = { roots, warnings };
-	pluginRootsCache.set(cacheKey, result);
-	return result;
+	// Runs once per cached promise, so each warning is logged once per computation.
+	for (const warning of warnings) logger.warn(warning);
+	return { roots, warnings };
 }
 
 /**

@@ -6,7 +6,7 @@ import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-ca
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type { Model } from "@oh-my-pi/pi-catalog/types";
 /** Thinking selectors accepted by CLI inputs, in display order. */
-export const CLI_THINKING_LEVELS: readonly string[] = ["off", ...THINKING_EFFORTS, "auto"];
+export const CLI_THINKING_LEVELS: readonly ConfiguredThinkingLevel[] = ["off", ...THINKING_EFFORTS, "auto"];
 
 /**
  * Metadata used to render thinking selector values in the coding-agent UI.
@@ -130,6 +130,14 @@ export function resolveThinkingLevelForModel(
 		return ThinkingLevel.Off;
 	}
 	return clampThinkingLevelForModel(model, level);
+}
+
+/**
+ * Level applied to `model` when the user has not picked one for it (carried,
+ * global default, auto). Unverified thinking stays unset until the user picks.
+ */
+export function automaticThinkingLevel<T>(model: Model | undefined, fallback: T): T | undefined {
+	return model?.thinking?.unverified ? undefined : fallback;
 }
 
 /**
@@ -382,7 +390,7 @@ export function modelSupportsEffortCeiling(model: Model, ceiling: Effort): boole
  * models.
  */
 export function resolveProvisionalAutoLevel(model: Model | undefined): Effort | undefined {
-	if (!model?.reasoning) return undefined;
+	if (!model?.reasoning || model.thinking?.unverified) return undefined;
 	const preferred = model.thinking?.defaultLevel ?? Effort.High;
 	return clampAutoThinkingEffort(model, preferred === Effort.Max ? Effort.XHigh : preferred, Effort.XHigh);
 }

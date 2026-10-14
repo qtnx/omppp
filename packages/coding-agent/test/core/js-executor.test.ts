@@ -14,7 +14,6 @@ import { executeJs, type JsResult } from "@oh-my-pi/pi-coding-agent/eval/js/exec
 import { createEvalCustomTools, describeEvalTools } from "@oh-my-pi/pi-coding-agent/task/eval-tools";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { cfgEvalToolsEnabled } from "../../src/eval/settings";
 
 // JS eval cold-starts a Bun worker; under --isolate + high CI concurrency that startup
@@ -512,7 +511,7 @@ describe("executeJs", () => {
 		expect(execute).toHaveBeenNthCalledWith(
 			1,
 			expect.stringMatching(/^js-read-/),
-			{ path: "artifact://15:raw:1-1400", [INTENT_FIELD]: "js prelude" },
+			{ path: "artifact://15:raw:1-1400" },
 			expect.any(AbortSignal),
 			undefined,
 			undefined,
@@ -520,7 +519,7 @@ describe("executeJs", () => {
 		expect(execute).toHaveBeenNthCalledWith(
 			2,
 			expect.stringMatching(/^js-read-/),
-			{ path: "artifact://15:raw:1-2", [INTENT_FIELD]: "js prelude" },
+			{ path: "artifact://15:raw:1-2" },
 			expect.any(AbortSignal),
 			undefined,
 			undefined,
@@ -573,8 +572,8 @@ describe("executeJs", () => {
 			agentOutput: "from-agent",
 		});
 		expect(execute).toHaveBeenCalledTimes(2);
-		expect(execute.mock.calls[0]?.[1]).toEqual({ path: "package.json", [INTENT_FIELD]: "js prelude" });
-		expect(execute.mock.calls[1]?.[1]).toEqual({ path: "agent://agent-42", [INTENT_FIELD]: "js prelude" });
+		expect(execute.mock.calls[0]?.[1]).toEqual({ path: "package.json" });
+		expect(execute.mock.calls[1]?.[1]).toEqual({ path: "agent://agent-42" });
 	});
 
 	it("preserves nested await expressions in instrumented tool-call arguments", async () => {

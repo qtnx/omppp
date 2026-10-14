@@ -16,6 +16,8 @@ import {
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createProviderErrorMessage } from "../../ai/src/providers/error-message";
 import { cfgRetryBaseDelayMs, cfgRetryMaxRetries } from "../src/session/settings";
+import { streamFactoryDroidGemini } from "../../ai/src/providers/factory-droid/gemini";
+import { captureFetch, gemini as factoryGemini } from "../../ai/test/helpers/factory-droid";
 
 const USAGE: Usage = {
 	input: 0,
@@ -49,9 +51,11 @@ function createHost(
 		messages?: readonly AgentMessage[];
 		lastModelChangeRole?: string;
 		modelRoles?: Record<string, string>;
+		shakeSucceeds?: boolean;
 	} = {},
 ): TurnRecoveryHost {
 	const settings = Settings.isolated({
+		"retry.baseDelayMs": 1,
 		...(options.fallbackChains ? { "retry.fallbackChains": options.fallbackChains } : {}),
 		...(options.modelRoles ? { modelRoles: options.modelRoles } : {}),
 	});
@@ -70,6 +74,9 @@ function createHost(
 		} as never,
 		sessionManager: {
 			getLastModelChangeRole: () => options.lastModelChangeRole,
+			getBranch: () => [],
+			getBranchView: () => [],
+			getSessionId: () => "test-session",
 		} as never,
 		persistedAssistantEntryId: () => undefined,
 		settings,
@@ -100,9 +107,8 @@ function createHost(
 		syncAfterModelChange: async () => {},
 		resetCurrentResponsesProviderSession: () => {},
 		maybeAutoRedeemReset: async () => ({ restored: false }),
-		runAutoCompaction: async () =>
-			({ deferredHandoff: false, continuationScheduled: false }) as RecoveryCompactionResult,
-		shakeForRequestBodyReadTimeout: async () => false,
+		runAutoCompaction: async () => ({ continuationScheduled: false }) as RecoveryCompactionResult,
+		shakeForRequestBodyReadTimeout: async () => options.shakeSucceeds === true,
 		withBashBranchTransition: <T>(operation: () => T): T => operation(),
 	};
 }
@@ -323,6 +329,43 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		expect(await recovery.handleResponsesRequestBodyReadTimeout(message)).toBe("not-applicable");
 	});
 
+	describe("full-replay timeout one-shot lifecycle", () => {
+		const timeoutTurn = (): AssistantMessage => ({
+			...makeMessage([], model),
+			api: "openai-responses" as const,
+			errorStatus: 408,
+			errorMessage: "Timed out reading request body.",
+			requestBodyReadTimeoutFullReplay: true,
+		});
+		const settledTurn = (content: AssistantMessage["content"]): AssistantMessage => ({
+			...makeMessage(content, model),
+			stopReason: "stop" as const,
+			errorMessage: undefined,
+		});
+
+		it("re-arms the recovery after an intervening turn that produced output", async () => {
+			const recovery = new TurnRecovery(createHost(model, modelRegistry, { shakeSucceeds: true }));
+			expect(await recovery.handleResponsesRequestBodyReadTimeout(timeoutTurn())).toBe("handled-retry");
+			await recovery.onAssistantSettledSuccessfully(
+				settledTurn([{ type: "toolCall", id: "call-progress", name: "bash", arguments: { command: "pwd" } }]),
+			);
+			expect(await recovery.handleResponsesRequestBodyReadTimeout(timeoutTurn())).toBe("handled-retry");
+		});
+
+		it("stays bound to one changed retry while the same prompt makes no progress", async () => {
+			const recovery = new TurnRecovery(createHost(model, modelRegistry, { shakeSucceeds: true }));
+			expect(await recovery.handleResponsesRequestBodyReadTimeout(timeoutTurn())).toBe("handled-retry");
+			expect(await recovery.handleResponsesRequestBodyReadTimeout(timeoutTurn())).toBe("handled-terminal");
+		});
+
+		it("does not re-arm on a settled turn that produced no output", async () => {
+			const recovery = new TurnRecovery(createHost(model, modelRegistry, { shakeSucceeds: true }));
+			expect(await recovery.handleResponsesRequestBodyReadTimeout(timeoutTurn())).toBe("handled-retry");
+			await recovery.onAssistantSettledSuccessfully(settledTurn([]));
+			expect(await recovery.handleResponsesRequestBodyReadTimeout(timeoutTurn())).toBe("handled-terminal");
+		});
+	});
+
 	it("does not replay a long OpenCode Go usage limit after committed text", () => {
 		const openCodeModel = getBundledModel("opencode-go", "deepseek-v4-flash");
 		if (!openCodeModel) throw new Error("Expected bundled OpenCode Go model");
@@ -365,16 +408,16 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 	});
 
 	it("excludes a Fireworks Fast failed turn with partial visible text from Fast→base fallback", () => {
-		const fastModel = getBundledModel("fireworks", "kimi-k2.6-fast");
-		if (!fastModel) throw new Error("Expected bundled model kimi-k2.6-fast");
+		const fastModel = getBundledModel("fireworks", "kimi-k3-fast");
+		if (!fastModel) throw new Error("Expected bundled model kimi-k3-fast");
 		const recovery = new TurnRecovery(createHost(fastModel, modelRegistry));
 		const message = makeMessage([{ type: "text", text: "partial visible output" }], fastModel);
 		expect(recovery.isFireworksFastFallbackEligible(message)).toBe(false);
 	});
 
 	it("keeps a Fireworks Fast empty/whitespace failed turn eligible for Fast→base fallback", () => {
-		const fastModel = getBundledModel("fireworks", "kimi-k2.6-fast");
-		if (!fastModel) throw new Error("Expected bundled model kimi-k2.6-fast");
+		const fastModel = getBundledModel("fireworks", "kimi-k3-fast");
+		if (!fastModel) throw new Error("Expected bundled model kimi-k3-fast");
 		const recovery = new TurnRecovery(createHost(fastModel, modelRegistry));
 		expect(recovery.isFireworksFastFallbackEligible(makeMessage([], fastModel))).toBe(true);
 		expect(recovery.isFireworksFastFallbackEligible(makeMessage([{ type: "text", text: "   \n" }], fastModel))).toBe(
@@ -877,6 +920,18 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			);
 		});
 
+		it.each([
+			"Request was aborted",
+			"Request was aborted.",
+			"The operation was aborted",
+			"The operation was aborted.",
+		])("resumes a generic %s abort after resolved tool calls", errorMessage => {
+			const message = cursorMessage([execToolCall("call-1")], errorMessage);
+			expect(recoveryForReset(message, [realResult("call-1")]).classifyResolvedInterruptedToolTurn(message)).toBe(
+				"reasonless-abort",
+			);
+		});
+
 		it("continues a Cursor HTTP/2 reset after an unmarked MCP result", () => {
 			const message = cursorMessage([mcpToolCall("mcp-1")], nghttp2Internal);
 			const recovery = recoveryForReset(message, [realResult("mcp-1", "mcp__databricks_production_execute_sql")]);
@@ -918,6 +973,7 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		const completionsClose = "OpenAI completions stream closed before a finish_reason was received";
 		const responsesClose = "OpenAI responses stream closed before a terminal response event was received";
 		const codexClose = "Codex stream ended before terminal completion event";
+		const cursorClose = "Cursor stream ended before turnEnded";
 
 		function gatewayMessage(content: AssistantMessage["content"], errorMessage: string): AssistantMessage {
 			const message = makeMessage(content, model);
@@ -937,6 +993,7 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			["completions", completionsClose],
 			["responses", responsesClose],
 			["Codex responses", codexClose],
+			["Cursor", cursorClose],
 		])("continues a premature %s close after a resolved tool call", (_provider, errorMessage) => {
 			const message = gatewayMessage(
 				[{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }],
@@ -1162,7 +1219,11 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			const continues: string[] = [];
 			const host = createHost(model, modelRegistry, { messages, textOutputCommitted });
 			cfgRetryBaseDelayMs.set(host.settings, 0);
-			host.sessionManager = { getLastModelChangeRole: () => undefined, getBranch: () => [] } as never;
+			host.sessionManager = {
+				getLastModelChangeRole: () => undefined,
+				getBranch: () => [],
+				getBranchView: () => [],
+			} as never;
 			host.agent = {
 				state: { messages },
 				appendMessage: (appended: AgentMessage) => messages.push(appended),
@@ -1239,6 +1300,24 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 				expect(new TurnRecovery(host).handleCommittedTextStreamStall(message)).toBe(true);
 				expect(continues).toEqual(["stream-stall-continue"]);
 			}
+		});
+
+		it("resumes a Factory Droid Gemini text stream that ends without a finish reason", async () => {
+			const truncated = JSON.stringify({
+				candidates: [{ content: { role: "model", parts: [{ text: "Here is the first half" }] } }],
+			});
+			const message = await streamFactoryDroidGemini(
+				factoryGemini(),
+				{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+				{
+					baseUrl: "https://api.factory.ai/api/llm/g/v1",
+					headers: { "x-api-provider": "google" },
+					fetch: captureFetch([], [truncated]),
+				},
+			).result();
+			const { host, continues } = continuationHost(message);
+			expect(new TurnRecovery(host).handleCommittedTextStreamStall(message)).toBe(true);
+			expect(continues).toEqual(["stream-stall-continue"]);
 		});
 
 		it("stops continuing past the per-prompt cap and resets on a new prompt", () => {

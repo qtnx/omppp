@@ -5,7 +5,7 @@ import { APP_NAME } from "@oh-my-pi/pi-utils";
 import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { mnemopiEmbedServerHelp as commandHelp } from "../cli/command-help";
 import { MnemopiEmbedClient } from "../mnemopi/embed-client";
-import { MNEMOPI_EMBED_SERVER_PORT, startMnemopiEmbedServer } from "../mnemopi/embed-server";
+import { MNEMOPI_EMBED_SERVER_PORT, startMnemopiEmbedServer } from "../mnemopi/embed-http-server";
 
 const DEFAULT_HOST = "0.0.0.0";
 

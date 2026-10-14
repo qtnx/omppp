@@ -92,8 +92,16 @@ class "deepseek" {
 	models "deepseek-flash" priority=10 {
 		strip-image-input #false
 	}
-	on "ollama-cloud" "nvidia" "deepseek" "fireworks" "nanogpt" "opencode-go" "openrouter" "litellm" "nous" {
-		stream-markup-healing-pattern "dsml"
-	}
+	// DSML is the model's own tool-call grammar, not a host quirk: any server
+	// running DeepSeek's chat template without (or with a broken) tool parser
+	// leaks it into content — hosted gateways, local backends, and custom
+	// providers alike. On hosts that parse it the healer sees no markup.
+	stream-markup-healing-pattern "dsml"
 	thinking-loop-guard "deepseek"
+	// V4 reasoning reaches omp as its plaintext trace on every host, and the
+	// revision pins the weights (flash 4.0 / 4.1, pro 4.0). Earlier lineages
+	// classify too coarsely to carry: `r1` also matches the R1 distills.
+	revision ">=4" {
+		portable-reasoning #true
+	}
 }

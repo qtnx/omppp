@@ -139,6 +139,8 @@ describe("createAgentSession defaultInactive tool activation", () => {
 	});
 
 	afterAll(() => {
+		// The discovered auth DB lives in registryAuthDir; Windows cannot delete it while open.
+		modelRegistry.authStorage.close();
 		removeSyncWithRetries(registryAuthDir);
 	});
 
@@ -181,8 +183,8 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			expect(session.systemPrompt.join("\n")).toContain("default_active_tool");
 			expect(session.systemPrompt.join("\n")).not.toContain("default_inactive_tool");
 
-			// Presentation lookup must survive Code Mode clearing the live mount set
-			// so historical prefixed calls retain their canonical renderer.
+			// Presentation lookup must survive clearing the live mount set so
+			// historical prefixed calls retain their canonical renderer.
 			await session.setActiveToolPresentation(session.getActiveToolNames(), []);
 			expect(session.getMountedXdevToolNames()).not.toContain("default_active_tool");
 			expect(session.getToolByName("xd://default_active_tool")?.name).toBe("default_active_tool");
@@ -1727,7 +1729,8 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				"jev_scout",
 				"bash",
 				"web_search",
-				"yield",
+				// `yield` is no longer part of the agent's declared tools; the task
+				// executor adds it at spawn when the run is structured.
 			];
 			const contextGcToolNames = [
 				"context_debug",

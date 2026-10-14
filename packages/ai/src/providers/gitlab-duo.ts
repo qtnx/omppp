@@ -252,6 +252,7 @@ export function streamGitLabDuo(
 									// like the azure-openai-responses mapping does.
 									disableReasoning: options.disableReasoning || options.forceReasoningOff,
 									toolChoice: options.toolChoice,
+									waitForTerminalDrain: options.waitForTerminalDrain,
 								} satisfies OpenAICompletionsOptions,
 							);
 

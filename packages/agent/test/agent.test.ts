@@ -503,6 +503,66 @@ describe("Agent", () => {
 		expect(finalMessage.errorMessage).toBe("caller cancelled");
 	});
 
+	it("emits an aborted assistant boundary when context transformation rejects after tool cancellation", async () => {
+		const toolStarted = Promise.withResolvers<void>();
+		const parameters = type({ question: "string" });
+		const tool: AgentTool<typeof parameters> = {
+			name: "ask",
+			label: "Ask",
+			description: "Interactive question",
+			parameters,
+			async execute(_toolCallId, _params, signal) {
+				if (!signal) throw new Error("Expected tool abort signal");
+				toolStarted.resolve();
+				await new Promise<void>(resolve => {
+					if (signal.aborted) resolve();
+					else signal.addEventListener("abort", () => resolve(), { once: true });
+				});
+				throw new Error("Ask input was cancelled");
+			},
+		};
+		const mock = createMockModel({ responses: [] });
+		const agent = new Agent({
+			initialState: { model: mock.model, tools: [tool] },
+			streamFn: mock.stream,
+			transformContext: async (messages, signal) => {
+				signal?.throwIfAborted();
+				return messages;
+			},
+		});
+		agent.replaceMessages([
+			createUserMessage("ask a question"),
+			createAssistantMessage(
+				[{ type: "toolCall", id: "ask_1", name: "ask", arguments: { question: "Deploy?" } }],
+				"toolUse",
+			),
+		]);
+		const events: AgentEvent[] = [];
+		agent.subscribe(event => events.push(event));
+
+		const running = agent.continue();
+		await toolStarted.promise;
+		agent.abort("Interrupted by user");
+		await running;
+
+		const boundaryIndex = events.findIndex(
+			event =>
+				event.type === "message_end" &&
+				event.message.role === "assistant" &&
+				event.message.stopReason === "aborted",
+		);
+		expect(boundaryIndex).toBeGreaterThanOrEqual(0);
+		const boundary = events[boundaryIndex];
+		if (boundary.type !== "message_end") throw new Error("Expected persisted assistant boundary");
+		expect(boundary.message).toMatchObject({ role: "assistant", errorMessage: "Interrupted by user" });
+		expect(events.slice(boundaryIndex + 1).map(event => event.type)).toEqual(["turn_end", "agent_end"]);
+		expect(agent.state.messages.at(-1)).toEqual(boundary.message);
+		expect(
+			agent.state.messages.filter(message => message.role === "assistant" && message.stopReason === "aborted"),
+		).toHaveLength(1);
+		expect(mock.calls).toHaveLength(0);
+	});
+
 	it("continue() should process queued follow-up messages after an assistant turn", async () => {
 		const mock = createMockModel({ responses: [{ content: ["Processed"] }] });
 		const agent = new Agent({ streamFn: mock.stream });
@@ -1002,6 +1062,46 @@ describe("Agent", () => {
 				content: [{ type: "text", text: "cursor passive context" }],
 			});
 		}
+	});
+
+	it("delivers a returned call's updates to subscribers after its run ended", async () => {
+		// A backgrounded job keeps reporting through the call's `onUpdate` once
+		// the run yielded; its frames must still reach the transcript.
+		const toolSchema = type({});
+		let report: ((text: string) => void) | undefined;
+		const tool: AgentTool<typeof toolSchema, { state: string }> = {
+			name: "job",
+			label: "Job",
+			description: "Starts a background job",
+			parameters: toolSchema,
+			async execute(_toolCallId, _params, _signal, onUpdate) {
+				report = text => onUpdate?.({ content: [{ type: "text", text }], details: { state: "completed" } });
+				return { content: [{ type: "text", text: "started" }], details: { state: "running" } };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-job", name: "job", arguments: {} }] },
+				{ content: ["yielding"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+		});
+		const events: AgentEvent[] = [];
+		agent.subscribe(event => events.push(event));
+
+		await agent.prompt("start the job");
+		expect(events.at(-1)?.type).toBe("agent_end");
+		report?.("job output");
+
+		const late = events.at(-1);
+		expect(late).toMatchObject({
+			type: "tool_execution_update",
+			toolCallId: "tool-job",
+			partialResult: { content: [{ type: "text", text: "job output" }], details: { state: "completed" } },
+		});
 	});
 
 	it("sends passive tool context with the default LLM conversion", async () => {

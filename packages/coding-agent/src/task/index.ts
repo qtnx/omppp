@@ -40,7 +40,7 @@ import taskRateLimitNoticeTemplate from "../prompts/tools/task-rate-limit-notice
 import taskSummaryTemplate from "../prompts/tools/task-summary.md" with { type: "text" };
 import { clampRuntimeToBudget } from "../session/time-budget";
 import { TASK_EFFORTS, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
-import { truncateForPrompt } from "../tools/approval";
+import { type ApprovalDetailsOptions, truncateApprovalDetail, truncateForPrompt } from "../tools/approval";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-tui/render/render-utils";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
@@ -82,7 +82,12 @@ import { mapWithConcurrencyLimitAllSettled, Semaphore } from "./parallel";
 import { renderResult, renderCall as renderTaskCall } from "@oh-my-pi/pi-tui/tools/task";
 import { repairTaskParams } from "@oh-my-pi/pi-tui/tools/task-repair-args";
 import { resolveMaxRuntimeMs } from "./runtime-cap";
-import { resolveEffectiveSubagentPolicy, runStructuredSubagent, StructuredSubagentError } from "./structured-subagent";
+import {
+	resolveEffectiveSubagentPolicy,
+	runStructuredSubagent,
+	StructuredSubagentError,
+	type StructuredSubagentRequest,
+} from "./structured-subagent";
 import { SpawnRun, type SpawnPermit } from "./spawn-run";
 import { type TaskLauncher, TaskLaunchSession } from "./speculative-launch";
 
@@ -101,6 +106,7 @@ import {
 	cfgTaskMaxRecursionDepth,
 	cfgTaskMaxRuntimeMs,
 	cfgTaskSpeculativeLaunch,
+	cfgTaskStructured,
 } from "./settings";
 function renderSubagentUserPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, {
@@ -195,6 +201,7 @@ interface TaskDescriptionOptions {
 	batchEnabled: boolean;
 	effortEnabled: boolean;
 	evalToolsEnabled: boolean;
+	structured: boolean;
 	asyncEnabled: boolean;
 	ircEnabled: boolean;
 	parentSpawns: string;
@@ -230,6 +237,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 		batchEnabled: options.batchEnabled,
 		effortEnabled: options.effortEnabled,
 		evalToolsEnabled: options.evalToolsEnabled,
+		structured: options.structured,
 		asyncEnabled: options.asyncEnabled,
 		hasBlockingAgents: renderedAgents.some(agent => agent.blocking),
 		hasModelMentions: options.sessionAgents.length > 0,
@@ -525,8 +533,17 @@ interface MergedSyncPayloads {
 	usage?: Usage;
 	outputPaths?: string[];
 	projectAgentsDir: string | null;
+	/** Some spawn returned an error result. */
+	isError: boolean;
 }
 
+/**
+ * Merge per-spawn sync payloads into one result view. `index` is each spawn's
+ * position in the original call so batch rows keep stable ordering; a missing
+ * payload (cancelled before start) becomes an explanatory content line. An
+ * error payload from any spawn makes the merged view an error too, the way a
+ * one-spawn call returns that payload as is.
+ */
 function mergeSyncPayloads(
 	spawns: SyncSpawnRef[],
 	payloads: (AgentToolResult<TaskToolDetails> | undefined)[],
@@ -537,6 +554,7 @@ function mergeSyncPayloads(
 	const usageTotals = createUsageTotals();
 	let hasUsage = false;
 	let projectAgentsDir: string | null = null;
+	let isError = false;
 	for (let position = 0; position < spawns.length; position++) {
 		const payload = payloads[position];
 		const { item, index } = spawns[position];
@@ -544,6 +562,7 @@ function mergeSyncPayloads(
 			contentParts.push(`Task ${item.name?.trim() || item.id?.trim() || `#${index + 1}`}: cancelled before start.`);
 			continue;
 		}
+		isError ||= payload.isError === true;
 		projectAgentsDir ??= payload.details?.projectAgentsDir ?? null;
 		const text = payload.content.find(part => part.type === "text")?.text;
 		if (text) contentParts.push(text);
@@ -562,6 +581,7 @@ function mergeSyncPayloads(
 		usage: hasUsage ? usageTotals : undefined,
 		outputPaths: outputPaths.length > 0 ? outputPaths : undefined,
 		projectAgentsDir,
+		isError,
 	};
 }
 
@@ -752,7 +772,7 @@ interface DelegationRateLimitBlock {
 export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetails, Theme> {
 	readonly name = "task";
 	readonly approval = "exec" as const;
-	readonly formatApprovalDetails = (args: unknown): string[] => {
+	readonly formatApprovalDetails = (args: unknown, options?: ApprovalDetailsOptions): string[] => {
 		const params = args as Partial<TaskParams>;
 		const lines: string[] = [];
 		if (typeof params.agent === "string") {
@@ -764,10 +784,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const model = formatModelForApproval(params.model);
 		if (model) lines.push(`Model: ${model}`);
 		if (typeof params.task === "string") {
-			lines.push(`Task:\n${truncateForPrompt(params.task)}`);
+			lines.push(`Task:\n${truncateApprovalDetail(params.task, options)}`);
 		}
 		if (typeof params.context === "string" && params.context.trim()) {
-			lines.push(`Context:\n${truncateForPrompt(params.context)}`);
+			lines.push(`Context:\n${truncateApprovalDetail(params.context, options)}`);
 		}
 		const tasks: unknown[] = Array.isArray(params.tasks) ? params.tasks : [];
 		if (tasks.length > 0) {
@@ -796,7 +816,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const itemModel = formatModelForApproval("model" in firstTask ? firstTask.model : undefined);
 				if (itemModel) lines.push(`Model: ${itemModel}`);
 				if ("task" in firstTask && typeof firstTask.task === "string") {
-					lines.push(`Task:\n${truncateForPrompt(firstTask.task)}`);
+					lines.push(`Task:\n${truncateApprovalDetail(firstTask.task, options)}`);
 				}
 			}
 			if (tasks.length > 1) {
@@ -883,6 +903,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			batchEnabled: this.#isBatchEnabled(),
 			effortEnabled: cfgTaskEnableEffort.get(this.session.settings),
 			evalToolsEnabled: evalToolsEnabled(this.session),
+			structured: this.#isStructured(),
 			defaultAgent: this.#defaultAgent(),
 		});
 	}
@@ -907,6 +928,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			batchEnabled: this.#isBatchEnabled(),
 			effortEnabled: cfgTaskEnableEffort.get(this.session.settings),
 			evalToolsEnabled: evalToolsEnabled(this.session),
+			structured: this.#isStructured(),
 			asyncEnabled: cfgAsyncEnabled.get(this.session.settings),
 			ircEnabled: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
 			parentSpawns: this.session.getSessionSpawns() ?? "*",
@@ -990,6 +1012,23 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 	#isBatchEnabled(): boolean {
 		return cfgTaskBatch.get(this.session.settings);
+	}
+
+	#isStructured(): boolean {
+		return cfgTaskStructured.get(this.session.settings);
+	}
+
+	/**
+	 * Result contract for a spawn: with `task.structured` the caller's
+	 * `outputSchema`/`schemaMode` pass through; without it the child gets no
+	 * schema or `yield` tool and returns its final message.
+	 */
+	#resultParams(params: TaskParams): Pick<StructuredSubagentRequest, "outputSchema" | "schemaMode" | "structured"> {
+		if (!this.#isStructured()) return { structured: false };
+		return {
+			...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
+			...(Object.hasOwn(params, "schemaMode") ? { schemaMode: params.schemaMode } : {}),
+		};
 	}
 
 	#defaultAgent(): string {
@@ -1085,8 +1124,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			context: this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined,
 			agent: params.agent,
 			model: params.model,
-			...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
-			...(Object.hasOwn(params, "schemaMode") ? { schemaMode: params.schemaMode } : {}),
+			...this.#resultParams(params),
 			...(params.effort !== undefined ? { effort: params.effort } : {}),
 			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
 			selfReview: params.self_review,
@@ -1640,6 +1678,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		return withBriefGaps(
 			withAdvisory({
 				content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
+				...(merged.isError ? { isError: true } : {}),
 				details: buildAsyncDetails(),
 			}),
 		);
@@ -1714,6 +1753,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							? nextProgress.resolvedModelIsFallback
 							: undefined;
 						progress.advisor = nextProgress.advisor ?? progress.advisor;
+						progress.completionPercent = nextProgress.completionPercent ?? progress.completionPercent;
 						progress.resolvedModelRoute = nextProgress.resolvedModelRoute ?? progress.resolvedModelRoute;
 						progress.tokens = nextProgress.tokens;
 						progress.requests = nextProgress.requests;
@@ -1722,6 +1762,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						progress.cost = nextProgress.cost;
 						progress.toolCount = nextProgress.toolCount;
 						progress.currentTool = nextProgress.currentTool;
+						progress.currentToolArgs = nextProgress.currentToolArgs;
+						progress.currentToolArgsKey = nextProgress.currentToolArgsKey;
+						progress.currentToolIntent = nextProgress.currentToolIntent;
+						progress.currentToolStartMs = nextProgress.currentToolStartMs;
 						progress.lastIntent = nextProgress.lastIntent;
 						progress.recentTools = nextProgress.recentTools.slice();
 						progress.recentOutput = nextProgress.recentOutput.slice();
@@ -1851,8 +1895,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	/**
 	 * Sync fan-out (async unavailable, or every item's agent type is
 	 * `blocking: true`): run every spawn to completion inline and merge the
-	 * per-spawn payloads into a single tool result. The session-scoped
-	 * semaphore still bounds concurrency across parallel task calls.
+	 * per-spawn payloads into a single tool result, an error when any spawn's
+	 * payload is. The session-scoped semaphore still bounds concurrency across
+	 * parallel task calls.
 	 */
 	async #executeSyncFanout(
 		toolCallId: string,
@@ -1910,6 +1955,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const merged = mergeSyncPayloads(spawns, payloads);
 		return {
 			content: [{ type: "text", text: merged.contentParts.join("\n\n") }],
+			...(merged.isError ? { isError: true } : {}),
 			details: {
 				projectAgentsDir: merged.projectAgentsDir,
 				results: merged.results,
@@ -2014,8 +2060,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				context,
 				agent: params.agent,
 				model: params.model,
-				...(Object.hasOwn(params, "outputSchema") ? { outputSchema: params.outputSchema } : {}),
-				...(Object.hasOwn(params, "schemaMode") ? { schemaMode: params.schemaMode } : {}),
+				...this.#resultParams(params),
 				...(params.effort !== undefined ? { effort: params.effort } : {}),
 				solutionSpace: params.solutionSpace,
 				...(params.tools?.length
