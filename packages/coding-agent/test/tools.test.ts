@@ -1785,6 +1785,9 @@ describe("Coding Agent Tools", () => {
 				"alpha.txt",
 			);
 
+			// The cache keys on ctime, which the kernel stamps from a coarse clock: let it tick so the
+			// rewrite below cannot land on the same ctime as the write above.
+			await Bun.sleep(50);
 			// Same-length name and content: the rewrite keeps the size; the mtime is put back.
 			fs.writeFileSync(archivePath, createZipArchive([{ path: "bravo.txt", content: "other\n" }]));
 			fs.utimesSync(archivePath, pinnedMtime, pinnedMtime);
