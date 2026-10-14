@@ -85,7 +85,8 @@ export default function (api) {
 					const settings = await Settings.loadIsolated({
 						cwd: fixture.cwd, agentDir: fixture.agentDir,
 						overrides: {
-							"async.enabled": false, "task.batch": false,
+							// Plain-text children (the fixture never calls yield); OMPx defaults task.structured on.
+							"async.enabled": false, "task.batch": false, "task.structured": false,
 							"task.isolation.enabled": false, "task.enableLsp": false,
 							"modelRoles": { default: "fixture/fallback", tiny: "fixture/tiny" },
 						},

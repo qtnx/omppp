@@ -1729,7 +1729,8 @@ describe("createAgentSession defaultInactive tool activation", () => {
 				"jev_scout",
 				"bash",
 				"web_search",
-				"yield",
+				// `yield` is no longer part of the agent's declared tools; the task
+				// executor adds it at spawn when the run is structured.
 			];
 			const contextGcToolNames = [
 				"context_debug",
