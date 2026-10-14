@@ -1785,6 +1785,11 @@ describe("Coding Agent Tools", () => {
 				"alpha.txt",
 			);
 
+			// The cache keys on ctime, which the kernel stamps from a coarse clock. Touch the archive until
+			// that clock ticks, so the rewrite below cannot land on the ctime the cached read recorded.
+			const cachedCtimeMs = fs.statSync(archivePath).ctimeMs;
+			while (fs.statSync(archivePath).ctimeMs === cachedCtimeMs)
+				fs.utimesSync(archivePath, pinnedMtime, pinnedMtime);
 			// Same-length name and content: the rewrite keeps the size; the mtime is put back.
 			fs.writeFileSync(archivePath, createZipArchive([{ path: "bravo.txt", content: "other\n" }]));
 			fs.utimesSync(archivePath, pinnedMtime, pinnedMtime);
