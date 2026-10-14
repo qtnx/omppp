@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.8] - 2026-10-14
+
 ### Added
 
 - `AgentTool.formatApprovalDetails` receives `ApprovalDetailsOptions`; `compact: true` asks for untruncated bodies so a compact approval prompt can count their lines ([#15550](https://github.com/can1357/oh-my-pi/pull/15550) by [@H4vC](https://github.com/H4vC))

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.8] - 2026-10-14
+
 ### Added
 
 - Added `viewWithoutThinking()`, `textWithoutThinking()`, `readerIncludesThinking()` and an optional `Archive.withoutThinking` variant, so an archive rendered with reasoning can be read by a model that must not see it; without a stored variant the view keeps only reasoning-free text and no frames ([#15436](https://github.com/can1357/oh-my-pi/pull/15436) by [@will-bogusz](https://github.com/will-bogusz))
