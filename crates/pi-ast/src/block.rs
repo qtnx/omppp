@@ -1315,9 +1315,8 @@ mod tests {
 			if node.is_named() && node_content_end_line(node) != raw_end {
 				count += 1;
 			}
-			for index in 0..node.child_count() {
-				stack.push(node.child(index).expect("child in range"));
-			}
+			let mut cursor = node.walk();
+			stack.extend(node.children(&mut cursor));
 		}
 		count
 	}
