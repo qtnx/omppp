@@ -479,7 +479,9 @@ fn collect_elidable_tree(
 	// When the run's total line span meets `min_body_lines`, elide the lines
 	// strictly between the first and last sibling's content, leaving the
 	// boundary statements visible.
-	let child_count = node.child_count();
+	// tree-sitter 0.26 indexes children by `u32`; a node never has more children
+	// than that.
+	let child_count = u32::try_from(node.child_count()).unwrap_or(u32::MAX);
 	let mut run_first: Option<Node<'_>> = None;
 	let mut run_last: Option<Node<'_>> = None;
 	let mut run_count: u32 = 0;

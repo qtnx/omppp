@@ -432,10 +432,10 @@ jj-lib = { version = "0.44", default-features = false, features = ["git"] }
 # ──────────────────────────────────────────────────────────────────────────────
 # AST & Tree-Sitter
 # ──────────────────────────────────────────────────────────────────────────────
-ast-grep-core = { version = "0.39", default-features = false, features = [
+ast-grep-core = { version = "0.45", default-features = false, features = [
    "tree-sitter",
 ] }
-tree-sitter = "0.25"
+tree-sitter = "0.26"
 tree-sitter-bash = "0.25"
 tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"

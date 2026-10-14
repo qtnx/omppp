@@ -276,7 +276,7 @@ impl LanguageExt for Html {
 	fn extract_injections<L: LanguageExt>(
 		&self,
 		root: Node<StrDoc<L>>,
-	) -> HashMap<String, Vec<TSRange>> {
+	) -> Vec<(String, Vec<TSRange>)> {
 		let lang = root.lang();
 		let mut map = HashMap::new();
 		let matcher = KindMatcher::new("script_element", lang.clone());
@@ -299,7 +299,7 @@ impl LanguageExt for Html {
 					.push(node_to_range(&content));
 			}
 		}
-		map
+		map.into_iter().collect()
 	}
 }
 
@@ -618,10 +618,10 @@ impl LanguageExt for SupportLang {
 	fn extract_injections<L: LanguageExt>(
 		&self,
 		root: Node<StrDoc<L>>,
-	) -> HashMap<String, Vec<TSRange>> {
+	) -> Vec<(String, Vec<TSRange>)> {
 		match self {
 			Self::Html => Html.extract_injections(root),
-			_ => HashMap::new(),
+			_ => Vec::new(),
 		}
 	}
 }
