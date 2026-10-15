@@ -1608,6 +1608,12 @@
 - Fixed silent MCP requests being terminated by an undeclared idle timeout; closing a legacy SSE connection now also cancels pending requests and notifications.
 - Fixed browser reuse for Chromium installed behind Linux wrapper scripts and prevented duplicate launches when a profile is locked ([#12236](https://github.com/can1357/oh-my-pi/pull/12236) by [@shivamklr](https://github.com/shivamklr)).
 
+## [1.11.9] - 2026-10-15
+
+### Changed
+
+- Synced with upstream oh-my-pi 18.10.3: new Factory Droid, Helmcode, MiniMax Token Plan and Bedrock Mantle providers, `gpt-6.1-sol`, per-agent soft request budgets, `task.structured`, and browser renderer-crash recovery.
+
 ## [1.11.8] - 2026-10-14
 
 ### Added
