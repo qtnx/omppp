@@ -419,7 +419,9 @@ const requiredReleaseJobs = [
 	"Test TS native/integration packages",
 	"Test coding-agent UI/TUI (TS)",
 	"Test coding-agent runtime/session (TS)",
-	"Test coding-agent native/unit (TS)",
+	"Test coding-agent native/unit (TS) 1/3",
+	"Test coding-agent native/unit (TS) 2/3",
+	"Test coding-agent native/unit (TS) 3/3",
 	"Test CLI smoke (TS)",
 	"Install method smoke tests",
 ];
