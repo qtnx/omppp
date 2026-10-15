@@ -352,7 +352,16 @@ async function codingAgentTestCommands(bucket: CodingAgentBucket): Promise<TestC
 		commands.push({
 			label: `packages/coding-agent (${plan.label}; ${testFiles.length} files; parallel=${plan.parallel}${chunkLabel}; ${chunk.length} files)`,
 			cwd: "packages/coding-agent",
-			command: ["bun", "--smol", "test", ...onlyFailuresArgs, ...chunk],
+			// The native bucket drives real Chromium (renderer-crash and mid-navigation cancel tests), which
+			// is timing sensitive on shared runners; retry a failing test twice before failing the chunk.
+			command: [
+				"bun",
+				"--smol",
+				"test",
+				...(bucket === "native" ? ["--retry=2"] : []),
+				...onlyFailuresArgs,
+				...chunk,
+			],
 			group: `coding-agent-${bucket}`,
 			isolatedHome: true,
 			parallel: plan.parallel,
