@@ -605,6 +605,7 @@ describe("ci.yml workflow scheduling", () => {
 		const bumpFiles = [
 			"package.json",
 			"Cargo.lock",
+			"MODULE.bazel.lock",
 			"packages/coding-agent/CHANGELOG.md",
 			"crates/pi-natives/src/lib.rs",
 		];

@@ -268,7 +268,7 @@ jobs:
               )
               # Files a release bump rewrites (versions, lockfiles, changelogs,
               # native sentinel). Anything else needs a fresh test run.
-              allowed='^(package\.json|bun\.lock|Cargo\.toml|Cargo\.lock|CHANGELOG\.md|packages/[^/]+/package\.json|packages/[^/]+/CHANGELOG\.md|crates/pi-natives/src/lib\.rs|packages/natives/native/(index\.js|index\.d\.ts|version-sentinel\.js))$'
+              allowed='^(package\.json|bun\.lock|Cargo\.toml|Cargo\.lock|MODULE\.bazel\.lock|CHANGELOG\.md|packages/[^/]+/package\.json|packages/[^/]+/CHANGELOG\.md|crates/pi-natives/src/lib\.rs|packages/natives/native/(index\.js|index\.d\.ts|version-sentinel\.js))$'
               tested=false
               while IFS=$'\t' read -r run_id base_sha; do
                 [ -n "$run_id" ] || continue
