@@ -635,7 +635,11 @@ mod tests {
 	/// (The *root* node's id is the address of the `root` field inside the
 	/// `TSTree` struct itself, which a copy necessarily relocates.)
 	fn subtree_id(tree: &Tree, index: usize) -> usize {
-		tree.root_node().child(u32::try_from(index).expect("child index fits u32")).expect("top-level decl").id()
+		tree
+			.root_node()
+			.child(u32::try_from(index).expect("child index fits u32"))
+			.expect("top-level decl")
+			.id()
 	}
 
 	const TS: SupportLang = SupportLang::TypeScript;
