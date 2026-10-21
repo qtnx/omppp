@@ -6871,7 +6871,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ast"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -6906,7 +6906,7 @@ dependencies = [
 
 [[package]]
 name = "pi-builtins"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "ansi-width",
  "anyhow",
@@ -6994,11 +6994,11 @@ dependencies = [
 
 [[package]]
 name = "pi-diff"
-version = "1.11.9"
+version = "1.11.10"
 
 [[package]]
 name = "pi-edit"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "async-trait",
  "parking_lot",
@@ -7018,7 +7018,7 @@ dependencies = [
 
 [[package]]
 name = "pi-iso"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "async-trait",
  "libc",
@@ -7030,7 +7030,7 @@ dependencies = [
 
 [[package]]
 name = "pi-natives"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "anyhow",
  "arboard",
@@ -7122,7 +7122,7 @@ dependencies = [
 
 [[package]]
 name = "pi-predict"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -7140,7 +7140,7 @@ dependencies = [
 
 [[package]]
 name = "pi-shell"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7171,7 +7171,7 @@ dependencies = [
 
 [[package]]
 name = "pi-vcs"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "futures",
  "gix",
@@ -7187,7 +7187,7 @@ dependencies = [
 
 [[package]]
 name = "pi-vfs"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "async-trait",
  "libc",
@@ -7200,7 +7200,7 @@ dependencies = [
 
 [[package]]
 name = "pi-voice"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "bytes",
  "flume",
@@ -7214,7 +7214,7 @@ dependencies = [
 
 [[package]]
 name = "pi-walker"
-version = "1.11.9"
+version = "1.11.10"
 dependencies = [
  "globset",
  "ignore",
