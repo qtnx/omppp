@@ -119,6 +119,7 @@
 		"dist/docs-index.generated.txt",
 		"dist/CHANGELOG-*.md",
 		"dist/*.node",
+		"dist/*.json-*.zst",
 		"dist/template-*.css",
 		"dist/template-*.html",
 		"dist/template-*.js",

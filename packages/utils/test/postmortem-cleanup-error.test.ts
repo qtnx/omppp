@@ -21,6 +21,8 @@ async function runPostmortemProbe(
 			...process.env,
 			...inheritedEnv,
 			XDG_STATE_HOME: stateHome,
+			// A ci-test-ts parent exports PI_TEST_RUNTIME=1, which would redirect the probe's logs to the shared test logs dir.
+			PI_TEST_RUNTIME: "",
 		};
 		delete env.PI_CODING_AGENT_DIR;
 		delete env.OMP_PROFILE;

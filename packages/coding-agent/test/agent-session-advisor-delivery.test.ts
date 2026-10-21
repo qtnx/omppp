@@ -265,6 +265,10 @@ describe("AgentSession advisor delivery during a tool batch", () => {
 		const settings = Settings.isolated({
 			"advisor.enabled": false,
 			"advisor.syncBacklog": "off",
+			// A concern below advisor.continueSeverity is preserved as a card at the
+			// terminal boundary; at or above it the note wakes one continuation.
+			"advisor.continueSeverity": "blocker",
+			"signals.enabled": false,
 			"compaction.enabled": false,
 			interruptMode: "immediate",
 			"retry.enabled": false,

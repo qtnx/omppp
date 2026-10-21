@@ -340,6 +340,9 @@ describe("advisor tool-call loop guard", () => {
 		);
 		if (!session) throw new Error("Expected live session");
 		const live = session;
+		// Enabling the advisor re-applies the active tool set asynchronously; let that
+		// queued mutation land first so it cannot drop the injected todo tool.
+		await live.runToolRegistryMutation(async () => {});
 		activateTodoTool(live, tempDir.path());
 		live.setTodoPhases([{ name: "Work", tasks: [{ content: "Finish the migration", status: "in_progress" }] }]);
 		const reminderRunEnded = Promise.withResolvers<void>();
@@ -679,6 +682,7 @@ describe("advisor tool-call loop guard", () => {
 			"advisor.syncBacklog": "strict",
 			"compaction.enabled": false,
 			"todo.enabled": false,
+			"signals.enabled": false,
 		});
 		session = new AgentSession({
 			agent: new Agent({
