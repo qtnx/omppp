@@ -128,7 +128,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | Flag | Description |
 | --- | --- |
 | `--prewalk` | Arm a one-shot handoff at the first eligible edit/write turn, gated on a successful todo call when `todo` is active (default off). See [prewalk](./prewalk.md). |
-| `--no-prewalk` | Disable prewalk even if `prewalk.enabled` is set; incompatible with `--prewalk`/`--prewalk-into`. |
+| `--no-prewalk` | Disable prewalk even if `prewalk.enabled` is set, and keep `prewalk.auto` out of the startup session; incompatible with `--prewalk`/`--prewalk-into`. |
 | `--prewalk-into <id-or-role>` | Arm prewalk with this target instead of the `smol` role. |
 | `--plan-yolo` | Start in read-only plan mode, auto-approve the model's plan proposal, then switch to the execution target to implement it. |
 | `--plan-yolo-into <id-or-role>` | Target model for plan-yolo execution (default the `smol` role); requires `--plan-yolo`. |
@@ -142,7 +142,7 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | `--no-tools` | Disable all built-in tools. |
 | `--no-lsp` | Disable LSP tools, formatting, and diagnostics. |
 | `--no-pty` | Disable PTY-based interactive bash execution. |
-| `--approval-mode <mode>` | Override `tools.approvalMode` for this session (`always-ask`, `write`, or `yolo`). See [approval mode](./approval-mode.md). |
+| `--approval-mode <mode>` | Override `tools.approvalMode` for this session (`always-ask`, `always-ask-cached`, `write`, or `yolo`). See [approval mode](./approval-mode.md). |
 | `--auto-approve`, `--yolo` | Force yolo tier approval; explicit tool/user policies and provider safety checks still apply. |
 | `--advisor` | Enable the advisor runtime (passively reviews each turn and injects notes). See [advisor / watchdog](./advisor-watchdog.md). |
 | `--max-time <duration>` | Stop the session after this duration (e.g. `600`, `10m`, `1h`). |

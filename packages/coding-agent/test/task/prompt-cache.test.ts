@@ -222,7 +222,6 @@ describe("task sibling prompt-cache routing", () => {
 					const result = await tool.execute(name, {
 						name,
 						task: `Review ${name}.`,
-						model: `${provider}/${modelId}`,
 					});
 					expect(result.isError, JSON.stringify(result)).not.toBe(true);
 					expect(result.details?.results[0]?.exitCode, JSON.stringify(result)).toBe(0);

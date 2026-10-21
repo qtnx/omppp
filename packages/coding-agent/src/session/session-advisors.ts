@@ -72,7 +72,7 @@ import {
 	getOrCreateAdvisorProviderSessionId,
 	isAdvisorInterruptImmuneTurnActive,
 	isClassifierRefusal,
-	isInterruptingSeverity,
+	meetsAdvisorSeverity,
 	quarantineAdvisorUnsafeOutput,
 	ReadAdvisorStateTool,
 	resolveAdvisorDeliveryChannel,
@@ -109,7 +109,7 @@ import {
 	type TakeoverPurpose,
 } from "../duo";
 import { detectCompletionClaim, hasMutationsSinceLastUserPrompt } from "../duo/takeover-signals";
-import { estimateToolSchemaTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
+import { estimateContextToolSchemaTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import type { PlanModeState } from "../plan-mode/state";
 import doneReviewMd from "../prompts/advisor/done-review.md" with { type: "text" };
 import advisorBoundaryGuidance from "../prompts/advisor/boundary-guidance.md" with { type: "text" };
@@ -151,6 +151,7 @@ import type { YieldQueue } from "./yield-queue";
 import {
 	cfgAdvisorDoneGate,
 	cfgAdvisorEnabled,
+	cfgAdvisorContinueSeverity,
 	cfgAdvisorEvictStaleResults,
 	cfgAdvisorFallbackModel,
 	cfgAdvisorImmuneTurns,
@@ -667,7 +668,7 @@ export class SessionAdvisors {
 	#advisorAutoResumeSuppressed = false;
 	#preserveAdvisorAdvice = false;
 	#preserveTerminalYieldAdvice = false;
-	/** Keeps terminal non-blocker advice on the visible card route during unwind. */
+	/** Routes late advice against a finished run through the boundary-flush continuation policy during unwind. */
 	#terminalUnwindActive = false;
 	#advisorPrimaryTurnsCompleted = 0;
 	/** Last time a running tool step was sent to Jev without advisors; reset at each terminal boundary. */
@@ -899,8 +900,8 @@ export class SessionAdvisors {
 			// off the review drain can still emit after it returns; those late notes
 			// deliver individually through #routeAdvice, and `#terminalUnwindActive`
 			// (held until the next primary turn starts), not the merge window, is what
-			// keeps them from steering finished work — only a blocker or an
-			// agent-end reviewer's concern may still request a continuation.
+			// keeps them from steering finished work — only a note at or above
+			// `advisor.continueSeverity` may still request a continuation.
 			if (!terminalBoundary) this.#terminalUnwindActive = false;
 		}
 	}
@@ -2292,19 +2293,7 @@ export class SessionAdvisors {
 		return this.#advisors.length > 0;
 	}
 
-	/**
-	 * Route one accepted advice note from `advisor` to the primary. Concern and
-	 * blocker interrupt the running agent through the steering channel; once the
-	 * loop has yielded, `triggerTurn` resumes it. After a terminal text answer with
-	 * no queued work, late non-blocker advice (a nit or concern) is preserved as a
-	 * visible advisor card, while a blocker wakes the primary to acknowledge work
-	 * it handed off incorrectly. After a deliberate user interrupt auto-resume is
-	 * suppressed while idle/unwinding (the note becomes a preserved card re-entering
-	 * on resume); a live-streaming turn is steered in directly. A plain nit rides
-	 * the non-interrupting YieldQueue aside during streaming. The emission guard
-	 * has already accepted the note; rejected calls never enter this route and
-	 * receive their specific policy outcome from `AdviseTool`.
-	 */
+	/** Whether the primary's tail (past advisor cards) is a terminal text answer with nothing queued behind it. */
 	#hasTerminalTextAnswerWithoutQueuedWork(): boolean {
 		if (this.#host.agent.hasQueuedMessages() || this.#host.hasPendingNextTurnMessages()) return false;
 		const messages = this.#host.agent.state.messages;
@@ -2313,10 +2302,18 @@ export class SessionAdvisors {
 		return isTerminalTextAssistantAnswer(messages[tail]);
 	}
 
-	/** Route an already-accepted advice note to the primary. Never re-runs
-	 *  admission — the note cleared the emission guard inside AdviseTool when it
-	 *  was emitted, so a deferred flush replays the backlog without
-	 *  re-filtering. */
+	/**
+	 * Route one accepted advice note from `advisor` to the primary. Concern and
+	 * blocker interrupt the running agent through the steering channel; a plain nit
+	 * rides the non-interrupting YieldQueue aside during streaming. After a terminal
+	 * text answer with no queued work, a note below `advisor.continueSeverity` is
+	 * preserved as a visible advisor card, while one at or above it wakes the
+	 * primary for one continuation. After a deliberate user interrupt auto-resume is
+	 * suppressed while idle/unwinding (the note becomes a preserved card re-entering
+	 * on resume); a live-streaming turn is steered in directly. Never re-runs
+	 * admission — the note cleared the emission guard inside AdviseTool when it was
+	 * emitted, so a deferred flush replays the backlog without re-filtering.
+	 */
 	#routeAdvice(advisor: ActiveAdvisor, note: string, severity?: AdvisorSeverity, turn?: number): void {
 		const effectiveSeverity = this.#advisorConsultInFlight ? undefined : severity;
 		// The implicit single ("default") advisor stamps no source name, so its
@@ -2328,8 +2325,9 @@ export class SessionAdvisors {
 		// finished, and N simultaneous notes would force N separate deliveries
 		// (#4840's spurious post-completion calls; N blockers = N identical "Done"
 		// continuations). Buffer everything — nits, concerns, blockers — and deliver
-		// once when the window closes: any blocker steers one merged continuation,
-		// otherwise one preserved card re-enters context on the next user turn.
+		// once when the window closes: any note at `advisor.continueSeverity` steers
+		// one merged continuation, otherwise one preserved card re-enters context on
+		// the next user turn.
 		if (this.#advisorTerminalBoundaryOpen) {
 			this.#advisorBoundaryNotes.push({
 				note,
@@ -2339,34 +2337,33 @@ export class SessionAdvisors {
 			});
 			return;
 		}
-		const interrupting = isInterruptingSeverity(effectiveSeverity);
+		const notes: AdvisorNote[] = [{ note, severity, advisor: source }];
 		const terminalAnswerNoQueuedWork = this.#hasTerminalTextAnswerWithoutQueuedWork();
-		// A final-review concern that lands after the boundary window closed
-		// (catch-up off, or a review slower than its wait) keeps the one
-		// continuation the merged boundary flush would have granted it.
-		const finalReviewConcern =
-			effectiveSeverity === "concern" &&
-			this.#terminalUnwindActive &&
-			(advisor.reviewMode ?? cfgAdvisorReviewMode.get(this.#host.settings)) === "agent-end";
-		const terminalUnwindPreserve =
-			this.#terminalUnwindActive &&
-			effectiveSeverity !== "blocker" &&
-			!finalReviewConcern &&
-			terminalAnswerNoQueuedWork;
+		// A note that lands after the boundary window closed (catch-up off, or a
+		// review slower than its wait) gets exactly what the merged boundary flush
+		// would have granted it. The loop may still report streaming here, and an
+		// aside would be drained into an extra turn that skips the continuation latch.
+		if (this.#terminalUnwindActive && terminalAnswerNoQueuedWork) {
+			this.#deliverAdvisorBatch(
+				notes,
+				formatAdvisorBatchContent(notes),
+				this.#continuesFinishedRun(effectiveSeverity),
+			);
+			return;
+		}
 		const channel = resolveAdvisorDeliveryChannel({
 			severity: effectiveSeverity,
+			continueSeverity: cfgAdvisorContinueSeverity.get(this.#host.settings),
 			autoResumeSuppressed: this.#advisorAutoResumeSuppressed,
-			preserveOnly: this.#preserveAdvisorAdvice || terminalUnwindPreserve,
+			preserveOnly: this.#preserveAdvisorAdvice,
 			// Key on the live agent-core loop, not session `isStreaming` (which also
 			// counts `#promptInFlightCount` during post-turn unwind). Only a running
 			// loop consumes a steer at its next boundary.
-			streaming: this.#host.agent.state.isStreaming && !this.#preserveTerminalYieldAdvice && !terminalUnwindPreserve,
+			streaming: this.#host.agent.state.isStreaming && !this.#preserveTerminalYieldAdvice,
 			aborting: this.#host.abortInProgress(),
 			terminalAnswerNoQueuedWork,
-			allowTerminalConcernSteering: finalReviewConcern,
-			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
+			interruptImmuneTurnActive: this.#isAdvisorInterruptImmuneTurnActive(),
 		});
-		const notes: AdvisorNote[] = [{ note, severity, advisor: source }];
 		if (channel === "aside") {
 			this.#host.yieldQueue.enqueue("advisor", { note, severity, advisor: source });
 			return;
@@ -2389,13 +2386,9 @@ export class SessionAdvisors {
 	 * uses — user-stop suppression, headless/terminal-yield preservation, and
 	 * the post-interrupt cooldown all gate a final-review continuation exactly
 	 * as they gate a live steer. The batch steers at most ONE continuation, only
-	 * when a note qualifies on its own merits: a blocker, or a concern from an
-	 * agent-end advisor (it reviewed the complete run, so a material issue in
-	 * finished work deserves one steering turn — the sleep latch prevents
-	 * cascade). For those final-review concerns `allowTerminalConcernSteering`
-	 * lifts ONLY the terminal-answer preservation — the turn they reviewed has
-	 * by definition just answered — never the stop/abort/preserve/cooldown
-	 * gates. Otherwise preserves as a single visible card.
+	 * when a note qualifies on its own merits: its severity meets
+	 * `advisor.continueSeverity` (the advisor continuation latch prevents a
+	 * cascade). Otherwise preserves as a single visible card.
 	 */
 	#flushAdvisorBoundaryNotes(): void {
 		if (this.#advisorBoundaryNotes.length === 0) return;
@@ -2414,46 +2407,36 @@ export class SessionAdvisors {
 		if (showGuidance) this.#advisorBoundaryGuidanceLastTurn = this.#advisorPrimaryTurnsCompleted;
 		const batch = formatAdvisorBatchContent(notes, { currentTurn: this.#advisorPrimaryTurnsCompleted });
 		const content = showGuidance ? `${ADVISOR_BOUNDARY_GUIDANCE}\n${batch}` : batch;
-		// Snapshot the shared policy inputs once: they cannot change while this
-		// synchronous flush runs. `streaming` is forced false — the primary's turn
-		// IS final even though the loop still reports streaming during the
-		// boundary callback, so "steer" here means triggering one continuation
-		// turn, never steering into the just-completed one. Forcing false also
-		// keeps user-stop suppression independent of the exact unwind state.
-		const aborting = this.#host.abortInProgress();
-		const terminalAnswerNoQueuedWork = this.#hasTerminalTextAnswerWithoutQueuedWork();
-		const interruptImmuneTurnActive = this.#isAdvisorInterruptImmuneTurnActive();
-		const shouldSteer = notes.some(n => {
-			// Steering eligibility: a blocker, or a concern from an agent-end
-			// reviewer. A turn-mode concern at a terminal boundary still
-			// preserves: the work was already reviewed per-turn.
-			const finalReviewConcern = n.severity === "concern" && this.#noteAdvisorIsAgentEnd(n.advisor);
-			if (n.severity !== "blocker" && !finalReviewConcern) return false;
-			return (
-				resolveAdvisorDeliveryChannel({
-					severity: n.severity,
-					autoResumeSuppressed: this.#advisorAutoResumeSuppressed,
-					preserveOnly: this.#preserveAdvisorAdvice,
-					streaming: false,
-					aborting,
-					terminalAnswerNoQueuedWork,
-					interruptImmuneTurnActive,
-					allowTerminalConcernSteering: finalReviewConcern,
-				}) === "steer"
-			);
-		});
-		this.#deliverAdvisorBatch(notes, content, shouldSteer);
+		this.#deliverAdvisorBatch(
+			notes,
+			content,
+			notes.some(n => this.#continuesFinishedRun(n.severity)),
+		);
 	}
 
-	/** Whether the advisor that produced `sourceName` reviews only at agent end.
-	 *  For the default advisor (no name), falls back to the live `advisor.reviewMode`. */
-	#noteAdvisorIsAgentEnd(sourceName: string | undefined): boolean {
-		for (const a of this.#advisors) {
-			if (sourceName === undefined ? !a.slug : a.name === sourceName) {
-				return (a.reviewMode ?? cfgAdvisorReviewMode.get(this.#host.settings)) === "agent-end";
-			}
-		}
-		return false;
+	/**
+	 * Whether a note against a finished primary run may start one continuation:
+	 * its severity meets `advisor.continueSeverity` (even when the tail is not a
+	 * clean answer) and the shared delivery policy would steer it. `streaming` is
+	 * forced false — the turn IS final even while the loop still reports
+	 * streaming, so "steer" means triggering one latched continuation turn, never
+	 * steering into the completed one; it also keeps user-stop suppression
+	 * independent of the exact unwind state.
+	 */
+	#continuesFinishedRun(severity: AdvisorSeverity | undefined): boolean {
+		const continueSeverity = cfgAdvisorContinueSeverity.get(this.#host.settings);
+		if (!meetsAdvisorSeverity(severity, continueSeverity)) return false;
+		const channel = resolveAdvisorDeliveryChannel({
+			severity,
+			continueSeverity,
+			autoResumeSuppressed: this.#advisorAutoResumeSuppressed,
+			preserveOnly: this.#preserveAdvisorAdvice,
+			streaming: false,
+			aborting: this.#host.abortInProgress(),
+			terminalAnswerNoQueuedWork: this.#hasTerminalTextAnswerWithoutQueuedWork(),
+			interruptImmuneTurnActive: this.#isAdvisorInterruptImmuneTurnActive(),
+		});
+		return channel === "steer";
 	}
 
 	/**
@@ -2983,13 +2966,24 @@ export class SessionAdvisors {
 		// delta to that arm. Floor it by a full local estimate — fixed advisor system
 		// prompt, tool schemas, stored messages, and incoming delta — so provider
 		// under-reporting or payload transforms cannot suppress maintenance.
+		// Schema overhead depends on the model, so promotion re-evaluates the
+		// local arm against the promoted model's schema policy.
 		const providerContextTokens = this.#estimateAdvisorContextTokens(advisor) + incomingTokens;
-		const localContextTokens =
-			agent.tokenizer.countTokens(agent.state.systemPrompt) +
-			estimateToolSchemaTokens(agent.state.tools, agent.tokenizer, this.#host.settings.revision) +
-			storedConversationTokens +
-			incomingTokens;
-		const contextTokens = compactionContextTokens(providerContextTokens, localContextTokens);
+		const fixedPromptTokens = agent.tokenizer.countTokens(agent.state.systemPrompt);
+		const contextTokensFor = (model: Model): number =>
+			compactionContextTokens(
+				providerContextTokens,
+				fixedPromptTokens +
+					estimateContextToolSchemaTokens(
+						agent.state.tools,
+						agent.tokenizer,
+						model,
+						this.#host.settings.revision,
+					) +
+					storedConversationTokens +
+					incomingTokens,
+			);
+		const contextTokens = contextTokensFor(advisorModel);
 
 		if (!shouldCompact(contextTokens, contextWindow, compactionSettings)) {
 			return false;
@@ -3005,7 +2999,7 @@ export class SessionAdvisors {
 			);
 			const newWindow = newModel.contextWindow ?? 0;
 			if (newWindow > 0) {
-				const stillNeedsCompaction = shouldCompact(contextTokens, newWindow, compactionSettings);
+				const stillNeedsCompaction = shouldCompact(contextTokensFor(newModel), newWindow, compactionSettings);
 				if (!stillNeedsCompaction) return false;
 			}
 		}
@@ -3193,8 +3187,11 @@ export class SessionAdvisors {
 			throw new NativeCompactionError(new Error("Compaction result cannot be replayed by the advisor model"));
 		}
 		// Native replacement history already contains the retained tail. Replaying
-		// that tail again as raw messages duplicates turns and tool-call IDs.
-		const recentMessages = providerPayload ? [] : preparation.recentMessages;
+		// that tail again as raw messages duplicates turns and tool-call IDs. A
+		// prefix-only compaction (`providerReplayThroughEntryId`: the tail could not
+		// fit the window) stops before the tail, so the tail replays as raw messages.
+		const recentMessages =
+			providerPayload && compactResult.providerReplayThroughEntryId === undefined ? [] : preparation.recentMessages;
 
 		// The retained messages still carry provider usage from before this
 		// compaction. Record their exact array boundary on the in-memory summary so

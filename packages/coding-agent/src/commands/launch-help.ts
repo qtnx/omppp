@@ -29,7 +29,9 @@ export const launchHelp = {
 			description:
 				"Switch from the active model to a fast/cheap model at the first edit/write after the plan's todo list exists (default off; see prewalk.enabled)",
 		}),
-		"no-prewalk": Flags.boolean({ description: "Disable prewalk even if prewalk.enabled is set" }),
+		"no-prewalk": Flags.boolean({
+			description: "Disable prewalk, including prewalk.auto, even if prewalk.enabled is set",
+		}),
 		"prewalk-into": Flags.string({ description: 'Target model for prewalk (default the "smol" role)' }),
 		"plan-yolo": Flags.boolean({
 			description:
@@ -120,8 +122,8 @@ export const launchHelp = {
 			description: "Auto-approve all tool calls (skip approval prompts)",
 		}),
 		"approval-mode": Flags.string({
-			options: ["always-ask", "write", "yolo"],
-			description: "Override tools.approvalMode for this session (always-ask|write|yolo)",
+			options: ["always-ask", "always-ask-cached", "write", "yolo"],
+			description: "Override tools.approvalMode for this session (always-ask|always-ask-cached|write|yolo)",
 		}),
 	},
 	examples: [

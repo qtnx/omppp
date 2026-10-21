@@ -17,7 +17,7 @@ import { hexToOklch, hueDistance, logger, oklchCusp, oklchToHex } from "@oh-my-p
 import { Image, type ImageBudget, imageMaxColumns } from "../components/image";
 import { fencedCode, type Markdown } from "../components/markdown";
 import { type CellDimensions, getCellDimensions, getImageDimensions } from "../terminal-capabilities";
-import { getThemeEpoch, type ThemeColor, theme } from "../theme";
+import { ensureThemeSync, getThemeEpoch, type ThemeColor, theme } from "../theme";
 import type { Component } from "../tui";
 import { closePartialSvg, prepareSvg } from "./svg-source";
 
@@ -59,6 +59,7 @@ const SERIES_CHROMA = 0.19;
 
 /** The active theme's color per figure token, for resolving a figure with `prepareSvg`. */
 export function svgFigurePalette(): Record<string, string> {
+	ensureThemeSync();
 	const palette: Record<string, string> = { surface: theme.getBgHex("selectedBg") };
 	for (const token in PALETTE) palette[token] = theme.getColorHex(PALETTE[token]!);
 	seriesColors(palette.accent!, theme.isLight).forEach((color, at) => {
@@ -181,6 +182,7 @@ export class SvgFigure implements Component {
 	#placeholder: readonly string[] | undefined;
 
 	constructor(options: SvgFigureOptions) {
+		ensureThemeSync();
 		this.#options = options;
 	}
 

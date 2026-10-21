@@ -44,6 +44,8 @@ use pi_edit::{
 	text::normalize_to_lf,
 };
 
+use crate::memory::{self, Settled, native_work};
+
 fn parse_mode(mode: &str) -> Result<EditMode> {
 	EditMode::parse(mode)
 		.ok_or_else(|| napi::Error::from_reason(format!("Unknown edit mode: {mode}")))
@@ -66,6 +68,10 @@ pub struct EditPolicy {
 	pub allow_fuzzy:          bool,
 	pub fuzzy_threshold:      f64,
 	pub enforce_seen_lines:   bool,
+	/// Narrowest per-line display cap any tool applies, in UTF-8 bytes (0: no
+	/// tool cuts lines). Without recorded read provenance, hashline anchors on
+	/// longer lines are rejected.
+	pub max_columns:          u32,
 	pub block_auto_generated: bool,
 	pub plan_active:          bool,
 	/// Registered internal URL schemes (router spec keys).
@@ -100,6 +106,7 @@ impl EditPolicy {
 			allow_fuzzy:        self.allow_fuzzy,
 			fuzzy_threshold:    self.fuzzy_threshold,
 			enforce_seen_lines: self.enforce_seen_lines,
+			max_columns:        self.max_columns as usize,
 			raw_input:          self.raw_input,
 		})
 	}
@@ -397,6 +404,7 @@ impl Shared {
 	/// is never previewed or applied again, so a fresh one is equivalent.
 	fn release(session: &mut Session) {
 		*session = Session::new(session.config().clone(), session.store().clone());
+		memory::released();
 	}
 
 	/// `true` when the pump must stop. Releases the session's buffers only
@@ -684,6 +692,9 @@ async fn preview_pump(shared: Arc<Shared>, rx: flume::Receiver<()>, on_preview: 
 		let Some(batch) = settled_preview(&shared).await else {
 			continue;
 		};
+		// Held until the delivery below has converted and released the batch
+		// on the JS thread, however this iteration ends.
+		let _settled = Settled::new(());
 		let is_final = !batch.streaming;
 		if shared.closed.load(Ordering::Acquire) {
 			return;
@@ -710,6 +721,9 @@ async fn preview_pump(shared: Arc<Shared>, rx: flume::Receiver<()>, on_preview: 
 /// `None` when nothing is pending, the session closed, or the blocking task
 /// failed.
 async fn settled_preview(shared: &Arc<Shared>) -> Option<PreviewBatch> {
+	// Every pass's batch and misses are freed by the time this returns,
+	// including passes abandoned while a URL resolver ran.
+	let _settled = Settled::new(());
 	let mut resolved = HashSet::new();
 	loop {
 		if shared.closed.load(Ordering::Acquire) {
@@ -717,6 +731,7 @@ async fn settled_preview(shared: &Arc<Shared>) -> Option<PreviewBatch> {
 		}
 		let compute = Arc::clone(shared);
 		let pass = napi::bindgen_prelude::spawn_blocking(move || {
+			let _work = native_work();
 			compute.preview_pass(&mut compute.session.blocking_lock())
 		})
 		.await;
@@ -780,7 +795,7 @@ pub struct EditInspection {
 pub fn edit_inspect(mode: String, args_json: String) -> Result<EditInspection> {
 	let mode = parse_mode(&mode)?;
 	let snapshot = snapshot_from_text(&args_json, false, true);
-	let engine = pi_edit::modes::engine_for(mode, true, 0.95, false);
+	let engine = pi_edit::modes::engine_for(mode, true, 0.95, false, 0);
 	let inspection = engine.inspect(&snapshot);
 	Ok(EditInspection {
 		paths:    inspection.paths,
@@ -971,6 +986,7 @@ mod tests {
 			allow_fuzzy:        true,
 			fuzzy_threshold:    0.95,
 			enforce_seen_lines: false,
+			max_columns:        512,
 			raw_input:          false,
 		};
 		let (wake, _rx) = flume::bounded::<()>(1);

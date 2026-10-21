@@ -61,6 +61,7 @@ import { getAgentDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { CONTEXT_GC_CUSTOM_TYPE, type ContextGcDelta } from "../../context-gc-plugin/src/schema";
 import { openContextGcStore } from "../../context-gc-plugin/src/storage";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { requestBodyText } from "@oh-my-pi/pi-ai/utils/request-body";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 const originalCodexPrePromptCompactionBytes = Bun.env.PI_CODEX_PRE_PROMPT_COMPACTION_BYTES;
@@ -1814,7 +1815,7 @@ describe("AgentSession message pipeline", () => {
 						...options,
 						apiKey: "test-key",
 						fetch: async (_url, init) => {
-							bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+							bodies.push(JSON.parse(requestBodyText(init) ?? "{}") as Record<string, unknown>);
 							// Exercise the real encoder but stop at the HTTP boundary, without inference.
 							return new Response(JSON.stringify({ error: { message: "Request captured" } }), { status: 400 });
 						},
@@ -2021,7 +2022,7 @@ describe("AgentSession message pipeline", () => {
 						...options,
 						apiKey: "test-key",
 						fetch: async (_url, init) => {
-							bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+							bodies.push(JSON.parse(requestBodyText(init) ?? "{}") as Record<string, unknown>);
 							return new Response(JSON.stringify({ error: { message: "Request captured" } }), { status: 400 });
 						},
 					}),

@@ -22,7 +22,8 @@ describe("postmortem crash reports", () => {
 				cwd: process.cwd(),
 				stdout: "pipe",
 				stderr: "pipe",
-				env: { ...process.env, XDG_STATE_HOME: stateHome },
+				// A ci-test-ts parent exports PI_TEST_RUNTIME=1, which would redirect the probe's logs to the shared test logs dir.
+				env: { ...process.env, XDG_STATE_HOME: stateHome, PI_TEST_RUNTIME: "" },
 			});
 			const [stdout, stderr, exitCode] = await Promise.all([
 				new Response(proc.stdout).text(),

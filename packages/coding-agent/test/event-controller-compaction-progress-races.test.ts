@@ -75,6 +75,7 @@ function createHarness() {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
 		updateEditorTopBorder: vi.fn(),
+		composer: { setRunActive: vi.fn() },
 		editor: { onEscape: undefined as (() => void) | undefined },
 		keybindings: { getKeys: () => ["escape"] },
 		session,

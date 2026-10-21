@@ -172,7 +172,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["yield"]);
 		const names = tools.map(t => t.name);
 
-		expect(names).toEqual(["yield", "resolve"]);
+		expect(names).toEqual(["yield"]);
 	});
 
 	it("includes yield tool when required", async () => {

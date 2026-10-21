@@ -23,10 +23,14 @@ import { EventBus } from "../../src/utils/event-bus";
 // --- Constants ----------------------------------------------------------------
 
 const TASK_PARAMS: TaskParams = {
-	agent: "task",
 	self_review: true,
-	tasks: [{ id: "FixBug", description: "Fix the bug", assignment: "Implement the fix end-to-end." }],
+	tasks: [{ agent: "task", id: "FixBug", description: "Fix the bug", assignment: "Implement the fix end-to-end." }],
 };
+
+/** Batch calls reject a top-level `agent`; route every item to `agent` instead. */
+function withItemAgent(params: TaskParams, agent: string): TaskParams {
+	return { ...params, tasks: params.tasks?.map(item => ({ ...item, agent })) };
+}
 
 const IMPLEMENTER_AGENT = "task";
 const REVIEWER_AGENT = "code-reviewer";
@@ -692,8 +696,7 @@ describe("task review gate", () => {
 			}),
 		);
 		const result = await tool.execute("call-custom-policy", {
-			...TASK_PARAMS,
-			agent: "core_task",
+			...withItemAgent(TASK_PARAMS, "core_task"),
 			isolated: true,
 		});
 
@@ -745,8 +748,7 @@ describe("task review gate", () => {
 			}),
 		);
 		const result = await tool.execute("call-configured-reviewer-model", {
-			...TASK_PARAMS,
-			agent: "core_task",
+			...withItemAgent(TASK_PARAMS, "core_task"),
 			isolated: true,
 		});
 
@@ -789,8 +791,7 @@ describe("task review gate", () => {
 			}),
 		);
 		const result = await tool.execute("call-quick-policy", {
-			...TASK_PARAMS,
-			agent: "quick_task",
+			...withItemAgent(TASK_PARAMS, "quick_task"),
 			self_review: false,
 			isolated: true,
 		});
@@ -840,9 +841,9 @@ describe("task review gate", () => {
 
 		const tool = await TaskTool.create(createSession(reviewGateSettings()));
 		const result = await tool.execute("call-item-self-review", {
-			agent: "task",
 			tasks: [
 				{
+					agent: "task",
 					id: "FixBug",
 					description: "Fix the bug",
 					assignment: "Implement the fix end-to-end.",
@@ -1034,8 +1035,8 @@ describe("task review gate", () => {
 		const execution = tool.execute("call-non-isolated-concurrent-gate", {
 			...TASK_PARAMS,
 			tasks: [
-				{ id: "FixBugOne", description: "Fix first bug", assignment: "Implement the first fix." },
-				{ id: "FixBugTwo", description: "Fix second bug", assignment: "Implement the second fix." },
+				{ agent: "task", id: "FixBugOne", description: "Fix first bug", assignment: "Implement the first fix." },
+				{ agent: "task", id: "FixBugTwo", description: "Fix second bug", assignment: "Implement the second fix." },
 			],
 		});
 

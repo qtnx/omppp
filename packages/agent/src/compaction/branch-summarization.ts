@@ -35,9 +35,9 @@ import {
 	createFileOps,
 	extractFileOpsFromMessage,
 	type FileOperations,
+	resolveSummaryDropThinking,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversationForSummary,
-	shouldDropThinkingFromSummary,
 	stripReadSelector,
 	truncateToolResultForSummary,
 	upsertFileOperations,
@@ -368,9 +368,11 @@ export async function generateBranchSummary(
 	// Transform to LLM-compatible messages, then serialize to text
 	// Serialization prevents the model from treating it as a conversation to continue
 	const llmMessages = (options.convertToLlm ?? defaultConvertToLlm)(messages);
-	const conversationText = serializeConversationForSummary(llmMessages, preferredDialect(model.id), {
-		dropThinking: shouldDropThinkingFromSummary(model),
-	});
+	const conversationText = serializeConversationForSummary(
+		llmMessages,
+		preferredDialect(model.id),
+		resolveSummaryDropThinking(model),
+	);
 
 	// Build prompt
 	const instructions = customInstructions || BRANCH_SUMMARY_PROMPT;

@@ -144,6 +144,7 @@ export function computeCompactionBoundaries(
 
 /** Stable inputs used to cache non-message token estimates. */
 export interface NonMessageTokenSource {
+	readonly model?: Model;
 	readonly systemPrompt?: readonly string[];
 	readonly agent?: {
 		readonly state?: {
@@ -272,30 +273,32 @@ export function estimateToolSchemaTokens(tools: ToolSchemaSource, tokenizer: Tok
 	return tokens;
 }
 
+/** Count schemas carried on every request, excluding server-side deferred catalogs. */
+export function estimateContextToolSchemaTokens(
+	tools: ToolSchemaSource,
+	tokenizer: Tokenizer,
+	model: Model | undefined,
+	sourceRevision = 0,
+): number {
+	return model?.toolSchemasInContext === false ? 0 : estimateToolSchemaTokens(tools, tokenizer, sourceRevision);
+}
+
 /**
  * Compute just the NON-MESSAGE token total: system prompt (with its skills
  * section subtracted, since skills are tokenized separately) + system context
  * (the rest of the system-prompt array) + tools + skills.
  *
  * Exposed so callers like `StatusLineComponent` can cache the non-message
- * total separately from the message total. Non-message inputs (skills,
- * tools, system prompt) change rarely; the message list grows on every
- * streaming turn. Splitting the two lets the caller refresh each on its own
- * cadence — non-message recomputed only when the inputs identity changes,
- * messages walked incrementally as new entries append.
+ * total separately from the growing message total. A model switch can change
+ * which tool schemas occupy context without changing the roster.
  */
-// Non-message inputs (system prompt, tools, skills) change rarely — at most
-// once per turn via setSystemPrompt/setTools — but the per-turn compaction and
-// threshold paths call these helpers several times: getContextBreakdown calls
-// both, and #estimateStoredContextTokens adds a third. Memoize on the identity
-// of the three input arrays so the expensive parts (system-prompt tokenization
-// and the per-tool JSON.stringify(toolWireSchema) inside estimateToolSchemaTokens)
-// run at most once per input change rather than per call. The identity keys are
-// the same stable references the StatusLineComponent cache already trusts
-// (setSystemPrompt/setTools replace the array reference rather than mutating it).
+// The per-turn threshold and compaction paths call these helpers repeatedly.
+// Cache by prompt, roster, skills, tokenizer, revision, and model schema policy;
+// setSystemPrompt/setTools replace their arrays rather than mutating them.
 interface NonMessageTokenCache {
 	systemPromptRef: readonly string[];
 	toolsRef: ToolSchemaSource;
+	toolSchemasInContext: boolean;
 	toolsRevision: number;
 	sourceRevision: number;
 	skillful: boolean;
@@ -328,6 +331,7 @@ function nonMessageTokenCacheEntry(
 	const cachedSession: CachedNonMessageTokenSource = session;
 	const systemPromptRef = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const toolsRef = session.agent?.state?.tools ?? EMPTY_TOOLS;
+	const toolSchemasInContext = session.model?.toolSchemasInContext !== false;
 	const toolsRevision = getToolSchemaMetadataRevision(toolsRef);
 	const skillsRef = session.renderedSkills ?? session.skills ?? EMPTY_SKILLS;
 	let entry = cachedSession[NON_MESSAGE_TOKEN_CACHE];
@@ -335,6 +339,7 @@ function nonMessageTokenCacheEntry(
 		entry &&
 		entry.systemPromptRef === systemPromptRef &&
 		entry.toolsRef === toolsRef &&
+		entry.toolSchemasInContext === toolSchemasInContext &&
 		entry.toolsRevision === toolsRevision &&
 		entry.sourceRevision === sourceRevision &&
 		entry.skillsRef === skillsRef &&
@@ -345,6 +350,7 @@ function nonMessageTokenCacheEntry(
 	entry = {
 		systemPromptRef,
 		toolsRef,
+		toolSchemasInContext,
 		toolsRevision,
 		sourceRevision,
 		skillful: true,
@@ -368,7 +374,7 @@ export function computeNonMessageTokens(
 	const tools = session.agent?.state?.tools ?? EMPTY_TOOLS;
 	const tokens =
 		tokenizer.countTokens(Array.from(systemPromptParts, part => part ?? "")) +
-		estimateToolSchemaTokens(tools, tokenizer, sourceRevision);
+		estimateContextToolSchemaTokens(tools, tokenizer, session.model, sourceRevision);
 	entry.tokens = tokens;
 	return tokens;
 }
@@ -400,7 +406,7 @@ export function computeNonMessageBreakdown(
 					renderedSkills(session.renderedSkills ?? session.skills ?? EMPTY_SKILLS, tools),
 					tokenizer,
 				);
-	const toolsTokens = estimateToolSchemaTokens(tools, tokenizer, sourceRevision);
+	const toolsTokens = estimateContextToolSchemaTokens(tools, tokenizer, session.model, sourceRevision);
 	const systemPromptParts = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const systemContextTokens = tokenizer.countTokens(Array.from(systemPromptParts.slice(1), part => part ?? ""));
 	const systemPromptTokens = Math.max(0, tokenizer.countTokens(systemPromptParts[0] ?? "") - skillsTokens);

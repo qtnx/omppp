@@ -45,6 +45,8 @@ import type { Tool, ToolSession } from "../tools";
 import { modelPromptProfile } from "../task/prompt-policy";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { ConsultTool } from "../tools/consult";
+import { denyError, resolveApproval, resolveApprovalFromContext } from "../tools/approval";
+import { getApprovalGrants } from "../tools/approval-cache";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { isFilesystemSourcePath } from "../tools/path-utils";
 import { supportsExternalThinking } from "../tools/think";
@@ -53,9 +55,9 @@ import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import {
 	isMountableUnderXdev,
 	listXdevTools,
-	type XdevState,
-	type XdevPromptDocs,
 	planXdevPromptDocs,
+	type XdevPromptDocs,
+	type XdevState,
 	xdevDocsFor,
 	xdevEntries,
 } from "../tools/xdev";
@@ -119,8 +121,6 @@ export interface SessionToolsHost {
 	orchestratorModeEnabled(): boolean;
 	planModeEnabled(): boolean;
 	model(): Model | undefined;
-	evalPreludes(): readonly EvalPreludeDefinition[];
-	sessionAgents(): readonly AgentDefinition[];
 	memoryBackendSession(): MemoryBackendStartOptions["session"];
 	clearInheritedProviderPromptCacheKey(): void;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
@@ -131,6 +131,12 @@ export interface SessionToolsHost {
 	redactOutboundText: ((text: string) => string) | undefined;
 	/** Per-turn live-learning context provider set by the SDK when learning is enabled. */
 	learningTurnContext?: LearningTurnContextProvider;
+	/** Live enabled eval preludes; candidates for the next base rebuild's advertised snapshot. */
+	evalPreludes(): readonly EvalPreludeDefinition[];
+	/** Live user-tagged model agents; candidates for the next base rebuild's advertised snapshot. */
+	sessionAgents(): readonly AgentDefinition[];
+	/** Runs a wait for the user's answer, such as an ACP client's permission request. */
+	waitForUser<T>(dialog: () => Promise<T>): Promise<T>;
 }
 
 /** Registry delta applied by the SDK's settings-gated tool reconcile. */
@@ -1295,21 +1301,19 @@ export class SessionTools {
 	 * Only wraps tools whose name is in PERMISSION_REQUIRED_TOOLS and only when
 	 * the bridge exposes `requestPermission`. No-ops for all other cases.
 	 *
-	 * When the user has explicitly opted into `yolo` / auto-approve behavior (via
-	 * the SDK/CLI `autoApprove` flag or a configured `tools.approvalMode: yolo`),
-	 * skips the gate unless the per-tool policy explicitly requires a prompt or
-	 * deny. The schema default is also `yolo`, so an explicit configuration or
-	 * explicit session flag is required: default-config ACP sessions keep the
-	 * client-side permission gate.
+	 * Bash follows its own approval resolution, including pattern allows, denials,
+	 * and critical overrides. The schema's implicit yolo default retains ACP's
+	 * client permission gate for unmatched bash commands; explicitly selecting
+	 * yolo opts out. Other tools keep their existing ACP gate behavior.
 	 */
 	#wrapToolForAcpPermission<T extends AgentTool>(tool: T): T {
 		const bridge = this.#host.clientBridge();
 		// Match the capability+method gating pattern used by read/write/bash.
 		if (!bridge?.capabilities.requestPermission || !bridge.requestPermission) return tool;
 		if (PERMISSION_REQUIRED_TOOLS[tool.name] !== true) return tool;
-		// Skip the gate only on explicit yolo opt-in; honour per-tool policies
-		// that require a prompt or deny (matching the normal approval wrapper).
-		if (this.#isExplicitAutoApproveMode()) {
+		// Default-config ACP sessions still ask for executable calls even though
+		// the schema defaults to yolo; explicit yolo is an intentional opt-in.
+		if (tool.name !== "bash" && this.#isExplicitAutoApproveMode()) {
 			const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.#host.settings);
 			const toolPolicy = userPolicies[tool.name];
 			if (!toolPolicy || toolPolicy === "allow") return tool;
@@ -1324,6 +1328,29 @@ export class SessionTools {
 					onUpdate: never,
 					ctx: AgentToolContext | undefined,
 				) => {
+					let cacheable = true;
+					if (target.name === "bash") {
+						const explicitAutoApprove = this.#isExplicitAutoApproveMode();
+						const { approvalMode, userPolicies } = resolveApprovalFromContext({
+							autoApprove: this.#autoApprove,
+							settings: this.#host.settings,
+						});
+						const mode = approvalMode === "yolo" && !explicitAutoApprove ? "always-ask" : approvalMode;
+						const resolved = resolveApproval(
+							target,
+							args,
+							mode,
+							userPolicies,
+							getApprovalGrants(this.#host.settings.getAgentDir(), this.#host.sessionManager.getSessionId()),
+						);
+						if (resolved.policy === "deny") throw denyError(resolved, target.name);
+						if (resolved.policy === "allow") {
+							return await target.execute(toolCallId, args as never, signal, onUpdate, ctx as never);
+						}
+						// A prompt forced by a critical command or an explicit pattern
+						// remains per-call, even after the client selects Always allow.
+						cacheable = !resolved.override;
+					}
 					const permissionIntent = getPermissionIntent(target.name, args);
 					if (!permissionIntent) {
 						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx as never);
@@ -1339,7 +1366,7 @@ export class SessionTools {
 						? [{ type: "content" as const, content: { type: "text" as const, text: `$ ${command}` } }]
 						: undefined;
 					// Short-circuit on persisted decisions.
-					const persisted = this.#acpPermissionDecisions.get(permissionIntent.cacheKey);
+					const persisted = cacheable ? this.#acpPermissionDecisions.get(permissionIntent.cacheKey) : undefined;
 					if (persisted === "allow_always") {
 						return await target.execute(toolCallId, args as never, signal, onUpdate, approvedCtx);
 					}
@@ -1357,25 +1384,27 @@ export class SessionTools {
 					signal?.addEventListener("abort", onAbort, { once: true });
 					let raced: PermissionRaceResult;
 					try {
-						const permissionPromise = bridge.requestPermission!(
-							{
-								toolCallId,
-								toolName: target.name,
-								title: permissionIntent.title,
-								...(target.name === "bash" ? { kind: "execute" } : {}),
-								status: "pending",
-								rawInput: args,
-								...(commandContent ? { content: commandContent } : {}),
-								locations: extractPermissionLocations(
-									args,
-									this.#host.sessionManager.getCwd(),
-									permissionIntent.paths,
-								),
-							},
-							PERMISSION_OPTIONS,
-							signal,
-						).then(outcome => ({ kind: "permission" as const, outcome }));
-						raced = await Promise.race([permissionPromise, abortPromise]);
+						raced = await this.#host.waitForUser(() => {
+							const permissionPromise = bridge.requestPermission!(
+								{
+									toolCallId,
+									toolName: target.name,
+									title: permissionIntent.title,
+									...(target.name === "bash" ? { kind: "execute" } : {}),
+									status: "pending",
+									rawInput: args,
+									...(commandContent ? { content: commandContent } : {}),
+									locations: extractPermissionLocations(
+										args,
+										this.#host.sessionManager.getCwd(),
+										permissionIntent.paths,
+									),
+								},
+								PERMISSION_OPTIONS,
+								signal,
+							).then(outcome => ({ kind: "permission" as const, outcome }));
+							return Promise.race([permissionPromise, abortPromise]);
+						});
 					} finally {
 						signal?.removeEventListener("abort", onAbort);
 					}
@@ -1390,9 +1419,9 @@ export class SessionTools {
 					if (!selectedOption) {
 						throw new ToolError(`Tool permission response used unknown option ID: ${outcome.optionId}`);
 					}
-					if (selectedOption.kind === "allow_always") {
+					if (cacheable && selectedOption.kind === "allow_always") {
 						this.#acpPermissionDecisions.set(permissionIntent.cacheKey, "allow_always");
-					} else if (selectedOption.kind === "reject_always") {
+					} else if (cacheable && selectedOption.kind === "reject_always") {
 						this.#acpPermissionDecisions.set(permissionIntent.cacheKey, "reject_always");
 					}
 					if (selectedOption.kind === "reject_once" || selectedOption.kind === "reject_always") {
@@ -2173,8 +2202,32 @@ export class SessionTools {
 		// {@link #notifyXdevMountDelta} cancel a mount followed by an unmount before
 		// any request is sent (issue #7139 reviews).
 		if (baseCatalogDelivered) {
+			// Route guidance ships in the same request's append prompt: a pending
+			// add whose route line already carries its catalog summary needs no
+			// notice line — the route renders the same name and summary. Deferred
+			// MCP discovery is the common path — the post-connect mount lands
+			// before the next user turn while the base catalog (which the check
+			// above consults) never lists routed tools — so without this check
+			// the notice would duplicate every route line verbatim. Two devices
+			// keep their notice lines: ones the bounded route projection omits
+			// (no shipped route line to lean on), and ones whose docs the prompt
+			// inlines (their route line has no summary; the notice is what
+			// delivers their docs).
+			let routedSummaryNames: Set<string> | undefined;
+			if (this.#xdev) {
+				const docsPlan = planXdevPromptDocs(
+					this.#xdev,
+					cfgToolsXdevDocs.get(this.#host.settings),
+					cfgToolsXdevInlineDevices.get(this.#host.settings),
+				);
+				routedSummaryNames = new Set(
+					projectMountedMCPXdevGuidance(collectMountedMCPToolRoutes(listXdevTools(this.#xdev)))
+						.mappings.filter(mapping => docsPlan.catalog.has(mapping.name))
+						.map(mapping => mapping.name),
+				);
+			}
 			for (const name of pending.added) {
-				if (this.#basePromptXdevNames.has(name)) announcedMounts.add(name);
+				if (this.#basePromptXdevNames.has(name) || routedSummaryNames?.has(name)) announcedMounts.add(name);
 			}
 		}
 		// Only announce a net change relative to what the model already knows (from

@@ -44,6 +44,7 @@ import {
 	normalizeResponsesToolCallId,
 	sanitizeOpenAIResponsesHistoryImagesForReplay,
 	stripOpenAIResponsesOutputOnlyStatusesForReplay,
+	truncateResponseItemId,
 } from "@oh-my-pi/pi-ai/utils";
 import { captureOpenAIHttpError } from "@oh-my-pi/pi-ai/utils/openai-http";
 import { isBedrockOpenAIUrl } from "@oh-my-pi/pi-catalog/hosts";
@@ -91,27 +92,34 @@ const REMOTE_COMPACTION_REQUEST_OVERHEAD_TOKENS = 256;
 const remoteImageTokenCache = new WeakMap<Record<string, unknown>, { billingKey: string; tokens: number }>();
 const TOOL_RESULT_IMAGE_ATTACHMENT_TEXT = "Attached image(s) from tool result:";
 
-interface NormalizedEstimateValue {
-	value: unknown;
+/**
+ * A request as the model reads it: every string value decoded (no quoting or
+ * escapes), with keys and scalar values kept as one framing fragment.
+ */
+interface RemoteEstimateParts {
+	fragments: string[];
+	framing: string[];
 	imageTokens: number;
 }
 
-function normalizeRemoteCompactionEstimateValue(
+function collectRemoteCompactionEstimate(
 	value: unknown,
 	tokenizer: Tokenizer,
-	dropEncrypted = true,
-): NormalizedEstimateValue {
-	if (Array.isArray(value)) {
-		const normalized: unknown[] = [];
-		let imageTokens = 0;
-		for (const item of value) {
-			const result = normalizeRemoteCompactionEstimateValue(item, tokenizer, dropEncrypted);
-			normalized.push(result.value);
-			imageTokens += result.imageTokens;
-		}
-		return { value: normalized, imageTokens };
+	dropEncrypted: boolean,
+	parts: RemoteEstimateParts,
+): void {
+	if (typeof value === "string") {
+		if (value) parts.fragments.push(value);
+		return;
 	}
-	if (!value || typeof value !== "object") return { value, imageTokens: 0 };
+	if (Array.isArray(value)) {
+		for (const item of value) collectRemoteCompactionEstimate(item, tokenizer, dropEncrypted, parts);
+		return;
+	}
+	if (value === null || typeof value !== "object") {
+		if (value !== undefined) parts.framing.push(String(value));
+		return;
+	}
 
 	const record = value as Record<string, unknown>;
 	if (record.type === "input_image") {
@@ -127,31 +135,44 @@ function normalizeRemoteCompactionEstimateValue(
 			};
 			remoteImageTokenCache.set(record, cached);
 		}
-		return { value: { ...record, image_url: "<image>" }, imageTokens: cached.tokens };
+		parts.imageTokens += cached.tokens;
+		return;
 	}
-	const normalized: Record<string, unknown> = {};
-	let imageTokens = 0;
-	for (const [key, item] of Object.entries(record)) {
+	for (const key in record) {
+		const item = record[key];
 		// Opaque encrypted reasoning/compaction state: its local base64 size far
 		// exceeds what the provider bills, so it stays out of the fit estimate
 		// (same policy as `MessageCountOptions.excludeEncryptedReasoning`).
-		if (dropEncrypted && key === "encrypted_content" && typeof item === "string") continue;
-		const result = normalizeRemoteCompactionEstimateValue(item, tokenizer, dropEncrypted);
-		normalized[key] = result.value;
-		imageTokens += result.imageTokens;
+		if (item === undefined || (dropEncrypted && key === "encrypted_content" && typeof item === "string")) continue;
+		parts.framing.push(key);
+		collectRemoteCompactionEstimate(item, tokenizer, dropEncrypted, parts);
 	}
-	return { value: normalized, imageTokens };
+}
+
+/**
+ * Text fragments and image tokens for `value`. Strings count decoded: JSON
+ * escaping inflates quote-, backslash- and newline-dense text (code,
+ * disassembly) well past what the model reads.
+ */
+function remoteCompactionEstimateParts(
+	value: unknown,
+	tokenizer: Tokenizer,
+	dropEncrypted: boolean,
+): { fragments: string[]; imageTokens: number } {
+	const parts: RemoteEstimateParts = { fragments: [], framing: [], imageTokens: 0 };
+	collectRemoteCompactionEstimate(value, tokenizer, dropEncrypted, parts);
+	if (parts.framing.length > 0) parts.fragments.push(parts.framing.join(" "));
+	return { fragments: parts.fragments, imageTokens: parts.imageTokens };
 }
 
 /**
  * Tokens of stored Responses replacement history. Retained `input_image` parts
  * count at their image estimate rather than as base64 text; everything else,
- * opaque compaction state included, counts as serialized.
+ * opaque compaction state included, counts as decoded text.
  */
 export function countResponsesHistoryTokens(items: unknown[], tokenizer: Tokenizer): number {
-	const normalized = normalizeRemoteCompactionEstimateValue(items, tokenizer, false);
-	const serialized = stringifyJson(normalized.value);
-	return (serialized === undefined ? 0 : tokenizer.countTokens(serialized)) + normalized.imageTokens;
+	const { fragments, imageTokens } = remoteCompactionEstimateParts(items, tokenizer, false);
+	return (fragments.length === 0 ? 0 : tokenizer.countTokens(fragments)) + imageTokens;
 }
 
 export interface TrimRemoteCompactionInputResult {
@@ -180,10 +201,10 @@ interface RemoteCompactionBudgetProbe {
 /**
  * Cheap-first sizing of a remote-compaction request. Images (priced from their
  * dimensions) and the request frame come off the budget rather than through
- * the tokenizer; opaque `encrypted_content` payloads are excluded. The
- * serialized transcript is then probed with {@link Tokenizer.checkTokenBudget},
- * which only pays for an exact count when the byte bound cannot already prove
- * the request fits.
+ * the tokenizer; opaque `encrypted_content` payloads are excluded. The decoded
+ * request text is then probed with {@link Tokenizer.checkTokenBudget}, which
+ * only pays for an exact count when the byte bound cannot already prove the
+ * request fits.
  */
 function probeRemoteCompactionInputBudget(
 	input: Array<Record<string, unknown>>,
@@ -192,16 +213,16 @@ function probeRemoteCompactionInputBudget(
 	tools: unknown[] | undefined,
 	contextWindow: number | null | undefined,
 ): RemoteCompactionBudgetProbe {
-	const normalized = normalizeRemoteCompactionEstimateValue(
+	const { fragments, imageTokens } = remoteCompactionEstimateParts(
 		{ instructions, input, ...(tools ? { tools } : {}) },
 		tokenizer,
+		true,
 	);
-	const serialized = stringifyJson(normalized.value) ?? "";
-	const flatTokens = normalized.imageTokens + REMOTE_COMPACTION_REQUEST_OVERHEAD_TOKENS;
+	const flatTokens = imageTokens + REMOTE_COMPACTION_REQUEST_OVERHEAD_TOKENS;
 	if (!contextWindow || contextWindow <= 0) {
-		return { tokens: tokenizer.countTokens(serialized, "upperbound") + flatTokens, fits: true, textFits: true };
+		return { tokens: tokenizer.countTokens(fragments, "upperbound") + flatTokens, fits: true, textFits: true };
 	}
-	const budget = tokenizer.checkTokenBudget(serialized, Math.max(0, contextWindow - flatTokens));
+	const budget = tokenizer.checkTokenBudget(fragments, Math.max(0, contextWindow - flatTokens));
 	return {
 		tokens: budget.tokens + flatTokens,
 		fits: budget.fits,
@@ -233,6 +254,16 @@ function isToolResultImageAttachment(item: Record<string, unknown>): boolean {
 	return hasLabel && hasImage;
 }
 
+/** Options for {@link trimRemoteCompactionInputToContextWindow}. */
+export interface TrimRemoteCompactionOptions {
+	/**
+	 * Whether oversized trailing tool outputs may be rewritten (default true).
+	 * False when a caller can compact a shorter prefix instead, so a kept tool
+	 * result replays intact rather than being replaced.
+	 */
+	rewriteOutputs?: boolean;
+}
+
 /**
  * Preserve the full native transcript unless trailing tool outputs alone push a
  * remote compaction request beyond the model window. Replacing only those
@@ -247,15 +278,16 @@ export function trimRemoteCompactionInputToContextWindow(
 	contextWindow: number | null | undefined,
 	instructions: string,
 	tools?: unknown[],
+	options?: TrimRemoteCompactionOptions,
 ): TrimRemoteCompactionInputResult {
 	const before = probeRemoteCompactionInputBudget(input, tokenizer, instructions, tools, contextWindow);
-	if (before.fits) {
+	if (before.fits || options?.rewriteOutputs === false) {
 		return {
 			input,
 			rewrittenOutputs: 0,
 			estimatedTokensBefore: before.tokens,
 			estimatedTokensAfter: before.tokens,
-			fits: true,
+			fits: before.fits || before.textFits,
 		};
 	}
 
@@ -690,8 +722,8 @@ export function buildOpenAiNativeHistory(
 					let msgId = parsedSignature?.id;
 					if (!msgId) {
 						msgId = `msg_${msgIndex}`;
-					} else if (msgId.length > 64) {
-						msgId = `msg_${Bun.hash(msgId).toString(36)}`;
+					} else {
+						msgId = truncateResponseItemId(msgId, "msg");
 					}
 					input.push({
 						type: "message",
@@ -836,6 +868,8 @@ export async function requestOpenAiRemoteCompaction(
 		sessionId?: string;
 		providerSessionState?: Map<string, ProviderSessionState>;
 		codexCompaction?: CodexCompactionContext;
+		/** Forwarded to {@link trimRemoteCompactionInputToContextWindow}. */
+		rewriteOutputs?: boolean;
 	},
 ): Promise<OpenAiRemoteCompactionResponse> {
 	let fetchImpl: FetchImpl = opts?.fetch ?? fetch;
@@ -849,6 +883,8 @@ export async function requestOpenAiRemoteCompaction(
 		new Tokenizer(model),
 		model.contextWindow,
 		instructions,
+		undefined,
+		{ rewriteOutputs: opts?.rewriteOutputs },
 	);
 	if (trimmed.rewrittenOutputs > 0) {
 		logger.info("Rewrote trailing tool outputs before OpenAI remote compaction", {

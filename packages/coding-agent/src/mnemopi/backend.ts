@@ -2,6 +2,7 @@ import { rm } from "node:fs/promises";
 import * as path from "node:path";
 import { type ApiKeyResolver, completeSimple, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import { hostMatchesUrl } from "@oh-my-pi/pi-catalog/hosts";
+import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import type { Mnemopi } from "@oh-my-pi/pi-mnemopi";
 import type { MnemopiLlmCompleteOptions } from "@oh-my-pi/pi-mnemopi/core/runtime-options";
 import type * as MnemopiDiagnoseNs from "@oh-my-pi/pi-mnemopi/diagnose";
@@ -26,6 +27,7 @@ import mnemopiInstructions from "../prompts/system/mnemopi-instructions.md" with
 import type { AgentSession } from "../session/agent-session";
 import { tinyModelClient } from "../tiny/title-client";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
+import { concreteThinkingLevel, shouldDisableReasoning, toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
 import {
 	loadMnemopiConfig,
 	type MnemopiBackendConfig,
@@ -80,9 +82,25 @@ export function resolveMemoryCompletionInput(
 	return { prompt };
 }
 
-async function installMnemopiState(session: AgentSession, config: MnemopiBackendConfig): Promise<MnemopiSessionState> {
+/**
+ * Installs a session-owned Mnemopi state. `inherited` is the state of a session this
+ * one was forked from with its system prompt copied (`/tan`): that prompt already
+ * carries the parent's recall, so the fork starts with it delivered instead of
+ * recalling again and appending a duplicate block that breaks the shared cache prefix.
+ */
+async function installMnemopiState(
+	session: AgentSession,
+	config: MnemopiBackendConfig,
+	inherited?: MnemopiSessionState,
+): Promise<MnemopiSessionState> {
 	mnemopiEmbedClient.setServerUrl(config.embedServerUrl);
-	const state = new MnemopiSessionState({ sessionId: session.sessionId, config, session });
+	const state = new MnemopiSessionState({
+		sessionId: session.sessionId,
+		config,
+		session,
+		hasRecalledForFirstTurn: inherited?.hasRecalledForFirstTurn,
+	});
+	state.lastRecallSnippet = inherited?.lastRecallSnippet;
 	const previous = setMnemopiSessionState(session, state);
 	await previous?.dispose();
 	try {
@@ -132,13 +150,13 @@ export const mnemopiBackend: MemoryBackend = {
 				session.sessionManager,
 			);
 			await Promise.all([loadMnemopi(), loadMnemopiCore()]);
-			await installMnemopiState(session, config);
+			await installMnemopiState(session, config, getMnemopiSessionStateFromParent(options));
 		} catch (error) {
 			logger.warn("Mnemopi: backend startup failed; memory backend inert.", { error: String(error) });
 		}
 	},
 
-	async buildDeveloperInstructions(_agentDir, settings, session): Promise<string | undefined> {
+	async buildDeveloperInstructions(_agentDir, _cwd, settings, session): Promise<string | undefined> {
 		return withLoopPhase("mnemopi.recall", () => {
 			const state = getMnemopiSessionState(session);
 			const primary = state?.aliasOf ?? state;
@@ -327,7 +345,7 @@ export const mnemopiBackend: MemoryBackend = {
 				scope: "bank",
 				extract: true,
 				extractEntities: true,
-				veracity: "user",
+				veracity: "stated",
 				memoryType: "fact",
 			});
 		} catch (error) {
@@ -594,7 +612,7 @@ async function resolveMnemopiProviderOptions(
 						: undefined,
 			};
 
-			for (const { model } of candidates) {
+			for (const { model, thinkingLevel } of candidates) {
 				if (signal?.aborted) return null;
 				try {
 					if (model.api === "local-inference") {
@@ -620,6 +638,8 @@ async function resolveMnemopiProviderOptions(
 						});
 						continue;
 					}
+					// `auto` has no per-request classifier here, so it sends no effort, like an omitted suffix.
+					const level = concreteThinkingLevel(thinkingLevel);
 					const message = await retryTransientCompletion(
 						() =>
 							withLoopPhase("mnemopi.extract", () =>
@@ -634,6 +654,8 @@ async function resolveMnemopiProviderOptions(
 										sessionId,
 										maxTokens: opts?.maxTokens,
 										temperature: opts?.temperature,
+										reasoning: clampThinkingLevelForModel(model, toReasoningEffort(level)),
+										disableReasoning: shouldDisableReasoning(level) ? true : undefined,
 										signal,
 										onAttempt: message =>
 											onUsage?.({

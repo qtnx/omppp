@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { SvgFigure } from "@oh-my-pi/pi-tui/chat/svg-figure";
 import { getKittyGraphics, setKittyGraphics } from "@oh-my-pi/pi-tui/kitty-graphics";
@@ -143,5 +144,32 @@ describe("SvgFigure", () => {
 		const shown = placement(svg, 80);
 		expect(shown.columns).toBe(78);
 		expect(shown.box).toBe(shown.raster);
+	});
+
+	// Regression (#15660): with no theme installed the palette threw inside the
+	// raster, so the figure was marked failed and showed its source instead.
+	it("draws in a process that never installed a theme", async () => {
+		const script = `
+			import { SvgFigure } from "@oh-my-pi/pi-tui/chat/svg-figure";
+			const landed = Promise.withResolvers();
+			const svg = new SvgFigure({ onChange: () => landed.resolve() });
+			svg.update(${JSON.stringify(SVG)}, true);
+			await Promise.resolve();
+			svg.render(80);
+			await landed.promise;
+			process.stdout.write(JSON.stringify(svg.debugState()));
+		`;
+		const proc = Bun.spawn([process.execPath, "--eval", script], {
+			cwd: path.resolve(import.meta.dir, ".."),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [exitCode, stdout, stderr] = await Promise.all([
+			proc.exited,
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(JSON.parse(stdout)).toMatchObject({ failed: false, current: true });
 	});
 });

@@ -134,6 +134,7 @@ function createDelayedSession(
 		prepareForHeadlessAdvisorDrain: () => {
 			advisorDrainPrepared = true;
 		},
+		waitForIdle: async () => {},
 		waitForAdvisorCatchup: async () => {
 			if (!advisorDrainPrepared) throw new Error("advisor catch-up started before headless delivery was armed");
 		},
@@ -339,6 +340,7 @@ describe("print mode working indicator", () => {
 			},
 			disableStopTimeTodoReminders: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
+			waitForIdle: async () => {},
 			waitForAdvisorCatchup: async (timeoutMs: number) => {
 				catchupTimeoutMs = timeoutMs;
 				markCatchupStarted();
@@ -401,6 +403,7 @@ describe("print mode working indicator", () => {
 			setTextOutputCommitted: () => {},
 			disableStopTimeTodoReminders: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
+			waitForIdle: async () => {},
 			waitForAdvisorCatchup: async (timeoutMs: number) => {
 				catchupTimeoutMs = timeoutMs;
 				markCatchupStarted();
@@ -447,6 +450,7 @@ describe("print mode working indicator", () => {
 			},
 			disableStopTimeTodoReminders: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
+			waitForIdle: async () => {},
 			waitForAdvisorCatchup: async () => true,
 			dispose: async () => {
 				disposed = true;

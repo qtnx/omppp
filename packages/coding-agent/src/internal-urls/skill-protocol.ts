@@ -12,7 +12,7 @@
 import type * as fsTypes from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, withTimeout } from "@oh-my-pi/pi-utils";
 import { resolveContainedPath } from "../discovery/contained-path";
 import { getActiveSkills, type Skill } from "../extensibility/skills";
 import { MCPManager } from "../mcp/manager";
@@ -38,6 +38,13 @@ import type {
 
 /** No loaded skill owns the URL's name; the only miss an MCP server may fill. */
 class UnknownSkillError extends Error {}
+
+/**
+ * Most an unknown `skill://` name waits for MCP (deferred startup included) to advertise it: long
+ * enough for a healthy handshake, short enough that a hung server or its reconnect ladder cannot
+ * hold a read of a typo'd or disabled skill name for the rest of the turn.
+ */
+const UNKNOWN_SKILL_MCP_WAIT_MS = 5_000;
 
 /**
  * Path a skill:// URL addresses, after traversal and plugin-root containment
@@ -133,16 +140,29 @@ export class SkillProtocolHandler implements ProtocolHandler {
 			// Loaded skills always win; otherwise serve the resource an MCP server advertises under
 			// exactly this URI (Figma's `skill://figma/figma-use/SKILL.md`). Templates stay behind `mcp://`.
 			// A deferred MCP startup that fails cannot change the diagnosis: the skill is still unknown.
+			// Most such names are not MCP resources at all, so one budget caps deferred startup (which
+			// never returns while a handshake hangs and the startup window is 0) plus the catalog wait.
+			const deadline = Date.now() + UNKNOWN_SKILL_MCP_WAIT_MS;
 			let mcpManager: MCPManager | undefined;
 			try {
-				mcpManager = await MCPManager.load();
+				mcpManager = await withTimeout(
+					MCPManager.load(),
+					UNKNOWN_SKILL_MCP_WAIT_MS,
+					"MCP startup outlasted the unknown-skill wait",
+					context?.signal,
+				);
 			} catch (loadError) {
 				if (context?.signal?.aborted) throw loadError;
 				logger.debug("MCP startup failed while resolving an unknown skill", { url: url.href, error: loadError });
 				throw error;
 			}
 			const resource =
-				mcpManager && (await readMcpResource(mcpManager, url, { exact: true, signal: context?.signal }));
+				mcpManager &&
+				(await readMcpResource(mcpManager, url, {
+					exact: true,
+					waitMs: Math.max(0, deadline - Date.now()),
+					signal: context?.signal,
+				}));
 			if (!resource) throw error;
 			// The server, not a loaded skill, sizes this text: keep `read`'s normal result limits.
 			return { ...resource, unbounded: false };

@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [18.12.4] - 2026-10-20
+
+### Fixed
+
+- Fixed snapcompact archive frames for Factory Droid models ignoring Factory's inline-image budget: they are now sized to half of it, like other budgeted hosts ([#16288](https://github.com/can1357/oh-my-pi/pull/16288) by [@will-bogusz](https://github.com/will-bogusz))
+
+## [18.10.4] - 2026-10-13
+
+### Added
+
+- Added `viewWithoutThinking()`, `textWithoutThinking()`, `readerIncludesThinking()` and an optional `Archive.withoutThinking` variant, so an archive rendered with reasoning can be read by a model that must not see it; without a stored variant the view keeps only reasoning-free text and no frames ([#15436](https://github.com/can1357/oh-my-pi/pull/15436) by [@will-bogusz](https://github.com/will-bogusz))
+
+### Fixed
+
+- Fixed re-rendering an archive without reasoning keeping every paragraph after the first of a multi-paragraph `¶think:` section ([#15436](https://github.com/can1357/oh-my-pi/pull/15436) by [@will-bogusz](https://github.com/will-bogusz))
+
 ## [18.10.3] - 2026-10-12
 
 ### Breaking Changes

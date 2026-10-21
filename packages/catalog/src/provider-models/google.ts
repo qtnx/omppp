@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { isExcludedModel } from "../compat/behavior";
 import { reviewedCollapseTable } from "../compat/collapse";
 import { classifyModel } from "../compat/taxonomy";
 import { providerEntry } from "../compat/providers";
@@ -127,7 +128,12 @@ export function googleAntigravityModelManagerOptions(
 								});
 								continue;
 							}
-							catalogs.push({ accountKey, models: result.models });
+							// Caches written under older rules fail the compiled-rules hash in
+							// the model cache, so filtering fresh rosters covers every source.
+							catalogs.push({
+								accountKey,
+								models: result.models.filter(model => !isExcludedModel("google-antigravity", model.id)),
+							});
 						}
 						if (catalogs.length === 0) return null;
 						const tagAccess = catalogs.every(catalog => catalog.accountKey !== undefined);

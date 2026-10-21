@@ -217,23 +217,28 @@ describe("collab guest extension lifecycle mirror", () => {
 		}
 	});
 
-	it("maps a non-terminal agent_end settle to willContinue: true", async () => {
+	it("distinguishes scheduled continuations from background waits in mirrored agent_end events", async () => {
 		const writeSpy = spyOn(Bun, "write").mockResolvedValue(0);
 		const renameSpy = spyOn(fsp, "rename").mockResolvedValue(undefined);
 		const harness = await makeHarness("lifecycle-mirror-room-2");
 		try {
-			// `isTerminal: false` is the session-layer marker for "a continuation
-			// is already scheduled" — lifecycle integrations must not treat it
-			// as a user-visible settle.
 			harness.hostSocket.send({
 				t: "event",
 				event: { type: "agent_end", messages: [], isTerminal: false },
 			} as CollabFrame);
+			harness.hostSocket.send({ t: "event", event: { type: "agent_start" } } as CollabFrame);
+			harness.hostSocket.send({
+				t: "event",
+				event: { type: "agent_end", messages: [], isTerminal: false, awaitingAsyncWork: true },
+			} as CollabFrame);
 			await harness.barrier();
 
 			const ends = harness.emitted.filter(event => event.type === "agent_end");
-			expect(ends.length).toBe(1);
+			expect(ends).toHaveLength(2);
 			expect(ends[0].willContinue).toBe(true);
+			expect(ends[0]).not.toHaveProperty("awaitingAsyncWork");
+			expect(ends[1].willContinue).toBe(true);
+			expect(ends[1].awaitingAsyncWork).toBe(true);
 		} finally {
 			writeSpy.mockRestore();
 			renameSpy.mockRestore();

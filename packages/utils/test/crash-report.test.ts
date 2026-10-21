@@ -28,10 +28,14 @@ async function readCrashRecord(filePath: string): Promise<Record<string, unknown
 describe("crash reports", () => {
 	let tempRoot = "";
 	let originalXdgStateHome: string | undefined;
+	let originalTmpdir: string | undefined;
 
 	beforeEach(async () => {
 		originalXdgStateHome = process.env.XDG_STATE_HOME;
+		originalTmpdir = process.env.TMPDIR;
 		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-crash-report-"));
+		// getLogsDir() resolves to <tmpdir>/omp-test-logs-<uid> in test processes; give each test its own tmpdir.
+		process.env.TMPDIR = tempRoot;
 		process.env.XDG_STATE_HOME = path.join(tempRoot, "state");
 		await fs.mkdir(path.join(process.env.XDG_STATE_HOME, "omp"), { recursive: true });
 		__resetDirsFromEnvForTests();
@@ -40,6 +44,7 @@ describe("crash reports", () => {
 
 	afterEach(async () => {
 		restoreEnv("XDG_STATE_HOME", originalXdgStateHome);
+		restoreEnv("TMPDIR", originalTmpdir);
 		__resetCrashReportStateForTests();
 		__resetDirsFromEnvForTests();
 		await fs.rm(tempRoot, { recursive: true, force: true });

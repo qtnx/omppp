@@ -126,6 +126,7 @@ import {
 } from "../storage-state";
 import { assertTabPressArgs } from "../tab-arguments";
 import type { Observation, ReadyInfo, SessionSnapshot } from "../tab-protocol";
+import { readFilePayloads } from "../upload-files";
 import {
 	installWebMcpPageHook,
 	uninstallWebMcpPageHook,
@@ -1538,16 +1539,7 @@ export class TernTab implements InProcessRunTab {
 			// No chooser asked for the preset: disarm it before dropping the files instead.
 			await this.#op("files", { paths: null });
 		}
-		const files = [];
-		for (const file of absolute) {
-			const handle = Bun.file(file);
-			files.push({
-				name: path.basename(file),
-				type: handle.type || "application/octet-stream",
-				data: Buffer.from(await fs.promises.readFile(file)).toString("base64"),
-			});
-		}
-		await this.#kit("setFiles", [spec, files]);
+		await this.#kit("setFiles", [spec, await readFilePayloads(absolute)]);
 	}
 
 	// ─── Queries ──────────────────────────────────────────────────────────
@@ -1561,13 +1553,13 @@ export class TernTab implements InProcessRunTab {
 		return await this.#kit<T | null>("read", [this.#spec(selector), prop, arg], frame);
 	}
 
-	/** The element's rendered text, or null. */
-	async text(selector: string | TernSelector, frame: FramePath = null): Promise<string | null> {
+	/** The element's rendered text (the page `<body>` without a selector), or null. */
+	async text(selector: string | TernSelector = "body", frame: FramePath = null): Promise<string | null> {
 		return await this.#read<string>(selector, "text", undefined, frame);
 	}
 
-	/** The element's inner HTML, or null. */
-	async html(selector: string | TernSelector, frame: FramePath = null): Promise<string | null> {
+	/** The element's inner HTML (the page `<body>` without a selector), or null. */
+	async html(selector: string | TernSelector = "body", frame: FramePath = null): Promise<string | null> {
 		return await this.#read<string>(selector, "html", undefined, frame);
 	}
 
@@ -3104,13 +3096,13 @@ export class TernFrame {
 		await this.#tab.pressIn(key, options, this.#path);
 	}
 
-	/** Element text. */
-	async text(selector: string): Promise<string> {
+	/** Element text; the frame's `<body>` without a selector. */
+	async text(selector = "body"): Promise<string> {
 		return (await this.#tab.text(selector, this.#path)) ?? "";
 	}
 
-	/** Element inner HTML. */
-	async html(selector: string): Promise<string> {
+	/** Element inner HTML; the frame's `<body>` without a selector. */
+	async html(selector = "body"): Promise<string> {
 		return (await this.#tab.html(selector, this.#path)) ?? "";
 	}
 

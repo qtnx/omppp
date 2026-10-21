@@ -46,6 +46,7 @@ function createContext(): InteractiveModeContext {
 		},
 		settings: Settings.isolated({ "compaction.idleEnabled": false }),
 		updateEditorTopBorder: vi.fn(),
+		composer: { setRunActive: vi.fn() },
 		editor: { getText: () => "" },
 		sessionManager: { getSessionName: () => undefined },
 		todoPhases: [],

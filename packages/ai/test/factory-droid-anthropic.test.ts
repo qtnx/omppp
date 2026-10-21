@@ -4,7 +4,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { streamAnthropic } from "../src/providers/anthropic";
 import { streamFactoryDroid } from "../src/providers/factory-droid";
-import type { AssistantMessage, Message } from "../src/types";
+import type { AnthropicFallbackCreditHandle, AssistantMessage, Message } from "../src/types";
 import {
 	anthropicChunks,
 	type CapturedRequest,
@@ -338,7 +338,7 @@ describe("Factory Droid native thinking-history boundary", () => {
 		// The first expiry read (at entry) is live; any later read sees it expired,
 		// as when async preparation outlasts the token.
 		let expiryReads = 0;
-		const redemption = {
+		const redemption: AnthropicFallbackCreditHandle = {
 			token: "fct_late",
 			prefillClaim: false,
 			params: {

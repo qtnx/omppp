@@ -22,7 +22,8 @@ const hyperlinkPattern = /\x1b\]8;[^\x1b\x07]*(?:\x07|\x1b\\)/g;
 let uiTheme: Theme;
 let priorShowResolvedModelBadge = false;
 
-function renderJobText(details: Omit<CoordinationDetails, "op">, expanded = false, live = false, width = 160): string {
+// Model badges live on job-tree rows, which a wait card draws once expanded (Ctrl+O).
+function renderJobText(details: Omit<CoordinationDetails, "op">, expanded = true, live = false, width = 160): string {
 	const component = waitToolRenderer.renderResult(
 		{ content: [{ type: "text", text: "Listed background jobs" }], details: { op: "wait", ...details } },
 		{ expanded, isPartial: live, spinnerFrame: live ? 0 : undefined },
@@ -96,7 +97,7 @@ describe("wait task model badges", () => {
 					},
 				],
 			},
-			false,
+			true,
 			true,
 			60,
 		);
@@ -171,7 +172,7 @@ describe("wait task model badges", () => {
 
 		const session = { asyncJobManager: manager } as unknown as ToolSession;
 		try {
-			const text = renderJobText({ jobs: snapshotJobs(session, manager.getAllJobs()) }, false, true);
+			const text = renderJobText({ jobs: snapshotJobs(session, manager.getAllJobs()) }, true, true);
 			const prefix = `${thinkingLevelGlyph(ThinkingLevel.Max, uiTheme)} ${identity} ${uiTheme.icon.advisor} Architect`;
 			expect(text).toContain(prefix);
 			expect(text.split(identity).length - 1).toBe(1);
@@ -307,7 +308,7 @@ describe("wait task model badges", () => {
 								},
 							],
 						},
-						false,
+						true,
 						false,
 						width,
 					);

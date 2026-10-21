@@ -1,16 +1,19 @@
 import { encodeSixelAsync } from "@oh-my-pi/pi-natives";
 import { getKittyGraphics } from "../kitty-graphics";
+import { ensureSixelRasterWidth } from "../sixel";
 import {
 	encodeSixelNow,
 	getCellDimensions,
 	getImageDimensions,
+	getTerminalBackgroundColor,
 	type ImageDimensions,
 	ImageProtocol,
 	imageFallback,
 	renderImage,
 	TERMINAL,
 } from "../terminal-capabilities";
-import { nativeImageNode } from "../native/blobs";
+import { nativeImageNode, openableImageProps } from "../native/blobs";
+import { imageLinksEnabled, linkedImageText, transcriptImageLink } from "../prompt/image-references";
 import type { DescribeContext, NativeNode } from "../native/node";
 import type { Component } from "../tui";
 
@@ -22,6 +25,8 @@ export interface ImageOptions {
 	maxWidthCells?: number;
 	maxHeightCells?: number;
 	filename?: string;
+	/** File the image was read from; its link target. Images without one link to a blob copy of their bytes. */
+	sourcePath?: string;
 	/** Shared budget that caps how many inline images render as live graphics. */
 	budget?: ImageBudget;
 	/**
@@ -36,6 +41,13 @@ export interface ImageOptions {
 	 * or the image's reserved rows stay blank until an unrelated repaint.
 	 */
 	requestRender?: () => void;
+}
+
+interface SixelEncode {
+	widthPx: number;
+	heightPx: number;
+	backgroundRgb: number;
+	sequence?: string | null;
 }
 
 /** Renders in progress whose rows are bound for native scrollback. */
@@ -652,14 +664,17 @@ export class Image implements Component {
 	#cachedImageProtocol: typeof TERMINAL.imageProtocol = null;
 	#cachedCellWidthPx = 0;
 	#cachedCellHeightPx = 0;
+	#cachedSixelBackground: number | undefined;
 	#cachedKittyUnicodePlaceholders = false;
+	#cachedLinked = false;
 	// Tallest graphic placement this image has rendered. The text fallback
 	// pads itself to this height so a budget demotion never shrinks the block
 	// (its rows may already be committed to native scrollback).
 	#renderedGraphicRows = 0;
-	#native?: NativeNode;
-	/** Newest SIXEL encode: its target size and, once settled, the sequence (`null` on failure). */
-	#sixel?: { widthPx: number; heightPx: number; sequence?: string | null };
+	/** Described node and the link policy it was built under (an `off` switch drops its `href`). */
+	#native?: { linked: boolean; node: NativeNode };
+	/** Newest SIXEL encode: target size, compositing background, and settled sequence. */
+	#sixel?: SixelEncode;
 
 	constructor(
 		base64Data: string,
@@ -699,33 +714,38 @@ export class Image implements Component {
 	}
 
 	/**
-	 * SIXEL sequence for a target size. A new size starts the encode off the JS
+	 * SIXEL sequence for a target size and background. A change starts the encode off the JS
 	 * thread and answers `undefined` until it settles; the settled encode
 	 * invalidates the cached lines and requests a repaint. A render bound for
 	 * scrollback cannot wait, so it encodes synchronously.
 	 */
-	#sixelSequence(widthPx: number, heightPx: number): string | null | undefined {
+	#sixelSequence(widthPx: number, heightPx: number, backgroundRgb: number): string | null | undefined {
 		const current = this.#sixel;
-		const sameSize = current !== undefined && current.widthPx === widthPx && current.heightPx === heightPx;
-		if (sameSize && current.sequence !== undefined) return current.sequence;
+		const sameInput =
+			current !== undefined &&
+			current.widthPx === widthPx &&
+			current.heightPx === heightPx &&
+			current.backgroundRgb === backgroundRgb;
+		if (sameInput && current.sequence !== undefined) return current.sequence;
 		if (scrollbackRenderDepth > 0) {
 			// Replacing the entry makes a still-pending async encode settle as stale.
-			const sequence = encodeSixelNow(this.#base64Data, widthPx, heightPx);
-			this.#sixel = { widthPx, heightPx, sequence };
+			const sequence = encodeSixelNow(this.#base64Data, widthPx, heightPx, backgroundRgb);
+			this.#sixel = { widthPx, heightPx, backgroundRgb, sequence };
 			return sequence;
 		}
-		if (sameSize) return undefined;
-		const request: { widthPx: number; heightPx: number; sequence?: string | null } = { widthPx, heightPx };
+		if (sameInput) return undefined;
+		const request: SixelEncode = { widthPx, heightPx, backgroundRgb };
 		this.#sixel = request;
 		const settle = (sequence: string | null): void => {
-			request.sequence = sequence;
-			if (this.#sixel !== request) return;
+			request.sequence = sequence === null ? null : ensureSixelRasterWidth(sequence);
+			if (this.#sixel !== request || getTerminalBackgroundColor() !== backgroundRgb) return;
 			this.invalidate();
 			if (this.#options.requestRender) this.#options.requestRender();
 			else this.#budget?.requestRender();
 		};
-		encodeSixelAsync(new Uint8Array(Buffer.from(this.#base64Data, "base64")), widthPx, heightPx).then(settle, () =>
-			settle(null),
+		encodeSixelAsync(new Uint8Array(Buffer.from(this.#base64Data, "base64")), widthPx, heightPx, backgroundRgb).then(
+			settle,
+			() => settle(null),
 		);
 		return undefined;
 	}
@@ -736,10 +756,12 @@ export class Image implements Component {
 	 * graphics protocols do not apply.
 	 */
 	describe(_cx: DescribeContext): NativeNode {
-		if (this.#native) return this.#native;
+		const linked = imageLinksEnabled();
+		if (this.#native?.linked === linked) return this.#native.node;
 		const maxW = this.#options.maxWidthCells;
 		const maxH = this.#options.maxHeightCells;
-		this.#native = nativeImageNode(Buffer.from(this.#base64Data, "base64"), this.#mimeType, {
+		const href = transcriptImageLink({ data: this.#base64Data, mimeType: this.#mimeType }, this.#options.sourcePath);
+		const node = nativeImageNode(Buffer.from(this.#base64Data, "base64"), this.#mimeType, {
 			alt: imageFallback(this.#mimeType, this.#dimensions, this.#options.filename),
 			w: this.#dimensions.widthPx,
 			h: this.#dimensions.heightPx,
@@ -750,8 +772,10 @@ export class Image implements Component {
 							h: maxH && maxH > 0 ? `${maxH}lines` : undefined,
 						}
 					: undefined,
+			...openableImageProps(href),
 		});
-		return this.#native;
+		this.#native = { linked, node };
+		return node;
 	}
 
 	render(width: number): readonly string[] {
@@ -759,6 +783,7 @@ export class Image implements Component {
 		const hasProtocol = imageProtocol != null;
 		const cellDimensions = getCellDimensions();
 		const kittyUnicodePlaceholders = getKittyGraphics().unicodePlaceholders;
+		const sixelBackground = imageProtocol === ImageProtocol.Sixel ? getTerminalBackgroundColor() : undefined;
 		// observe() must run on every pass — even a cache hit — so the image keeps
 		// its display-order slot in the budget. Only graphics-capable frames count
 		// toward (and are demoted by) the budget; without a protocol every image is
@@ -771,6 +796,7 @@ export class Image implements Component {
 		// re-encode the full image on every render pass.
 		const imageId = this.#imageId;
 		const transmitsSeparately = imageProtocol === ImageProtocol.Kitty && imageId != null;
+		const linked = imageLinksEnabled();
 
 		if (
 			this.#cachedLines &&
@@ -779,7 +805,10 @@ export class Image implements Component {
 			this.#cachedImageProtocol === imageProtocol &&
 			this.#cachedCellWidthPx === cellDimensions.widthPx &&
 			this.#cachedCellHeightPx === cellDimensions.heightPx &&
+			this.#cachedSixelBackground === sixelBackground &&
 			this.#cachedKittyUnicodePlaceholders === kittyUnicodePlaceholders &&
+			// The text fallback embeds a link only under an enabled hyperlink policy.
+			this.#cachedLinked === linked &&
 			(!transmitsSeparately || this.#budget?.shouldTransmit(imageId) !== true) &&
 			// Cached rows reserved for a pending SIXEL encode must not reach scrollback.
 			!(scrollbackRenderDepth > 0 && this.#sixel !== undefined && this.#sixel.sequence === undefined)
@@ -801,7 +830,7 @@ export class Image implements Component {
 				maxHeightCells: this.#options.maxHeightCells,
 				imageId: this.#imageId,
 				includeTransmit: needsTransmit,
-				sixel: (widthPx, heightPx) => this.#sixelSequence(widthPx, heightPx),
+				sixel: (widthPx, heightPx) => this.#sixelSequence(widthPx, heightPx, sixelBackground!),
 			});
 
 			if (result?.transmit && this.#imageId != null && this.#budget !== undefined) {
@@ -817,9 +846,9 @@ export class Image implements Component {
 				// height. First (rows-1) lines are empty (TUI clears them); the last
 				// saves the final-row cursor, moves up to the image origin, emits the
 				// image sequence, then restores the final-row cursor. When the block
-				// straddles the viewport top, the renderer rewrites this line to the
-				// visible slice (encodeKittyPlacementLine) from the geometry
-				// registered below.
+				// straddles the viewport top, the renderer crops the source raster
+				// for SIXEL or rewrites the Kitty placement's visible source slice
+				// from the geometry registered below.
 				if (this.#imageId != null && this.#budget !== undefined) {
 					this.#budget.registerPlacementGeometry(
 						this.#imageId,
@@ -849,7 +878,9 @@ export class Image implements Component {
 		this.#cachedImageProtocol = imageProtocol;
 		this.#cachedCellWidthPx = cellDimensions.widthPx;
 		this.#cachedCellHeightPx = cellDimensions.heightPx;
+		this.#cachedSixelBackground = sixelBackground;
 		this.#cachedKittyUnicodePlaceholders = kittyUnicodePlaceholders;
+		this.#cachedLinked = linked;
 
 		return lines;
 	}
@@ -864,7 +895,11 @@ export class Image implements Component {
 	 */
 	#fallbackLines(): string[] {
 		const fallback = this.#theme.fallbackColor(
-			imageFallback(this.#mimeType, this.#dimensions, this.#options.filename),
+			linkedImageText(
+				imageFallback(this.#mimeType, this.#dimensions, this.#options.filename),
+				{ data: this.#base64Data, mimeType: this.#mimeType },
+				this.#options.sourcePath,
+			),
 		);
 		if (this.#renderedGraphicRows <= 1) return [fallback];
 		const lines: string[] = [];

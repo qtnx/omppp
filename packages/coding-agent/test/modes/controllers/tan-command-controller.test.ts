@@ -71,6 +71,7 @@ function createCloneStub(overrides?: {
 		setTodoPhases: vi.fn(),
 		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
 		getEnabledToolNames: vi.fn(() => overrides?.enabledToolNames ?? overrides?.activeToolNames ?? ["read", "bash"]),
+		setActiveToolPresentation: vi.fn(async () => {}),
 		subscribe: vi.fn((l: (event: TanSessionEvent) => void) => {
 			listener = l;
 			return () => {
@@ -132,6 +133,7 @@ function createContext(overrides?: {
 		systemPrompt: ["system prompt"],
 		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
 		getEnabledToolNames: vi.fn(() => overrides?.enabledToolNames ?? overrides?.activeToolNames ?? ["read", "bash"]),
+		getMountedXdevToolNames: vi.fn(() => []),
 		modelRegistry: { authStorage: { marker: "auth" } },
 		preparedExtensions: overrides?.preparedExtensions,
 		effectiveExtensionRoots: overrides?.effectiveExtensionRoots,

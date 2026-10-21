@@ -64,6 +64,8 @@ interface SessionRef {
 	runtimeEpoch: number;
 	/** Sent `Target.setAutoAttach`; only such a session is told about real child targets. */
 	autoAttach: boolean;
+	/** Asked for `Page.setInterceptFileChooserDialog`; the tab keeps it on while any of its sessions does. */
+	interceptsFileChooser: boolean;
 }
 
 interface TargetInfo {
@@ -113,15 +115,23 @@ class ExtensionReplacedError extends Error {}
 /** A connected extension browser instance; one per browser/profile. */
 interface ExtInstance {
 	instanceId: string;
-	/** Stable short code derived from the instance id; names target ids (`TAB<code>.<tabId>`). */
+	/** Short code derived from the instance id and browser run; names target ids (`TAB<code>.<tabId>`). */
 	code: string;
 	socket: RelaySocket | null;
 	info: { userAgent: string; browserVersion: string; discardedTabsProtocol?: number } | null;
+	/** `Date.now()` when its socket closed; null while connected. */
+	goneSince: number | null;
+	/** Settles at its next hello; created by the first caller that waits for one. */
+	reconnected: PromiseWithResolvers<void> | null;
 }
 
-/** Deterministic per-instance code for target ids: stable across relay restarts. */
-function instanceCode(instanceId: string): string {
-	return createHash("sha256").update(instanceId).digest("base64url").slice(0, 8);
+/**
+ * Deterministic per-instance code for target ids: stable across relay restarts and service-worker restarts, new
+ * after a browser restart (when Chrome reuses tab ids). Older extensions send no browser session.
+ */
+function instanceCode(instanceId: string, browserSession: string): string {
+	const identity = browserSession ? `${instanceId}/${browserSession}` : instanceId;
+	return createHash("sha256").update(identity).digest("base64url").slice(0, 8);
 }
 
 function tabKeyOf(extCode: string, tabId: number): string {
@@ -157,7 +167,7 @@ class TabState {
 	groupId: number;
 	/** Whether `chrome.debugger` is currently attached to this tab. */
 	attached = false;
-	/** Set when attach failed or the user cancelled the debugger; cleared on navigation. */
+	/** Set when attach failed or the user cancelled the debugger bar; cleared on navigation. */
 	banned = false;
 	/** Whether targets for this tab were announced to discovering connections. */
 	announced = false;
@@ -172,6 +182,8 @@ class TabState {
 	detaching: Promise<void> | null = null;
 	/** A successful attach completed after the most recently requested relay detach. */
 	reattachedAfterDetach = false;
+	/** The relay asked the extension to close this tab (`Target.closeTarget`); its coming detach is not Chrome's own. */
+	closing = false;
 	/** True after the relay put this tab in the omp group; `ompGroupId` holds that group. */
 	grouped = false;
 	/** Group RPC in flight — suppresses duplicate requests from load-time tabUpdated bursts. */
@@ -191,6 +203,8 @@ class TabState {
 	rootRuntimeEnabling: Promise<void> | null = null;
 	/** Invalidates an in-flight Runtime enable when the debugger detaches. */
 	runtimeGeneration = 0;
+	/** Settled by the next detach Chrome reports on its own (not one the relay requested). */
+	chromeDetach = Promise.withResolvers<void>();
 
 	constructor(
 		readonly instanceId: string,
@@ -223,8 +237,19 @@ class TabState {
 const INELIGIBLE_URL = /^(chrome|devtools|edge|view-source|chrome-extension|chrome-untrusted|chrome-search):/i;
 
 const RPC_TIMEOUT_MS = 20_000;
+/** How long after its timeout a late RPC result is still undone; a wedged extension must not grow the map forever. */
+const LATE_RPC_KEEP_MS = 60_000;
 const CDP_ERROR_METHOD_NOT_FOUND = -32601;
 const CDP_ERROR_SERVER = -32000;
+/**
+ * How long a new tab waits for the browser it belongs in (that of `nearTargetId` or of a tab the client drives) to
+ * reconnect after its socket closed: the extension's longest reconnect backoff (10 s) plus its hello.
+ */
+const AFFINE_RECONNECT_WAIT_MS = 12_000;
+/** Chrome's answer to a command in flight when it ends the debugger attachment. */
+const DETACHED_COMMAND_ERROR = /Detached while handling command/;
+/** How long such a failure waits for the extension to report the detach itself. */
+const CHROME_DETACH_REPORT_MS = 1_000;
 
 /**
  * Multiplexing CDP bridge between downstream puppeteer connections and the
@@ -244,12 +269,22 @@ export class RelayBridge {
 	/** Instance whose hello ran last: answers browser-wide requests and owns created tabs. */
 	#lastHelloInstance: string | null = null;
 	#extensionSeen = false;
+	/**
+	 * Tabs omp opened whose close failed while their browser was offline (see {@link #closeTab}), by tab key, with
+	 * the URL the tab showed: closed at that browser's next hello, unless the tab is gone or shows another page.
+	 */
+	#closeOnHello = new Map<string, string>();
 	/** `Date.now()` when the last ready extension socket closed; null while one is ready or none ever was. */
 	#extensionGoneSince: number | null = null;
 	#pendingRpc = new Map<
 		string,
 		{ resolve: (value: unknown) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }
 	>();
+	/**
+	 * Timed-out RPCs whose late success still needs undoing (a tab Chrome created after omp gave up), by
+	 * `instance:id`.
+	 */
+	#lateRpc = new Map<string, { onResult: (result: unknown) => void; timer: NodeJS.Timeout }>();
 	/** Real child session id → owning tab key, learned from `Target.attachedToTarget` events. */
 	#realSessionTabs = new Map<string, string>();
 	#log: (message: string, data?: Record<string, unknown>) => void;
@@ -259,6 +294,8 @@ export class RelayBridge {
 	#groupQueue: TabState[] = [];
 	/** True while {@link #drainGroupQueue} runs — group RPCs must never overlap. */
 	#groupDraining = false;
+	/** Each tab's last file chooser interception transition; see {@link #serializeInterception}. */
+	#interceptionTransitions = new Map<string, Promise<void>>();
 
 	constructor(
 		opts: {
@@ -289,6 +326,52 @@ export class RelayBridge {
 			if (inst.socket) return inst;
 		}
 		return undefined;
+	}
+
+	/**
+	 * The browser the caller's tabs live in: the one named by `nearTargetId` (a tab the caller drives on another
+	 * connection; omp gives every tab its own), else one holding a tab this connection drives. Offline or not.
+	 */
+	#affineInstance(conn: CdpConnection, nearTargetId: unknown): ExtInstance | undefined {
+		const near = typeof nearTargetId === "string" ? parseTargetId(nearTargetId) : null;
+		if (near) {
+			// The target id names its browser even after the user closed that tab.
+			const code = near.key.slice(0, near.key.indexOf(":"));
+			const inst = [...this.#instances.values()].find(inst => inst.code === code);
+			if (inst) return inst;
+		}
+		const own = [...conn.claims].map(key => this.#tabs.get(key)).find(tab => tab !== undefined);
+		return own && this.#instances.get(own.instanceId);
+	}
+
+	/** Wait for an offline browser's hello, up to {@link AFFINE_RECONNECT_WAIT_MS} after its socket closed. */
+	async #awaitReconnect(inst: ExtInstance): Promise<void> {
+		if (inst.socket || inst.goneSince === null) return;
+		const left = inst.goneSince + AFFINE_RECONNECT_WAIT_MS - Date.now();
+		if (left <= 0) return;
+		inst.reconnected ??= Promise.withResolvers<void>();
+		const timeout = Promise.withResolvers<void>();
+		const timer = setTimeout(timeout.resolve, left);
+		try {
+			await Promise.race([inst.reconnected.promise, timeout.promise]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	/**
+	 * The browser a new tab opens in: the caller's ({@link #affineInstance}), else the one showing the first selected
+	 * tab (the tab an open without a target used to adopt), else the last hello, so a reconnecting extension's hello
+	 * does not move new tabs to another browser.
+	 */
+	#instanceForNewTab(affine: ExtInstance | undefined): ExtInstance | undefined {
+		if (affine?.socket) return affine;
+		for (const tab of this.#tabs.values()) {
+			if (!tab.active || tab.discarded || !this.#eligible(tab)) continue;
+			const inst = this.#instances.get(tab.instanceId);
+			if (inst?.socket) return inst;
+		}
+		return this.#lastHello();
 	}
 
 	/** True after the first hello, and stays true: separates a reaped service worker from an absent extension. */
@@ -372,6 +455,7 @@ export class RelayBridge {
 		const inst = this.#instances.get(instanceId);
 		if (!inst || inst.socket !== socket) return;
 		inst.socket = null;
+		inst.goneSince = Date.now();
 		this.#rejectPendingExtensionRpcs(instanceId, new Error("relay extension disconnected"));
 		// Keep the instance's tabs listed (the browser may reconnect), but drop
 		// debugger state: the attachment died with the service worker.
@@ -410,7 +494,14 @@ export class RelayBridge {
 			case "rpcResult": {
 				const key = `${instanceId}:${msg.id}`;
 				const pending = this.#pendingRpc.get(key);
-				if (!pending) return;
+				if (!pending) {
+					const late = this.#lateRpc.get(key);
+					if (!late) return;
+					this.#lateRpc.delete(key);
+					clearTimeout(late.timer);
+					if (msg.ok) late.onResult(msg.result);
+					return;
+				}
 				this.#pendingRpc.delete(key);
 				clearTimeout(pending.timer);
 				if (msg.ok) pending.resolve(msg.result);
@@ -442,9 +533,10 @@ export class RelayBridge {
 		// Hellos without an instance id (legacy extension builds) share one anon
 		// instance and keep the historical latest-wins replacement semantics.
 		const instanceId = typeof msg.instanceId === "string" && msg.instanceId.length > 0 ? msg.instanceId : "anon";
+		const code = instanceCode(instanceId, typeof msg.browserSession === "string" ? msg.browserSession : "");
 		let inst = this.#instances.get(instanceId);
 		if (!inst) {
-			inst = { instanceId, code: instanceCode(instanceId), socket: null, info: null };
+			inst = { instanceId, code, socket: null, info: null, goneSince: null, reconnected: null };
 			this.#instances.set(instanceId, inst);
 		} else if (inst.socket && inst.socket !== socket) {
 			// Same browser reconnected (service-worker restart): retire the old
@@ -458,7 +550,21 @@ export class RelayBridge {
 			this.#socketInstance.delete(inst.socket);
 			inst.socket.close();
 		}
+		if (inst.code !== code) {
+			// The browser restarted, and Chrome reuses tab ids: retire the previous run's targets, and the closes
+			// queued for them, so an old target id cannot name a tab the user opened since.
+			for (const [key, tab] of this.#tabs) {
+				if (tab.instanceId === instanceId) this.#onTabRemoved(key);
+			}
+			for (const key of this.#closeOnHello.keys()) {
+				if (key.startsWith(`${inst.code}:`)) this.#closeOnHello.delete(key);
+			}
+			inst.code = code;
+		}
 		inst.socket = socket;
+		inst.goneSince = null;
+		inst.reconnected?.resolve();
+		inst.reconnected = null;
 		this.#socketInstance.set(socket, instanceId);
 		inst.info = {
 			userAgent: msg.userAgent,
@@ -479,6 +585,14 @@ export class RelayBridge {
 		for (const [key, tab] of this.#tabs) {
 			if (tab.instanceId !== instanceId || seen.has(tab.tabId)) continue;
 			this.#onTabRemoved(key);
+		}
+		// Close the tabs whose close failed while this browser was offline, unless the user closed them meanwhile or
+		// the id now names another page.
+		for (const [key, url] of this.#closeOnHello) {
+			if (!key.startsWith(`${inst.code}:`)) continue;
+			this.#closeOnHello.delete(key);
+			const closed = this.#tabs.get(key);
+			if (closed?.url === url) void this.#closeTab(key, closed.tabId, inst).catch(() => undefined);
 		}
 		for (const tab of this.#tabs.values()) {
 			if (tab.instanceId !== instanceId) continue;
@@ -501,6 +615,9 @@ export class RelayBridge {
 					if (!ok) this.#onTabDetached(tab.tabKey, "reattach_failed", false);
 				});
 			}
+			// A tab the hello brings that no client was told about, such as one a browser opened before its
+			// extension connected, is announced now: no later change has to happen for Puppeteer to see it.
+			if (!tab.announced && this.#eligible(tab)) this.#announceTab(tab);
 		}
 		this.#syncGrouping();
 		this.#log("extension connected", {
@@ -525,8 +642,13 @@ export class RelayBridge {
 		if (!conn) return;
 		this.#conns.delete(connId);
 		const touched = new Set<string>();
-		for (const ref of conn.sessions.values()) touched.add(ref.tabKey);
+		const intercepting = new Set<string>();
+		for (const ref of conn.sessions.values()) {
+			touched.add(ref.tabKey);
+			if (ref.interceptsFileChooser) intercepting.add(ref.tabKey);
+		}
 		conn.sessions.clear();
+		for (const tabKey of intercepting) this.#releaseFileChooserInterception(tabKey);
 		// Tabs this client claimed leave the omp group unless another claimant
 		// remains — session holders don't count: the long-lived registry
 		// connection holds sessions on every tab without driving any of them.
@@ -614,6 +736,19 @@ export class RelayBridge {
 				if (!(await this.#forwardToTab(conn, msg, ref.tabKey, undefined, ref.autoAttach ? announce : undefined))) {
 					ref.autoAttach = previous;
 				}
+				return;
+			}
+			if (msg.method === "Page.setInterceptFileChooserDialog") {
+				// Every session of a tab shares one debugger attachment, so interception is tab-wide here: one
+				// session switching it off must not cancel another session's chooser wait.
+				await this.#serializeInterception(ref.tabKey, async () => {
+					const previous = ref.interceptsFileChooser;
+					ref.interceptsFileChooser = msg.params?.enabled === true;
+					const params = { ...msg.params, enabled: this.#interceptsFileChooser(ref.tabKey) };
+					if (!(await this.#forwardToTab(conn, { ...msg, params }, ref.tabKey, undefined))) {
+						ref.interceptsFileChooser = previous;
+					}
+				});
 				return;
 			}
 			await this.#forwardToTab(conn, msg, ref.tabKey, undefined);
@@ -724,7 +859,8 @@ export class RelayBridge {
 
 	/**
 	 * Forward a command to the tab and reply to it; resolves whether the command succeeded.
-	 * `beforeReply` runs on success ahead of the reply.
+	 * `beforeReply` runs on success ahead of the reply. Target lifecycle commands are answered by the
+	 * relay's browser handlers instead, which reply (or throw to `cdpMessage`) themselves: they resolve `true`.
 	 */
 	async #forwardToTab(
 		conn: CdpConnection,
@@ -755,6 +891,17 @@ export class RelayBridge {
 			this.#replyError(conn, msg, "relay extension is not connected");
 			return false;
 		}
+		// Sent raw, createTarget honors `newWindow` and answers with Chrome's id, which no relay command
+		// resolves; close and activate are refused ("Not allowed"). Run them in this tab's browser, where a
+		// new tab lands like every relay-created tab: in that browser's current window.
+		if (
+			msg.method === "Target.createTarget" ||
+			msg.method === "Target.closeTarget" ||
+			msg.method === "Target.activateTarget"
+		) {
+			await this.#handleBrowserCommand(conn, msg, tab);
+			return true;
+		}
 		try {
 			const result = await this.#rpc(
 				{
@@ -770,7 +917,13 @@ export class RelayBridge {
 			this.#reply(conn, msg, (result as Record<string, unknown> | undefined) ?? {});
 			return true;
 		} catch (err) {
-			this.#replyError(conn, msg, err instanceof Error ? err.message : String(err));
+			const message = err instanceof Error ? err.message : String(err);
+			// Chrome fails the root session's command in flight before it reports the detach. Hold the failure
+			// until the detach is reported, so the client gets `OMP.debuggerDetached` first and knows why.
+			if (realSessionId === undefined && tab.attached && DETACHED_COMMAND_ERROR.test(message)) {
+				await Promise.race([tab.chromeDetach.promise, Bun.sleep(CHROME_DETACH_REPORT_MS)]);
+			}
+			this.#replyError(conn, msg, message);
 			return false;
 		}
 	}
@@ -838,7 +991,8 @@ export class RelayBridge {
 		}
 	}
 
-	async #handleBrowserCommand(conn: CdpConnection, msg: CdpCommand): Promise<void> {
+	/** `near`: the tab whose session sent the command; a tab it creates opens in that tab's browser. */
+	async #handleBrowserCommand(conn: CdpConnection, msg: CdpCommand, near?: TabState): Promise<void> {
 		switch (msg.method) {
 			case "Browser.getVersion": {
 				this.#reply(conn, msg, {
@@ -926,15 +1080,37 @@ export class RelayBridge {
 			case "Target.createTarget": {
 				const url =
 					typeof msg.params?.url === "string" && msg.params.url.length > 0 ? msg.params.url : "about:blank";
-				const inst = this.#lastHello();
+				// `nearTargetId` is the relay's own parameter: open in the browser of that tab.
+				const affine = near ? undefined : this.#affineInstance(conn, msg.params?.nearTargetId);
+				// Its extension may be reconnecting: another browser can be another profile, logged in elsewhere.
+				if (affine && !affine.socket) {
+					await this.#awaitReconnect(affine);
+					if (this.#conns.get(conn.id) !== conn) return;
+				}
+				const inst = near ? this.#instances.get(near.instanceId) : this.#instanceForNewTab(affine);
 				if (!inst || !inst.socket) {
 					this.#replyError(conn, msg, "relay extension is not connected");
 					return;
 				}
 				// CDP `background: true` creates the tab without selecting it; an extension that predates `active` ignores it.
 				const active = msg.params?.background === true ? false : undefined;
-				const result = (await this.#rpc({ op: "createTab", url, active }, inst)) as { tab: TabSnapshot };
+				// Chrome can still create the tab after the RPC timed out: close it then, since nobody learns its id.
+				const result = (await this.#rpc({ op: "createTab", url, active }, inst, RPC_TIMEOUT_MS, late => {
+					const tabId = (late as { tab: TabSnapshot }).tab.tabId;
+					this.#closeTab(tabKeyOf(inst.code, tabId), tabId, inst).catch(err => {
+						this.#log("late relay tab close waits for the next hello", {
+							tabId,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					});
+				})) as { tab: TabSnapshot };
 				this.#onTabUpsert(result.tab, inst.instanceId);
+				// The client left while Chrome created the tab (omp gave up on a slow open), so nobody
+				// can learn its id to close it later: close it now instead of leaving it in the user's browser.
+				if (this.#conns.get(conn.id) !== conn) {
+					await this.#closeTab(tabKeyOf(inst.code, result.tab.tabId), result.tab.tabId, inst);
+					return;
+				}
 				// Creating a tab is an explicit act of driving it.
 				const createdKey = tabKeyOf(inst.code, result.tab.tabId);
 				this.#claimTab(conn, createdKey);
@@ -952,7 +1128,7 @@ export class RelayBridge {
 					this.#replyError(conn, msg, `No target with id ${String(msg.params?.targetId)}`);
 					return;
 				}
-				await this.#rpc({ op: "removeTab", tabId: removedTab.tabId }, this.#instanceFor(removedTab));
+				await this.#closeTab(parsed.key, removedTab.tabId, this.#instanceFor(removedTab));
 				this.#reply(conn, msg, { success: true });
 				return;
 			}
@@ -961,6 +1137,10 @@ export class RelayBridge {
 				const activatedTab = parsed ? this.#tabs.get(parsed.key) : undefined;
 				if (parsed && activatedTab) {
 					await this.#rpc({ op: "activateTab", tabId: activatedTab.tabId }, this.#instanceFor(activatedTab));
+				} else if (near) {
+					// Raw, a page session's activate failed; don't turn an unknown id into success there.
+					this.#replyError(conn, msg, `No target with id ${String(msg.params?.targetId)}`);
+					return;
 				}
 				this.#reply(conn, msg, {});
 				return;
@@ -1117,11 +1297,28 @@ export class RelayBridge {
 		tab.attached = false;
 		tab.attaching = null;
 		this.#resetRuntime(tab);
-		tab.banned = true;
-		// The user dismissed the debugger infobar (or the attach was torn
-		// down): release the tab's omp-group membership too.
+		// Only the user pressing Cancel on Chrome's debugging bar is a refusal. Chrome also detaches when
+		// another extension's frame (a password manager's inline menu) starts loading in the tab: that tab
+		// stays adoptable and is announced again at once; an attach Chrome refuses still bans it (#ensureAttached).
+		const cancelledByUser = reason === "canceled_by_user";
+		if (cancelledByUser) tab.banned = true;
+		// A user cancel releases the tab's omp-group membership; any other detach keeps it.
 		this.#syncTabGrouping(tab);
+		// Relay-private event, ahead of the sessions' detach: a client driving the tab learns that Chrome
+		// ended the attachment, not the page, and can re-adopt it instead of waiting on a dead session. A tab
+		// the relay is closing detaches on its way out (Chrome may report that before the removal): not re-adoptable.
+		if (!tab.closing) {
+			for (const conn of this.#conns.values()) {
+				for (const pageSession of conn.sessionsForTab(tabKey, "page")) {
+					this.#emit(conn, "OMP.debuggerDetached", { reason }, pageSession);
+				}
+			}
+		}
+		// Failures of commands that were in flight are released behind the event (#forwardToTab).
+		tab.chromeDetach.resolve();
+		tab.chromeDetach = Promise.withResolvers<void>();
 		this.#retractTab(tab);
+		if (!cancelledByUser && !tab.closing && this.#eligible(tab) && !tab.discarded) this.#announceTab(tab);
 	}
 
 	#onTabRemoved(tabKey: string): void {
@@ -1166,17 +1363,7 @@ export class RelayBridge {
 		const eligible = this.#eligible(tab);
 		this.#syncTabGrouping(tab);
 		if (eligible && !tab.announced && !tab.discarded) {
-			tab.announced = true;
-			for (const conn of this.#conns.values()) {
-				if (!conn.discover) continue;
-				this.#emit(conn, "Target.targetCreated", { targetInfo: this.#tabInfo(tab, tab.attached) });
-				this.#emit(conn, "Target.targetCreated", { targetInfo: this.#pageInfo(tab, tab.attached) });
-			}
-			for (const conn of this.#conns.values()) {
-				if (!conn.autoAttach) continue;
-				this.#attachForAutoAttach(tab);
-				break;
-			}
+			this.#announceTab(tab);
 			return;
 		}
 		if ((!eligible || tab.discarded) && tab.announced) {
@@ -1194,6 +1381,17 @@ export class RelayBridge {
 		}
 	}
 
+	/** Announce an unannounced tab to discovering connections and attach it for auto-attaching ones. */
+	#announceTab(tab: TabState): void {
+		tab.announced = true;
+		for (const conn of this.#conns.values()) {
+			if (!conn.discover) continue;
+			this.#emit(conn, "Target.targetCreated", { targetInfo: this.#tabInfo(tab, tab.attached) });
+			this.#emit(conn, "Target.targetCreated", { targetInfo: this.#pageInfo(tab, tab.attached) });
+		}
+		this.#attachForAutoAttach(tab);
+	}
+
 	#attachForAutoAttach(tab: TabState): void {
 		let hasAutoAttach = false;
 		for (const conn of this.#conns.values()) {
@@ -1204,7 +1402,12 @@ export class RelayBridge {
 		}
 		if (!hasAutoAttach) return;
 		void this.#ensureAttached(tab, { retryAfterDiscard: true }).then(ok => {
-			if (!ok) return;
+			if (!ok) {
+				// A refused attach banned the tab until its URL changes. Withdraw the announcement too, or the URL change
+				// finds the tab already announced and neither announces nor attaches it again.
+				if (tab.banned && tab.announced && this.#tabs.get(tab.tabKey) === tab) this.#retractTab(tab);
+				return;
+			}
 			if (tab.discarded || !this.#eligible(tab) || this.#tabs.get(tab.tabKey) !== tab) {
 				this.#retractTab(tab);
 				this.#detachIfUnheld(tab.tabKey);
@@ -1353,6 +1556,7 @@ export class RelayBridge {
 			runtimeEnabling: null,
 			runtimeEpoch: 0,
 			autoAttach: false,
+			interceptsFileChooser: false,
 		});
 		return sessionId;
 	}
@@ -1361,6 +1565,7 @@ export class RelayBridge {
 		const ref = conn.sessions.get(sessionId);
 		if (!ref) return;
 		conn.sessions.delete(sessionId);
+		if (ref.interceptsFileChooser) this.#releaseFileChooserInterception(ref.tabKey);
 		const targetId = ref.kind === "tab" ? tabTargetIdFromKey(ref.tabKey) : pageTargetIdFromKey(ref.tabKey);
 		this.#emit(conn, "Target.detachedFromTarget", { sessionId, targetId }, parentSessionId);
 		// An explicit release of the last session must drop the attachment too,
@@ -1421,6 +1626,50 @@ export class RelayBridge {
 			if (conn.sessionsForTab(tabKey).length > 0) out.push(conn);
 		}
 		return out;
+	}
+
+	/** Whether any live session on a tab, across connections, has file chooser interception on. */
+	#interceptsFileChooser(tabKey: string): boolean {
+		for (const conn of this.#conns.values()) {
+			for (const ref of conn.sessions.values()) {
+				if (ref.tabKey === tabKey && ref.interceptsFileChooser) return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Switch interception off once no live session of the tab asks for it: a session that went away without disabling
+	 * it (a worker killed mid-upload) would otherwise leave the shared attachment swallowing every chooser.
+	 */
+	#releaseFileChooserInterception(tabKey: string): void {
+		void this.#serializeInterception(tabKey, async () => {
+			if (this.#interceptsFileChooser(tabKey)) return;
+			const tab = this.#tabs.get(tabKey);
+			const inst = tab?.attached ? this.#instances.get(tab.instanceId) : undefined;
+			if (!tab || !inst) return;
+			const params = { enabled: false };
+			await this.#rpc(
+				{ op: "send", tabId: tab.tabId, method: "Page.setInterceptFileChooserDialog", params },
+				inst,
+			).catch(() => {});
+		});
+	}
+
+	/**
+	 * Run a tab's interception transitions one at a time, each sending the tab-wide state as it stands when it runs.
+	 * The extension starts RPCs independently, so overlapping transitions could settle out of order; a failed one's
+	 * rollback would then restore a state another transition had already changed on the tab.
+	 */
+	#serializeInterception(tabKey: string, run: () => Promise<void>): Promise<void> {
+		const pending = this.#interceptionTransitions.get(tabKey);
+		const result = pending ? pending.then(run) : run();
+		const tail = result.catch(() => {});
+		this.#interceptionTransitions.set(tabKey, tail);
+		void tail.then(() => {
+			if (this.#interceptionTransitions.get(tabKey) === tail) this.#interceptionTransitions.delete(tabKey);
+		});
+		return result;
 	}
 
 	#emitTabAttached(conn: CdpConnection, tab: TabState): void {
@@ -1533,16 +1782,45 @@ export class RelayBridge {
 		return inst;
 	}
 
-	#rpc(req: RelayRpcRequest, inst: ExtInstance, timeoutMs = RPC_TIMEOUT_MS): Promise<unknown> {
+	#rpc(
+		req: RelayRpcRequest,
+		inst: ExtInstance,
+		timeoutMs = RPC_TIMEOUT_MS,
+		onLateResult?: (result: unknown) => void,
+	): Promise<unknown> {
 		if (!inst.socket) return Promise.reject(new Error("relay extension is not connected"));
 		const id = ++this.#rpcSeq;
 		const { promise, resolve, reject } = Promise.withResolvers<unknown>();
 		const timer = setTimeout(() => {
-			this.#pendingRpc.delete(`${inst.instanceId}:${id}`);
+			const key = `${inst.instanceId}:${id}`;
+			this.#pendingRpc.delete(key);
+			if (onLateResult) {
+				const expiry = setTimeout(() => this.#lateRpc.delete(key), LATE_RPC_KEEP_MS);
+				expiry.unref?.();
+				this.#lateRpc.set(key, { onResult: onLateResult, timer: expiry });
+			}
 			reject(new Error(`extension rpc '${req.op}' timed out after ${timeoutMs}ms`));
 		}, timeoutMs);
 		this.#pendingRpc.set(`${inst.instanceId}:${id}`, { resolve, reject, timer });
 		inst.socket.send(JSON.stringify({ t: "rpc", id, ...req } satisfies RelayToExtMessage));
 		return promise;
+	}
+
+	/**
+	 * Close a tab omp opened. The extension retries a close Chrome refuses before answering, so the caller holds
+	 * its relay lease through the retry. One whose close still fails (its browser offline, the socket dropping
+	 * mid-call, or Chrome refusing every try) is closed at that browser's next hello, unless the user closed it.
+	 */
+	async #closeTab(key: string, tabId: number, inst: ExtInstance): Promise<void> {
+		const tab = this.#tabs.get(key);
+		if (tab) tab.closing = true;
+		try {
+			await this.#rpc({ op: "removeTab", tabId }, inst);
+		} catch (err) {
+			// The tab stays open, so a later detach is Chrome's own again.
+			if (tab) tab.closing = false;
+			this.#closeOnHello.set(key, tab?.url ?? "");
+			throw err;
+		}
 	}
 }

@@ -41,6 +41,7 @@ import {
 import { OpenAIHttpError, postOpenAIStream } from "../utils/openai-http";
 import { withOpenRouterAffordableMaxTokensRetry } from "../utils/openrouter-affordable-max-tokens";
 import { notifyProviderResponse } from "../utils/provider-response";
+import { wrapFetchForRequestCompression } from "../utils/request-compression";
 import { waitForRetry } from "../utils/retry-wait";
 import {
 	adaptSchemaForStrict,
@@ -105,6 +106,7 @@ import {
 	isCompiledGrammarTooLargeStrictError,
 	isOpenAIResponsesProgressEvent,
 	isStrictToolsDisabledForScope,
+	readOpenRouterRawMetadata,
 	type OpenAIPromptCacheOptions,
 	type OpenAIStrictToolsScope,
 	type OpenAIStrictToolsState,
@@ -895,7 +897,7 @@ const streamOpenAIResponsesOnce = (
 						body: requestParams,
 						signal: requestSignal,
 						fetch: wrapFetchForCopilotFallback(
-							options?.fetch,
+							wrapFetchForRequestCompression(options?.fetch ?? fetch, model),
 							model.provider === "github-copilot",
 							resolveCopilotRequestIdentity(options?.headers),
 							copilotCacheKey,
@@ -1378,7 +1380,7 @@ const streamOpenAIResponsesOnce = (
 				output.requestBodyReadTimeoutFullReplay = true;
 			}
 			// Some providers via OpenRouter include extra details here.
-			const rawMetadata = (error as { error?: { metadata?: { raw?: string } } })?.error?.metadata?.raw;
+			const rawMetadata = readOpenRouterRawMetadata(capturedErrorResponse);
 			if (rawMetadata) output.errorMessage += `\n${rawMetadata}`;
 			output.duration = performance.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
@@ -1577,10 +1579,11 @@ function applyOpenAIResponsesPromptCachePolicy(
 	options: OpenAIResponsesOptions | undefined,
 	statefulCacheBaseline?: ResponseInput,
 ): void {
+	const cacheRetention = resolveCacheRetention(options?.cacheRetention);
+	if (cacheRetention === "none") return;
 	const promptCache = options?.promptCache;
-	if (!promptCache || resolveCacheRetention(options?.cacheRetention) === "none") return;
 	if (!model.compat.supportsPromptCacheBreakpoints) {
-		if (promptCache.mode === "explicit") {
+		if (promptCache?.mode === "explicit") {
 			throw new AIError.ConfigurationError(
 				`OpenAI explicit prompt caching is unsupported for ${model.provider}/${model.id}; enable compat.supportsPromptCacheBreakpoints only for a compatible endpoint.`,
 			);
@@ -1588,11 +1591,15 @@ function applyOpenAIResponsesPromptCachePolicy(
 		return;
 	}
 
+	// GPT-5.6+ replaces `prompt_cache_retention` with `prompt_cache_options.ttl`;
+	// long retention selects the 12h minimum lifetime even without an explicit policy.
+	const ttl = promptCache?.ttl ?? (cacheRetention === "long" ? "12h" : undefined);
+	if (!promptCache && ttl === undefined) return;
 	params.prompt_cache_options = {
-		mode: promptCache.mode,
-		ttl: promptCache.ttl ?? model.compat.promptCacheBreakpointTtl,
+		mode: promptCache?.mode ?? "implicit",
+		ttl: ttl ?? model.compat.promptCacheBreakpointTtl,
 	};
-	if (promptCache.mode === "explicit" && promptCache.breakpoint !== "none")
+	if (promptCache?.mode === "explicit" && promptCache.breakpoint !== "none")
 		markLatestStableResponsesCacheBreakpoint(params.input, statefulCacheBaseline);
 }
 
@@ -1681,11 +1688,14 @@ export function buildParams(
 		instructions: systemInstructions,
 		stream: true,
 		prompt_cache_key: promptCacheKey,
-		prompt_cache_retention: promptCacheKey
-			? cacheRetention === "long" && model.compat.supportsLongPromptCacheRetention
+		// GPT-5.6+ ignores the legacy retention field; its lifetime rides `prompt_cache_options.ttl`.
+		prompt_cache_retention:
+			promptCacheKey &&
+			cacheRetention === "long" &&
+			model.compat.supportsLongPromptCacheRetention &&
+			!model.compat.supportsPromptCacheBreakpoints
 				? "24h"
-				: undefined
-			: undefined,
+				: undefined,
 		// Gateway routing: OpenRouter-only Responses wire field for sticky upstream
 		// routing + observability grouping; no equivalent on direct OpenAI.
 		session_id: model.compat.isOpenRouterHost ? getOpenRouterResponsesSessionId(options) : undefined,

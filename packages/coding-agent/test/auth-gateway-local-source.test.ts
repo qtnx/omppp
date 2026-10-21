@@ -156,6 +156,7 @@ function stubGatewayServerForModule(serverModule: typeof authGatewayServer, capt
 				port: 49_000,
 				hostname: "127.0.0.1",
 				close: async () => {},
+				setClients: () => {},
 			};
 		},
 	);

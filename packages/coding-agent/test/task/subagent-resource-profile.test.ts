@@ -469,8 +469,9 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
-			tasks: [{ id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." }],
+			tasks: [
+				{ agent: agent.name, id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." },
+			],
 		};
 
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
@@ -511,8 +512,9 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
-			tasks: [{ id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." }],
+			tasks: [
+				{ agent: agent.name, id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." },
+			],
 		};
 		const customMessages: CapturedCustomMessage[] = [];
 		let capturedOptions: CreateAgentSessionOptions | undefined;
@@ -546,8 +548,9 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
-			tasks: [{ id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." }],
+			tasks: [
+				{ agent: agent.name, id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." },
+			],
 		};
 
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
@@ -573,8 +576,9 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
-			tasks: [{ id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." }],
+			tasks: [
+				{ agent: agent.name, id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." },
+			],
 		};
 
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
@@ -601,8 +605,9 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
-			tasks: [{ id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." }],
+			tasks: [
+				{ agent: agent.name, id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." },
+			],
 		};
 
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
@@ -639,8 +644,14 @@ describe("subagent resource profile", () => {
 
 		const tool = await TaskTool.create(createToolSession([caveman, ponytail, rtk], null, undefined, settings));
 		await tool.execute("task-call", {
-			agent: agent.name,
-			tasks: [{ id: "CavemanDisabled", description: "Implement", assignment: "Implement the assignment." }],
+			tasks: [
+				{
+					agent: agent.name,
+					id: "CavemanDisabled",
+					description: "Implement",
+					assignment: "Implement the assignment.",
+				},
+			],
 		});
 
 		expect(runSpy.mock.calls[0]?.[0].autoloadSkills?.map(skill => skill.name)).toEqual(["ponytail", "rtk"]);
@@ -670,8 +681,14 @@ describe("subagent resource profile", () => {
 
 		const tool = await TaskTool.create(createToolSession([caveman, ponytail, rtk], null, undefined, settings));
 		await tool.execute("task-call", {
-			agent: agent.name,
-			tasks: [{ id: "PonytailDisabled", description: "Implement", assignment: "Implement the assignment." }],
+			tasks: [
+				{
+					agent: agent.name,
+					id: "PonytailDisabled",
+					description: "Implement",
+					assignment: "Implement the assignment.",
+				},
+			],
 		});
 
 		expect(runSpy.mock.calls[0]?.[0].autoloadSkills?.map(skill => skill.name)).toEqual(["caveman", "rtk"]);
@@ -701,8 +718,9 @@ describe("subagent resource profile", () => {
 
 		const tool = await TaskTool.create(createToolSession([caveman, ponytail, rtk], null, undefined, settings));
 		await tool.execute("task-call", {
-			agent: agent.name,
-			tasks: [{ id: "RtkDisabled", description: "Implement", assignment: "Implement the assignment." }],
+			tasks: [
+				{ agent: agent.name, id: "RtkDisabled", description: "Implement", assignment: "Implement the assignment." },
+			],
 		});
 
 		expect(runSpy.mock.calls[0]?.[0].autoloadSkills?.map(skill => skill.name)).toEqual(["caveman", "ponytail"]);
@@ -725,8 +743,9 @@ describe("subagent resource profile", () => {
 
 		const tool = await TaskTool.create(createToolSession([caveman, ponytail]));
 		await tool.execute("task-call", {
-			agent: agent.name,
-			tasks: [{ id: "MissingRtk", description: "Implement", assignment: "Implement the assignment." }],
+			tasks: [
+				{ agent: agent.name, id: "MissingRtk", description: "Implement", assignment: "Implement the assignment." },
+			],
 		});
 
 		expect(runSpy.mock.calls[0]?.[0].autoloadSkills?.map(skill => skill.name)).toEqual(["caveman", "ponytail"]);
@@ -744,8 +763,9 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
-			tasks: [{ id: "ReviewRuntime", description: "Review runtime", assignment: "Review the issue." }],
+			tasks: [
+				{ agent: agent.name, id: "ReviewRuntime", description: "Review runtime", assignment: "Review the issue." },
+			],
 		};
 
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
@@ -769,8 +789,9 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
-			tasks: [{ id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." }],
+			tasks: [
+				{ agent: agent.name, id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." },
+			],
 		};
 
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
@@ -793,8 +814,9 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
-			tasks: [{ id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." }],
+			tasks: [
+				{ agent: agent.name, id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the issue." },
+			],
 		};
 
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
@@ -922,8 +944,14 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
-			tasks: [{ id: "InspectContext", description: "Inspect context", assignment: "Use the parent context." }],
+			tasks: [
+				{
+					agent: agent.name,
+					id: "InspectContext",
+					description: "Inspect context",
+					assignment: "Use the parent context.",
+				},
+			],
 		};
 		let capturedOptions: ExecutorOptions | undefined;
 
@@ -965,10 +993,19 @@ describe("subagent resource profile", () => {
 			source: "bundled",
 		};
 		const params: TaskParams = {
-			agent: agent.name,
 			tasks: [
-				{ id: "InspectRuntime", description: "Inspect runtime", assignment: "Find the runtime issue." },
-				{ id: "InspectGateway", description: "Inspect gateway", assignment: "Find the gateway issue." },
+				{
+					agent: agent.name,
+					id: "InspectRuntime",
+					description: "Inspect runtime",
+					assignment: "Find the runtime issue.",
+				},
+				{
+					agent: agent.name,
+					id: "InspectGateway",
+					description: "Inspect gateway",
+					assignment: "Find the gateway issue.",
+				},
 			],
 		};
 		const contextFiles: string[] = [];

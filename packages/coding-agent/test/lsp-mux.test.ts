@@ -25,6 +25,7 @@ interface RpcMessage {
 interface FakeState {
 	initializeCount: number;
 	processId: number | null;
+	initializationOptions: unknown;
 	didOpen: Record<string, number>;
 	didChange: Record<string, number[]>;
 	didClose: string[];
@@ -148,14 +149,22 @@ async function withTimeout<T>(promise: Promise<T>, description: string, timeoutM
 }
 
 const fixturePath = path.join(import.meta.dir, "fixtures", "fake-lsp-server.ts");
-const initializeParams = (processId = 424242): Record<string, unknown> => ({
+const initializeParams = (processId = 424242, initializationOptions: unknown = {}): Record<string, unknown> => ({
 	processId,
 	rootUri: null,
 	capabilities: {},
+	initializationOptions,
 });
 
-async function initialize(client: MuxTestClient, processId = 424242): Promise<Record<string, unknown>> {
-	const result = await client.request<Record<string, unknown>>("initialize", initializeParams(processId));
+async function initialize(
+	client: MuxTestClient,
+	processId = 424242,
+	initializationOptions: unknown = {},
+): Promise<Record<string, unknown>> {
+	const result = await client.request<Record<string, unknown>>(
+		"initialize",
+		initializeParams(processId, initializationOptions),
+	);
 	client.notify("initialized", {});
 	return result;
 }
@@ -194,10 +203,10 @@ describe("LspMuxServer", () => {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	});
 
-	async function link(): Promise<{ client: MuxTestClient; connected: MuxConnectResult }> {
+	async function link(params = connectParams): Promise<{ client: MuxTestClient; connected: MuxConnectResult }> {
 		const client = await MuxTestClient.connect(endpoint);
 		clients.push(client);
-		const connected = await client.request<MuxConnectResult>(MUX_CONNECT_METHOD, connectParams);
+		const connected = await client.request<MuxConnectResult>(MUX_CONNECT_METHOD, params);
 		return { client, connected };
 	}
 
@@ -308,6 +317,26 @@ describe("LspMuxServer", () => {
 			uri,
 			diagnostics: [{ message: "fake", severity: 2, range: expect.any(Object) }],
 		});
+	}, 10_000);
+
+	it("does not hand an idle server to a link with other initialization options", async () => {
+		const first = await link({ ...connectParams, initializationOptions: { probe: "A" } });
+		await initialize(first.client, 424242, { probe: "A" });
+		first.client.destroy();
+		await pollUntil(() => Promise.resolve(server.sessionCount === 0), "first session close");
+
+		// A reused server answers `initialize` from cache, so B must get its own process.
+		const second = await link({ ...connectParams, initializationOptions: { probe: "B" } });
+		expect(second.connected.spawned).toBe(true);
+		expect(second.connected.pid).not.toBe(first.connected.pid);
+		await initialize(second.client, 424242, { probe: "B" });
+		expect((await state(second.client)).initializationOptions).toEqual({ probe: "B" });
+
+		const third = await link({ ...connectParams, initializationOptions: { probe: "A" } });
+		expect(third.connected.spawned).toBe(false);
+		expect(third.connected.pid).toBe(first.connected.pid);
+		await initialize(third.client, 424242, { probe: "A" });
+		expect((await state(third.client)).initializationOptions).toEqual({ probe: "A" });
 	}, 10_000);
 
 	it("intercepts shutdown and exit for only the calling session", async () => {

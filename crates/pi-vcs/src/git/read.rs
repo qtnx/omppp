@@ -544,7 +544,7 @@ impl GitRepo {
 		}
 		let repo = self.gix()?;
 		let mut out = Vec::new();
-		for id in self.walk_commit_ids("HEAD")?.into_iter().take(count) {
+		for id in self.walk_commit_ids("HEAD", count)? {
 			let commit = repo
 				.find_commit(id)
 				.map_err(|err| Error::backend("git log", err))?;
@@ -565,7 +565,7 @@ impl GitRepo {
 		}
 		let mut out = Vec::new();
 		let repo = self.gix()?;
-		for id in self.walk_commit_ids("HEAD")?.into_iter().take(count) {
+		for id in self.walk_commit_ids("HEAD", count)? {
 			let commit = repo
 				.find_commit(id)
 				.map_err(|err| Error::backend("git log", err))?;
@@ -657,7 +657,7 @@ impl GitRepo {
 		}
 		let mut out = Vec::new();
 		let repo = self.gix()?;
-		for id in self.walk_commit_ids(rev)? {
+		for id in self.walk_commit_ids(rev, usize::MAX)? {
 			let commit = repo
 				.find_commit(id)
 				.map_err(|err| Error::backend("git rev-list", err))?;
@@ -1017,7 +1017,10 @@ impl GitRepo {
 		Ok(None)
 	}
 
-	fn walk_commit_ids(&self, rev: &str) -> Result<Vec<gix::ObjectId>> {
+	/// The first `limit` commits reachable from `rev`, newest first. Like
+	/// `git log -n<limit>`, the walk stops there, so older history is never
+	/// read.
+	fn walk_commit_ids(&self, rev: &str, limit: usize) -> Result<Vec<gix::ObjectId>> {
 		let repo = self.gix()?;
 		let id = repo
 			.rev_parse_single(rev)
@@ -1030,6 +1033,7 @@ impl GitRepo {
 			))
 			.all()
 			.map_err(|err| Error::backend("git rev-list", err))?
+			.take(limit)
 			.map(|item| {
 				item
 					.map(|info| info.id)
@@ -1300,6 +1304,9 @@ fn path_matches(path: &str, wanted: &str) -> bool {
 			.strip_prefix(wanted)
 			.is_some_and(|rest| rest.starts_with('/'))
 }
+/// `path =` values from `.gitmodules`, keeping only plain relative paths:
+/// like Git, reject absolute, `.`, and `..` components, which could escape
+/// the checkout or make the recursive walk revisit a parent forever.
 fn parse_gitmodules(path: &Path) -> Vec<String> {
 	let Ok(content) = std::fs::read_to_string(path) else {
 		return Vec::new();
@@ -1309,7 +1316,13 @@ fn parse_gitmodules(path: &Path) -> Vec<String> {
 		.filter_map(|line| {
 			let line = line.trim();
 			let (key, value) = line.split_once('=')?;
-			(key.trim().eq_ignore_ascii_case("path")).then(|| value.trim().to_owned())
+			let value = value.trim();
+			(key.trim().eq_ignore_ascii_case("path")
+				&& !value.is_empty()
+				&& Path::new(value)
+					.components()
+					.all(|component| matches!(component, std::path::Component::Normal(_))))
+			.then(|| value.to_owned())
 		})
 		.collect()
 }
@@ -1355,6 +1368,67 @@ mod tests {
 		fs::write(cwd.join(name), contents)?;
 		git(cwd, &["add", name])?;
 		git(cwd, &["commit", "-m", subject])?;
+		Ok(())
+	}
+
+	#[test]
+	fn bounded_logs_read_only_the_requested_prefix_like_git_log() -> TestResult {
+		let (dir, repo) = repo()?;
+		commit(dir.path(), "one", "one\n", "first")?;
+		let first = repo.head_sha()?.ok_or("missing HEAD")?;
+		commit(dir.path(), "two", "two\n", "second")?;
+		commit(dir.path(), "three", "three\n", "third")?;
+		assert_eq!(repo.log_subjects(1)?, ["third"]);
+		assert!(repo.log_subjects(0)?.is_empty());
+		assert!(repo.log_onelines(0)?.is_empty());
+		assert_eq!(
+			repo.log_onelines(1)?,
+			git(dir.path(), &["log", "-1", "--oneline", "--no-decorate"])?
+				.lines()
+				.map(str::to_owned)
+				.collect::<Vec<_>>()
+		);
+		fs::remove_file(
+			dir.path()
+				.join(".git/objects")
+				.join(&first[..2])
+				.join(&first[2..]),
+		)?;
+		// A fresh handle cannot satisfy the missing ancestor from an object
+		// cache. A prefix that stops before it never reads it, as `git log -1`
+		// does not; a walk that reaches it reports it.
+		let repo = GitRepo::require(dir.path())?;
+		assert_eq!(repo.log_subjects(1)?, ["third"]);
+		assert_eq!(repo.log_onelines(1)?.len(), 1);
+		assert!(repo.log_subjects(0)?.is_empty());
+		for result in [repo.log_subjects(3), repo.log_onelines(3)] {
+			assert!(matches!(result, Err(Error::Backend { context: "git rev-list", .. })));
+		}
+		Ok(())
+	}
+
+	#[test]
+	fn submodule_paths_skip_escaping_and_self_referential_entries() -> TestResult {
+		let outer = tempfile::tempdir()?;
+		let root = outer.path().join("root");
+		fs::create_dir_all(root.join("sub"))?;
+		fs::create_dir_all(outer.path().join("victim"))?;
+		git(&root, &["init", "-q"])?;
+		git(&root.join("sub"), &["init", "-q"])?;
+		git(&outer.path().join("victim"), &["init", "-q"])?;
+		// `.` and `a/..` would re-enqueue the root forever; `../victim` and the
+		// absolute path point at a real checkout outside the repository.
+		let absolute = outer.path().join("victim");
+		fs::write(
+			root.join(".gitmodules"),
+			format!(
+				"[submodule \"self\"]\n\tpath = .\n[submodule \"up\"]\n\tpath = sub/..\n[submodule \
+				 \"escape\"]\n\tpath = ../victim\n[submodule \"abs\"]\n\tpath = {}\n[submodule \
+				 \"sub\"]\n\tpath = sub\n",
+				absolute.display()
+			),
+		)?;
+		assert_eq!(GitRepo::require(&root)?.submodule_paths()?, ["sub"]);
 		Ok(())
 	}
 

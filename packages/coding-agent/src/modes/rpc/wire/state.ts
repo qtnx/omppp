@@ -177,6 +177,7 @@ export const stateDefs = {
 		tokensBefore: "number.integer",
 		"details?": "unknown",
 		"preserveData?": JSON_OBJECT,
+		"providerReplayThroughEntryId?": "string",
 	},
 	ModelCycleResult: { model: "ModelInfo", "thinkingLevel?": "ThinkingLevel", isScoped: "boolean" },
 	ThinkingLevelCycleResult: { level: "Effort" },

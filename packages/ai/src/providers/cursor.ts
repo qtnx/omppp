@@ -261,7 +261,7 @@ import {
 	piReadDisplayPath,
 	piReadPathHasRange,
 	piTimeout,
-	shellTimeoutSeconds,
+	shellDeadlineSeconds,
 } from "./cursor/exec-modern";
 import { handleInteractionQuery, protoUnknownFields } from "./cursor/interaction-query";
 
@@ -345,6 +345,18 @@ function isCursorModelNotFound(error: unknown): boolean {
 	return (
 		(error instanceof AIError.ProviderHttpError && error.code === "BAD_MODEL_NAME") ||
 		(error instanceof Error && CURSOR_MODEL_NOT_FOUND_PATTERN.test(error.message))
+	);
+}
+
+/**
+ * Failures that, before any token, mean the wire conversation is poisoned
+ * rather than the account: a bare gRPC `resource_exhausted` (#8345), or the
+ * structured PROVIDER_ERROR every resume of a turn cut mid-stream draws (#15830).
+ */
+function isCursorConversationRejected(error: unknown, message: string): boolean {
+	return (
+		(error instanceof AIError.ProviderHttpError && error.code === "PROVIDER_ERROR") ||
+		RESOURCE_EXHAUSTED_PATTERN.test(message)
 	);
 }
 
@@ -1814,13 +1826,14 @@ function streamCursorWithWireMode(
 				flushOpenToolCalls(output, stream, openBlockState);
 			}
 			const result = await AIError.finalize(error, { api: model.api, signal: options?.signal });
-			// #8345: a server-side per-conversation rejection surfaces as a bare
-			// resource_exhausted with zero tokens — the conversation is poisoned,
-			// not the account. Rotate the wire id and rebuild from `context` on
-			// the next attempt (the caller's retry loop). Do not migrate cached
-			// side-state: pendingToolCalls from a mid-turn checkpoint re-poison
-			// the new id. One rotation per failure streak; a new rotation is
-			// allowed only after the current rotated id completed a turn.
+			// #8345/#15830: a server-side per-conversation rejection (a bare
+			// resource_exhausted, or PROVIDER_ERROR after a mid-turn cut) with zero
+			// tokens means the conversation is poisoned, not the account. Rotate
+			// the wire id and rebuild from `context` on the next attempt (the
+			// caller's retry loop). Do not migrate cached side-state:
+			// pendingToolCalls from a mid-turn checkpoint re-poison the new id.
+			// One rotation per failure streak; a new rotation is allowed only
+			// after the current rotated id completed a turn.
 			const currentRotated =
 				baseConversationId === undefined ? undefined : rotatedConversationIds.get(baseConversationId);
 			const canRotate = currentRotated === undefined || successfulRotatedConversationIds.has(currentRotated);
@@ -1829,7 +1842,7 @@ function streamCursorWithWireMode(
 				baseConversationId !== undefined &&
 				usageState !== undefined &&
 				!usageState.sawTokenDelta &&
-				RESOURCE_EXHAUSTED_PATTERN.test(result.message) &&
+				isCursorConversationRejected(error, result.message) &&
 				canRotate
 			) {
 				const rotated = crypto.randomUUID();
@@ -2668,7 +2681,7 @@ async function handleExecServerMessage(
 			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
 				command: args.command,
 				cwd: args.workingDirectory || undefined,
-				timeout: shellTimeoutSeconds(args.timeout),
+				timeout: shellDeadlineSeconds(args),
 			});
 			const { execResult } = await resolveExecHandler(
 				args,
@@ -2689,7 +2702,7 @@ async function handleExecServerMessage(
 			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
 				command: args.command,
 				cwd: args.workingDirectory || undefined,
-				timeout: shellTimeoutSeconds(args.timeout),
+				timeout: shellDeadlineSeconds(args),
 			});
 			await handleShellStreamArgs(args, execMsg, runTransport, execHandlers, onToolResult);
 			return;
@@ -3167,7 +3180,7 @@ async function handleExecServerMessage(
 			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
 				command: args.command,
 				cwd: args.workingDirectory || undefined,
-				timeout: shellTimeoutSeconds(args.timeout),
+				timeout: shellDeadlineSeconds(args),
 			});
 			const { execResult } = await resolveExecHandler(
 				normalizedArgs,
@@ -5076,6 +5089,13 @@ function endCurrentThinkingBlock(
  * call handed to an external executor is only a handoff while the marker is
  * absent, and the consumer that runs it needs a runnable block.
  *
+ * A frame whose `toolCallId` already has a block in `output` is the server
+ * re-dispatching that call (a new `execId`, e.g. a `read` re-sent once a
+ * parallel shell created the file). It adds no block: a second block with the
+ * same id makes every rebuilt history replay the call twice, which Cursor
+ * rejects (issue #15749). The re-run's result supersedes the first one in the
+ * host's result buffer.
+ *
  * Exported for tests to exercise ordering with adjacent text/thinking blocks.
  */
 export function synthesizeCursorExecToolCall(
@@ -5087,6 +5107,7 @@ export function synthesizeCursorExecToolCall(
 	args: Record<string, unknown>,
 	{ executed = true }: { executed?: boolean } = {},
 ): void {
+	if (output.content.some(block => block.type === "toolCall" && block.id === toolCallId)) return;
 	endCurrentTextBlock(output, stream, state);
 	endCurrentThinkingBlock(output, stream, state);
 	// Exec-frame translators often write `optional: value || undefined`. A
@@ -5919,12 +5940,20 @@ interface CursorAssistantStep {
  * the text and reasoning that followed each result; a round ends at a call
  * followed by anything other than another call. Consecutive calls stay in one
  * round — they were issued together. Hidden reasoning still marks a boundary.
+ * A call id repeated within the message — a re-dispatched exec frame recorded
+ * before issue #15749 was fixed — is issued once; Cursor rejects a history that
+ * repeats it.
  */
 function buildCursorAssistantSteps(msg: AssistantMessage, targetModelId: string | undefined): CursorAssistantStep[] {
 	const steps: CursorAssistantStep[] = [];
 	let step: CursorAssistantStep = { content: [], callIds: [] };
 	const replayThinking = canReplayCursorThinking(msg, targetModelId);
+	const issuedCallIds = new Set<string>();
 	for (const item of msg.content) {
+		if (item.type === "toolCall") {
+			if (issuedCallIds.has(item.id)) continue;
+			issuedCallIds.add(item.id);
+		}
 		if (item.type !== "toolCall" && step.callIds.length > 0) {
 			steps.push(step);
 			step = { content: [], callIds: [] };
@@ -6147,7 +6176,14 @@ function buildRootPromptMessagesJson(
 				});
 				continue;
 			}
-			pushToolResult(msg);
+			// A re-dispatched call recorded two results in the same batch; the
+			// re-run's answer is the one the model saw.
+			let result = msg;
+			for (let j = i + 1; j < historyEnd && messages[j].role === "toolResult"; j++) {
+				const later = messages[j];
+				if (later.role === "toolResult" && later.toolCallId === msg.toolCallId) result = later;
+			}
+			pushToolResult(result);
 		}
 	}
 
@@ -6299,6 +6335,8 @@ function buildConversationTurns(
 		while (i < messages.length && messages[i].role !== "user" && messages[i].role !== "developer") {
 			const stepMsg = messages[i];
 			if (stepMsg.role === "assistant") {
+				// Mirrors `buildCursorAssistantSteps`: a repeated call id is issued once.
+				const issuedCallIds = new Set<string>();
 				for (const item of stepMsg.content) {
 					let step: ConversationStep;
 					if (item.type === "text") {
@@ -6322,6 +6360,8 @@ function buildConversationTurns(
 							},
 						});
 					} else if (item.type === "toolCall") {
+						if (issuedCallIds.has(item.id)) continue;
+						issuedCallIds.add(item.id);
 						step = createCursorToolCallStep(item, toolResults.get(item.id));
 					} else {
 						continue;

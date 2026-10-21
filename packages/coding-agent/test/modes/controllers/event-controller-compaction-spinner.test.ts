@@ -50,6 +50,7 @@ function createHarness(options: { isStreaming: boolean; withSpinner: boolean }):
 		chatContainer: { removeChild: vi.fn() },
 		statusContainer,
 		statusLine: { invalidate: vi.fn() },
+		composer: { setRunActive: vi.fn() },
 		editor: { getText: () => "", onEscape: undefined },
 		keybindings: { getKeys: () => ["escape"] },
 		ensureLoadingAnimation: vi.fn(),

@@ -39,16 +39,19 @@ function fixtureConfig(): MCPStdioServerConfig {
 	return { type: "stdio", command: process.execPath, args: [FIXTURE_PATH] };
 }
 
-function waitForTools(manager: MCPManager, expectedNames: readonly string[]): Promise<void> {
-	if (expectedNames.every(name => manager.getTools().some(tool => tool.name === name))) return Promise.resolve();
-
-	const { promise, resolve } = Promise.withResolvers<void>();
-	manager.setOnToolsChanged(tools => {
-		if (!expectedNames.every(name => tools.some(tool => tool.name === name))) return;
-		manager.setOnToolsChanged(() => {});
-		resolve();
+/**
+ * `connectServers` returns once its startup window (250 ms) closes, leaving a
+ * slower handshake to register its tools in the background. A CPU-starved
+ * runner routinely spawns the fixture past that window, so wait for both
+ * servers' initial tools before exercising ownership.
+ */
+async function connectBoth(manager: MCPManager): Promise<void> {
+	await manager.connectServers({ [SHORT_SERVER]: fixtureConfig(), [COLON_SERVER]: fixtureConfig() }, {});
+	expect(await manager.waitForStartup(0)).toEqual({
+		connected: [SHORT_SERVER, COLON_SERVER],
+		pending: [],
+		failed: [],
 	});
-	return promise;
 }
 
 describe("MCP tool ownership with prefix-colliding server names", () => {
@@ -66,9 +69,7 @@ describe("MCP tool ownership with prefix-colliding server names", () => {
 	});
 
 	it("refreshing one server keeps the sibling server's tools registered", async () => {
-		const toolsReady = waitForTools(manager, [SHORT_TOOL, COLON_TOOL]);
-		await manager.connectServers({ [SHORT_SERVER]: fixtureConfig(), [COLON_SERVER]: fixtureConfig() }, {});
-		await toolsReady;
+		await connectBoth(manager);
 		const names = () => manager.getTools().map(t => t.name);
 		expect(names()).toContain(SHORT_TOOL);
 		expect(names()).toContain(COLON_TOOL);
@@ -94,9 +95,7 @@ describe("MCP tool ownership with prefix-colliding server names", () => {
 	}, 20_000);
 
 	it("disconnecting a server with sanitized name characters removes exactly its tools", async () => {
-		const toolsReady = waitForTools(manager, [SHORT_TOOL, COLON_TOOL]);
-		await manager.connectServers({ [SHORT_SERVER]: fixtureConfig(), [COLON_SERVER]: fixtureConfig() }, {});
-		await toolsReady;
+		await connectBoth(manager);
 		const payloads: string[][] = [];
 		manager.setOnToolsChanged(tools => {
 			payloads.push(tools.map(t => t.name));

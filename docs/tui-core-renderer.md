@@ -140,10 +140,13 @@ and image protocols; it does not change history semantics.
 
 Inside tmux, the pane environment identifies tmux rather than the attached
 emulator. At startup, terminal detection asks the local tmux server for
-`#{client_termtype}` and maps recognized client names through the normal
-capability table; an unavailable `tmux` command or missing terminal-type reply
-keeps the environment fallback. Modified keys still require tmux
-`extended-keys`, while OSC notifications require `allow-passthrough`.
+`#{client_termtype}` and `#{client_termname}` and maps recognized names through
+the normal capability table: the terminal-type reply first, then a client `TERM`
+that names its emulator (`xterm-kitty`, `xterm-ghostty`, `wezterm`). The pane's
+own `TERM` (`tmux-*`) never selects an image protocol; an unrecognized client
+leaves images to the runtime SIXEL probe. Modified keys still require tmux
+`extended-keys`, while OSC notifications and Kitty graphics require
+`allow-passthrough`.
 
 `ProcessTerminal` pairs capability queries with typed DA1 sentinel owners.
 Private CSI replies may be split across stdin flushes, so reassembly must retain
@@ -163,8 +166,12 @@ native TSP surfaces keep their own image transport.
 ### Native rendering (Tern Surface Protocol)
 
 `ProcessTerminal` also sends the TSP `hello` query (APC `tsp`) behind a `tsp`
-DA1 sentinel owner. `PI_TUI_NATIVE=0` disables it; multiplexers and Bun tests
-skip it by default, while `PI_TUI_NATIVE=1` forces the probe. A supported-version
+DA1 sentinel owner. `PI_TUI_NATIVE=0` disables it; multiplexers, devenv's
+reloading shell (`DEVENV_RELOAD_FILE`: its terminal layer forwards DA1 but drops
+APC) and Bun tests skip it by default, while `PI_TUI_NATIVE=1` forces the probe
+(tmux still needs `@tern-tsp`). With `TERM_PROGRAM=tern` only a multiplexer's
+session marker counts, not a `screen*`/`tmux*` `TERM` alone, and the debug log
+records once why the pane stayed on rows. A supported-version
 reply switches `TUI` to `native/backend.ts`: components
 are described (`describe()`, or `rows` fallback from `render()`), reconciled
 into document ops (`native/reconcile.ts`) and sent as frames, paced by the

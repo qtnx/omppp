@@ -391,7 +391,8 @@ syntect = { version = "5.3", default-features = false, features = [
 # ──────────────────────────────────────────────────────────────────────────────
 # Markup Conversion
 # ──────────────────────────────────────────────────────────────────────────────
-html-to-markdown-rs = { version = "3.12.4", default-features = false }
+html-escape = "0.2.15"
+html-to-markdown-rs = { version = "3.18.3", default-features = false }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Tokenization

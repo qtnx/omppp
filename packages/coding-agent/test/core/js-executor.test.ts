@@ -35,12 +35,9 @@ function createTool(
 	} as unknown as AgentTool;
 }
 
+/** Parses the `util.inspect` text the runtime prints for a final object value (plain data only). */
 function getJsonData(result: JsResult): unknown {
-	const jsonOutputs = result.displayOutputs.filter(
-		(output): output is Extract<JsResult["displayOutputs"][number], { type: "json" }> => output.type === "json",
-	);
-	expect(jsonOutputs).toHaveLength(1);
-	return jsonOutputs[0].data;
+	return Bun.JSON5.parse(result.output.trim());
 }
 
 function getStatusEvents(result: JsResult) {
@@ -659,7 +656,7 @@ describe("executeJs", () => {
 		expect(result.output.trim()).toBe('{\n  "name": "demo",\n  "enabled": true\n}');
 	});
 
-	it("auto-displays returned objects as structured output", async () => {
+	it("prints returned objects as inspected text", async () => {
 		const result = await executeJs("return { answer: 42, nested: { ok: true } };", {
 			sessionId,
 			session,
@@ -667,8 +664,8 @@ describe("executeJs", () => {
 		});
 
 		expect(result.exitCode).toBe(0);
-		expect(result.output).toBe("");
-		expect(result.displayOutputs).toEqual([{ type: "json", data: { answer: 42, nested: { ok: true } } }]);
+		expect(getJsonData(result)).toEqual({ answer: 42, nested: { ok: true } });
+		expect(result.displayOutputs).toEqual([]);
 	});
 
 	it('rewrites static `import { x } from "pkg"` to dynamic import', async () => {
@@ -703,8 +700,7 @@ describe("executeJs", () => {
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toContain("callable value");
 		expect(result.output).toContain("fn:");
-		// No JSON display because structuredClone fails on the embedded function.
-		expect(result.displayOutputs.filter(o => o.type === "json")).toHaveLength(0);
+		expect(result.displayOutputs).toEqual([]);
 	});
 
 	it("cancels execution when the timeout expires", async () => {

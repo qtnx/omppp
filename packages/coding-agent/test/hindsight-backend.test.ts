@@ -484,7 +484,7 @@ describe("hindsightBackend first-turn injection", () => {
 			taskDepth: 0,
 		});
 
-		const prompt = await hindsightBackend.buildDeveloperInstructions("/tmp", settings, session as never);
+		const prompt = await hindsightBackend.buildDeveloperInstructions("/tmp", "/tmp", settings, session as never);
 		expect(prompt).toContain("Use `xd://recall` proactively");
 		expect(prompt).toContain("Use `retain` to store");
 	});
@@ -507,10 +507,12 @@ describe("hindsightBackend first-turn injection", () => {
 		state.mentalModelsSnippet = "<mental_models>\n# User Preferences\nprefers tabs\n</mental_models>";
 		state.lastRecallSnippet = "<memories>\nrecalled fact\n</memories>";
 
-		const prompt = await hindsightBackend.buildDeveloperInstructions("/tmp", settings, session as never);
-		const promptText = prompt ?? "";
-		const mmIdx = promptText.indexOf("<mental_models>\n");
-		const memIdx = promptText.indexOf("<memories>\n");
+		const prompt = await hindsightBackend.buildDeveloperInstructions("/tmp", "/tmp", settings, session as never);
+		// `<memories>` and `<mental_models>` are mentioned in the static memory instructions
+		// bullets too. Match the actual injected block opener (tag + newline)
+		// to disambiguate documentation prose from the injected payloads.
+		const mmIdx = prompt!.indexOf("<mental_models>\n");
+		const memIdx = prompt!.indexOf("<memories>\n");
 		expect(mmIdx).toBeGreaterThanOrEqual(0);
 		expect(memIdx).toBeGreaterThanOrEqual(0);
 		expect(mmIdx).toBeLessThan(memIdx);

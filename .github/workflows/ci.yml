@@ -12,6 +12,8 @@ on:
          - "packages/**"
          - "crates/**"
          - "scripts/**"
+         - ".omp/tools/**"
+         - ".omp/tests/**"
          - "bazel/**"
          - "MODULE.bazel"
          - "MODULE.bazel.lock"
@@ -39,6 +41,8 @@ on:
          - "packages/**"
          - "crates/**"
          - "scripts/**"
+         - ".omp/tools/**"
+         - ".omp/tests/**"
          - "bazel/**"
          - "MODULE.bazel"
          - "MODULE.bazel.lock"
@@ -680,6 +684,8 @@ jobs:
               merge-multiple: true
               run-id: ${{ steps.source.outputs.artifact-run-id }}
               github-token: ${{ secrets.GITHUB_TOKEN }}
+         - name: Install project-local TUI debug tool dependencies
+           run: bun install --cwd .omp/tools --frozen-lockfile
          - name: Test native/TUI/browser-ish packages (TS)
            env:
               OMP_TEST_CONCURRENCY: "4"

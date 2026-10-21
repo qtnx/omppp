@@ -21,6 +21,7 @@ import quickTaskMd from "../prompts/agents/quick_task.md" with { type: "text" };
 import reviewerMd from "../prompts/agents/reviewer.md" with { type: "text" };
 import scoutMd from "../prompts/agents/scout.md" with { type: "text" };
 import securityReviewerMd from "../prompts/agents/security-reviewer.md" with { type: "text" };
+import seanceMd from "../prompts/agents/seance.md" with { type: "text" };
 import taskMd from "../prompts/agents/task.md" with { type: "text" };
 import testerMd from "../prompts/agents/tester.md" with { type: "text" };
 import uiUxReviewerMd from "../prompts/agents/ui_ux_reviewer.md" with { type: "text" };
@@ -73,6 +74,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 	{ fileName: "librarian.md", template: librarianMd },
 	{ fileName: "oracle.md", template: oracleMd },
 	{ fileName: "tester.md", template: testerMd },
+	{ fileName: "seance.md", template: seanceMd },
 	{
 		fileName: "task.md",
 		frontmatter: {

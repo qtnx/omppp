@@ -82,6 +82,7 @@ function createHarness(
 		chatContainer: { removeChild: vi.fn() },
 		statusContainer: { clear: vi.fn() },
 		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn(), markActivityEnd: vi.fn() },
+		composer: { setRunActive: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		editor: { getText: () => options.editorText ?? "" },
 		sessionManager: manager,

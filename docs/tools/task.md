@@ -13,6 +13,8 @@
   - `packages/coding-agent/src/task/eval-tools.ts` — expose parent-kernel tools to a child.
   - `packages/coding-agent/src/task/discovery.ts` — discover project/user/plugin/bundled agents.
   - `packages/coding-agent/src/task/agents.ts` — bundled agent definitions and frontmatter parsing.
+  - `packages/coding-agent/src/task/seance.ts` and `seance-policy.ts` — seance source/model resolution, cold-revival contract, and session isolation options.
+  - `packages/coding-agent/src/slash-commands/seance.ts` — `/seance` command and session-picker adapter.
   - `packages/coding-agent/src/task/executor.ts` — create child sessions, run subagents, collect output, hand finished sessions to the lifecycle manager.
   - `packages/coding-agent/src/registry/agent-lifecycle.ts` — idle-TTL parking and revival of finished subagents.
   - `packages/coding-agent/src/registry/agent-registry.ts` — process-global agent directory (`running | idle | parked | aborted`).
@@ -40,7 +42,8 @@ The wire schema is shape-swapped by `task.batch` (default on). One unit of work 
 | `context` | `string` | Yes (batch) | Shared background prepended to every spawn of the call via the subagent system prompt. Rejected when `task.batch` is off. |
 | `tasks` | `array` | Yes (batch) | One task item per subagent. Provided names must be unique within the call (case-insensitive). Rejected when `task.batch` is off. |
 | `name` | `string` | No | Stable agent name — becomes the registry/IRC id. The prompt requests CamelCase, at most 32 characters; the wire schema only requires a string. Defaults to a generated AdjectiveNoun name and is uniquified per session by `AgentOutputManager`. Item field in batch shape, top-level in flat shape. |
-| `agent` | `string` | No | Agent type to run this item (e.g. `scout`, `task`, or `quick_task`). Defaults to the spawn policy's default agent (usually `task`); items in one batch call may use different agent types. Item field in batch shape, top-level in flat shape. |
+| `agent` | `string` | No | Agent type to run this item (e.g. `scout`, `task`, or `quick_task`). Defaults to the spawn policy's default agent (usually `task`); items in one batch call may use different agent types. The bundled `seance` agent is listed only when spawnable and is hidden in plan mode. Item field in batch shape, top-level in flat shape. |
+| `sourceSession` | `string` | Yes for seance | Session id or path to consult; present only when seance is spawnable and omitted in plan mode. Resolved read-only; only its transcript is forked, artifacts are read in place. Ids search the caller's artifact tree first (a direct child transcript wins over same-id descendants; ambiguous matches fail), then the current project. Item field in batch shape, top-level in flat shape. |
 | `task` | `string` | Yes | The work — complete, self-contained instructions. Empty-after-trim is rejected. Item field in batch shape, top-level in flat shape. |
 | `solutionSpace` | `string` | Yes | How open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open (e.g. `one fix: rename, names given`; `deadlock cause open, no repro`). Volume of work does not widen it. Rides the child's first prompt into the `auto` thinking classifier as its sole input — the judge sees this field, not the `task` text; ignored when the child's thinking selector is not `auto` or `effort` overrides it. Blank or missing values fall back to classifying the `task` text: the schema advertises it as required, but the tool's lenient argument validation still spawns a call that omits it. Item field in batch shape, top-level in flat shape. |
 | `model` | `string \| string[]` | No | Explicit non-empty model selector or fallback chain; optional `:reasoning` suffix preserved. Takes precedence over `task.agentModelOverrides` and agent frontmatter. |
@@ -56,16 +59,23 @@ Runtime also accepts the fork's legacy `id`, `description`, `role`, and `assignm
 
 Users can tag models with `^` in the composer. The resulting session-local `m1`, `m2`, … pseudonyms are accepted as `agent` by task, eval `agent()`, and `workpool()`; each uses the bundled task template pinned to the tagged selector. See [user-tagged model agents](../task-agent-discovery.md#user-tagged-model-agents) for persistence, boundaries, and precedence.
 
+Batch calls reject a top-level `agent` rather than silently discarding a specialist selector and spawning the default agent. Put `agent` on each `tasks[]` item when selecting `reviewer`, `scout`, or a custom agent; the agent name is not inferred from the task text.
+
 The stale per-call `schema` field is rejected; callers use `outputSchema` and optional `schemaMode`. Without a caller schema, structured output falls back to the agent definition's `output` frontmatter and then the inherited parent session schema. Ad-hoc workflows can use the eval bridge's `agent(prompt, schema)`.
 
 ## Outputs
 
 The tool returns one text block plus `details: TaskToolDetails`.
 
+When `async.enabled=true`, the Task tool description supplies background-job guidance: results auto-deliver, blocked callers can use `wait` if the tool is active, `read proc://<id>` inspects without consuming delivery, `write proc://<id>/kill` cancels, and `write agent://<id>` coordinates when peer messaging is enabled. Spawn acknowledgments do not repeat these instructions.
+
+Extensions that replace `task` inherit this guidance (the native tool's `delegationGuidance`) in their description for calls delegated through `ctx.invokeTool`, while keeping their own calling instructions and input schema.
+
 Background response (`async.enabled=true`):
-- `content`: `` Spawned agent `<id>` (job `<jobId>`). `` plus auto-delivery guidance: use `wait` only when blocked, `read proc://<id>` for non-consuming inspection, `write proc://<id>/kill` to cancel, and `write agent://<id>` to coordinate when peer messaging is enabled. A batch call instead returns `` Spawned N background agents using <agent types>. ... `` (the deduped per-item agent types, comma-joined) with a per-agent `- `<id>` (job `<jobId>`)` listing.
+
+- `content`: `` Spawned agent `<id>` (job `<jobId>`). `` A batch call instead returns `` Spawned N background agents using <agent types>. ... `` (the deduped per-item agent types, comma-joined) with a per-agent `- `<id>` (job `<jobId>`)` listing.
 - `details`: `{ projectAgentsDir, results, totalDurationMs, progress: [<AgentProgress per spawn>], async: { state, jobId, type: "task" } }`. The call keeps one shared `progress[]` snapshot; `async.jobId` is the first started job and `async.state` aggregates over the async spawns ("running" until every job settles, "failed" if any spawn failed) — jobs that settled before the call returned are already reflected. A mixed call's `results` carries the blocking spawns' inline `SingleResult`s (pure background calls return `results: []`).
-- Live progress streams into the same tool block via `onUpdate(...)`; final results arrive as async-result injections. Non-isolated completions get an idle/follow-up hint when messaging is enabled. Budget-stopped resumable agents get a resume hint; hard aborts point at the transcript. The current `task-follow-up.md` template still labels isolated runs non-resumable, despite the retained-workspace lifecycle described below.
+- Live progress streams into the same tool block via `onUpdate(...)`; final results arrive as async-result injections. Non-isolated completions get an idle/follow-up hint when messaging is enabled. Aborted agents that can be resumed get a resume hint; isolated runs point at the transcript. The current `task-follow-up.md` template still labels isolated runs non-resumable, despite the retained-workspace lifecycle described below.
 
 Settled response (`async.enabled=false`, no job manager, blocking agent, or async job body):
 - `content`: summary rendered from `packages/coding-agent/src/prompts/tools/task-summary.md` with a preview capped at 5000 chars; `agent://<id>` holds the full output. A sync batch concatenates the per-spawn summaries.
@@ -111,12 +121,12 @@ Artifacts and side channels:
 14. The child must finish through the hidden `yield` tool; up to 3 reminder prompts, the last forcing `toolChoice = yield` when supported. `finalizeSubprocessOutput(...)` reconciles raw text, `yield` payloads, structured schemas, `report_finding` data, and abort states.
 - Lifecycle follow-up: idle agents park after `task.agentIdleTtlMs`; retained messaging or Agent Hub revives them; `"Main"` never parks. Prefer messaging existing agents via `write agent://<id>`; `history://<id>` shows prior work. Peer messaging derives from `isIrcEnabled`, requiring someone to message and either spawn capability or subagent status.
 15. End-of-run lifecycle (keep-alive, in the run finalizer):
-    - caller signal, wall-clock timeout, or internal hard abort → registry status `aborted`, session disposed — terminal;
-    - soft-request-budget abort on a kept-alive agent with a reviver → treated as resumable: the agent becomes `idle` and may receive a follow-up/revival;
-    - manager shutdown → dispose/unregister the process-local session without a hard-kill tombstone;
+    - caller signal, user interrupt, wall-clock timeout, or soft-request-budget abort on a kept-alive agent with a reviver → only the run stops: the agent becomes `idle` and may receive a follow-up/revival;
+    - explicit kill (Agent Hub, RPC `cancel_subagent`, collab, vibe), or an aborted agent without a reviver → registry status `aborted`, session disposed, kill tombstone written; a later message or Hub revive reopens the transcript as a fresh `parked` generation, removes the tombstone, and revives it;
+    - manager shutdown → dispose/unregister the process-local session without a kill tombstone;
     - isolated kept-alive run → follows the same idle/parking/revival path while retaining its workspace; explicit release captures final patches/branch state and cleans the isolation handle;
     - everything else (success and failure alike) → status `idle` with the live session attached, and `AgentLifecycleManager.global().adopt(id, { idleTtlMs, revive })` arms the park timer. The reviver reopens the session JSONL.
-16. Lifecycle thereafter: `idle` agents are parked after `task.agentIdleTtlMs` (session disposed; `AgentRef` + session file retained); `write agent://<id>` or the Agent Hub revives them back to `idle`. `"Main"` is never parked.
+16. Lifecycle thereafter: `idle` agents are parked after `task.agentIdleTtlMs` (session disposed; `AgentRef` + session file retained); `write agent://<id>` or the Agent Hub revives parked and killed agents back to `idle`. `"Main"` is never parked.
 
 ## Modes / Variants
 - Execution mode
@@ -126,7 +136,7 @@ Artifacts and side channels:
   - on — `{ context, tasks[] }`: one independent spawn per item, required `context` shared across the call's spawns, with `agent`, `model`, `outputSchema`, `schemaMode`, `isolated`, `max_runtime_seconds`, and `self_review` per item. `effort` appears only when its setting enables it; `isolated` also requires plan mode to be disabled. Lifecycle, revival, and concurrency semantics match N parallel single calls.
   - off — single spawn per call; `tasks`/`context` are rejected and removed from the schema, with the same conditional `effort`/`isolated` fields.
 - Speculative launch (`task.speculativeLaunch`, default on; batch mode only) — while a `{ context, tasks[] }` call streams, the tool's stream session (`src/task/speculative-launch.ts`) starts each item's `SpawnRun` as soon as that item's JSON object closes (`context` must already have closed), and starts the remainder when the call finishes streaming. Dispatch adopts runs whose normalized spawn params still match; an invalid finished call, launched items that differ from the finished call, a blocking hook, or an aborted turn aborts every launched run. Launches need host authorization (`authorizeLaunch`): auto-allowed `task` approval and no extension `tool_call`/`tool_result`/approval lifecycle handlers.
-- Isolation is enabled with `task.isolation.enabled`; `isolation.backend` selects `auto`, `apfs`, `btrfs`, `zfs`, `reflink`, `overlayfs`, `projfs`, `block-clone`, or `rcopy`, and the PAL resolves the actual backend with fallback.
+- Isolation is available when `task.isolation.enabled` is true: each task must set `isolated: true` to use a separate checkout; omitted or `false` tasks share the parent checkout. `isolation.backend` selects `auto`, `apfs`, `btrfs`, `zfs`, `reflink`, `overlayfs`, `projfs`, `block-clone`, or `rcopy`, and the PAL resolves the actual backend with fallback.
 - Isolation merge strategy: `task.isolation.merge` selects patch mode (capture/apply root patches) or branch mode (commit to `omp/task/<id>`, cherry-pick into parent). `task.isolation.apply=false` retains captured changes without applying them; nested repositories get separate patch artifacts.
 - Eval-defined tools: `tools` resolves names across the parent's retained Python/JS kernels. Unknown names, disabled sharing, or the same name defined in both kernels fail preflight; these tools are not available in plan mode.
 - Agent source precedence is first-wins by exact name: project `.omp/agents`; user `.omp/agent/agents`; OMPx extension-package `agents/` roots in CLI → project settings → user settings → installed npm/link plugin order; Claude marketplace plugin agents (project before user); then bundled (`scout`, `reviewer`, `security-reviewer`, `task`, `quick_task`).
@@ -169,7 +179,7 @@ Artifacts and side channels:
   - Allocates session-scoped output ids through `AgentOutputManager` so `agent://` stays unique across invocations.
   - Shares the parent `local://` root and `ArtifactManager` with subagents.
 - Background work / cancellation
-  - `write proc://<jobId>/kill` (no `content` needed) or parent tool-call abort cancels background jobs; parent tool-call abort cancels sync runs through the call signal. A hard-aborted run lands `aborted` and is torn down. An owned running subagent without a job can be cancelled through `proc://<agentId>/kill`, which aborts and releases its session.
+  - `write proc://<jobId>/kill` (no `content` needed) or parent tool-call abort cancels background jobs; parent tool-call abort cancels sync runs through the call signal. A cancelled run stops but its agent stays `idle` and resumable. An owned running subagent without a job can be cancelled through `proc://<agentId>/kill`, which aborts and releases its session.
   - Missing-`yield` recovery sends up to three internal reminder prompts to the child session.
 
 ## Limits & Caps
@@ -211,3 +221,19 @@ Artifacts and side channels:
 - Branch-mode merge temporarily stashes the parent repo before cherry-picking; a stash-pop conflict leaves the landed commits on HEAD and preserves the stash, reported as `stashConflict`. Patch mode uses `repo.canApplyPatch(...)` before applying the root patch; reverse-only applicability is treated as already applied, while failed forward checks retain the artifact for recovery.
 - Nested git repos are diffed independently inside isolated workspaces and merged separately with `applyNestedPatches(...)`.
 - `agent://` ids are name-based (`Task` first, `Task-2`/`Task-3` only when the name repeats, nested like `Parent.Child`) by `AgentOutputManager`; this is what prevents artifact collisions across repeated or nested invocations.
+
+## Seance
+
+Use `agent: "seance"` with required `sourceSession`, `task`, and `solutionSpace`; set `model` to override the source's active-branch model. A source with no restorable saved model requires an explicit selection. Plan mode hides the agent, fields, and consult guidance; explicit seance calls are rejected.
+
+Ownership: `task/seance.ts` (validation, source/model resolution, restore contract) and `task/seance-policy.ts` (isolation options, applied in one spread at the fresh SDK boundary and on cold revival). The fork itself is `SessionManager.forkFrom(..., { seance: true })`, which stamps `seanceSource` in the header.
+
+The source is read without opening a writer. Task-spawned id lookup checks the caller's artifact tree first (a direct child transcript wins over same-id descendants; ambiguous matches fail), then the current project's sessions; it does not search other projects. Explicit paths always work.
+
+Only the transcript is forked; artifacts stay in the source. In the consult, `history://` (index, lookup, completion) scans only the source's artifacts tree, `artifact://` resolves the consult's own artifacts then the source's, and `agent://` reads the source's outputs. New artifact ids start past the source's highest id, so inherited references keep resolving to the source.
+
+The consult excludes additional roots, workspace tree, context files, skills, rules, inherited agents, extensions, MCP, IRC, and LSP. It is limited to `read`, `grep`, and `glob` as enabled; `task.structured` (default off) adds hidden `yield`, otherwise the final assistant message completes the report. Cold revival requires the `seanceSource` header and `read` in the persisted tools, restores the persisted prompt, and keeps only seance tools.
+
+Warm or revived IRC follow-ups preserve this completion contract. A yielded follow-up republishes canonical `agent://<id>` output; successful, nonempty unstructured follow-ups also republish their final report when woken by a direct parent message (not an `agent://all` broadcast) or user-prompted, removing a stale `<id>.json` sidecar; peer-only unstructured replies and cancelled or empty follow-ups do not publish.
+
+Inherited source charges are zeroed; new consultation turns use existing task/Agent Hub usage tracking.

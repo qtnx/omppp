@@ -234,7 +234,7 @@ export class AgentTranscriptViewer<TRecord extends AgentRecordLike = AgentRecord
 		this.#pollTimer.unref?.();
 	}
 
-	/** Advisor and aborted-agent transcripts are read-only. */
+	/** Advisor transcripts are read-only; every other agent revives on send. */
 	get #sendable(): boolean {
 		const ref = this.#deps.registry.get(this.#deps.agentId);
 		if (!ref || ref.kind === "advisor" || ref.status === "aborted") return false;

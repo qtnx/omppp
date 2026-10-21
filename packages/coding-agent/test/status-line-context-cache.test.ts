@@ -89,7 +89,7 @@ function makeSession(opts: {
 	const model = {
 		id: opts.modelId ?? "test-model",
 		contextWindow,
-		...(opts.modelInput ? { input: opts.modelInput } : {}),
+		input: opts.modelInput ?? ["text"],
 	};
 	let usage: ContextUsage | undefined =
 		"usage" in opts

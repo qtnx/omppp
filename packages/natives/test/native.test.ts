@@ -477,6 +477,31 @@ try {
 			}
 		});
 
+		it("caps matches at maxCountPerFile when the path is a single file", async () => {
+			// Regression: the cap reached only the directory walks, so naming one
+			// explicit file dropped it and a hot file returned the whole global
+			// budget.
+			const scopedDir = await fs.mkdtemp(path.join(os.tmpdir(), "natives-grep-cap-"));
+			try {
+				const hot = path.join(scopedDir, "hot.txt");
+				await fs.writeFile(hot, Array.from({ length: 50 }, (_, i) => `needle ${i}`).join("\n"));
+
+				const result = await grep({
+					pattern: "needle",
+					path: hot,
+					mode: GrepOutputMode.Content,
+					maxCount: 40,
+					maxCountPerFile: 5,
+				});
+
+				expect(result.matches).toHaveLength(5);
+				expect(result.limitReached).toBe(true);
+				expect(result.filesWithMatches).toBe(1);
+			} finally {
+				await fs.rm(scopedDir, { recursive: true, force: true });
+			}
+		});
+
 		it("streams matches through onMatches in bounded batches instead of returning them", async () => {
 			const scopedDir = await fs.mkdtemp(path.join(os.tmpdir(), "natives-grep-stream-"));
 			try {
@@ -1099,6 +1124,27 @@ try {
 
 			expect(cleaned).toContain("Main content");
 			// Navigation/footer may or may not be removed depending on preprocessing
+		});
+
+		it("keeps collapsed sections only with hiddenContent reachable, never template content", async () => {
+			const html = `<main>
+<h2>Product information</h2>
+<button aria-expanded="false">Item details</button>
+<div style="display:none"><p>Country of Origin: India</p></div>
+<template><p>Template-only claim</p></template>
+</main>`;
+
+			const dropped = await htmlToMarkdown(html);
+			const reachable = await htmlToMarkdown(html, { hiddenContent: "reachable" });
+
+			expect(dropped).toContain("Product information");
+			expect(dropped).not.toContain("Country of Origin: India");
+			expect(reachable).toContain("Country of Origin: India");
+			expect(reachable).not.toContain("Template-only claim");
+		});
+
+		it("rejects an unknown hiddenContent value", async () => {
+			expect(() => htmlToMarkdown("<p>text</p>", { hiddenContent: "visible" })).toThrow(/hiddenContent/);
 		});
 
 		it("should reject depth-truncated HTML", async () => {

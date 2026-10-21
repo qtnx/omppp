@@ -4,7 +4,7 @@
 
 use std::{
 	ffi::{OsStr, OsString},
-	io::{self, Write},
+	io::Write,
 	path::Path,
 };
 
@@ -314,7 +314,7 @@ fn process_is_gone(pid: i32) -> bool {
 	// SAFETY: signal 0 only probes for the process; nothing is delivered.
 	pid > 0
 		&& unsafe { libc::kill(pid, 0) } < 0
-		&& io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+		&& std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
 #[cfg(not(unix))]

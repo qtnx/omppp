@@ -2057,16 +2057,20 @@ export class MCPManager {
 	}
 
 	/**
-	 * Get server instructions allowed by config (for prompt injection and rebuild signatures).
+	 * Get server instructions allowed by config (for prompt injection and rebuild signatures),
+	 * keyed by server name in sorted order. `#connections` follows connection order, which
+	 * shifts with late connects and reconnects; sorting keeps the rendered
+	 * "## MCP Server Instructions" section byte-stable so the provider prompt cache survives.
 	 */
 	getServerInstructions(): Map<string, string> {
-		const instructions = new Map<string, string>();
+		const instructions: [string, string][] = [];
 		for (const [name, connection] of this.#connections) {
 			if (connection.config.instructions !== false && connection.instructions) {
-				instructions.set(name, connection.instructions);
+				instructions.push([name, connection.instructions]);
 			}
 		}
-		return instructions;
+		instructions.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+		return new Map(instructions);
 	}
 
 	/**

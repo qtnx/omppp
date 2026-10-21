@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { KEYBINDINGS } from "@oh-my-pi/pi-tui/app-keybindings";
+import { ApprovalDialogComponent } from "@oh-my-pi/pi-tui/overlays/approval-dialog";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-tui/overlays/tree-selector";
@@ -121,6 +122,7 @@ async function createContext() {
 		queuedMessageCount: 0,
 		abort,
 		retry,
+		prewarmModelConnection: vi.fn(),
 	};
 	const updatePendingMessagesDisplay = vi.fn();
 	const handleBtwBranchKey = vi.fn(async () => true);
@@ -231,7 +233,7 @@ async function createContext() {
 		chatContainer: { children: [], setToolActivityVisible: vi.fn() },
 		handleHotkeysCommand: vi.fn(),
 		handlePlanModeCommand: vi.fn(),
-		handleClearCommand: vi.fn(),
+		handleNewCommand: vi.fn(),
 		showTreeSelector: vi.fn(),
 		showUserMessageSelector: vi.fn(),
 		showSessionSelector: vi.fn(),
@@ -1209,6 +1211,25 @@ describe("InputController global tool-output expand (ctrl+o)", () => {
 		setFocused({ handleInput() {} });
 		expect(ctx.toolOutputExpanded).toBe(false);
 
+		expect(dispatchInput(listeners, CTRL_O)).toEqual({ consume: true });
+		expect(ctx.toolOutputExpanded).toBe(true);
+	});
+
+	it("lets a focused approval prompt with summarized details take ctrl+o before the transcript", async () => {
+		const { ctx, listeners, setFocused } = await setup();
+		const callbacks = { onApprove: vi.fn(), onDeny: vi.fn() };
+		const summarized = new ApprovalDialogComponent("Allow tool: bash\nCommand: rm -rf build …", callbacks, {
+			fullPrompt: "Allow tool: bash\nCommand: rm -rf build\nrm -rf dist",
+		});
+		setFocused(summarized);
+		expect(dispatchInput(listeners, CTRL_O)).toEqual({ consume: true });
+		expect(ctx.toolOutputExpanded).toBe(false);
+		expect(summarized.render(80).join("\n")).toContain("rm -rf dist");
+		// The image-paste chord is left to the dialog, which hands it to the composer's tracked paste.
+		expect(dispatchInput(listeners, "\x16")).toBeUndefined();
+
+		// Without a full prompt to show, the key keeps toggling tool previews (#7837).
+		setFocused(new ApprovalDialogComponent("Allow tool: bash\nCommand: ls", callbacks));
 		expect(dispatchInput(listeners, CTRL_O)).toEqual({ consume: true });
 		expect(ctx.toolOutputExpanded).toBe(true);
 	});
