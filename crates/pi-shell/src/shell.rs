@@ -7652,7 +7652,7 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 			.expect("grace observation channel should not drop");
 		assert_eq!(
 			grace,
-			Duration::from_millis(500),
+			Duration::from_millis(1250),
 			"run_shell_command_once must wait CANCEL_READER_GRACE before stopping the reader"
 		);
 
