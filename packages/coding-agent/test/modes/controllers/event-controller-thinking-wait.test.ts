@@ -20,6 +20,7 @@ function createContext(overrides?: { thinkingLevel?: ThinkingLevel; isStreaming?
 		isInitialized: true,
 		settings: Settings.isolated({}),
 		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn(), markActivityEnd: vi.fn() },
+		composer: { setRunActive: vi.fn() },
 		statusContainer: { clear: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		pendingTools: new Map<string, unknown>(),

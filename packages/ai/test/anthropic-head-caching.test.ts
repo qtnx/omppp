@@ -18,6 +18,7 @@ import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { AssistantMessage, CacheRetention, Context, Message, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
 import { markPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { requestBodyText } from "@oh-my-pi/pi-ai/utils/request-body";
 
 const MODEL_SPEC: ModelSpec<"anthropic-messages"> = {
 	id: "claude-sonnet-4-5",
@@ -59,7 +60,7 @@ async function captureWireBody(
 ): Promise<MessageCreateParams> {
 	let body: MessageCreateParams | undefined;
 	const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
-		body = JSON.parse(String(init?.body ?? "{}")) as MessageCreateParams;
+		body = JSON.parse(requestBodyText(init) ?? "{}") as MessageCreateParams;
 		return new Response(
 			JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
 			{ status: 400, headers: { "Content-Type": "application/json" } },

@@ -107,6 +107,7 @@ function makeTurnEndContext(options: { lastAssistantMessage?: AssistantMessage }
 		chatContainer: { removeChild: () => {} },
 		statusContainer: { clear: () => {}, disposeChildren: () => {}, addChild: () => {} },
 		statusLine: { invalidate: () => {}, markActivityEnd: () => {}, markActivityStart: () => {} },
+		composer: { setRunActive: () => {} },
 		editor: { getText: () => "" },
 		sessionManager: { getSessionName: () => "test-session" },
 		clearPinnedError: () => {},

@@ -18,7 +18,7 @@ import { bindEffects } from "@oh-my-pi/pi-coding-agent/config/registry";
 
 import * as discovery from "@oh-my-pi/pi-coding-agent/discovery";
 import { editVariantForModel } from "@oh-my-pi/pi-coding-agent/utils/edit-mode";
-import MODEL_PRIO from "../src/priority.json" with { type: "json" };
+import { roleDefaultModels } from "@oh-my-pi/pi-catalog/compat/behavior";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { getAgentDbPath, getProjectAgentDir, logger, TempDir } from "@oh-my-pi/pi-utils";
 import * as fileLock from "@oh-my-pi/pi-utils/file-lock";
@@ -1891,18 +1891,8 @@ describe("Settings", () => {
 		const writeLegacySettings = (settings: Record<string, unknown>) =>
 			writeSettings({ setupVersion: SETUP_CONFIG_VERSION, ...settings });
 
-		const webDefaultCandidates = MODEL_PRIO.web.flatMap(selector => {
-			if (selector === "google/gemini-2.5-flash") {
-				return [
-					"google-gemini-cli/gemini-2.5-flash",
-					"google-antigravity/gemini-2.5-flash",
-					"google/gemini-2.5-flash",
-				];
-			}
-			if (selector === "google-antigravity/gemini-2.5-flash") return [];
-			return [selector];
-		});
-		const webExaCandidates = ["web/exa", ...webDefaultCandidates.filter(selector => selector !== "web/exa")];
+		const MODEL_PRIO = roleDefaultModels();
+		const webExaCandidates = ["web/exa", ...MODEL_PRIO.web.filter(selector => selector !== "web/exa")];
 		const webOrderedHead = [
 			"google-gemini-cli/gemini-2.5-flash",
 			"google-antigravity/gemini-2.5-flash",
@@ -1978,14 +1968,14 @@ describe("Settings", () => {
 				"auto-thinking model",
 				"providers.autoThinkingModel",
 				"qwen3-1.7b",
-				{ judge: "typesafe/jev-latest" },
+				{ judge: "typesafe/jev-1.14.0" },
 				{ judge: ["local/qwen3-1.7b", "@tiny", "@smol", "@default"] },
 			],
 			[
 				"unexpected-stop model",
 				"providers.unexpectedStopModel",
 				"gemma-3-1b",
-				{ judge: "typesafe/jev-latest" },
+				{ judge: "typesafe/jev-1.14.0" },
 				{ judge: ["local/gemma-3-1b", "@tiny", "@smol", "@default"] },
 			],
 			["tiny model", "providers.tinyModel", "lfm2.5-230m", { tiny: "local/lfm2.5-230m" }, {}],

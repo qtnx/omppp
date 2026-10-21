@@ -2,20 +2,17 @@
 {{#if asyncEnabled}}
 
 # Async Job Contract
-- Results auto-deliver. Use `wait` only when completely blocked; `read proc://<jobId>` inspects without consuming and `write proc://<jobId>/kill` cancels. NEVER busy-poll.
-- Job IDs are process-local; after expiry, use the agent ID with `write agent://<id>` or `history://<id>`.
-{{#if structured}}- With `outputSchema`, parsed payloads (even invalid ones) are served at `agent://<id>`; fields via `agent://<id>/<field>` and nested paths such as `agent://<id>/reports/0/data`. Invalid payloads also preview inline.
-{{/if}}- `completed` means successful yield/job exit, not artifact acceptance. Verify claimed changes.
+{{asyncGuidance}}
 {{/if}}
-{{#if structured}}`outputSchema` parsed payload, even when invalid, is available at `agent://<id>`; extract fields with `/<field>` and nested paths such as `/reports/0/data`. Invalid payloads also appear inline for diagnosis.
-{{/if}}`name` is stable CamelCase ≤32 (auto-generated when omitted);{{#if structured}} `outputSchema` overrides agent/session schemas and `schemaMode` is `permissive` by default, `strict` to fail validation.{{/if}}
+{{#ifAny structured hasStructuredAgents}}{{#if structured}}`outputSchema`{{else}}STRUCTURED agents'{{/if}} parsed payload, even invalid: `agent://<id>` (field `/<field>`, nested `/reports/0/data`); invalid preview inline.
+{{/ifAny}}`name` is stable CamelCase ≤32 (auto-generated when omitted);{{#if structured}} `outputSchema` overrides agent/session schemas and `schemaMode` is `permissive` by default, `strict` to fail validation.{{/if}}
 `solutionSpace`: describe whether fix/design is given or causes/designs remain open; volume does not widen it. Examples: `one fix: rename, names given`; `single-flight cache load; races easy to miss`; `several retry API shapes; error classes to choose`; `deadlock cause open, no repro`.
 {{#if evalToolsEnabled}}`tools`: eval-defined tools exposed to child.{{/if}}{{#if effortEnabled}} `effort`: `"lo"`|`"med"`|`"hi"` follows how open-ended problem is.{{/if}}
 {{#if isolationEnabled}}`isolated`: isolated worktree; changes {{#if applyIsolatedChanges}}apply to parent on success{{else}}are retained without applying{{/if}}.{{/if}}
 {{#if structured}}`schemaMode`: default `permissive` warns after retries; `strict` fails.{{/if}}
 
 # Strategy
-- Dispatch every independent ready item concurrently{{#if batchEnabled}} in one `tasks[]`{{else}} as parallel calls{{/if}}; sequence only when B strictly needs A's output{{#if ircEnabled}} (small missing piece → B asks A via `write agent://<id>`){{/if}}. Give overlapping files one integration owner; agents coordinate via `write agent://<id>` when needed. NEVER shrink or serialize a batch just to avoid overlap.{{#when MAX_CONCURRENCY ">" 0}} Cap: {{pluralize MAX_CONCURRENCY "subagent" "subagents"}} at once; larger batches queue.{{/when}}
+- Dispatch every independent ready item concurrently{{#if batchEnabled}} in one `tasks[]`{{else}} as parallel calls{{/if}}; sequence only when B strictly needs A's output{{#if ircEnabled}} (small missing piece → B asks A via `write agent://<id>`){{/if}}. Give overlapping files one integration owner;{{#if ircEnabled}} agents coordinate via `write agent://<id>` when needed.{{/if}} NEVER shrink or serialize a batch just to avoid overlap.{{#when MAX_CONCURRENCY ">" 0}} Cap: {{pluralize MAX_CONCURRENCY "subagent" "subagents"}} at once; larger batches queue.{{/when}}
 - Pick the `agent` first: read-only research → {{#if scoutAvailable}}`scout` (fast) or `explore` (broader){{else}}an available read-only agent{{/if}}; a specialist for its domain; {{#if defaultAgentIsGeneric}}the general-purpose worker{{else}}the spawn-policy default{{/if}} only when nothing fits. Give each item a specific `role`; never generic workers.
 - Brief so the owner never re-discovers what YOU already know: the exact `file:line`/`file:symbol` anchors, the contract, the pattern to mirror, and the one decisive snippet where the change hinges. Do NOT paste the whole edit — if you already hold every line of the change, make the edit yourself; delegation buys concurrency, not typing. The owner reads ONLY the anchors and owned files you name; anything it still needs it asks YOU for over IPC — it never searches the repo. A child question is a brief gap: answer it within the turn, then carry the fact into the next brief. Cross-task contracts go in {{#if batchEnabled}}batch `context`{{else}}the task{{/if}} before dispatch. Every task skips formatters, linters, and project-wide suites — you run those once at the end.
 - Ten-minute slices: size every `task` so its owner finishes inside 10 min — open the named anchors, ask you for whatever is missing, edit, then one Acceptance run. Too big → two briefs (split by file ownership or contract side; lock the shared contract inline; same wave), never a longer runtime. A brief whose anchors you cannot name is not ready to dispatch — do that one lookup yourself and name them.
@@ -24,7 +21,7 @@
 {{#if ircEnabled}}- Parent-to-subagent peer messages arrive as steering; blocked children in `wait` need no separate poll. Children ask you (not the repo) for missing facts: answer with path, symbol, contract, or decision immediately.{{/if}}
 
 # Inputs
-- `agent` (optional): base agent type (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`plan`, `reviewer`). {{#if defaultAgentIsGeneric}}Defaults to the general-purpose worker (`{{defaultAgent}}`) — omit rather than pass that name; only omit after checking the list below.{{else}}The spawn-policy default (`{{defaultAgent}}`) applies when omitted. Omit `agent` when the spawn-policy default is the best fit.{{/if}}{{#if allowedAgentsText}} Spawn policy allows: {{allowedAgentsText}}.{{/if}}
+- `agent` (optional): base agent type (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`plan`, `reviewer`). {{#if defaultAgentIsGeneric}}Defaults to the general-purpose worker (`{{defaultAgent}}`) — omit rather than pass that name; only omit after checking the list below.{{else}}The spawn-policy default (`{{defaultAgent}}`) applies when omitted. Omit `agent` when the spawn-policy default is the best fit.{{/if}}{{#if batchEnabled}} Specialist `agent` selectors belong inside each `tasks[]` item; NEVER put `agent` at the top level.{{/if}}{{#if allowedAgentsText}} Spawn policy allows: {{allowedAgentsText}}.{{/if}}
 {{#if batchEnabled}}
 - `context` (REQUIRED, session-specific): shared Goal / Constraints / Contract for whole batch, stated once — outcome and why, repo/worktree/cwd/current state, exact repo-provided bootstrap commands (never invented), repo rules and non-goals, shared-file ownership, parent-only gates, LOCKED literal signatures/schemas (or exact readable `file:symbol`), ownership of each contract side, real runtime ordering, OPEN local choices.
 - `tasks[]`: `name` (stable CamelCase ≤32, auto if omitted) · `agent` (as above) · `task` (assignment-fmt below; one-liners or missing Acceptance/Done are PROHIBITED) · `model` (explicit selector or fallback chain; `:reasoning` suffix kept; overrides agent model){{#if evalToolsEnabled}} · `tools` (eval-defined tools exposed to subagent){{/if}}{{#if effortEnabled}} · `effort` `"lo"|"med"|"hi"`{{/if}}{{#if structured}} · `outputSchema` (JSON Schema; overrides agent/session schemas) · `schemaMode` `"permissive"` (default) | `"strict"`{{/if}} · `max_runtime_seconds` (MUST set: `quick_task` 300, `task` 600, `explore`{{#if scoutAvailable}}/`scout`{{/if}} 600; a hard ceiling the owner is told about; `0` = unlimited only for a user-requested long run){{#if isolationEnabled}} · `isolated` ({{#if applyIsolatedChanges}}own worktree, successful changes applied to parent checkout{{else}}own worktree, changes kept as patch/branch artifacts{{/if}}){{/if}}. Legacy aliases `assignment`, `id`, `description`, `role` still accepted.
@@ -33,6 +30,7 @@
 {{/if}}
 Subagents start blank — no conversation history. Pass large payloads via `local://<path>` URIs, never inline.
 `solutionSpace`: Describe how open-ended the child's problem is, not volume or sibling coordination; sole classifier input when thinking selector is `auto`, otherwise ignored. (`one fix: rename, names given`; `deadlock cause open, no repro`).
+{{#if seanceGuidance}}{{seanceGuidance}}{{/if}}
 
 # assignment-fmt
 <assignment-fmt>
@@ -59,7 +57,7 @@ Pick the most specific agent. Omit `agent` only when the spawn-policy default is
 Agents named `m<N>` are models the user tagged in this conversation (`<model agent="m<N>" name="…"/>` in their message): the general-purpose task agent pinned to that model. Spawn one only when the user's request names it; never substitute it for a specialist on your own.
 {{/if}}
 {{#list agents join="\n"}}
-### {{name}}{{#if readOnly}} (READ-ONLY){{/if}}{{#if blocking}} (BLOCKING: inline result){{/if}}
+### {{name}}{{#if readOnly}} (READ-ONLY){{/if}}{{#if blocking}} (BLOCKING: inline result){{/if}}{{#if structured}} (STRUCTURED; schema result){{/if}}
 {{description}}
 {{#if readOnly}}Use ONLY for investigation; do edits yourself or assign to a writing agent.{{/if}}
 {{/list}}

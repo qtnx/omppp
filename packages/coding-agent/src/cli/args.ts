@@ -6,6 +6,7 @@ import { $env, APP_DISPLAY_NAME, APP_NAME, APP_TAGLINE, CONFIG_DIR_NAME, logger 
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { DEFAULT_LINUX_PODMAN_IMAGE } from "../config/sandbox-defaults";
 import type { ServiceTierOpenAISettingValue } from "../config/service-tier";
+import type { ApprovalMode } from "../tools/approval";
 import { CLI_THINKING_LEVELS, type ConfiguredThinkingLevel, parseCliThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { BUILTIN_TOOL_NAMES, normalizeToolNames } from "../tools/builtin-names";
 import {
@@ -94,7 +95,7 @@ export interface Args {
 	/** RPC modes only: run extensions without a UI; `rpc-ui` tool UI remains enabled. */
 	noUi?: boolean;
 	autoApprove?: boolean;
-	approvalMode?: "always-ask" | "write" | "yolo";
+	approvalMode?: ApprovalMode;
 	be?: string;
 	fe?: string;
 	worktree?: string | true;

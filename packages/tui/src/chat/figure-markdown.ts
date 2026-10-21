@@ -1,6 +1,6 @@
 import type { Tokens } from "@oh-my-pi/pi-utils/marked";
 import type { ImageBudget } from "../components/image";
-import type { Markdown } from "../components/markdown";
+import { type Markdown, streamingMarkdownSource } from "../components/markdown";
 import { Spacer } from "../components/spacer";
 import { Container } from "../tui";
 import { SvgFigure, svgFigureRendering } from "./svg-figure";
@@ -68,11 +68,18 @@ export class FigureMarkdown extends Container {
 	/**
 	 * The trimmed prose ahead of the first figure, or "" when the block opens
 	 * with one. These are the only rows plain Markdown reproduces byte for
-	 * byte, so they are all a transcript may publish ahead of the figure.
+	 * byte, so they are all a transcript may publish ahead of the figure. While
+	 * that prose is still the streaming tail (no figure follows it yet), only
+	 * its settled prefix ({@link Markdown.getLastRenderStableText}) qualifies:
+	 * the rest is still being written. Both forms are in
+	 * {@link streamingMarkdownSource} form, so the settled prefix stays a byte
+	 * prefix of the whole run once a figure splits it off.
 	 */
 	get leadingProse(): string {
 		const first = this.#parts[0];
-		return first?.kind === "markdown" ? first.text : "";
+		if (first?.kind !== "markdown") return "";
+		if (this.#transient && this.#parts.length === 1) return first.md.getLastRenderStableText().trim();
+		return streamingMarkdownSource(first.text);
 	}
 
 	/** Whether a figure's final source still waits for its raster, or a chart for its pick or raster. */

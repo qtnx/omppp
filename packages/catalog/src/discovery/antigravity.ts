@@ -29,6 +29,13 @@ export interface AntigravityDiscoveryApiModel {
 	apiProvider?: string;
 	modelProvider?: string;
 	isInternal?: boolean;
+	/**
+	 * Set for roster rows the backend lists but refuses to serve on this
+	 * account (e.g. `gemini-4-argon-disabled`, `tagTitle: "Unavailable"`,
+	 * `model: MODEL_PLACEHOLDER_M421`); a request against such an id answers
+	 * `Cloud Code Assist API error (404): Requested entity was not found.`
+	 */
+	disabled?: boolean;
 	supportsVideo?: boolean;
 }
 
@@ -72,6 +79,7 @@ const AntigravityDiscoveryApiModelSchema = type({
 	"apiProvider?": type("unknown").pipe(value => (typeof value === "string" ? value : undefined)),
 	"modelProvider?": type("unknown").pipe(value => (typeof value === "string" ? value : undefined)),
 	"isInternal?": type("unknown").pipe(value => (typeof value === "boolean" ? value : undefined)),
+	"disabled?": type("unknown").pipe(value => (typeof value === "boolean" ? value : undefined)),
 	"supportsVideo?": type("unknown").pipe(value => (typeof value === "boolean" ? value : undefined)),
 });
 
@@ -186,6 +194,11 @@ export async function fetchAntigravityDiscoveryModels(
 				continue;
 			}
 			if (model.isInternal === true) {
+				continue;
+			}
+			// Rows the backend marks unavailable are listed but 404 on inference;
+			// discovery is authoritative, so drop them instead of offering a dead id.
+			if (model.disabled === true) {
 				continue;
 			}
 

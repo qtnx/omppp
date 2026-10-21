@@ -165,6 +165,40 @@ describe("Editor async autocomplete scheduling", () => {
 		expect(submitted).toBe("@widgetx");
 	});
 
+	it("accepts the selected stale @ completion for a quoted path containing spaces", async () => {
+		const base = new CombinedAutocompleteProvider();
+		const refresh = Promise.withResolvers<{ items: AutocompleteItem[]; prefix: string } | null>();
+		let requests = 0;
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider({
+			getSuggestions(_lines, _cursorLine, _cursorCol, signal) {
+				requests += 1;
+				if (requests === 1) {
+					return Promise.resolve({
+						items: [
+							{ label: "obsidian calendar/", value: '@"~/0. before/obsidian calendar/' },
+							{ label: "obsidian/", value: '@"~/0. before/obsidian/' },
+						],
+						prefix: "@",
+					});
+				}
+				signal?.addEventListener("abort", () => refresh.resolve(null));
+				return refresh.promise;
+			},
+			applyCompletion: base.applyCompletion.bind(base),
+		});
+
+		const shown = untilAutocompleteShown(editor);
+		editor.handleInput("@");
+		await shown;
+		editor.handleInput('"~/0. before/ob');
+		editor.handleInput("\x1b[B");
+		editor.handleInput("\t");
+
+		expect(editor.getText()).toBe('@"~/0. before/obsidian/');
+		expect(editor.isShowingAutocomplete()).toBeFalse();
+	});
+
 	it("drops a hidden @ popup on Escape so its pending refresh never appears", async () => {
 		const editor = new Editor(defaultEditorTheme);
 		const refresh = Promise.withResolvers<{ items: AutocompleteItem[]; prefix: string } | null>();
@@ -576,6 +610,84 @@ describe("Editor slash autocomplete acceptance", () => {
 		editor.handleInput("\r");
 
 		expect(submitted).toBe("/xyz");
+	});
+
+	describe("a command listed only because its description matches the typed text", () => {
+		// `not-a-command` is a subsequence of this description, never of the name `loop` (#16265).
+		const commands = [
+			{ name: "loop", description: "Toggle loop mode, not a re-run: gate a re-check on command status" },
+		];
+		const loopEditor = (): { editor: Editor; submitted: () => string } => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.setAutocompleteProvider(new CombinedAutocompleteProvider(commands, "/tmp"));
+			let submitted = "";
+			editor.onSubmit = text => {
+				submitted = text;
+			};
+			return { editor, submitted: () => submitted };
+		};
+		const typed = async (): Promise<{ editor: Editor; submitted: () => string }> => {
+			const typing = loopEditor();
+			typing.editor.handleInput("/");
+			await untilAutocompleteShown(typing.editor);
+			for (const char of "not-a-command") typing.editor.handleInput(char);
+			await untilAutocompleteShown(typing.editor);
+			expect(typing.editor.render(80).join("\n")).toContain("loop");
+			return typing;
+		};
+
+		it("submits the typed command on Enter instead of running the listed one", async () => {
+			const { editor, submitted } = await typed();
+			editor.handleInput("\r");
+			expect(submitted()).toBe("/not-a-command");
+		});
+
+		it("runs the listed command once the user moves the selection onto it", async () => {
+			const { editor, submitted } = await typed();
+			editor.handleInput("\x1b[B");
+			editor.handleInput("\r");
+			expect(submitted()).toBe("/loop");
+		});
+
+		it("submits the typed command on an Enter that outruns the popup", () => {
+			const { editor, submitted } = loopEditor();
+			editor.setText("/not-a-command");
+			editor.handleInput("\r");
+			expect(submitted()).toBe("/not-a-command");
+		});
+	});
+
+	it("applies a matching alias on Enter even when the description ranks higher", () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([{ name: "x", aliases: ["abcd"], description: "ace" }], "/tmp"),
+		);
+		let submitted = "";
+		editor.onSubmit = text => {
+			submitted = text;
+		};
+
+		editor.setText("/ac");
+		editor.handleInput("\r");
+
+		expect(submitted).toBe("/x");
+	});
+
+	it("applies a matching alias from the slash popup on Enter", async () => {
+		const editor = new Editor(defaultEditorTheme);
+		editor.setAutocompleteProvider(
+			new CombinedAutocompleteProvider([{ name: "x", aliases: ["abcd"], description: "ace" }], "/tmp"),
+		);
+		let submitted = "";
+		editor.onSubmit = text => {
+			submitted = text;
+		};
+
+		editor.handleInput("/ac");
+		await untilAutocompleteShown(editor);
+		editor.handleInput("\r");
+
+		expect(submitted).toBe("/x");
 	});
 
 	it("never completes Enter to the bare skill namespace row", () => {

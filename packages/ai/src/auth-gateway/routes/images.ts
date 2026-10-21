@@ -2,11 +2,13 @@ import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
 import { classifyGatewayError } from "../../error/gateway";
 import { generateImage } from "../../images";
+import { validateImageInput } from "../../images/shared";
 import * as imagesServer from "../../providers/images-server";
 import { deterministicUuid } from "../../utils/deterministic-id";
 import {
 	type AuthGatewayRouteOptions,
 	buildGatewayApiKeyResolver,
+	gatewayRequestLogFields,
 	mirrorRequestAbort,
 	recordGatewayUsage,
 	resolveGatewayApiKeyWithOrigin,
@@ -49,6 +51,7 @@ async function handleImages(
 	let parsed: imagesServer.ImagesParsedRequest;
 	try {
 		parsed = await imagesServer.parseRequest(body, kind);
+		for (const image of parsed.request.inputImages ?? []) validateImageInput(image);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return imagesServer.formatError(400, "invalid_request_error", message);
@@ -75,13 +78,7 @@ async function handleImages(
 
 	const client = resolveClientIdentity(req.headers);
 	const sessionId = deterministicUuid(`images\u0000${model.provider}/${model.id}`);
-	const apiKeyResolution = await resolveGatewayApiKeyWithOrigin(
-		bootOpts.storage,
-		model,
-		sessionId,
-		controller.signal,
-		peer,
-	);
+	const apiKeyResolution = await resolveGatewayApiKeyWithOrigin(bootOpts, model, sessionId, controller.signal, peer);
 	if (controller.signal.aborted) return aborted();
 	if ("status" in apiKeyResolution) {
 		return imagesServer.formatError(apiKeyResolution.status, apiKeyResolution.type, apiKeyResolution.message);
@@ -95,12 +92,13 @@ async function handleImages(
 		resolvedModel: model.id,
 		stream: false,
 		peer,
+		...gatewayRequestLogFields(bootOpts, apiKeyResolution),
 	});
 
 	try {
 		const result = await generateImage(model, parsed.request, {
 			apiKey: buildGatewayApiKeyResolver(
-				bootOpts.storage,
+				bootOpts,
 				model,
 				sessionId,
 				apiKeyResolution,

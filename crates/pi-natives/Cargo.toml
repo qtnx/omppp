@@ -37,6 +37,7 @@ futures.workspace = true
 grep-pcre2.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
+html-escape.workspace = true
 html-to-markdown-rs.workspace = true
 icy_sixel.workspace = true
 ignore.workspace = true

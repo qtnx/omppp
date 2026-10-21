@@ -709,7 +709,7 @@ export interface UsageWindowSeries {
 	accountKey: string;
 	/** Email/account id when known, else the stable account key. */
 	accountLabel: string;
-	/** Groups the same limit window across accounts (the provider limit id). */
+	/** Groups the same limit window across accounts: the limit id, or quota family + window for positional Codex slots. */
 	windowKey: string;
 	/** Human label of the limit (distinguishes same-duration windows). */
 	windowLabel: string;
@@ -723,7 +723,7 @@ export interface UsageWindowSeries {
  */
 export interface ProviderWindowInsight {
 	provider: string;
-	/** Groups the same limit window across accounts (the provider limit id). */
+	/** Groups the same limit window across accounts: the limit id, or quota family + window for positional Codex slots. */
 	windowKey: string;
 	/** Human label of the limit (distinguishes same-duration windows). */
 	windowLabel: string;

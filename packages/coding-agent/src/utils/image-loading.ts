@@ -177,6 +177,8 @@ interface LoadInMemoryImageInputOptions {
 	bytes?: Uint8Array;
 	resolvedPath: string;
 	textNotePrefix: string;
+	/** Original file type when the display image was rasterized before loading. */
+	sourceMimeType?: string;
 	autoResize: boolean;
 	maxBytes: number;
 	excludeWebP: boolean | undefined;
@@ -219,7 +221,11 @@ async function loadInMemoryImageInput(options: LoadInMemoryImageInputOptions): P
 		}
 	}
 
-	let textNote = `${options.textNotePrefix} [${outputMimeType}]`;
+	const sourceMimeType = options.sourceMimeType ?? options.image.mimeType;
+	let textNote = `${options.textNotePrefix} [${sourceMimeType}]`;
+	if (outputMimeType !== sourceMimeType) {
+		textNote += ` (displayed as ${outputMimeType})`;
+	}
 	if (dimensionNote) {
 		textNote += `\n${dimensionNote}`;
 	}
@@ -386,6 +392,7 @@ export async function loadSvgImageInput(options: LoadImageInputOptions): Promise
 		bytes: png,
 		resolvedPath,
 		textNotePrefix: "Read SVG file",
+		sourceMimeType: "image/svg+xml",
 		autoResize: options.autoResize,
 		maxBytes,
 		excludeWebP: options.excludeWebP,
@@ -396,12 +403,13 @@ export async function loadSvgImageInput(options: LoadImageInputOptions): Promise
 export async function loadImageAttachmentInput(
 	options: LoadImageAttachmentInputOptions,
 ): Promise<LoadedImageInput | null> {
-	if (!SUPPORTED_INPUT_IMAGE_MIME_TYPES.has(options.image.mimeType)) {
+	const image = { ...options.image, mimeType: options.image.mimeType.toLowerCase() };
+	if (!SUPPORTED_INPUT_IMAGE_MIME_TYPES.has(image.mimeType)) {
 		return null;
 	}
 
 	return loadInMemoryImageInput({
-		image: options.image,
+		image,
 		resolvedPath: options.uri,
 		textNotePrefix: `Read image attachment ${options.label}`,
 		autoResize: options.autoResize,

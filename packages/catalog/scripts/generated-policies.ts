@@ -267,21 +267,4 @@ function applyGeneratedModelPolicy(model: ModelSpec<Api>): void {
 		const reference = seedModels("alibaba-token-plan").find(candidate => candidate.id === model.id);
 		if (reference) model.name = reference.name;
 	}
-
-	// Kimi Code K3 uses the provider-native mandatory-thinking transport. The
-	// credential-free models.dev fallback currently labels it as z.ai, while
-	// live discovery maps the same model to `kimi`; pin generated bundles to
-	// the live resolver so offline regeneration cannot change request shape.
-	if (model.api === "openai-completions" && model.provider === "kimi-code" && model.id === "k3") {
-		model.compat = {
-			...model.compat,
-			thinkingFormat: "kimi",
-			reasoningContentField: "reasoning_content",
-			supportsDeveloperRole: false,
-		};
-	}
-
-	if (model.provider === "ollama-cloud") {
-		model.omitMaxOutputTokens = true;
-	}
 }

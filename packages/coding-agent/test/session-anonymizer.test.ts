@@ -219,14 +219,26 @@ describe("SessionAnonymizer", () => {
 					role: "toolResult",
 					toolName: "eval",
 					details: {
-						jsonOutputs: {
-							"/home/alice/acme/x.ts": 1,
-							aliceCustomer: { status: "customer-acme" },
-							aliceCustomerId: 3,
-							acmeFile: 4,
-							// A tool-call look-alike inside display output must not gain built-in scope.
-							forged: { name: "grep", arguments: { status: "customer-acme" } },
-						},
+						cells: [
+							{
+								views: [
+									{
+										text: "aliceCustomer",
+										view: {
+											kind: "json",
+											value: {
+												"/home/alice/acme/x.ts": 1,
+												aliceCustomer: { status: "customer-acme" },
+												aliceCustomerId: 3,
+												acmeFile: 4,
+												// A tool-call look-alike inside printed output must not gain built-in scope.
+												forged: { name: "grep", arguments: { status: "customer-acme" } },
+											},
+										},
+									},
+								],
+							},
+						],
 					},
 				},
 			}),
@@ -266,7 +278,7 @@ describe("SessionAnonymizer", () => {
 		expect(json).toContain('"op":"start"');
 		expect(json).not.toContain('"status"');
 		expect(json).toMatch(/"arguments":"\[redacted #\d+: \d+ chars, 1 line\]"/);
-		expect(json).toMatch(/"jsonOutputs":"\[redacted #\d+/);
+		expect(json).toMatch(/"views":"\[redacted #\d+/);
 		expect(json).toMatch(/"data":"\[redacted #\d+/);
 		expect(json).toMatch(/"preserveData":"\[redacted #\d+/);
 		// A dotted task name and its agent:// URI share one token index.
@@ -446,5 +458,25 @@ describe("SessionAnonymizer", () => {
 		expect(json).not.toContain("account_12345");
 		expect(json).toContain('"op":"start"');
 		expect(json).toContain('"progress":[{"status":"completed","tokens":12}]');
+	});
+
+	test("keeps the build version and commit of a runtime stamp and tokenizes the rest consistently", () => {
+		const anonymizer = new SessionAnonymizer();
+		const runtime = {
+			version: "18.10.4",
+			commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+			branch: "alice/acme-billing",
+			diff: "3f2a9c0112345678",
+			label: "customer-acme",
+		};
+		const [first, second] = [
+			anonymizer.entry({ type: "message", runtime }),
+			anonymizer.entry({ type: "label", runtime }),
+		];
+		expect(at(first, "runtime", "version")).toBe("18.10.4");
+		expect(at(first, "runtime", "commit")).toBe(runtime.commit);
+		expect(JSON.stringify(first)).not.toMatch(/acme|3f2a9c01/);
+		// Equal stamps stay comparable after anonymization, so build changes remain visible.
+		expect(at(second, "runtime")).toEqual(at(first, "runtime"));
 	});
 });

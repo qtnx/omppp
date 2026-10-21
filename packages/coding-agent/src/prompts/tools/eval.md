@@ -3,11 +3,12 @@ One cell per call; top-level state persists, including across compaction.{{#if s
 {{#if py}}Python: plain Python subprocess, not IPython (no `get_ipython()`, `obj?`, or `%matplotlib`). Magics like `%pip`, `%load`, `%time` and `!cmd` are rewritten to Python. Top-level `await` works; `asyncio.run(…)` fails.{{/if}}
 {{#if js}}JS: Bun (`Bun.file`, `Bun.write`, `Bun.$`); top-level `await`/`return` work.{{/if}}
 On error, retry only the failed step; earlier steps may have taken effect.
+Printing an image{{#if py}} or figure{{/if}} attaches it.
 
 <prelude>
 {{#ifAll py js}}Python helpers: sync, kwargs; JS helpers: async, ONE trailing options object.{{else}}{{#if py}}Sync; kwargs.{{/if}}{{#if js}}Async; ONE trailing options object.{{/if}}{{/ifAll}}
 ```
-display(value) → None        print(value, ...) → None
+print(value, ...)  log(message)  phase(title)
 read(path, offset?=1, limit?=None) → str
 write(path, content) → str
 env(key?=None, value?=None) → str | None | dict

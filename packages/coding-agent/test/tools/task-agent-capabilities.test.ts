@@ -66,10 +66,10 @@ describe("task agent capability descriptions", () => {
 describe("explicit task agent precedence", () => {
 	afterEach(() => vi.restoreAllMocks());
 	it.each([
-		{ batch: "task", item: undefined, expected: "task", calls: 0 },
-		{ batch: "task", item: "quick_task", expected: "quick_task", calls: 0 },
-		{ batch: undefined, item: undefined, expected: "quick_task", calls: 1 },
-	])("preserves batch=$batch item=$item and only routes absent choices", async ({ batch, item, expected, calls }) => {
+		{ item: "task", expected: "task", calls: 0 },
+		{ item: "quick_task", expected: "quick_task", calls: 0 },
+		{ item: undefined, expected: "quick_task", calls: 1 },
+	])("preserves item=$item and only routes absent choices", async ({ item, expected, calls }) => {
 		vi.spyOn(discovery, "discoverAgents")
 			.mockResolvedValueOnce({
 				agents: ["task", "quick_task"].map(name => ({
@@ -90,7 +90,6 @@ describe("explicit task agent precedence", () => {
 			getSessionSpawns: () => "*",
 		} as unknown as ToolSession);
 		const result = await tool.execute("precedence", {
-			agent: batch,
 			context: "Read-only fixture: preserve the caller's chosen agent and return its observed outcome.",
 			tasks: [{ name: "Probe", agent: item, task: "Read one fact." }],
 		} as TaskParams);

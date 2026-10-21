@@ -450,6 +450,26 @@ provider "cursor" {
 			cache-write 0
 		}
 	}
+	// Gemini 4 Argon: $2/$10, cache read $0.10. Other Models bill at the
+	// model's API price, so the card follows Google's list-price increase to
+	// $4/$20, cache read $0.20, from 2026-12-01 (midnight US Pacific).
+	models "gemini-4-argon" {
+		cost-patch {
+			input 2.0
+			output 10.0
+			cache-read 0.1
+			cache-write 0
+			effective-rates {
+				list-price {
+					effective-from "2026-12-01T08:00:00Z"
+					input 4.0
+					output 20.0
+					cache-read 0.2
+					cache-write 0
+				}
+			}
+		}
+	}
 	// GLM 5.2: $1.40/$4.40, cache read $0.26.
 	models "glm-5.2" {
 		cost-patch {

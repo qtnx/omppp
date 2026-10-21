@@ -1,5 +1,6 @@
 import { isAnthropicServerToolHistoryBlock } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import { countNewlines, isRecord, logger } from "@oh-my-pi/pi-utils";
+import { PRESERVE_KEY as SNAPCOMPACT_PRESERVE_KEY } from "@oh-my-pi/snapcompact";
 import {
 	type BlobStore,
 	externalizeImageDataSync,
@@ -135,6 +136,38 @@ function externalizeImagePayloadSync(
  */
 export function forgetExternalizedImages(blobStore: BlobStore): void {
 	externalizedImageRefs.delete(blobStore);
+}
+
+/** True for the snapcompact archive slot, `preserveData[PRESERVE_KEY]`. */
+function isSnapcompactArchiveSlot(
+	key: string | undefined,
+	childKey: string,
+	value: unknown,
+): value is Record<string, unknown> {
+	return key === "preserveData" && childKey === SNAPCOMPACT_PRESERVE_KEY && isRecord(value);
+}
+
+/**
+ * The snapcompact archive under `preserveData[PRESERVE_KEY]`: its frames
+ * externalize to the blob store, and every other field persists verbatim. The
+ * next compaction re-renders the archive from `text`, so a cut would drop the
+ * newest history uncounted and render {@link TRUNCATION_NOTICE} into the frames.
+ */
+function persistSnapcompactArchive(archive: Record<string, unknown>, blobStore: BlobStore): Record<string, unknown> {
+	const frames = truncateForPersistence(archive.frames, blobStore, SNAPCOMPACT_FRAMES_KEY);
+	const persisted = frames === archive.frames ? archive : { ...archive, frames };
+	const view = archive.withoutThinking;
+	if (!isRecord(view) || !isRecord(view.archive)) return persisted;
+	const viewArchive = persistSnapcompactArchive(view.archive, blobStore);
+	return viewArchive === view.archive
+		? persisted
+		: { ...persisted, withoutThinking: { ...view, archive: viewArchive } };
+}
+
+function snapcompactArchiveNeedsRewrite(archive: Record<string, unknown>): boolean {
+	if (persistenceNodeNeedsRewrite(archive.frames, SNAPCOMPACT_FRAMES_KEY)) return true;
+	const view = archive.withoutThinking;
+	return isRecord(view) && isRecord(view.archive) && snapcompactArchiveNeedsRewrite(view.archive);
 }
 
 /**
@@ -363,7 +396,9 @@ function truncateForPersistence(
 				changed = true;
 				continue;
 			}
-			const newValue = truncateForPersistence(value, blobStore, childKey, ancestors);
+			const newValue = isSnapcompactArchiveSlot(key, childKey, value)
+				? persistSnapcompactArchive(value, blobStore)
+				: truncateForPersistence(value, blobStore, childKey, ancestors);
 			if (newValue !== value) changed = true;
 			entries.push([childKey, newValue]);
 		}
@@ -463,7 +498,15 @@ function persistenceNodeNeedsRewrite(obj: unknown, key?: string, ancestors = new
 		ancestors.add(obj);
 		for (const childKey in obj) {
 			if (!Object.hasOwn(obj, childKey)) continue;
-			if (persistenceNodeNeedsRewrite((obj as Record<string, unknown>)[childKey], childKey, ancestors)) {
+			const value = (obj as Record<string, unknown>)[childKey];
+			if (isSnapcompactArchiveSlot(key, childKey, value)) {
+				if (snapcompactArchiveNeedsRewrite(value)) {
+					ancestors.delete(obj);
+					return true;
+				}
+				continue;
+			}
+			if (persistenceNodeNeedsRewrite(value, childKey, ancestors)) {
 				ancestors.delete(obj);
 				return true;
 			}

@@ -28,13 +28,17 @@ import { assumedTspHello, NativeBackend, type NativeHost } from "./native/backen
 import { col } from "./native/describe";
 import { TSP_PREFIX, type TspHello } from "./native/encode";
 import type { DescribeContext, NativeNode, NativeScreen, NativeSurfaceProvider, NativeUiEvent } from "./native/node";
+import { cropSixelTop } from "./sixel";
 import { STDOUT_BACKLOG_CLEAR_BYTES, setAltScreenActive, type Terminal } from "./terminal";
 import { classifyTerminalMultiplexerModule, terminalMultiplexerSessions } from "./terminal-multiplexer";
 import {
+	directPlacementLift,
 	encodeKittyDeleteAllImages,
 	encodeKittyDeleteImage,
 	encodeKittyDeletePlacement,
 	encodeKittyPlacementLine,
+	getCellDimensions,
+	getTerminalBackgroundColor,
 	ImageProtocol,
 	isImageProtocolForced,
 	isInsideTerminalMultiplexer,
@@ -45,6 +49,7 @@ import {
 	synchronizedOutputUserOverride,
 	TERMINAL,
 } from "./terminal-capabilities";
+import { onTerminalBackgroundFallbackChange } from "./theme/theme";
 import { compositeLineAt } from "./render/composite";
 import { tmuxMultiplexer } from "./multiplexers/tmux";
 import {
@@ -104,6 +109,11 @@ const PAINT_END_NO_SYNC = ENABLE_AUTOWRAP;
 // native text selection.
 const MOUSE_TRACKING_ON = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 const MOUSE_TRACKING_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
+// Cell-size replies: CSI 6 ; height ; width t in pixels, and iTerm2's
+// OSC 1337 ; ReportCellSize = height ; width [; scale] ST in points.
+const CELL_SIZE_REPLY = /^\x1b\[6;(\d+);(\d+)t$/;
+const ITERM2_CELL_SIZE_REPLY =
+	/^\x1b\]1337;ReportCellSize=(\d+(?:\.\d+)?);(\d+(?:\.\d+)?)(?:;(\d+(?:\.\d+)?))?(?:\x07|\x1b\\)$/;
 
 type MouseTrackingState = "off" | "inline" | "full";
 
@@ -921,6 +931,8 @@ export class TUI extends Container {
 	#debugNextWindowTop = 0;
 	#inputListeners = new Set<InputListener>();
 	#startListeners = new Set<StartListener>();
+	/** True from the end of start() until stop(): the terminal modes start listeners enable are live. */
+	#started = false;
 	#paintListeners = new Set<PaintListener>();
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
@@ -1004,6 +1016,8 @@ export class TUI extends Container {
 	#screenImagePlacements = new Map<number, LiveImagePlacement>();
 	#altImagePlacements = new Map<number, LiveImagePlacement>();
 	#nextImagePlacementId = 1;
+	/** Last top-clipped SIXEL crop; only the block straddling row 0 is ever cropped. */
+	#sixelCrop: { source: string; pixels: number; maxHeightPixels: number; output: string } | undefined;
 	#ghosttyInitialImageDelayDone = false;
 	#ghosttyInitialImageDelayTimer: RenderTimer | undefined;
 	#ghosttyImageReadyAtMs = 0;
@@ -1014,6 +1028,7 @@ export class TUI extends Container {
 	#forceViewportRepaintOnNextRender = false;
 	#hasEverRendered = false;
 	#stopped = false;
+	#appearanceReportUnsubscribe: (() => void) | undefined;
 	#cancelPostmortemRestore?: () => void;
 	/** True between a `deferInput` start() and enableInput(). */
 	#inputDeferred = false;
@@ -1102,6 +1117,7 @@ export class TUI extends Container {
 	overlayStack: {
 		component: Component;
 		options?: OverlayOptions;
+		/** Focus restored after closing; tracks live focus changes beneath an input-less key holder. */
 		preFocus: Component | null;
 		hidden: boolean;
 		/**
@@ -1233,6 +1249,9 @@ export class TUI extends Container {
 	setFocus(component: Component | null): void {
 		const holder = this.#getKeyHolderOverlay();
 		if (holder && !isOverlayFocusTarget(holder.component, component)) {
+			if (!holder.component.handleInput && this.#focusedComponent === holder.component) {
+				holder.preFocus = component;
+			}
 			const currentFocus = this.#focusedComponent;
 			component = isOverlayFocusTarget(holder.component, currentFocus) ? currentFocus : holder.component;
 		}
@@ -1483,6 +1502,34 @@ export class TUI extends Container {
 
 	start(options?: TUIStartOptions): void {
 		this.#stopped = false;
+		this.#appearanceReportUnsubscribe?.();
+		let backgroundRgb: number | undefined;
+		let subscribed = true;
+		const repaintForBackgroundChange = () => {
+			if (!subscribed || this.#stopped) return;
+			const nextBackgroundRgb = getTerminalBackgroundColor();
+			// Track RGB before the SIXEL guard: the startup OSC 11 reply usually
+			// arrives before DA1 enables SIXEL, so revisiting the same color once
+			// SIXEL is live must not replay identical rows.
+			if (nextBackgroundRgb === backgroundRgb) return;
+			backgroundRgb = nextBackgroundRgb;
+			if (TERMINAL.imageProtocol !== ImageProtocol.Sixel) return;
+			// Track RGB even during optimistic native ownership: fallback paints
+			// with the latest color, so a later return to the startup RGB must repaint.
+			// Never write rows while the native surface still owns rendering.
+			if (this.#nativeLive) return;
+			this.invalidate();
+			// Match theme changes: replay owned history on direct terminals, but
+			// leave multiplexer scrollback intact and repaint only the viewport.
+			this.requestRender(true, { clearScrollback: !isInsideTerminalMultiplexer() });
+		};
+		const unsubscribe = this.terminal.onAppearanceReport?.(repaintForBackgroundChange);
+		const unsubscribeFallback = onTerminalBackgroundFallbackChange(repaintForBackgroundChange);
+		this.#appearanceReportUnsubscribe = () => {
+			subscribed = false;
+			unsubscribe?.();
+			unsubscribeFallback();
+		};
 		this.#debugPaint = undefined;
 		this.#debugServer?.stop();
 		this.#debugServer = undefined;
@@ -1610,16 +1657,14 @@ export class TUI extends Container {
 			() => this.stop(),
 			{ deferInput: this.#inputDeferred, isLoopStalled: () => this.#watchdog.isStalled() },
 		);
+		// ProcessTerminal.start() resets the previous owner's RGB. Seed only
+		// after that reset so an identical OSC 11 reply still repaints fallback rows.
+		backgroundRgb = TERMINAL.imageProtocol === ImageProtocol.Sixel ? getTerminalBackgroundColor() : undefined;
 		if (this.#stopped) return;
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = postmortem.register("tui-restore", () => this.stop());
-		for (const listener of this.#startListeners) {
-			try {
-				listener();
-			} catch {
-				// Startup listeners are feature hooks; one broken hook must not prevent rendering.
-			}
-		}
+		for (const listener of this.#startListeners) this.#runStartListener(listener);
+		this.#started = !this.#stopped;
 		this.terminal.hideCursor();
 		this.#recordHardwareCursorHidden();
 		if (!this.#inputDeferred) {
@@ -1761,7 +1806,7 @@ export class TUI extends Container {
 		this.#resizeSettleTimer?.cancel();
 		this.#resizeSettleTimer = undefined;
 		if (this.#altActive || this.#resizeAltActive) {
-			this.terminal.write(`${this.#takePendingAltEnter()}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			this.terminal.write(`${this.#takePendingAltEnter()}${this.#altScreenExit()}`);
 			setAltScreenActive(false);
 			this.#altActive = false;
 			this.#resizeAltActive = false;
@@ -2072,7 +2117,7 @@ export class TUI extends Container {
 		this.#suppressResizeUntil = this.#renderScheduler.now() + 100;
 		this.#altPreviousLines = [];
 		this.#altPreparedRows = [];
-		const exitSequence = `${this.#keyboardEnhancementExit()}\x1b[?1049l`;
+		const exitSequence = this.#altScreenExit();
 		// Only the provider plan frame emits a pending exit, and an exit already
 		// pending (a fused overlay close) owns that slot.
 		if (this.#frameProvider !== undefined && this.#pendingAltExit === "") {
@@ -2384,11 +2429,27 @@ export class TUI extends Container {
 		if (this.#heldInput !== undefined && this.#heldFocus === previous) this.#heldFocus = next;
 	}
 
+	/**
+	 * Register a hook that re-enables terminal modes on every start(). A hook
+	 * added while the TUI is already running (a prepaint composer starts it
+	 * before the interactive mode wires its controllers) missed that start, so
+	 * it runs immediately instead of waiting for a stop/start cycle that may
+	 * never come.
+	 */
 	addStartListener(listener: StartListener): () => void {
 		this.#startListeners.add(listener);
+		if (this.#started) this.#runStartListener(listener);
 		return () => {
 			this.#startListeners.delete(listener);
 		};
+	}
+
+	#runStartListener(listener: StartListener): void {
+		try {
+			listener();
+		} catch {
+			// Startup listeners are feature hooks; one broken hook must not prevent rendering.
+		}
 	}
 
 	addInputListener(listener: InputListener): () => void {
@@ -2507,6 +2568,9 @@ export class TUI extends Container {
 		// Query terminal for cell size in pixels: CSI 16 t
 		// Response format: CSI 6 ; height ; width t
 		this.terminal.write("\x1b[16t");
+		// iTerm2 never answers CSI 16 t. Without a size, rows reserved for an image
+		// and crops of a partly scrolled one assume 9x18 cells and land offset.
+		if (TERMINAL.imageProtocol === ImageProtocol.Iterm2) this.terminal.write("\x1b]1337;ReportCellSize\x1b\\");
 	}
 
 	/**
@@ -2559,6 +2623,8 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
+		this.#appearanceReportUnsubscribe?.();
+		this.#appearanceReportUnsubscribe = undefined;
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = undefined;
 		this.#debugServer?.stop();
@@ -2586,7 +2652,7 @@ export class TUI extends Container {
 		this.#cancelResizeProbe();
 		if (this.#resizeAltActive) {
 			this.#resizeAltActive = false;
-			this.terminal.write(`${this.#takePendingAltEnter()}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			this.terminal.write(`${this.#takePendingAltEnter()}${this.#altScreenExit()}`);
 			setAltScreenActive(false);
 		}
 		if (this.#altActive || this.#pendingAltExit) {
@@ -2598,7 +2664,7 @@ export class TUI extends Container {
 			const mouseExit = this.#mouseTracking !== "off" ? MOUSE_TRACKING_OFF : "";
 			const exitSequence = this.#pendingAltExit
 				? `${this.#takePendingAltEnter()}${this.#pendingAltExit}${mouseExit}`
-				: `${mouseExit}${this.#keyboardEnhancementExit()}\x1b[?1049l`;
+				: `${mouseExit}${this.#altScreenExit()}`;
 			this.terminal.write(exitSequence);
 			setAltScreenActive(false);
 			this.#altActive = false;
@@ -2628,6 +2694,7 @@ export class TUI extends Container {
 		// (and live-session ghosts are already bounded by the inline-image budget).
 		this.#clearImageProbeState();
 		this.#stopped = true;
+		this.#started = false;
 		this.#watchdog.stop();
 		if (this.#renderTimer) {
 			this.#renderTimer.cancel();
@@ -2693,6 +2760,13 @@ export class TUI extends Container {
 			return;
 		}
 		this.#requestOrdinaryRender();
+	}
+
+	/** Run `callback` after `delayMs` on the render scheduler's clock, unless the TUI has stopped. */
+	scheduleAfter(delayMs: number, callback: () => void): RenderTimer {
+		return this.#renderScheduler.scheduleRender(() => {
+			if (!this.#stopped) callback();
+		}, delayMs);
 	}
 
 	/**
@@ -2910,9 +2984,9 @@ export class TUI extends Container {
 			this.#inputRenderGraceUntilMs = this.#renderScheduler.now() + TUI.#INPUT_RENDER_GRACE_MS;
 		}
 
-		// A focused input owner can reserve its gesture before TUI-wide listeners
+		// The effective input owner can reserve its gesture before TUI-wide listeners
 		// and debug shortcuts see the key, then handle the raw event exactly once.
-		const focusedForCapture = this.#focusedComponent;
+		const focusedForCapture = this.#inputTarget();
 		if (
 			focusedForCapture?.handleInput &&
 			(!isKeyRelease(data) || focusedForCapture.wantsKeyRelease) &&
@@ -2951,20 +3025,26 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Pass input to focused component (including Ctrl+C).
-		// The focused component can decide how to handle Ctrl+C.
-		// Opted-in components only dirty their focused subtree. Unregistered
-		// components retain the legacy full compose because their callbacks may
-		// mutate siblings; focus changes also require the new surface to paint.
-		const focused = this.#focusedComponent;
-		if (focused?.handleInput) {
+		const target = this.#inputTarget();
+		if (target?.handleInput) {
 			// Filter out key release events unless component opts in
-			if (isKeyRelease(data) && !focused.wantsKeyRelease) {
+			if (isKeyRelease(data) && !target.wantsKeyRelease) {
 				return;
 			}
-			focused.handleInput(data);
+			target.handleInput(data);
 			this.requestRender();
 		}
+	}
+
+	/**
+	 * Component that receives keyboard input. An input-less key-holding overlay
+	 * leaves input with the focus it displaced; other focus owners keep their input.
+	 */
+	#inputTarget(): Component | null {
+		const focused = this.#focusedComponent;
+		if (focused?.handleInput) return focused;
+		const holder = this.#getKeyHolderOverlay();
+		return holder?.component === focused ? holder.preFocus : null;
 	}
 
 	/**
@@ -2980,14 +3060,19 @@ export class TUI extends Container {
 	}
 
 	#consumeCellSizeResponse(data: string): boolean {
-		// Response format: ESC [ 6 ; height ; width t
-		const match = data.match(/^\x1b\[6;(\d+);(\d+)t$/);
-		if (!match) {
-			return false;
+		let heightPx: number;
+		let widthPx: number;
+		const pixels = CELL_SIZE_REPLY.exec(data);
+		if (pixels) {
+			heightPx = parseInt(pixels[1], 10);
+			widthPx = parseInt(pixels[2], 10);
+		} else {
+			const points = ITERM2_CELL_SIZE_REPLY.exec(data);
+			if (!points) return false;
+			const scale = points[3] ? Number(points[3]) : 1;
+			heightPx = Math.round(Number(points[1]) * scale);
+			widthPx = Math.round(Number(points[2]) * scale);
 		}
-
-		const heightPx = parseInt(match[1], 10);
-		const widthPx = parseInt(match[2], 10);
 		if (heightPx <= 0 || widthPx <= 0) {
 			return true;
 		}
@@ -3202,7 +3287,13 @@ export class TUI extends Container {
 		return output;
 	}
 
-	/** Clip a direct placement and record its live owner; history placements have no mutable owner. */
+	/**
+	 * Clip direct placements to the visible source slice: Kitty tracks a live
+	 * placement owner, while SIXEL crops the encoded raster (iTerm2 images are
+	 * not cropped). SIXEL and iTerm2 have no delete command and composite over
+	 * existing pixels, so erase the visible rows they paint above `screenRow`
+	 * before repainting.
+	 */
 	#imageLineSequence(
 		line: string,
 		screenRow: number,
@@ -3211,7 +3302,19 @@ export class TUI extends Container {
 	): string {
 		if (screenRow < 0) return line;
 		const parsed = parseKittyDirectPlacementLine(line);
-		if (!parsed) return line;
+		if (!parsed) {
+			const requestedLift = directPlacementLift(line);
+			const lift = Math.min(requestedLift, screenRow);
+			if (requestedLift > lift) {
+				const cellHeight = getCellDimensions().heightPx;
+				const cropPixels = Math.round((requestedLift - lift) * cellHeight);
+				const maxHeightPixels = Math.floor((screenRow + 1) * cellHeight);
+				line = line.replace(/\x1bP[0-9;]*q[\s\S]*?\x1b\\/g, sequence =>
+					this.#cropSixel(sequence, cropPixels, maxHeightPixels),
+				);
+			}
+			return lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}${line}` : line;
+		}
 		const previous = placements?.get(placementRow);
 		const placementId = previous?.placementId ?? this.#nextImagePlacementId++;
 		const erase = previous ? encodeKittyDeletePlacement(previous.imageId, previous.placementId) : "";
@@ -3227,6 +3330,32 @@ export class TUI extends Container {
 				imageHeightPx: this.#imageBudget.getPlacementGeometry(parsed.imageId)?.heightPx ?? 0,
 			})
 		);
+	}
+
+	/**
+	 * Crop a SIXEL raster whose top rows lie above the viewport. A raster the
+	 * cropper cannot parse is dropped: painting it whole would overwrite the
+	 * rows below the visible slice.
+	 */
+	#cropSixel(source: string, pixels: number, maxHeightPixels: number): string {
+		const cached = this.#sixelCrop;
+		if (
+			cached !== undefined &&
+			cached.pixels === pixels &&
+			cached.maxHeightPixels === maxHeightPixels &&
+			cached.source === source
+		) {
+			return cached.output;
+		}
+		let output: string;
+		try {
+			output = cropSixelTop(source, pixels, maxHeightPixels);
+		} catch (err) {
+			logger.warn("Dropping top-clipped SIXEL image that cannot be cropped", { err });
+			output = "";
+		}
+		this.#sixelCrop = { source, pixels, maxHeightPixels, output };
+		return output;
 	}
 
 	#terminalLine(line: PreparedLine): string {
@@ -3758,8 +3887,7 @@ export class TUI extends Container {
 			// restore it in the fused exit or later frames see matching states
 			// and inline click/hover stays dead until the setting toggles.
 			const mouseEnter = wantMouse !== "off" && this.#mouseTracking === "off" ? MOUSE_TRACKING_ON : "";
-			const enhancementExit = this.#keyboardEnhancementExit();
-			const exitSequence = `${mouseExit}${mouseEnter}${enhancementExit}\x1b[?1049l`;
+			const exitSequence = `${mouseExit}${mouseEnter}${this.#altScreenExit()}`;
 			// Session replacement finishes while its fullscreen selector still
 			// covers the old normal buffer. Fuse the restore into the destructive
 			// repaint so no stale frame can become visible between writes.
@@ -4344,14 +4472,15 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Resolve the active keyboard-enhancement exit sequence. Falls back to popping
-	 * kitty whenever a custom Terminal exposes its push sequence but predates the
-	 * `keyboardEnhancementExitSequence` property.
+	 * Leave the alternate screen: pop its keyboard-enhancement frame first, then
+	 * re-assert the main-screen mode for terminals that lose it on `?1049l`.
+	 * Falls back to popping kitty whenever a custom Terminal exposes its push
+	 * sequence but predates the `keyboardEnhancementExitSequence` property.
 	 */
-	#keyboardEnhancementExit(): string {
+	#altScreenExit(): string {
 		const exit = this.terminal.keyboardEnhancementExitSequence;
-		if (exit !== undefined) return exit ?? "";
-		return this.terminal.kittyEnableSequence ? "\x1b[<u" : "";
+		const keyboardExit = exit !== undefined ? (exit ?? "") : this.terminal.kittyEnableSequence ? "\x1b[<u" : "";
+		return `${keyboardExit}\x1b[?1049l${this.terminal.keyboardEnhancementRestoreSequence ?? ""}`;
 	}
 
 	/**

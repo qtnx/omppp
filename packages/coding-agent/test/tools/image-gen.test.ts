@@ -563,6 +563,39 @@ describe("imageGenTool catalog routing", () => {
 		expect(text).toContain("(1774x887, quality low)");
 	});
 
+	it("spells the requested shape into the Codex prompt because the backend ignores the size field", async () => {
+		const image = catalogModel("openai-codex", "gpt-image-2", "openai-codex-responses");
+		const carrier = catalogModel("openai-codex", "gpt-5.5", "openai-codex-responses", "chat");
+		const requests: Record<string, unknown>[] = [];
+		const fetchMock: FetchImpl = async (_input, init) => {
+			requests.push(JSON.parse(String(init?.body)));
+			const event = {
+				type: "response.completed",
+				response: { output: [{ type: "image_generation_call", result: WEBP_DATA }] },
+			};
+			return new Response(`data: ${JSON.stringify(event)}\n\n`, {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		};
+		const settings = Settings.isolated({ modelRoles: { image: "openai-codex/gpt-image-2" } });
+		const ctx = createContext({ models: [image, carrier], settings, fetch: fetchMock });
+
+		for (const params of [{ aspect_ratio: "3:2" as const }, { image_size: "1024x1536" as const }]) {
+			collectPaths(await imageGenTool.execute("codex-shape", { subject: "apple", ...params }, undefined, ctx));
+		}
+
+		const sent = requests.map(body => {
+			const input = body.input as Array<{ content: Array<{ text?: string }> }>;
+			const tools = body.tools as Array<{ size?: string }>;
+			return { text: input[0]?.content[0]?.text, size: tools[0]?.size };
+		});
+		expect(sent).toEqual([
+			{ text: "apple.\n\nOutput format: landscape image, 3:2 aspect ratio.", size: "1536x1024" },
+			{ text: "apple.\n\nOutput format: portrait image, 1024x1536 pixels.", size: "1024x1536" },
+		]);
+	});
+
 	it.skipIf(process.platform === "win32")(
 		"rejects a FIFO image input before reading or contacting the provider",
 		async () => {

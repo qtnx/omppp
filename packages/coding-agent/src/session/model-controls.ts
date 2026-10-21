@@ -26,9 +26,17 @@ import {
 	resolveModelRoleValue,
 } from "../config/model-resolver";
 import { getKnownRoleIds } from "../config/model-roles";
+import { buildServiceTierByFamily } from "../config/service-tier";
 import type { Settings } from "../config/settings";
 import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
-import { cfgDefaultThinkingLevel, cfgProvidersAutoThinkingMaxEffort, cfgProvidersFireworksTier } from "./settings";
+import {
+	cfgDefaultThinkingLevel,
+	cfgProvidersAutoThinkingMaxEffort,
+	cfgProvidersFireworksTier,
+	cfgTierAnthropic,
+	cfgTierGoogle,
+	cfgTierOpenai,
+} from "./settings";
 import prewalkChecklistPrompt from "../prompts/system/prewalk-checklist.md" with { type: "text" };
 import prewalkContinuePrompt from "../prompts/system/prewalk-continue.md" with { type: "text" };
 import prewalkPlanPrompt from "../prompts/system/prewalk-plan.md" with { type: "text" };
@@ -922,14 +930,30 @@ export class ModelControls {
 	 */
 	isFastModeActive(): boolean {
 		const model = this.#model;
-		if (!model) return false;
-		const tier = this.effectiveServiceTier(model);
-		if (tier === "ultrafast") return shouldSendServiceTier(tier, model);
-		if (!realizesPriorityServiceTier(tier, model)) return false;
-		if (model.provider === "anthropic") {
-			return !isAnthropicFastModeFallbackDisabled(this.#host.providerSessionState, model);
-		}
-		return true;
+		if (!model || !this.#realizesFastTier(model, this.#serviceTierByFamily)) return false;
+		return (
+			model.provider !== "anthropic" || !isAnthropicFastModeFallbackDisabled(this.#host.providerSessionState, model)
+		);
+	}
+
+	/**
+	 * Whether a fresh session started on `model` would realize a fast tier from
+	 * the configured `tier.*` settings, ignoring this session's `/fast` toggles.
+	 * Feeds the next launch's startup status prepaint.
+	 */
+	isFastModeConfiguredFor(model: Model): boolean {
+		const settings = this.#host.settings;
+		const tiers = buildServiceTierByFamily(
+			cfgTierOpenai.get(settings),
+			cfgTierAnthropic.get(settings),
+			cfgTierGoogle.get(settings),
+		);
+		return this.#realizesFastTier(model, tiers);
+	}
+
+	#realizesFastTier(model: Model, tiers: ServiceTierByFamily): boolean {
+		const tier = this.#serviceTierFor(model, tiers);
+		return tier === "ultrafast" ? shouldSendServiceTier(tier, model) : realizesPriorityServiceTier(tier, model);
 	}
 
 	/**
@@ -940,13 +964,16 @@ export class ModelControls {
 	 * per-family tier map down to the entry for its family.
 	 */
 	effectiveServiceTier(model: Model | undefined = this.#model): ServiceTier | undefined {
-		if (model?.provider === "fireworks") {
+		return model ? this.#serviceTierFor(model, this.#serviceTierByFamily) : undefined;
+	}
+
+	#serviceTierFor(model: Model, tiers: ServiceTierByFamily): ServiceTier | undefined {
+		if (model.provider === "fireworks") {
 			return cfgProvidersFireworksTier.get(this.#host.settings) === "priority" && !isFireworksFastModelId(model.id)
 				? "priority"
 				: undefined;
 		}
-		if (!model) return undefined;
-		return resolveModelServiceTier(this.#serviceTierByFamily, model);
+		return resolveModelServiceTier(tiers, model);
 	}
 
 	/** The live per-family tier map, or `null` when empty (for session persistence). */

@@ -8,7 +8,7 @@ import { getAntigravityUserAgent } from "@oh-my-pi/pi-catalog/wire/gemini-header
 import { readSseJson } from "@oh-my-pi/pi-utils";
 import { withAuth } from "../auth-retry";
 import * as AIError from "../error";
-import { errorMessage, ImageApiError, usageFromWire } from "./shared";
+import { errorMessage, ImageApiError, usageFromWire, validateImageInput } from "./shared";
 import type { GeneratedImage, ImageGenerationOptions, ImageGenerationRequest, ImageGenerationResult } from "./types";
 
 const IMAGE_SYSTEM_INSTRUCTION =
@@ -99,7 +99,6 @@ function buildRequest(request: ImageGenerationRequest, model: string, projectId:
 				{ category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_ONLY_HIGH" },
 			],
 		},
-		requestType: "agent",
 		requestId: `agent-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
 		userAgent: "antigravity",
 	};
@@ -138,6 +137,7 @@ export async function generateAntigravityImage(
 	request: ImageGenerationRequest,
 	options: ImageGenerationOptions,
 ): Promise<ImageGenerationResult> {
+	for (const image of request.inputImages ?? []) validateImageInput(image);
 	const fetchImpl = options.fetch ?? fetch;
 	const response = await withAuth(
 		options.apiKey,

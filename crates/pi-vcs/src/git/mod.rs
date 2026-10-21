@@ -1,8 +1,9 @@
 //! Git backend: gitoxide-powered repository operations.
 //!
 //! Git subprocesses are reserved for credential-bound network transfers,
-//! reftable repositories, and whole-worktree status/untracked walks whose
-//! resource failures must stay outside the driving process.
+//! reftable repositories, whole-worktree status/untracked walks whose resource
+//! failures must stay outside the driving process, and commit signing, which
+//! must use the user's configured Git signing program.
 //!
 //! Repository discovery is a pure filesystem walk (no subprocess, no gix open):
 //! it mirrors the battle-tested TypeScript walk it replaces — `.git` pointer

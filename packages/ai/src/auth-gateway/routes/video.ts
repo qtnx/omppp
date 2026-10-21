@@ -8,6 +8,7 @@ import { deterministicUuid } from "../../utils/deterministic-id";
 import {
 	type AuthGatewayRouteOptions,
 	buildGatewayApiKeyResolver,
+	gatewayRequestLogFields,
 	mirrorRequestAbort,
 	resolveGatewayApiKeyWithOrigin,
 } from "../dispatch";
@@ -57,13 +58,7 @@ async function resolveVideoJob(
 		);
 	}
 	const sessionId = deterministicUuid(`video\u0000${model.provider}/${model.id}`);
-	const apiKeyResolution = await resolveGatewayApiKeyWithOrigin(
-		bootOpts.storage,
-		model,
-		sessionId,
-		controller.signal,
-		peer,
-	);
+	const apiKeyResolution = await resolveGatewayApiKeyWithOrigin(bootOpts, model, sessionId, controller.signal, peer);
 	if (controller.signal.aborted) return aborted();
 	if ("status" in apiKeyResolution) {
 		return videoServer.formatError(apiKeyResolution.status, apiKeyResolution.type, apiKeyResolution.message);
@@ -74,7 +69,7 @@ async function resolveVideoJob(
 function videoOptions(bootOpts: AuthGatewayRouteOptions, resolved: ResolvedVideoRequest, peer: string) {
 	return {
 		apiKey: buildGatewayApiKeyResolver(
-			bootOpts.storage,
+			bootOpts,
 			resolved.model,
 			resolved.sessionId,
 			resolved.apiKeyResolution,
@@ -88,11 +83,13 @@ function videoOptions(bootOpts: AuthGatewayRouteOptions, resolved: ResolvedVideo
 }
 
 function logVideoRequest(
+	bootOpts: AuthGatewayRouteOptions,
 	requestId: string,
 	operation: "submit" | "poll" | "content",
-	model: ResolvedVideoRequest["model"],
+	resolved: ResolvedVideoRequest,
 	peer: string,
 ): void {
+	const { model } = resolved;
 	logger.info("auth-gateway request", {
 		requestId,
 		format: `video-${operation}`,
@@ -101,6 +98,7 @@ function logVideoRequest(
 		resolvedModel: model.id,
 		stream: operation === "content",
 		peer,
+		...gatewayRequestLogFields(bootOpts, resolved.apiKeyResolution),
 	});
 }
 
@@ -148,13 +146,7 @@ export async function handleVideoSubmit(
 		);
 	}
 	const sessionId = deterministicUuid(`video\u0000${model.provider}/${model.id}`);
-	const apiKeyResolution = await resolveGatewayApiKeyWithOrigin(
-		bootOpts.storage,
-		model,
-		sessionId,
-		controller.signal,
-		peer,
-	);
+	const apiKeyResolution = await resolveGatewayApiKeyWithOrigin(bootOpts, model, sessionId, controller.signal, peer);
 	if (controller.signal.aborted) return aborted();
 	if ("status" in apiKeyResolution) {
 		return videoServer.formatError(apiKeyResolution.status, apiKeyResolution.type, apiKeyResolution.message);
@@ -167,11 +159,12 @@ export async function handleVideoSubmit(
 		resolvedModel: model.id,
 		stream: false,
 		peer,
+		...gatewayRequestLogFields(bootOpts, apiKeyResolution),
 	});
 	try {
 		const job = await submitVideo(model, parsed.request, {
 			apiKey: buildGatewayApiKeyResolver(
-				bootOpts.storage,
+				bootOpts,
 				model,
 				sessionId,
 				apiKeyResolution,
@@ -211,7 +204,7 @@ export async function handleVideoPoll(
 	const requestId = crypto.randomUUID();
 	const resolved = await resolveVideoJob(bootOpts, req, peer, gatewayId);
 	if (resolved instanceof Response) return resolved;
-	logVideoRequest(requestId, "poll", resolved.model, peer);
+	logVideoRequest(bootOpts, requestId, "poll", resolved, peer);
 	try {
 		const job = await pollVideo(resolved.model, resolved.upstreamId, videoOptions(bootOpts, resolved, peer));
 		recordCompletedUsage(bootOpts, resolved, req, job);
@@ -243,7 +236,7 @@ export async function handleVideoContent(
 	const requestId = crypto.randomUUID();
 	const resolved = await resolveVideoJob(bootOpts, req, peer, gatewayId);
 	if (resolved instanceof Response) return resolved;
-	logVideoRequest(requestId, "content", resolved.model, peer);
+	logVideoRequest(bootOpts, requestId, "content", resolved, peer);
 	try {
 		const content = await downloadVideo(resolved.model, resolved.upstreamId, videoOptions(bootOpts, resolved, peer));
 		const headers = new Headers(gatewayResponseHeaders(resolved.model, { requestId, startedAt }));

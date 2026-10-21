@@ -13,6 +13,7 @@ import {
 	parseAntigravityCredentials,
 } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { getEffectiveTokenCost } from "@oh-my-pi/pi-catalog/models";
 import { isEnoent, logger, parseImageMetadata, prompt, ptree, Snowflake, untilAborted } from "@oh-my-pi/pi-utils";
 import { type RoleChainCandidate, resolveModelRoleValue, resolveRoleChain } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
@@ -162,9 +163,17 @@ function resolveHostedImageCarrier(
 			const model = modelRegistry.find(selectedModel.provider, id);
 			if (model && isOpenAIHostedImageModel(model)) return model;
 		}
-		return modelRegistry
-			.getAvailable()
-			.find(model => model.provider === selectedModel.provider && isOpenAIHostedImageModel(model));
+		let carrier: Model | undefined;
+		let carrierInput = Infinity;
+		for (const model of modelRegistry.getAvailable()) {
+			if (model.provider !== selectedModel.provider || !isOpenAIHostedImageModel(model)) continue;
+			const input = getEffectiveTokenCost(model.cost).input;
+			if (!carrier || input < carrierInput) {
+				carrier = model;
+				carrierInput = input;
+			}
+		}
+		return carrier;
 	};
 	// A Codex subscription generates through the prioritized hosted model even when the session chats
 	// an older GPT model; OpenAI API-key requests keep the session's own hosted model first.

@@ -57,6 +57,7 @@ import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
 import { listLogoutAccounts, logoutCredential } from "../../slash-commands/helpers/logout";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
+import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import type { EventBus } from "../../utils/event-bus";
 import { selectRpcEntries } from "./rpc-compat";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
@@ -1606,6 +1607,10 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		setEditorComponent(): void {
 			// Custom editor components not supported in RPC mode
 		}
+
+		getEditorComponent() {
+			return undefined;
+		}
 	}
 
 	// Wire up UI context for tool execution (ask tool, etc.) and extensions.
@@ -2129,7 +2134,9 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 
 			case "set_todos": {
 				session.setTodoPhases(command.phases);
-				return success(id, "set_todos", { todoPhases: session.getTodoPhases() });
+				const phases = session.getTodoPhases();
+				session.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				return success(id, "set_todos", { todoPhases: phases });
 			}
 
 			case "set_host_tools": {

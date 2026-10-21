@@ -104,6 +104,8 @@ Malformed `package.json` JSON is a hard failure at read time; malformed manifest
 
 ## Install/update flow (`PluginManager.install`)
 
+Every Bun package-manager call below (`install`, `update`, `uninstall`, `pm cache`) goes through `runBunCli` (`src/extensibility/plugins/bun-cli.ts`), which re-runs the current executable with `BUN_BE_BUN=1` rather than looking up `bun` on `PATH`. The standalone `omp` binary embeds Bun, so npm/Git plugin installs need no separately installed Bun; Git sources still need `git` on `PATH`.
+
 1. Parse feature bracket syntax from install spec.
 2. Validate the spec: git specs via `validateGitSpec`; npm specs against the package-name regex + shell-metacharacter denylist.
 3. Ensure plugin `package.json` exists (`omp-plugins`, private dependencies map).

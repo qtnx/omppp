@@ -38,6 +38,42 @@ tui.addChild(editor);
 tui.start();
 ```
 
+## SIXEL transparency and terminal backgrounds
+
+SIXEL has binary transparency, not fractional alpha. omp blends partially
+transparent image pixels against the terminal's reported OSC 11 background
+before quantization, preserving antialiased text and translucent details.
+Images with alpha are resized in premultiplied form before background compositing
+to prevent dark fringes and hidden-color bleed along scaled transparent edges.
+Fully transparent pixels stay transparent. Kitty and iTerm2 retain their
+existing image paths.
+
+When a new OSC 11 report changes the background RGB, SIXEL images are
+re-encoded even if the terminal stays dark or stays light. Terminals supporting
+Mode 2031 trigger this automatically. Otherwise, press Ctrl+L to refresh the
+background after changing it. This introduces no periodic polling.
+Direct terminals replay transcript history using the existing theme-change
+repaint policy; multiplexers repaint the viewport without clearing their native
+scrollback.
+
+Cached RGB is cleared when terminal ownership starts or ends, so a restarted
+session without an OSC 11 response cannot inherit the previous terminal's RGB.
+If the terminal cannot report its RGB, or an active multiplexer marks background
+queries as unreliable on the current platform, omp approximates the background
+with black for detected dark appearance or white for light. Untrusted reports
+do not override the existing appearance fallback. Exact edge-color matching is
+not guaranteed with that fallback, transparent terminal windows, or graphics
+overlapping a differently colored background.
+
+On known-broken background-query paths, such as macOS inside Zellij, native
+appearance changes also repaint SIXEL images when using a fixed theme or
+identical light/dark theme mappings. `COLORFGBG` still takes precedence over the
+native fallback; reports that leave the effective background unchanged do not
+trigger a repaint.
+
+If native TSP negotiation fails, the row renderer resumes these SIXEL refreshes.
+Expecting native support alone does not disable repainting after the failure.
+
 ## Core API
 
 ### TUI

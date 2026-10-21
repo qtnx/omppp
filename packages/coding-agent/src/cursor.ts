@@ -31,12 +31,13 @@ import {
 	piLsPath,
 	piReadPath,
 	piTimeout,
-	shellTimeoutSeconds,
+	shellDeadlineSeconds,
 } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { cursorMcpPrefersReplaceEdit, normalizeCursorReplaceArgs } from "./cursor-bridge-tools";
 import type { MCPResourceReadResult } from "./mcp/types";
 import { resolveApproval, resolveApprovalFromContext } from "./tools/approval";
+import { getApprovalGrants } from "./tools/approval-cache";
 import {
 	confineToWorkspace,
 	resolveReadPathAsync,
@@ -241,6 +242,11 @@ function createToolResultMessage(
  * The agent loop never sees these calls, so the bridge installs its own
  * `addAdditionalContext` sink and attaches what the call reported to the
  * result message; `Agent` injects it after the buffered Cursor results.
+ *
+ * Also sets `rawImages`: both read frames compose `:raw` for gutter-free text,
+ * and `read` must still answer an image file with the image. The flag rides on
+ * the caller's context only, because a missing context is what lets the
+ * extension wrapper fall back to the session's approval settings.
  */
 function createBridgeToolContext(options: CursorExecBridgeOptions): {
 	context: AgentToolContext | undefined;
@@ -251,6 +257,7 @@ function createBridgeToolContext(options: CursorExecBridgeOptions): {
 	return {
 		context: base && {
 			...base,
+			rawImages: true,
 			addAdditionalContext: (value: string) => {
 				reported.push(value);
 			},
@@ -349,12 +356,14 @@ function allowsDirectFileMutation(options: CursorExecBridgeOptions): boolean {
  * proceed, or the refusal text to answer with.
  */
 function refuseByWritePolicy(options: CursorExecBridgeOptions, toolName: string, pathArg: string): string | null {
-	const { approvalMode, userPolicies } = resolveApprovalFromContext(options.getToolContext?.());
+	const context = options.getToolContext?.();
+	const { approvalMode, userPolicies } = resolveApprovalFromContext(context);
 	const approval = resolveApproval(
 		{ name: toolName, approval: "write" },
 		{ path: pathArg },
 		approvalMode,
 		userPolicies,
+		getApprovalGrants(context?.settings?.getAgentDir(), context?.sessionManager?.getSessionId()),
 	);
 	if (approval.policy === "allow") return null;
 	return approval.policy === "deny"
@@ -591,7 +600,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 
 	async shell(args: Parameters<NonNullable<ICursorExecHandlers["shell"]>>[0]) {
 		const toolCallId = decodeToolCallId(args.toolCallId);
-		const timeoutSeconds = shellTimeoutSeconds(args.timeout);
+		const timeoutSeconds = shellDeadlineSeconds(args);
 		const toolResultMessage = await executeTool(this.options, "bash", toolCallId, {
 			command: args.command,
 			cwd: args.workingDirectory || undefined,
@@ -612,7 +621,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 			return createToolResultMessage(toolCallId, toolName, result, true);
 		}
 
-		const timeoutSeconds = shellTimeoutSeconds(args.timeout);
+		const timeoutSeconds = shellDeadlineSeconds(args);
 		const toolArgs = omitUndefinedArgs({
 			command: args.command,
 			cwd: args.workingDirectory || undefined,
@@ -1077,12 +1086,14 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 			? this.options.getEditReplaceTool?.()
 			: (this.options.getExecutableTool?.(toolName) ?? this.options.tools.get(toolName));
 		if (!tool) return false;
-		const { approvalMode, userPolicies } = resolveApprovalFromContext(this.options.getToolContext?.());
+		const context = this.options.getToolContext?.();
+		const { approvalMode, userPolicies } = resolveApprovalFromContext(context);
 		const approval = resolveApproval(
 			tool,
 			preferReplace ? normalizeCursorReplaceArgs(args) : args,
 			approvalMode,
 			userPolicies,
+			getApprovalGrants(context?.settings?.getAgentDir(), context?.sessionManager?.getSessionId()),
 		);
 		return approval.policy === "allow";
 	}

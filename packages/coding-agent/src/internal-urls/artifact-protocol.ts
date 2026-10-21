@@ -93,9 +93,13 @@ async function resolveArtifactFile(url: InternalUrl, context?: ResolveContext): 
 	// Artifact ids are per-session counters; in multi-session hosts the same
 	// id exists in several dirs. Pin resolution to the calling session's
 	// artifacts dir first so `artifact://3` means *this* session's #3.
-	const dirs = artifactsDirsFromRegistry();
 	const pinnedDir = context?.localProtocolOptions?.getArtifactsDir?.() ?? null;
-	if (pinnedDir) {
+	// A seance reads only its own artifacts plus the consulted source's, in
+	// place; its own ids are allocated past the source's, so neither shadows.
+	const seanceDir = context?.session?.seanceSourceArtifactsDir;
+	const dirs = seanceDir ? [] : artifactsDirsFromRegistry();
+	if (seanceDir) dirs.push(...(pinnedDir ? [pinnedDir] : []), seanceDir);
+	else if (pinnedDir) {
 		const pinnedIndex = dirs.indexOf(pinnedDir);
 		if (pinnedIndex >= 0) dirs.splice(pinnedIndex, 1);
 		dirs.unshift(pinnedDir);

@@ -50,42 +50,60 @@ static EXCLUDED_DIR_SET: LazyLock<HashSet<&'static str>> =
 #[napi(object)]
 pub struct ListWorkspaceOptions<'env> {
 	/// Directory to scan.
-	pub path:              String,
+	pub path:                    String,
 	/// Maximum depth for returned tree entries. Root children are depth 1.
-	pub max_depth:         u32,
+	pub max_depth:               u32,
 	/// Include hidden files and directories. Default: false.
-	pub hidden:            Option<bool>,
+	pub hidden:                  Option<bool>,
 	/// Respect .gitignore files. Default: true.
-	pub gitignore:         Option<bool>,
+	pub gitignore:               Option<bool>,
 	/// Also surface AGENTS.md files in directories at depth 1..=4, even when
 	/// gitignore would otherwise hide the file. Walks deeper than `maxDepth`
 	/// to find them. Default: false.
-	pub collect_agents_md: Option<bool>,
+	pub collect_agents_md:       Option<bool>,
+	/// Report unreadable directories instead of silently skipping them: an
+	/// unreadable root fails the scan, and unreadable subdirectories are
+	/// returned in `unreadableDirectories` while the walk continues. Default:
+	/// false (startup discovery stays best-effort).
+	pub report_directory_errors: Option<bool>,
 	/// Timeout in milliseconds for the operation.
-	pub timeout_ms:        Option<u32>,
+	pub timeout_ms:              Option<u32>,
 	/// Abort signal for cancelling the operation.
-	pub signal:            Option<Unknown<'env>>,
+	pub signal:                  Option<Unknown<'env>>,
 }
 
 /// Result payload returned by a workspace scan.
 #[napi(object)]
 pub struct ListWorkspaceResult {
 	/// Entries within `maxDepth`, with mtime and regular-file size metadata.
-	pub entries:         Vec<GlobMatch>,
+	pub entries:                Vec<GlobMatch>,
 	/// Directory-scoped AGENTS.md files within depth 1..=4 (capped at 200).
 	/// Always empty when `collectAgentsMd` is false.
-	pub agents_md_files: Vec<String>,
+	pub agents_md_files:        Vec<String>,
 	/// True when any output cap was hit.
-	pub truncated:       bool,
+	pub truncated:              bool,
+	/// Subdirectories whose contents could not be listed. Always empty unless
+	/// `reportDirectoryErrors` is set.
+	pub unreadable_directories: Vec<WorkspaceDirectoryError>,
+}
+
+/// A subdirectory the scan could not list.
+#[napi(object)]
+pub struct WorkspaceDirectoryError {
+	/// Forward-slash path relative to the scan root.
+	pub path:    String,
+	/// Platform error, e.g. `Permission denied (os error 13)`.
+	pub message: String,
 }
 
 struct WorkspaceConfig {
-	root:              PathBuf,
-	max_depth:         usize,
-	walk_max_depth:    usize,
-	include_hidden:    bool,
-	use_gitignore:     bool,
-	collect_agents_md: bool,
+	root:                    PathBuf,
+	max_depth:               usize,
+	walk_max_depth:          usize,
+	include_hidden:          bool,
+	use_gitignore:           bool,
+	collect_agents_md:       bool,
+	report_directory_errors: bool,
 }
 
 #[derive(Default)]
@@ -129,7 +147,11 @@ fn build_workspace_walk_request(config: &WorkspaceConfig) -> pi_walker::WalkRequ
 		.order(pi_walker::WalkOrder::Path)
 		.emit_root(false)
 		.depth(1, config.walk_max_depth)
-		.directory_errors(pi_walker::DirectoryErrorMode::SkipSkippable)
+		.directory_errors(if config.report_directory_errors {
+			pi_walker::DirectoryErrorMode::Visit
+		} else {
+			pi_walker::DirectoryErrorMode::SkipSkippable
+		})
 		.cache(false)
 }
 
@@ -184,6 +206,7 @@ fn run_list_workspace(
 	ct: task::CancelToken,
 ) -> Result<ListWorkspaceResult> {
 	let mut results = WorkspaceResults::default();
+	let mut unreadable_directories = Vec::new();
 	build_workspace_walk_request(&config)
 		.for_each_entry_with_heartbeat(
 			|| ct.heartbeat(),
@@ -220,14 +243,29 @@ fn run_list_workspace(
 				}
 				Ok(pi_walker::WalkDecision::Include)
 			},
-			|_| Ok(pi_walker::WalkDecision::Include),
+			|error| {
+				let relative = pi_walker::normalize_relative_path(&config.root, error.path);
+				if relative.is_empty() {
+					return Err(Error::from_reason(format!(
+						"Native directory scan failed for {}: {}",
+						error.path.display(),
+						error.error
+					)));
+				}
+				unreadable_directories.push(WorkspaceDirectoryError {
+					path:    relative.into_owned(),
+					message: error.error.to_string(),
+				});
+				Ok(pi_walker::WalkDecision::Skip)
+			},
 		)
 		.map_err(iofs::map_walker_error)?;
 
 	Ok(ListWorkspaceResult {
-		entries:         results.entries.into_values().collect(),
+		entries: results.entries.into_values().collect(),
 		agents_md_files: results.agents_md_files.into_iter().collect(),
-		truncated:       results.truncated,
+		truncated: results.truncated,
+		unreadable_directories,
 	})
 }
 
@@ -244,6 +282,7 @@ pub fn list_workspace(options: ListWorkspaceOptions<'_>) -> task::Promise<ListWo
 		hidden,
 		gitignore,
 		collect_agents_md,
+		report_directory_errors,
 		timeout_ms,
 		signal,
 	} = options;
@@ -252,8 +291,14 @@ pub fn list_workspace(options: ListWorkspaceOptions<'_>) -> task::Promise<ListWo
 	task::blocking("listWorkspace", ct, move |ct| {
 		let max_depth = max_depth as usize;
 		let collect_agents_md = collect_agents_md.unwrap_or(false);
+		let report_directory_errors = report_directory_errors.unwrap_or(false);
 		let walk_max_depth = if collect_agents_md {
 			max_depth.max(AGENTS_MD_MAX_DEPTH)
+		} else if report_directory_errors {
+			// A depth-0 walk never opens the root, so an unreadable root would
+			// resolve empty. Walk one level so its listing error surfaces; the
+			// returned entries stay bounded by `max_depth`.
+			max_depth.max(1)
 		} else {
 			max_depth
 		};
@@ -265,6 +310,7 @@ pub fn list_workspace(options: ListWorkspaceOptions<'_>) -> task::Promise<ListWo
 				include_hidden: hidden.unwrap_or(false),
 				use_gitignore: gitignore.unwrap_or(true),
 				collect_agents_md,
+				report_directory_errors,
 			},
 			ct,
 		)

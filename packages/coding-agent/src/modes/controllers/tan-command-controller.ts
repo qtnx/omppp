@@ -162,7 +162,11 @@ export class TanCommandController {
 			session.agent.promptCacheKey ?? (taskPromptCacheKey === undefined ? parentSessionId : undefined);
 		const thinkingLevel = session.configuredThinkingLevel();
 		const systemPrompt = [...session.systemPrompt];
+		// The copied prompt carries the parent's memory recall; the clone inherits it as delivered.
+		const parentMnemopiSessionState = session.getMnemopiSessionState?.();
 		const toolNames = session.getEnabledToolNames();
+		const activeToolNames = session.getActiveToolNames();
+		const mountedToolNames = session.getMountedXdevToolNames();
 		const modelRegistry = session.modelRegistry;
 		// Snapshot the parent's rebindable extensions and root policy at dispatch.
 		// The child rebinds these (skipping discovery) so it re-registers the
@@ -244,6 +248,8 @@ export class TanCommandController {
 								thinkingLevel,
 								systemPrompt,
 								toolNames,
+								mountedToolNames,
+								advertiseHeadlessAsk: activeToolNames.includes("ask"),
 								providerSessionId: `${parentSessionId}:${options.providerSessionLabel}:${Snowflake.next()}`,
 								providerPromptCacheKey: parentPromptCacheKey,
 								taskPromptCacheKey,
@@ -269,8 +275,10 @@ export class TanCommandController {
 								preloadedExtensionPaths: parentExtensionPaths?.length ? [...parentExtensionPaths] : undefined,
 								extensionRoots: () => parentExtensionRoots,
 								localProtocolOptions,
+								parentMnemopiSessionState,
 							});
 							clone = created.session;
+							await clone.setActiveToolPresentation(toolNames, mountedToolNames);
 						} catch (error) {
 							mcpFollower?.dispose();
 							throw error;

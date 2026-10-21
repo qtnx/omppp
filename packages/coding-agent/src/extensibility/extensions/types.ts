@@ -259,11 +259,38 @@ export interface ExtensionCustomOptions {
 /** Wrap the current autocomplete provider with additional behavior (pi-compatible). */
 export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 
-/** The two renderings of a tool-approval prompt passed to `ExtensionUIContext.approve()`. */
+/** The renderings of a tool-approval prompt passed to `ExtensionUIContext.approve()`. */
 export interface ExtensionApprovalPrompt {
 	full: string;
 	compact: string;
+	/** Label of the "approve for this session" choice; absent when the call must be approved each time. */
+	session?: string;
+	/**
+	 * Grants an `always-ask-cached` prompt can remember, in display order; absent otherwise. A host
+	 * that does not render them still answers `once`/`session`/`deny`.
+	 */
+	grants?: readonly ExtensionApprovalGrant[];
 }
+
+/** One remembered-approval choice of an `always-ask-cached` prompt. */
+export interface ExtensionApprovalGrant {
+	/** `folder`: the directory around the call, its own entries only; `target`: the exact file or URL. */
+	scope: "folder" | "target";
+	/** Label of the choice remembered for this session, e.g. `Approve Directory: ~/src`. */
+	label: string;
+	/** Label of the same choice remembered across sessions, e.g. `Always Approve Directory: ~/src`. */
+	alwaysLabel: string;
+}
+
+/**
+ * An answer to `ExtensionUIContext.approve()`: this call only, later like calls this session too,
+ * one of the prompt's {@link ExtensionApprovalPrompt.grants} (`always`: across sessions), or no.
+ */
+export type ExtensionApprovalAnswer =
+	| "once"
+	| "session"
+	| "deny"
+	| { grant: ExtensionApprovalGrant["scope"]; always: boolean };
 
 /**
  * UI context for extensions to request interactive UI.
@@ -301,11 +328,15 @@ export interface ExtensionUIContext {
 	): Promise<ExtensionAskDialogResult | undefined>;
 
 	/**
-	 * Show a tool-approval prompt; true only for an explicit approval. Each prompt is a title line
-	 * then details: `compact` collapses multi-line details for a host that shows the call itself
-	 * beside the prompt, `full` keeps them. Absent: callers fall back to an Approve/Deny `select`.
+	 * Show a tool-approval prompt; anything but an explicit approval is `deny`, `session` only when
+	 * the prompt offers it, and a grant only one the prompt lists. Each prompt is a title line then
+	 * details: `compact` summarizes the tool's own details (command, path, content) to one row for a
+	 * host with little room, `full` keeps them whole. Absent: callers fall back to a `select`.
 	 */
-	approve?(prompt: ExtensionApprovalPrompt, dialogOptions?: ExtensionUIDialogOptions): Promise<boolean>;
+	approve?(
+		prompt: ExtensionApprovalPrompt,
+		dialogOptions?: ExtensionUIDialogOptions,
+	): Promise<ExtensionApprovalAnswer>;
 
 	/** Show a notification to the user. */
 	notify(message: string, type?: "info" | "warning" | "error"): void;
@@ -382,6 +413,9 @@ export interface ExtensionUIContext {
 	setEditorComponent(
 		factory: ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined,
 	): void;
+
+	/** Get the current custom editor factory, if one has been installed. */
+	getEditorComponent(): ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined;
 
 	/** Get the current theme for styling. */
 	readonly theme: Theme;
@@ -525,7 +559,7 @@ export type AnnotationDiffSource =
 	| { kind: "diff"; diff: string; label?: string }
 	/** Staged + unstaged (or jj working-copy) changes in the live session cwd. */
 	| { kind: "uncommitted" }
-	/** A GitHub PR: `https://github.com/owner/repo/pull/N` or `pr://owner/repo/N`. */
+	/** A GitHub PR or GitLab MR: `https://github.com/owner/repo/pull/N`, `pr://owner/repo/N`, `https://<host>/<group>/<project>/-/merge_requests/N`, or `mr://<host>/<group>/<project>/N/diff`. */
 	| { kind: "pr"; ref: string };
 
 export type AnnotationSource = AnnotationTextSource | AnnotationDiffSource;
@@ -892,6 +926,9 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	/** Tool approval tier. Defaults to `"exec"` when omitted.
 	 *  `"read"`: read-only operations. `"write"`: mutations. `"exec"`: code execution. */
 	approval?: ToolApproval;
+	/** Exact targets an approval mode may remember for this call (`always-ask-cached`), one key per
+	 *  target, derived from the call's args. Omit it and approvals are never remembered per target. */
+	approvalCacheTargets?: (args: unknown) => readonly string[] | undefined;
 	/** Structured-output strict grammar opt-in/out. `false` is meaningful: OpenAI-family
 	 *  serializers preserve an explicit `strict: false` on the wire (#4336/#4340). */
 	strict?: boolean;
@@ -899,6 +936,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	mcpServerName?: string;
 	/** Original MCP tool name for discovery/search metadata. */
 	mcpToolName?: string;
+	/** MCP read-only annotation, independent of the approval tier. */
+	mcpReadOnlyHint?: boolean;
 	/** Previous public name when a rename changed minting. Forwarded through
 	 *  RegisteredToolAdapter so approval falls back to legacy `deny`/`prompt`. */
 	legacyName?: string;

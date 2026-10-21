@@ -7,6 +7,7 @@
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
+import { presentNarrationAsAnswer } from "@oh-my-pi/pi-ai/utils/narration";
 import { $flag, logger, postmortem, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { MCPManager } from "../mcp/manager";
 import { resolveMCPTimeoutMs } from "../mcp/timeout";
@@ -295,6 +296,7 @@ async function runPrintModeCore(
 	// From this point onward a late blocker must be recorded without starting a
 	// primary turn whose response print mode would never emit.
 	session.prepareForHeadlessAdvisorDrain();
+	await session.waitForIdle();
 
 	// Read via the session accessor, not the raw state tail: a classifier
 	// refusal is pruned from active context at settle, and an aborted turn
@@ -330,8 +332,9 @@ async function runPrintModeCore(
 			// (text, then tool calls, then more text — GPT models do this on every
 			// long task); the TUI shows all of them, so print mode must too, or a
 			// plan written mid-turn is silently dropped. Oldest first, final last.
+			// Narration the provider returned as thinking is part of the reply.
 			for (const message of turnAssistantMessages(session.state.messages, assistantMsg)) {
-				for (const content of message.content) {
+				for (const content of presentNarrationAsAnswer(message).content) {
 					if (content.type === "text") {
 						writeStdoutLine(`${sanitizeText(content.text)}\n`);
 					} else if (printThoughts && content.type === "thinking" && content.thinking.trim().length > 0) {

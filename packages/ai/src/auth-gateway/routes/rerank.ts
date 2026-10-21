@@ -6,6 +6,7 @@ import { deterministicUuid } from "../../utils/deterministic-id";
 import {
 	type AuthGatewayRouteOptions,
 	buildGatewayApiKeyResolver,
+	gatewayRequestLogFields,
 	mirrorRequestAbort,
 	recordGatewayUsage,
 	resolveGatewayApiKeyWithOrigin,
@@ -39,13 +40,7 @@ export async function handleRerank(bootOpts: AuthGatewayRouteOptions, req: Reque
 
 	const client = resolveClientIdentity(req.headers);
 	const sessionId = deterministicUuid(`rerank\u0000${model.provider}/${model.id}`);
-	const apiKeyResolution = await resolveGatewayApiKeyWithOrigin(
-		bootOpts.storage,
-		model,
-		sessionId,
-		controller.signal,
-		peer,
-	);
+	const apiKeyResolution = await resolveGatewayApiKeyWithOrigin(bootOpts, model, sessionId, controller.signal, peer);
 	if (controller.signal.aborted) return aborted();
 	if ("status" in apiKeyResolution) {
 		return rerankWire.formatError(apiKeyResolution.status, apiKeyResolution.type, apiKeyResolution.message);
@@ -59,12 +54,13 @@ export async function handleRerank(bootOpts: AuthGatewayRouteOptions, req: Reque
 		resolvedModel: model.id,
 		stream: false,
 		peer,
+		...gatewayRequestLogFields(bootOpts, apiKeyResolution),
 	});
 
 	try {
 		const result = await rerank(model, parsed.request, {
 			apiKey: buildGatewayApiKeyResolver(
-				bootOpts.storage,
+				bootOpts,
 				model,
 				sessionId,
 				apiKeyResolution,

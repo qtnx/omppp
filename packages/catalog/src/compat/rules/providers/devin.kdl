@@ -1,10 +1,8 @@
-// Catalog entry for "devin"; no deployment-contract compat rules are needed.
+// Catalog entry and deployment contract for "devin".
 
 provider "devin" {
 	default-model "swe-1-6"
 	env "DEVIN_API_KEY"
-	// Devin selects reasoning tiers by model uid, never an inline effort field.
-	trust-explicit-thinking-only #true
 	dynamic-models-authoritative #true
 	discovery label="Devin" oauth-provider="devin" {
 		env "DEVIN_API_KEY"
@@ -192,4 +190,10 @@ provider "devin" {
 			}
 		}
 	}
+}
+
+// Devin's Cascade catalog reports each model's thinking surface; a row
+// without one carries no reasoning ladder.
+on-api "devin-agent" {
+	trust-explicit-thinking-only #true
 }

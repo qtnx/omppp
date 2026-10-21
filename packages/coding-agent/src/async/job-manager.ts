@@ -1,8 +1,10 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { PipeStreams } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { EventBus } from "../utils/event-bus";
 import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
+import type { JobWidgetInputs, JobWidgetRegistry } from "../job-widgets/types";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -143,6 +145,8 @@ export interface AsyncJob {
 	agentId?: string;
 	/** The process the job runs, when it spawns one. */
 	process?: AsyncJobProcess;
+	/** What the job's live widget reads; set by bash and task jobs. */
+	widgetInputs?: JobWidgetInputs;
 	/**
 	 * Job is registered but parked behind a caller-managed gate (e.g. a task
 	 * batch semaphore). Queued jobs do not count toward the running-job limit
@@ -193,6 +197,8 @@ export interface AsyncJobProcess {
 	readonly cwd: string;
 	/** Live pids the command spawned, in spawn order; empty before it starts and after it ends. */
 	pids(): readonly number[];
+	/** Copies of the bytes crossing the command's pipes, kept with the job row (`proc://<id>/streams`). */
+	readonly streams?: PipeStreams;
 }
 
 /** Delivery callback for a settled job's result text. */
@@ -284,6 +290,8 @@ export interface AsyncJobRegisterOptions {
 	foreground?: boolean;
 	/** The process the job runs; see {@link AsyncJob.process}. */
 	process?: AsyncJobProcess;
+	/** See {@link AsyncJob.widgetInputs}. */
+	widgetInputs?: JobWidgetInputs;
 }
 
 /**
@@ -339,6 +347,8 @@ export class AsyncJobManager {
 	#deliveryLoop: Promise<void> | undefined;
 	#deliveryQueueChanged = Promise.withResolvers<void>();
 	#disposed = false;
+	/** Live widgets of this root's jobs; set by the root session when widgets are available. */
+	widgets: JobWidgetRegistry | undefined;
 
 	#filterJobs(jobs: Iterable<AsyncJob>, filter?: AsyncJobFilter): AsyncJob[] {
 		if (!filter) return Array.from(jobs);
@@ -472,10 +482,7 @@ export class AsyncJobManager {
 			);
 		}
 
-		const id = this.#resolveJobId(options?.id);
-		this.#suppressedDeliveries.delete(id);
-		this.#consumedJobResults.delete(id);
-		this.#releasedForegroundJobs.delete(id);
+		const id = this.#claimJobId(options?.id);
 		if (options?.foreground) this.#suppressedDeliveries.add(id);
 		const abortController = new AbortController();
 		const startTime = Date.now();
@@ -491,6 +498,7 @@ export class AsyncJobManager {
 			ownerId: options?.ownerId,
 			agentId: options?.agentId,
 			process: options?.process,
+			widgetInputs: options?.widgetInputs,
 			queued: options?.queued === true,
 			...(options?.foreground ? { foreground: true } : {}),
 		};
@@ -553,6 +561,39 @@ export class AsyncJobManager {
 			else this.#scheduleEviction(id);
 		})();
 
+		return id;
+	}
+
+	/**
+	 * Deliver an already-completed result through the normal owner-scoped job
+	 * queue without consuming a running-job slot.
+	 */
+	publishCompleted(
+		type: AsyncJobType,
+		label: string,
+		result: AsyncJobRunResult,
+		options: { id?: string; ownerId?: string; agentId?: string },
+	): string {
+		if (this.#disposed) throw new Error("Async job manager is disposed");
+		const id = this.#claimJobId(options.id);
+		const now = Date.now();
+		const job: AsyncJob = {
+			id,
+			type,
+			status: "completed",
+			startTime: now,
+			endTime: now,
+			label,
+			abortController: new AbortController(),
+			promise: Promise.resolve(),
+			ownerId: options.ownerId,
+			agentId: options.agentId,
+			resultText: result.text,
+			structured: result.structured,
+		};
+		this.#jobs.set(id, job);
+		this.#enqueueDelivery(id, result.text);
+		this.#scheduleEviction(id);
 		return id;
 	}
 
@@ -954,6 +995,8 @@ export class AsyncJobManager {
 		this.#progressListeners.clear();
 		this.#releasedForegroundJobs.clear();
 		this.#deliverySinks.clear();
+		this.widgets?.dispose();
+		this.widgets = undefined;
 		return jobsSettled && drained;
 	}
 
@@ -971,8 +1014,9 @@ export class AsyncJobManager {
 		// #suppressedDeliveries; evicting now would clear that marker (#evictJob)
 		// before the queue's isStale check drains it, letting the already-consumed
 		// result inject a duplicate async-result follow-up. A parked entry keeps
-		// the full retention window instead. Clamping inside #scheduleEviction
-		// keeps a shorter configured retention the effective cap.
+		// the row until its delivery settles (see #scheduleEviction), which then
+		// arms the consumed grace. Clamping inside #scheduleEviction keeps a
+		// shorter configured retention the effective cap.
 		const deliveryPending =
 			this.#deliveries.some(delivery => delivery.jobId === jobId) ||
 			this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId);
@@ -991,6 +1035,14 @@ export class AsyncJobManager {
 		this.#releasedForegroundJobs.delete(jobId);
 		this.#evictJob(jobId);
 		if (jobId === `bg_${this.#nextAutoId - 1}`) this.#nextAutoId -= 1;
+	}
+
+	#claimJobId(preferredId?: string): string {
+		const id = this.#resolveJobId(preferredId);
+		this.#suppressedDeliveries.delete(id);
+		this.#consumedJobResults.delete(id);
+		this.#releasedForegroundJobs.delete(id);
+		return id;
 	}
 
 	#resolveJobId(preferredId?: string): string {
@@ -1118,6 +1170,7 @@ export class AsyncJobManager {
 		this.#consumedJobResults.delete(jobId);
 		const job = this.#jobs.get(jobId);
 		if (job) this.#runRetainedArtifactsCleanup(job);
+		this.widgets?.forget(jobId);
 		return this.#jobs.delete(jobId);
 	}
 
@@ -1126,6 +1179,13 @@ export class AsyncJobManager {
 	 * retention window; a consumed result passes the shorter
 	 * {@link #consumedResultEvictionMs}. The delay is clamped to the configured
 	 * retention so an explicit short retention always stays the effective cap.
+	 * A timer that fires while a suppressed job's delivery is in flight (its
+	 * async-result entry parked on a busy owner's yield queue) evicts only once
+	 * that attempt settles: the parked entry's isStale check resolves through
+	 * the suppression marker #evictJob clears, so evicting mid-park would
+	 * re-inject a result a foreground snapshot already consumed. Unsuppressed
+	 * in-flight deliveries keep the bounded lifecycle, so a receipt that never
+	 * settles cannot pin the row and its retained artifacts.
 	 */
 	#scheduleEviction(jobId: string, delayMs: number = this.#retentionMs): void {
 		if (this.#disposed) return;
@@ -1136,7 +1196,16 @@ export class AsyncJobManager {
 		const delay = Math.max(0, Math.min(this.#retentionMs, delayMs));
 		clearTimeout(this.#evictionTimers.get(jobId));
 		const timer = setTimeout(() => {
-			this.#evictJob(jobId);
+			const inFlight = this.#inFlightDeliveries.find(delivery => delivery.jobId === jobId)?.promise;
+			if (!inFlight || !this.isDeliverySuppressed(jobId)) {
+				this.#evictJob(jobId);
+				return;
+			}
+			// The settled attempt may re-arm this job's timer (consumed grace);
+			// only evict when nothing replaced this one in the meantime.
+			void inFlight.then(() => {
+				if (this.#evictionTimers.get(jobId) === timer) this.#evictJob(jobId);
+			});
 		}, delay);
 		timer.unref();
 		this.#evictionTimers.set(jobId, timer);

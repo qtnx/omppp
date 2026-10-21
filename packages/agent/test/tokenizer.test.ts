@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "bun:test";
 import type { Api, AssistantMessage, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
 import { convertCodexResponsesMessages } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { streamOpenAIResponses } from "@oh-my-pi/pi-ai/providers/openai-responses";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import * as natives from "@oh-my-pi/pi-natives";
 import { Agent } from "../src/agent";
@@ -200,6 +201,75 @@ describe("countMessage", () => {
 	});
 });
 
+// Ollama chat drops historical assistant thinking even when the stored turn
+// contains it; a false compaction floor can discard most of a usable window.
+describe("Ollama chat history estimate", () => {
+	const model = buildModel({
+		id: "deepseek-v4-flash",
+		name: "DeepSeek V4 Flash",
+		api: "ollama-chat",
+		provider: "ollama-cloud",
+		baseUrl: "https://ollama.com",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1_000_000,
+		maxTokens: 8192,
+	});
+	const turn: AssistantMessage = {
+		role: "assistant",
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		content: [
+			{ type: "thinking", thinking: "r".repeat(8000), thinkingSignature: "s".repeat(8000) },
+			{ type: "text", text: "Done." },
+		],
+		usage: {
+			input: 10,
+			output: 4000,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 4010,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 0,
+	};
+	test("counts foreign thinking demoted into visible Ollama text, without its native signature", () => {
+		const foreign: AssistantMessage = {
+			...turn,
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+		};
+		const stripping = new Tokenizer(model);
+		const floor = { excludeEncryptedReasoning: true };
+		const estimate = stripping.countMessage(foreign, floor);
+		expect(estimate).toBeGreaterThan(1000);
+		expect(stripping.countMessage(foreign)).toBe(estimate);
+		const replaying = new Tokenizer({ ...model, compat: { ...model.compat, stripThinkingHistory: false } });
+		expect(replaying.countMessage(foreign, floor)).toBe(estimate);
+	});
+
+	test("counts only replayed content and recounts after the stripping policy changes", () => {
+		const visible = { ...turn, content: [{ type: "text", text: "Done." }] } satisfies AssistantMessage;
+		const agent = new Agent({ initialState: { model, systemPrompt: [], tools: [], messages: [] } });
+		const floor = { excludeEncryptedReasoning: true };
+		const visibleCount = agent.tokenizer.countMessage(visible);
+		expect(agent.tokenizer.countMessage(turn)).toBe(visibleCount);
+		expect(agent.tokenizer.countMessage(turn, floor)).toBe(visibleCount);
+
+		const replaying = { ...model, compat: { ...model.compat, stripThinkingHistory: false } };
+		expect(agent.tokenizer.countsAlike(replaying)).toBe(false);
+		agent.setModel(replaying);
+		expect(agent.tokenizer.countMessage(turn, floor)).toBeGreaterThan(visibleCount + 1000);
+		expect(agent.tokenizer.countMessage(turn)).toBeGreaterThan(agent.tokenizer.countMessage(turn, floor));
+		agent.setModel(model);
+		expect(agent.tokenizer.countMessage(turn, floor)).toBe(visibleCount);
+	});
+});
+
 // Contract: a replayed signed thinking block costs what the reading model bills
 // for it: Claude rebuilds the full reasoning from the signature and bills it at
 // the size the turn billed as output; other readers are charged the
@@ -309,6 +379,25 @@ describe("countMessage replayed thinking", () => {
 		const ranTools = signedTurn(opus, VISIBLE, SIGNATURE, "toolUse");
 		ranTools.content = [...ranTools.content, toolCall];
 		expect(tokenizer.countMessage(ranTools)).toBe(OUTPUT_TOKENS);
+	});
+
+	test("charges the reasoning of the latest turn that abandoned its tool calls on the Claude API only", () => {
+		// The Anthropic Messages replay keeps the latest assistant turn
+		// byte-for-byte, signatures included; Bedrock's Converse replay strips them.
+		const toolCall = { type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.ts" } } as const;
+		for (const stop of ["stop", "length"] as const) {
+			const tokenizer = new Tokenizer(opus);
+			const turn = signedTurn(opus, VISIBLE, SIGNATURE, stop);
+			turn.content = [...turn.content, toolCall];
+			expect(tokenizer.countLatestTurn(turn)).toBe(OUTPUT_TOKENS);
+			// An older position, counted after it, still gets the stripped count.
+			expect(tokenizer.countMessage(turn)).toBe(tokenizer.countMessage(turn, { excludeEncryptedReasoning: true }));
+
+			const bedrock = new Tokenizer(bedrockOpus);
+			const bedrockTurn = signedTurn(bedrockOpus, VISIBLE, SIGNATURE, stop);
+			bedrockTurn.content = [...bedrockTurn.content, toolCall];
+			expect(bedrock.countLatestTurn(bedrockTurn)).toBe(bedrock.countMessage(bedrockTurn));
+		}
 	});
 
 	test("lowers a native Claude replay by the visible text a shake rewrite removes, after a reload too", () => {

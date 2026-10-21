@@ -5,6 +5,7 @@ import { closeQuietly, type DatabasePath, openDatabase } from "../db";
 import { backfillConsolidatedFacts, ensureVeracityConsolidator } from "./beam/consolidate";
 import type { BeamMemoryState, JsonValue, Metadata, RecallResult, RecallTierLabel } from "./beam/types";
 import { EpisodicGraph } from "./episodic-graph";
+import { STOP_WORDS } from "./synonyms";
 import { VeracityConsolidator } from "./veracity-consolidation";
 
 export type PolyphonicVoice = "hybrid" | "vector" | "graph" | "fact" | "temporal";
@@ -229,15 +230,20 @@ function queryTokens(query: string): string[] {
 	return tokens;
 }
 
-/** Subject candidates for the fact voice: every 3+ char query word plus adjacent word pairs. */
+/**
+ * Subject candidates for the fact voice: every 3+ char query word plus adjacent word pairs.
+ * Stopwords never anchor a subject on their own — the regex extractor stores sentence-initial
+ * words like `That` as subjects, so a bare `that` in the query would pull in unrelated memories.
+ */
 function factSubjectCandidates(query: string): string[] {
 	const tokens = queryTokens(query);
 	const seen = new Set<string>();
 	for (let i = 0; i < tokens.length; i++) {
 		const word = tokens[i] as string;
-		if (word.length >= 3) seen.add(word);
+		const isContent = !STOP_WORDS.has(word);
+		if (isContent && word.length >= 3) seen.add(word);
 		const next = tokens[i + 1];
-		if (next !== undefined) seen.add(`${word} ${next}`);
+		if (next !== undefined && (isContent || !STOP_WORDS.has(next))) seen.add(`${word} ${next}`);
 	}
 	return [...seen];
 }

@@ -38,6 +38,7 @@ import type {
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { withEnv, withOfficialAnthropicEndpoint } from "./helpers";
+import { requestBodyText } from "@oh-my-pi/pi-ai/utils/request-body";
 
 const ANTHROPIC_MODEL_SPEC: ModelSpec<"anthropic-messages"> = {
 	id: "claude-sonnet-4-5",
@@ -1237,6 +1238,43 @@ describe("Anthropic request fingerprint alignment", () => {
 		}).result();
 		expect(proxy.beta()).not.toContain("extended-cache-ttl-2025-04-11");
 	});
+	it("uses 1h cache TTL on Vertex without sending the extended-cache beta", async () => {
+		let capturedHeader = "";
+		let capturedBody: {
+			system?: Array<{ cache_control?: { type?: string; ttl?: string } }>;
+			messages?: Array<{ content?: Array<{ cache_control?: { type?: string; ttl?: string } }> | string }>;
+			anthropic_beta?: string[];
+		} = {};
+		const fetchMock = (async (_input: string | URL | Request, init?: RequestInit) => {
+			capturedHeader = new Headers(init?.headers).get("anthropic-beta") ?? "";
+			capturedBody = JSON.parse(String(init?.body ?? "{}"));
+			return new Response(
+				JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "captured" } }),
+				{ status: 400, headers: { "Content-Type": "application/json" } },
+			);
+		}) as typeof fetch;
+		const vertexModel: Model<"anthropic-messages"> = buildModel({
+			...ANTHROPIC_MODEL_SPEC,
+			id: "claude-opus-5-5@default",
+			name: "Claude Opus 5.5 via Vertex",
+			provider: "google-vertex",
+			baseUrl:
+				"https://us-east5-aiplatform.googleapis.com/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-5-5@default:streamRawPredict",
+		});
+
+		await streamAnthropic(
+			vertexModel,
+			{ systemPrompt: ["Stay concise."], messages: [{ role: "user", content: "Hi", timestamp: Date.now() }] },
+			{ apiKey: "vertex-adc", cacheRetention: "long", fetch: fetchMock },
+		).result();
+
+		const breakpoint = capturedBody.messages
+			?.flatMap(message => (Array.isArray(message.content) ? message.content : []))
+			.find(block => block.cache_control)?.cache_control;
+		expect(breakpoint).toEqual({ type: "ephemeral", ttl: "1h" });
+		expect(capturedHeader).not.toContain("extended-cache-ttl-2025-04-11");
+		expect(capturedBody.anthropic_beta ?? []).not.toContain("extended-cache-ttl-2025-04-11");
+	});
 
 	it("retries once with the version a claude_code_version_too_old rejection requires", async () => {
 		const tooOld = JSON.stringify({
@@ -2356,7 +2394,7 @@ describe("Anthropic request fingerprint alignment", () => {
 
 	it("marks only the Anthropic strict allowlist strict", async () => {
 		const tools: Tool[] = [
-			...(["python", "edit", "find"] as const).map(name => ({
+			...(["python", "edit", "find", "yield"] as const).map(name => ({
 				name,
 				description: `${name} tool`,
 				strict: true,
@@ -2394,8 +2432,38 @@ describe("Anthropic request fingerprint alignment", () => {
 
 		const strictNames = (payload.tools ?? []).filter(tool => tool.strict === true).map(tool => tool.name);
 
-		expect(strictNames).toEqual(["python", "edit", "find"]);
+		expect(strictNames).toEqual(["python", "edit", "find", "yield"]);
 		expect(payload.tools?.find(tool => tool.name === "edit")?.input_schema?.required).toEqual(["requiredValue"]);
+	});
+
+	it("sends yield with buffered input streaming while other tools stream eagerly", async () => {
+		const tools: Tool[] = (["yield", "read"] as const).map(name => ({
+			name,
+			description: `${name} tool`,
+			strict: true,
+			parameters: {
+				type: "object",
+				properties: { requiredValue: { type: "string" } },
+				required: ["requiredValue"],
+			} as TJsonSchema,
+		}));
+
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: ["Stay concise."],
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+				tools,
+			},
+			{ isOAuth: false },
+		)) as { tools?: Array<{ name?: string; strict?: boolean; eager_input_streaming?: boolean }> };
+
+		// Eager streaming skips the API's input validation, which `strict` alone did not
+		// make up for: eagerly streamed yields still arrived as invalid JSON.
+		const yieldTool = payload.tools?.find(tool => tool.name === "yield");
+		expect(yieldTool?.strict).toBe(true);
+		expect(yieldTool?.eager_input_streaming).toBe(false);
+		expect(payload.tools?.find(tool => tool.name === "read")?.eager_input_streaming).toBe(true);
 	});
 
 	it("marks regular two-field Zod object tools strict", async () => {
@@ -2734,6 +2802,15 @@ describe("Anthropic request fingerprint alignment", () => {
 			interleavedThinking: false,
 			hasTools: true,
 		});
+		const withIncompatibleBufferedTools = buildAnthropicClientOptions({
+			model: incompatibleModel,
+			apiKey: "sk-ant-api-test",
+			extraBetas: [],
+			stream: true,
+			interleavedThinking: false,
+			hasTools: true,
+			hasBufferedInputTools: true,
+		});
 
 		// No betas at all → the header is omitted entirely on API-key requests.
 		expect(withoutTools.defaultHeaders["anthropic-beta"]).toBeUndefined();
@@ -2741,6 +2818,8 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(withIncompatibleTools.defaultHeaders["anthropic-beta"]).toContain(
 			"fine-grained-tool-streaming-2025-05-14",
 		);
+		// The beta would stream `yield` eagerly, past the API's input validation.
+		expect(withIncompatibleBufferedTools.defaultHeaders["anthropic-beta"]).toBeUndefined();
 	});
 
 	it("uses Cloudflare AI Gateway authorization without Anthropic credential headers", () => {
@@ -3573,14 +3652,14 @@ describe("Anthropic request fingerprint alignment", () => {
 });
 
 describe("cch attestation", () => {
-	it("wrapFetchForCch: replaces cch=00000 with correct XXHash64 in outgoing request body", async () => {
+	it("wrapFetchForCch: patches cch over the uncompressed body before the transport gzips it", async () => {
 		const { promise: bodyPromise, resolve: bodyResolve } = Promise.withResolvers<string>();
 		const controller = new AbortController();
 
+		let gzipped = false;
 		const fakeFetch = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-			const raw = init?.body;
-			const body = typeof raw === "string" ? raw : new TextDecoder().decode(raw as Uint8Array);
-			bodyResolve(body);
+			gzipped = new Headers(init?.headers).get("content-encoding") === "gzip";
+			bodyResolve(requestBodyText(init) ?? "");
 			controller.abort();
 			return new Response('event: message_stop\ndata: {"type":"message_stop"}\n\n', {
 				status: 200,
@@ -3592,12 +3671,14 @@ describe("cch attestation", () => {
 			ANTHROPIC_MODEL,
 			{
 				systemPrompt: ["Be helpful."],
-				messages: [{ role: "user", content: "hello", timestamp: Date.now() }],
+				// Above the gzip floor, so the official-API request is compressed.
+				messages: [{ role: "user", content: "hello ".repeat(500), timestamp: Date.now() }],
 			},
 			{ apiKey: "sk-ant-oat-test", isOAuth: true, signal: controller.signal, fetch: fakeFetch },
 		);
 
 		const capturedBody = await bodyPromise;
+		expect(gzipped).toBe(true);
 
 		// The placeholder must have been replaced before the request was sent.
 		expect(capturedBody).toContain("cch=");

@@ -15,13 +15,14 @@ import {
 import { JSONC } from "bun";
 import { resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { loadExtensions } from "../extensions/loader";
+import { runBunCli } from "./bun-cli";
 import { refreshBunGitCache } from "./bun-git-cache";
 import { type GitSource, parseGitUrl } from "./git-url";
 import { resolvePluginManifestEntries } from "./loader";
 import { getInstalledPluginsRegistryPath, readInstalledPluginsRegistry } from "./marketplace/registry";
 import { parsePluginId } from "./marketplace/types";
 import { extractPackageName, parsePluginSpec } from "./parser";
-import { normalizePluginRuntimeConfig } from "./runtime-config";
+import { normalizePluginRuntimeConfig, writePluginRuntimeConfig } from "./runtime-config";
 import type {
 	DoctorCheck,
 	DoctorOptions,
@@ -178,8 +179,8 @@ export class PluginManager {
 	}
 
 	async #saveRuntimeConfig(): Promise<void> {
-		await this.#ensureConfigLoaded();
-		await Bun.write(getPluginsLockfile(), JSON.stringify(this.#runtimeConfig, null, 2));
+		const config = await this.#ensureConfigLoaded();
+		await writePluginRuntimeConfig(getPluginsLockfile(), config);
 	}
 
 	async #loadProjectOverrides(): Promise<ProjectPluginOverrides> {
@@ -560,31 +561,17 @@ export class PluginManager {
 			// `--no-cache` re-fetches the manifest while leaving the tarball cache
 			// intact. Git specs don't use the manifest cache; their cache staleness is
 			// handled by refreshBunGitCache + `bun update` below.
-			const installArgs = [
-				"bun",
-				"install",
-				...(gitSource ? [] : ["--no-cache"]),
-				...(options.force ? ["--force"] : []),
-				packageInstallSpec,
-			];
-			const installProc = Bun.spawn(installArgs, {
-				cwd: getPluginsDir(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-				windowsHide: true,
-			});
-			// Drain stdout+stderr concurrently with proc.exited. Awaiting exited
-			// before reading either pipe risks a >64 KiB OS-pipe-buffer deadlock
-			// once bun install prints enough progress; even where Bun currently
-			// buffers eagerly, doing this leaks unbounded memory.
-			const [installExit, , installStderr] = await Promise.all([
-				installProc.exited,
-				new Response(installProc.stdout).text(),
-				new Response(installProc.stderr).text(),
-			]);
-			if (installExit !== 0) {
-				throw new Error(`bun install failed: ${installStderr}`);
+			const install = await runBunCli(
+				[
+					"install",
+					...(gitSource ? [] : ["--no-cache"]),
+					...(options.force ? ["--force"] : []),
+					packageInstallSpec,
+				],
+				getPluginsDir(),
+			);
+			if (install.exitCode !== 0) {
+				throw new Error(`bun install failed: ${install.stderr}`);
 			}
 			// Resolve actual package name. npm specs encode the name (strip version);
 			// git specs do not, so diff plugins/package.json deps to find the new entry.
@@ -623,21 +610,9 @@ export class PluginManager {
 			// cache from the remote. Rollback is handled by the outer catch.
 			if (gitSource && existingActualName) {
 				await refreshBunGitCache(gitSource, getPluginsDir());
-				const updateProc = Bun.spawn(["bun", "update", actualName], {
-					cwd: getPluginsDir(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-					windowsHide: true,
-				});
-				// Same drain-concurrent-with-exit pattern as the bun install above.
-				const [updateExit, , updateStderr] = await Promise.all([
-					updateProc.exited,
-					new Response(updateProc.stdout).text(),
-					new Response(updateProc.stderr).text(),
-				]);
-				if (updateExit !== 0) {
-					throw new Error(`bun update ${actualName} failed: ${updateStderr}`);
+				const update = await runBunCli(["update", actualName], getPluginsDir());
+				if (update.exitCode !== 0) {
+					throw new Error(`bun update ${actualName} failed: ${update.stderr}`);
 				}
 			}
 
@@ -782,21 +757,7 @@ export class PluginManager {
 		validatePackageName(name);
 		await this.#ensurePackageJson();
 
-		const proc = Bun.spawn(["bun", "uninstall", name], {
-			cwd: getPluginsDir(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-			windowsHide: true,
-		});
-
-		// Drain both pipes concurrently with proc.exited to avoid a pipe-buffer
-		// deadlock if bun uninstall floods stdout/stderr.
-		const [exitCode] = await Promise.all([
-			proc.exited,
-			new Response(proc.stdout).text(),
-			new Response(proc.stderr).text(),
-		]);
+		const { exitCode } = await runBunCli(["uninstall", name], getPluginsDir());
 		if (exitCode !== 0) {
 			throw new Error(`npm uninstall failed for ${name}`);
 		}
@@ -1242,21 +1203,8 @@ export class PluginManager {
 
 	async #installPluginDependencies(): Promise<boolean> {
 		try {
-			const proc = Bun.spawn(["bun", "install"], {
-				cwd: getPluginsDir(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-				windowsHide: true,
-			});
-			// Drain pipes concurrently with proc.exited; otherwise a chatty
-			// bun install can block on a full OS pipe buffer.
-			const [exit] = await Promise.all([
-				proc.exited,
-				new Response(proc.stdout).text(),
-				new Response(proc.stderr).text(),
-			]);
-			return exit === 0;
+			const { exitCode } = await runBunCli(["install"], getPluginsDir());
+			return exitCode === 0;
 		} catch {
 			return false;
 		}

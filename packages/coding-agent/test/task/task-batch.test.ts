@@ -34,6 +34,8 @@ import {
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
+import { cfgTaskDisabledAgents, cfgTaskEnableEffort, cfgTaskStructured } from "@oh-my-pi/pi-coding-agent/task/settings";
+
 const batchSchemaOutput = type({
 	context: "string",
 	tasks: type({
@@ -44,7 +46,6 @@ const batchSchemaOutput = type({
 	"[string]": "unknown",
 });
 
-import { cfgTaskEnableEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
 const scoutAgent: AgentDefinition = {
 	name: "scout",
 	description: "Read-only scout agent",
@@ -288,6 +289,34 @@ describe("task.batch schema gating", () => {
 		expect(getBatchItemProperties(batch).schemaMode).toBeUndefined();
 		expect(batch.description).not.toContain("outputSchema");
 	});
+
+	it("explains structured result navigation with task.structured off only while a visible agent opts in", async () => {
+		mockDiscovery([
+			taskAgent,
+			{ ...taskAgent, name: "reporter", description: "Reports a verdict", structured: true },
+		]);
+		// The fork defaults `task.structured` on; this contract is the setting-off path.
+		const session = createSession({
+			settings: { "task.batch": true, "async.enabled": true, "task.structured": false },
+		});
+		const tool = await TaskTool.create(session);
+		const navigation = "nested `/reports/0/data`";
+
+		const optedIn = tool.description;
+		expect(optedIn).toContain(navigation);
+		expect(optedIn).toContain("### reporter (STRUCTURED; schema result)\nReports a verdict");
+		expect(optedIn).not.toContain("outputSchema");
+		expect(optedIn).not.toContain("schemaMode");
+
+		cfgTaskDisabledAgents.override(session.settings, ["reporter"]);
+		expect(tool.description).not.toContain(navigation);
+
+		cfgTaskDisabledAgents.override(session.settings, []);
+		cfgTaskStructured.override(session.settings, true);
+		const settingOn = tool.description;
+		expect(settingOn).toContain("`outputSchema` parsed payload, even invalid");
+		expect(settingOn).not.toContain("STRUCTURED");
+	});
 });
 
 describe("task.batch validation", () => {
@@ -301,6 +330,17 @@ describe("task.batch validation", () => {
 		const result = await tool.execute("tool-call", params);
 		return getFirstText(result);
 	}
+
+	it("reports missing tasks as a failed tool result instead of a successful refusal", async () => {
+		mockDiscovery();
+		const tool = await TaskTool.create(createSession({ settings: { "task.batch": true } }));
+		const result = await tool.execute("missing-tasks", {
+			context: "<tasks><task>Inspect the project</task></tasks>",
+		});
+
+		expect(getFirstText(result)).toContain("Missing `tasks`");
+		expect(result.isError).toBe(true);
+	});
 
 	it("rejects the stale schema argument regardless of batch mode", async () => {
 		for (const batch of [false, true]) {
@@ -326,6 +366,19 @@ describe("task.batch validation", () => {
 		expect(text).toContain("not part of the batch shape");
 	});
 
+	it("rejects a misplaced specialist before spawning any agent", async () => {
+		mockDiscovery();
+		const run = vi.spyOn(executorModule, "runSubprocess");
+		const tool = await TaskTool.create(createSession({ settings: { "task.batch": true, "async.enabled": false } }));
+		const result = await tool.execute("misplaced-specialist", {
+			context: "Inspect changes without edits",
+			agent: "custom-auditor",
+			tasks: [{ task: "Inspect the patch" }],
+		});
+		expect(getFirstText(result)).toContain("tasks[].agent");
+		expect(run).not.toHaveBeenCalled();
+	});
+
 	it("rejects empty task arrays and items without tasks", async () => {
 		const empty = await executeText({ tasks: [] }, { "task.batch": true });
 		expect(empty).toContain("Missing `tasks`");
@@ -346,7 +399,7 @@ describe("task.batch validation", () => {
 			return makeResult(options.id ?? "?");
 		});
 
-		const text = await executeText({ agent: "task", tasks: [{ assignment: "Work." }] }, { "task.batch": true });
+		const text = await executeText({ tasks: [{ agent: "task", assignment: "Work." }] }, { "task.batch": true });
 		expect(text).not.toContain("Missing `context`");
 		expect(text).toContain("All done.");
 		expect(capturedContext).toBeUndefined();
@@ -540,9 +593,8 @@ describe("task.batch spawning", () => {
 		expect(text).toContain("Spawned 2 background agents");
 		expect(text).toContain("- `Alpha`");
 		expect(text).toContain("- `Beta`");
-		expect(text).toContain("`read proc://<id>`");
-		expect(text).toContain("Call `wait`");
-		expect(text).toContain("`write proc://<id>/kill`");
+		// Lifecycle guidance is sent once through the tool description, never repeated in results.
+		expect(text).not.toContain("`read proc://<id>`");
 		expect(text).not.toContain("`hub wait`");
 		expect(text).not.toContain('`hub` op:"wait"');
 		expect(result.details?.progress?.map(progress => progress.id)).toEqual(["Alpha", "Beta"]);
@@ -829,6 +881,27 @@ describe("task.batch spawning", () => {
 			["Alpha", 3_000],
 			["Beta", 9_000],
 		]);
+	});
+
+	it("ignores a caller-supplied effort unless task.enableEffort is on", async () => {
+		mockDiscovery();
+		const efforts: Array<string | undefined> = [];
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			efforts.push(options.effort);
+			return makeResult(options.id ?? "?");
+		});
+		const run = async (settings: Record<string, unknown>, params: TaskParams) => {
+			const tool = await TaskTool.create(createSession({ settings: { "async.enabled": false, ...settings } }));
+			await tool.execute("tc-effort", params);
+		};
+		const batch = { context: "Shared.", tasks: [{ name: "Solo", task: "Reply OK.", effort: "hi" }] } as TaskParams;
+
+		// Stale or model-invented calls carry the unadvertised field in both shapes.
+		await run({ "task.batch": false }, { task: "Reply OK.", solutionSpace: "One exact response.", effort: "hi" });
+		await run({ "task.batch": true }, batch);
+		await run({ "task.batch": true, "task.enableEffort": true }, batch);
+
+		expect(efforts).toEqual([undefined, undefined, "hi"]);
 	});
 
 	it("keeps a long result inline when no readable output artifact exists", async () => {

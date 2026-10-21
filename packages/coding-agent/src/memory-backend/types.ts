@@ -127,9 +127,11 @@ export interface MemoryBackend {
 	/**
 	 * Markdown injected as the system-prompt append section.
 	 * Returned on every prompt rebuild via `refreshBaseSystemPrompt()`.
+	 * `cwd` is the session's project directory and selects project-scoped memory.
 	 */
 	buildDeveloperInstructions(
 		agentDir: string,
+		cwd: string,
 		settings: Settings,
 		session?: AgentSession,
 	): Promise<string | undefined>;

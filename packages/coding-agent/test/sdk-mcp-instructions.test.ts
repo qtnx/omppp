@@ -7,6 +7,8 @@ import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
+import type { MCPStdioServerConfig } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -584,6 +586,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			await session.dispose();
 		}
 	}, 20_000);
+
 	it("renders Bash guidance from candidate active names before publishing the tool set", async () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
@@ -612,4 +615,47 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			await session.dispose();
 		}
 	});
+
+	// Regression for #15705: remote servers connect late or reconnect, so
+	// connection order varies within and across sessions. The section must not
+	// follow it, or every reorder rewrites the provider prompt cache.
+	it("renders server instructions in name order regardless of connection order", async () => {
+		const config: MCPStdioServerConfig = { type: "stdio", command: process.execPath, args: [FIXTURE_PATH] };
+		const renderSection = async (connectOrder: string[]): Promise<string> => {
+			const manager = new MCPManager(tempDir, null, async () => ({ configs: {}, sources: {}, exaApiKeys: [] }));
+			try {
+				for (const name of connectOrder) await manager.connectServers({ [name]: config }, {}, undefined, 0);
+				const { session } = await createAgentSession({
+					cwd: tempDir,
+					agentDir: tempDir,
+					modelRegistry,
+					sessionManager: SessionManager.inMemory(),
+					settings: Settings.isolated({}),
+					model: getBundledModel("openai", "gpt-4o-mini"),
+					disableExtensionDiscovery: true,
+					skills: [],
+					contextFiles: [],
+					promptTemplates: [],
+					slashCommands: [],
+					enableLsp: false,
+					skipPythonPreflight: true,
+					enableMCP: true,
+					mcpManager: manager,
+				});
+				try {
+					const prompt = session.systemPrompt.join("\n");
+					return prompt.slice(prompt.indexOf("## MCP Server Instructions"));
+				} finally {
+					await session.dispose();
+				}
+			} finally {
+				await manager.disconnectAll();
+			}
+		};
+
+		const lateAlpha = await renderSection(["zeta", "alpha"]);
+		expect(lateAlpha.indexOf("### alpha\n")).toBeGreaterThan(-1);
+		expect(lateAlpha.indexOf("### alpha\n")).toBeLessThan(lateAlpha.indexOf("### zeta\n"));
+		expect(await renderSection(["alpha", "zeta"])).toBe(lateAlpha);
+	}, 30_000);
 });

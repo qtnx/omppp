@@ -9,6 +9,7 @@ import consultationRequestTemplate from "../prompts/advisor/consultation-request
 import consultationRequestAsyncTemplate from "../prompts/advisor/consultation-request-async.md" with { type: "text" };
 import fableNormalMessageFramesNote from "../prompts/advisor/fable-normal-message-frames-note.md" with { type: "text" };
 import promptReviewTemplate from "../prompts/advisor/prompt-review.md" with { type: "text" };
+import { isEvalStateContext } from "../eval/state";
 import {
 	collectNativeReplayRegexSecretValues,
 	obfuscateNativeReplay,
@@ -341,13 +342,6 @@ interface CatchupWaiter {
 	finish: (caughtUp: boolean) => void;
 	timer?: NodeJS.Timeout;
 }
-/**
- * Synthetic message `AgentSession.#withEvalStateContext` appends at the tail of
- * every display-context rebuild; its slot moves each time, so
- * {@link AdvisorRuntime.rebaseDeliveredPrefix} does not align on it.
- */
-const EVAL_STATE_CONTEXT_TYPE = "eval-state-context";
-
 type PendingItem = PendingDelta | PendingConsult;
 
 interface DeliveredMessage {
@@ -1222,7 +1216,7 @@ export class AdvisorRuntime {
 		const rebased: DeliveredMessage[] = [];
 		for (const delivered of this.#deliveredPrefix) {
 			const message = delivered.message;
-			if (message.role === "custom" && message.customType === EVAL_STATE_CONTEXT_TYPE) continue;
+			if (isEvalStateContext(message)) continue;
 			const current = all[rebased.length];
 			if (current === undefined) return;
 			const fingerprint = fingerprintMessage(current);
@@ -2353,7 +2347,7 @@ function obfuscateAssistantMessage(
 			const args = obfuscateToolArguments(obfuscator, block.arguments, sharedRegexSecretValues);
 			if (args === block.arguments) return block;
 			changed = true;
-			return { ...block, arguments: args };
+			return { ...block, arguments: args, thoughtSignature: undefined };
 		}
 		return block;
 	});

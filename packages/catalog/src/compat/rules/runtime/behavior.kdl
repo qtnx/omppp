@@ -173,6 +173,10 @@ behavior {
 	// serve; the dedicated tool surfaces route them instead.
 	exclude-models provider="xai-oauth" exact="grok-imagine-image-quality" exact="grok-imagine-image-2.0" \
 		prefix="grok-imagine-video" prefix="grok-stt-" prefix="grok-voice-"
+	// Antigravity still advertises the Gemini 3.5 Flash wire ids, but every
+	// request to them answers with a retirement notice instead of a reply.
+	// `gemini-3-flash` is the family's recycled alias and routes to the same ids.
+	exclude-models provider="google-antigravity" exact="gemini-3.5-flash" exact="gemini-3-flash"
 	// Meta's /v1/models lists image generation and transcription SKUs beside
 	// the Muse Spark chat models, and SAM segmentation beside them.
 	exclude-models provider="meta" prefix="muse-image-" prefix="muse-voice-" prefix="sam-"
@@ -181,6 +185,9 @@ behavior {
 	exclude-models provider="nanogpt" substring="embedding" substring="image" substring="vision" \
 		substring="audio" substring="speech" substring="transcribe" substring="moderation" \
 		substring="realtime" substring="whisper" substring="tts"
+	// SambaNova's /v1/models may include embedding and audio SKUs.
+	exclude-models provider="sambanova" substring="embedding" substring="whisper" substring="audio" \
+		substring="e5-mistral" substring="clip"
 	// AIML API's roster interleaves media/embedding SKUs; bounded tokens keep
 	// chat ids from false-matching on plain substrings.
 	exclude-models provider="aimlapi" token="audio" token="embed" token="embedding" token="embeddings" \
@@ -219,9 +226,10 @@ behavior {
 	// effort ladder that lists `/responses` therefore rides Responses, so
 	// thinking-off actually disables reasoning instead of clamping to the
 	// lowest effort. Ladder ids without `/responses` (deepseek-v4-flash-fast,
-	// gemini-3.7-flash, Qwen3.8-Flash, Qwen3.8-Max-0902, hy4-preview,
-	// space-bunny-alpha), the Qwen3.8 ids (chat already disables them through
-	// `enable_thinking: false`), and non-reasoning ids stay on chat completions.
+	// gemini-3.7-flash, glm-5.3-flash since 2026-10-14, Qwen3.8-Flash,
+	// Qwen3.8-Max-0902, hy4-preview, space-bunny-alpha), the Qwen3.8 ids (chat
+	// already disables them through `enable_thinking: false`), and
+	// non-reasoning ids stay on chat completions.
 	api-routes provider="commandcode" default="openai-completions" {
 		route "anthropic-messages" prefix="claude-"
 		route "openai-responses" exact="gpt-5.3-codex" exact="gpt-5.4" exact="gpt-5.4-mini" exact="gpt-5.5" \
@@ -230,7 +238,7 @@ behavior {
 			exact="deepseek/deepseek-v4-flash" exact="deepseek/deepseek-v4-flash-vision-exp" \
 			exact="deepseek/deepseek-v4-pro" exact="deepseek/deepseek-v4.1-flash" \
 			exact="deepseek/deepseek-v4.1-flash-fast" exact="moonshotai/Kimi-K3" \
-			exact="z-ai/glm-5.3-flash" exact="z-ai/glm-5.3-flashx" exact="zai-org/GLM-5.2" \
+			exact="z-ai/glm-5.3-flashx" exact="zai-org/GLM-5.2" \
 			exact="zai-org/GLM-5.3" exact="google/gemini-3.1-flash-lite" exact="google/gemini-3.5-flash" \
 			exact="google/gemini-3.5-flash-lite" exact="google/gemini-3.6-flash" \
 			exact="google/gemini-3.8-flash" exact="MiniMaxAI/MiniMax-M3" exact="stepfun/Step-5-Preview" \
@@ -255,6 +263,8 @@ behavior {
 	// at /responses (#10610, #12030). The Muse prefix covers gateway-first
 	// revisions; exact ids stay as cache-migration identity.
 	api-routes provider="opencode-zen" {
+		// Paid Argon is served only on Zen's native Google endpoint (#15977).
+		route "google-generative-ai" exact="gemini-4-argon"
 		route "anthropic-messages" exact="union-alpha"
 		route "openai-responses" prefix="muse-spark-" exact="muse-spark-1.3-contributor-free" exact="gpt-6-astra" \
 			exact="gpt-6-sol" exact="gpt-6-luna"
@@ -264,6 +274,7 @@ behavior {
 	// responses pins are gateway-verified (deepseek-v4-flash 2026-08-08;
 	// muse-spark per opencode.ai/docs/go/#endpoints, #8957, #10610).
 	api-routes provider="opencode-go" {
+		route "google-generative-ai" exact="gemini-4-argon-contributor"
 		route "anthropic-messages" exact="union-alpha"
 		route "openai-responses" prefix="muse-spark-" exact="deepseek-v4-flash" exact="muse-spark-1.2" \
 			exact="muse-spark-1.2-contributor" exact="muse-spark-1.3" exact="muse-spark-1.3-contributor"
@@ -346,7 +357,6 @@ behavior {
 	// Google); price rows at their first-party equivalents, Vertex before
 	// Anthropic for Claude ids. Aliases map ids whose peer ships differently.
 	pricing-peer provider="google-antigravity" peers="google" "google-vertex" "anthropic" {
-		alias "gemini-3-flash" peer-id="gemini-3-flash-preview"
 		alias "gemini-3-pro" peer-id="gemini-3-pro-preview"
 		alias "gemini-3.1-pro" peer-id="gemini-3.1-pro-preview"
 		alias "claude-opus-4-5" peer-id="claude-opus-4-5@20251101"
@@ -375,4 +385,143 @@ behavior {
 	}
 	hosted-default provider="zai-search" model="glm-4.7"
 	hosted-default provider="synthetic-search" model="auto"
+	// Built-in default model selector chains per agent role, most preferred
+	// first; the coding agent reads them through `roleDefaultModels()`.
+	role-defaults "smol" {
+		model "tnx/smol:medium"
+		model "claude-haiku-5-5"
+		model "claude-haiku-5.5"
+		model "haiku-5-5"
+		model "haiku-5.5"
+		model "google-antigravity/gemini-3.8-flash"
+		model "gemini-3.8-flash"
+		model "gemini-3-8-flash"
+		model "gemini-3.7-flash"
+		model "gemini-3-7-flash"
+		model "gemini-3.6-flash"
+		model "gemini-3-6-flash"
+		model "gemini-3.5-flash"
+		model "gemini-3-5-flash"
+		model "openai-codex/gpt-5.3-codex-spark"
+		model "gpt-5.3-codex-spark"
+		model "5.3-spark"
+		model "spark"
+		model "zai/glm-5.3-flash"
+		model "glm-5.3-flash"
+		model "gemini-3.1-flash-lite"
+		model "gemini-3-1-flash-lite"
+		model "flash-lite"
+		model "cerebras/gpt-oss-120b"
+		model "gpt-oss-120b"
+		model "oss-120b"
+		model "cerebras/zai-glm-4.7"
+		model "cerebras/zai-glm-4.6"
+		model "cerebras/zai-glm"
+		model "claude-haiku-4-5"
+		model "claude-haiku-4.5"
+		model "haiku-4-5"
+		model "haiku-4.5"
+		model "haiku"
+		model "openai-codex/gpt-5.6-luna"
+		model "gpt-5.6-luna"
+		model "openai-codex/gpt-5.4-mini"
+		model "gpt-5.4-mini"
+		model "-mini"
+	}
+	role-defaults "slow" {
+		model "openai-codex/gpt-5.6-sol"
+		model "gpt-5.6-sol"
+		model "anthropic/claude-fable-5-1"
+		model "claude-fable-5-1"
+		model "claude-fable-5.1"
+		model "fable-5.1"
+		model "fable-5-1"
+		model "anthropic/claude-fable-5"
+		model "claude-fable-5"
+		model "fable-5"
+		model "kimi-code/k3"
+		model "kimi-k3"
+		model "moonshotai/kimi-k3"
+		model "k3"
+		model "zai/glm-5.3"
+		model "glm-5.3"
+		model "anthropic/claude-opus-5-5"
+		model "claude-opus-5-5"
+		model "opus-5-5"
+		model "anthropic/claude-opus-5"
+		model "claude-opus-5"
+		model "opus-5"
+		model "openai-codex/gpt-5.5"
+		model "gpt-5.5"
+		model "claude-opus-4-8"
+		model "claude-opus-4.8"
+		model "opus-4-8"
+		model "opus-4.7"
+		model "opus-4-7"
+		model "opus-4.6"
+		model "opus-4-6"
+		model "opus-4.5"
+		model "opus-4-5"
+		model "opus-4.1"
+		model "opus-4-1"
+		model "opus-4.8"
+	}
+	// Fork-only role chains (formerly priority.json entries).
+	role-defaults "designer" {
+		model "anthropic/claude-opus-5"
+		model "tnx/designer:medium"
+		model "google-gemini-cli/gemini-3.1-pro"
+		model "google-gemini-cli/gemini-3-pro"
+		model "gemini-3.1-pro"
+		model "gemini-3-1-pro"
+		model "gemini-3-pro"
+		model "gemini-3"
+		model "google-gemini-cli/gemini-3.5-flash"
+		model "gemini-3.5-flash"
+		model "gemini-3-5-flash"
+	}
+	role-defaults "super_review" {
+		model "anthropic/claude-fable-5-1:high"
+		model "anthropic/claude-opus-5:high"
+		model "openai-codex/gpt-5.6-sol:high"
+	}
+	role-defaults "image" {
+		model "openai/gpt-image-2"
+		model "openai-codex/gpt-image-2"
+		model "google-antigravity/gemini-3-pro-image"
+		model "xai/grok-imagine-image"
+		model "xai-oauth/grok-imagine-image"
+		model "openrouter/google/gemini-3-pro-image"
+		model "google/gemini-3-pro-image"
+		model "deepinfra/black-forest-labs/FLUX-2-pro"
+	}
+	role-defaults "web" {
+		model "web/parallel"
+		model "web/hosted"
+		model "web/exa"
+		model "web/firecrawl"
+		model "web/searxng"
+		model "web/startpage"
+		model "web/duckduckgo"
+		model "web/ecosia"
+		model "web/google"
+		model "web/mojeek"
+		model "web/public"
+	}
+	role-defaults "speech" {
+		model "local/kokoro"
+		model "xai/grok-tts"
+		model "xai-oauth/grok-tts"
+	}
+	role-defaults "dictation" {
+		model "local/parakeet-tdt-0.6b-v3"
+	}
+	// Pinned: TypeSafe's `jev-latest` alias trails the newest release (it answers as jev-1.13.0).
+	role-defaults "judge" {
+		model "typesafe/jev-1.14.0"
+		model "openrouter/typesafe/jev-1.14"
+		model "@tiny"
+		model "@smol"
+		model "@default"
+	}
 }

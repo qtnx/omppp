@@ -65,8 +65,15 @@ import { buildHotkeysMarkdown, HotkeysSheetComponent } from "@oh-my-pi/pi-tui/ho
 import { isNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { buildToolsMarkdown } from "@oh-my-pi/pi-tui/prompt/tools-markdown";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
+import { buildJobTree, jobTreeGuide, jobTreeIndent } from "@oh-my-pi/pi-tui/overlays/job-tree";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
+import {
+	currentRuntimeIdentity,
+	formatRuntimeIdentity,
+	runtimeIdentityHistory,
+	sameRuntimeIdentity,
+} from "../../session/runtime-identity";
 import type { NewSessionOptions } from "../../session/session-entries";
 import {
 	cleanSourceCheckoutIfConfigured,
@@ -138,6 +145,9 @@ const LEARNING_CLEAR_SCOPE_LABELS = {
 	global: "Global",
 	repo: "Repo",
 } as const;
+
+/** Rows `/session` spends on the builds that wrote the session, including the elision row. */
+const MAX_LISTED_BUILDS = 5;
 
 function formatCreditValue(value: number): string {
 	return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -623,6 +633,23 @@ export class CommandController {
 		let info = "";
 		info += `${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}\n`;
 		info += `${theme.fg("dim", "ID:")} ${stats.sessionId}\n`;
+		const builds = runtimeIdentityHistory(this.ctx.session.sessionManager.getEntries());
+		const running = currentRuntimeIdentity();
+		// A source checkout's diff hash changes with each edit, so a long-lived session can collect
+		// many builds: keep the first and the latest few. Every row is keyed so the overlay never
+		// mistakes a colourless continuation row for a section heading.
+		const hidden = builds.length > MAX_LISTED_BUILDS ? builds.length - MAX_LISTED_BUILDS + 1 : 0;
+		for (const [index, build] of builds.entries()) {
+			if (hidden > 0 && index > 0 && index <= hidden) {
+				if (index === 1) info += `${theme.fg("dim", `Builds 2–${hidden + 1}:`)} ${hidden} more\n`;
+				continue;
+			}
+			const key = builds.length === 1 ? "Build:" : `Build ${index + 1}:`;
+			info += `${theme.fg("dim", key)} ${replaceTabs(sanitizeText(formatRuntimeIdentity(build)))}\n`;
+		}
+		if (!sameRuntimeIdentity(builds[builds.length - 1], running)) {
+			info += `${theme.fg("dim", "Running:")} ${replaceTabs(sanitizeText(formatRuntimeIdentity(running)))}\n`;
+		}
 		info += `\n${theme.bold("Provider")}\n`;
 		const model = this.ctx.session.model;
 		if (!model) {
@@ -750,17 +777,16 @@ export class CommandController {
 			this.showCommandReport({ title: "Advisor Status", body: new Text("Advisor is disabled.", 0, 0) });
 			return;
 		}
-		// Fetch live quota data (cached 5 min by the auth-gateway) so we can show
-		// real usage windows/reset timers per advisor provider. Non-fatal when absent.
-		const usageProvider = this.ctx.session as { fetchUsageReports?: () => Promise<UsageReport[] | null> };
-		let usageReports: UsageReport[] | null = null;
-		if (usageProvider.fetchUsageReports) {
-			try {
-				usageReports = await usageProvider.fetchUsageReports();
-			} catch {
-				// Network/auth failure is non-fatal — just skip the quota line.
-			}
-		}
+		// Render cached quota data without waiting for the network. Quota lines
+		// are optional, and the refresh below serves the next invocation.
+		const usageProvider = this.ctx.session as {
+			cachedUsageReports?: UsageReport[];
+			fetchUsageReports?: () => Promise<UsageReport[] | null>;
+		};
+		const usageReports: UsageReport[] | null = usageProvider.cachedUsageReports ?? null;
+		// Warm the snapshot for the next invocation. The fetch logs its own
+		// failures, and a missing quota line is non-fatal by design.
+		void usageProvider.fetchUsageReports?.().catch(() => {});
 		// Resolve the active OAuth identity for each advisor's provider so quota
 		// filtering matches the credential actually in use (not sibling accounts).
 		const resolveActiveAdvisorAccount = (provider: string, sessionId?: string): OAuthAccountIdentity | undefined =>
@@ -867,13 +893,14 @@ export class CommandController {
 	/**
 	 * `/jobs`: natively the live jobs sheet the jobs pill opens (inspect and
 	 * cancel included); `/jobs full`, and text mode, a report of the running
-	 * and recent jobs (see {@link showCommandReport}).
+	 * and recent jobs (see {@link showCommandReport}). Both list the viewed
+	 * session's jobs and its subagents' as a tree (see {@link buildJobTree}).
 	 */
 	async handleJobsCommand(options?: { full?: boolean }): Promise<void> {
 		this.clearUsagePanelActive();
 		const full = options?.full === true;
-		const snapshot = this.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
-		if (!snapshot) {
+		const tree = this.ctx.viewSession.getAsyncJobTree();
+		if (!tree) {
 			this.ctx.showWarning("Async background jobs are unavailable in this session.");
 			return;
 		}
@@ -884,39 +911,41 @@ export class CommandController {
 
 		const now = Date.now();
 		const columns = this.ctx.ui.terminal.columns ?? 100;
-		const lineWidth = Math.max(24, columns - 24);
-		let info = `${theme.fg("dim", "Running:")} ${snapshot.running.length}\n`;
-		if (snapshot.running.length === 0 && snapshot.recent.length === 0) {
+		let info = `${theme.fg("dim", "Running:")} ${tree.running.length}\n`;
+		if (tree.running.length === 0 && tree.recent.length === 0) {
 			info += `\n${theme.fg("dim", "No async jobs yet.")}`;
 			this.showCommandReport({ title: "Background Jobs", body: new Text(info, 0, 0) });
 			return;
 		}
 
-		// Full mode wraps here so every line, including heredoc lines and wrap
-		// continuations, keeps the two-column indent under its job row inside the
-		// report box.
-		const commandWidth = Math.max(1, columns - 6);
-		const describe = (job: AsyncJobSnapshotItem): string => {
-			if (!full) return `  ${theme.fg("dim", truncateJobLabel(job.label, lineWidth))}`;
-			const command = replaceTabs(sanitizeText(job.command ?? job.label));
-			return wrapTextWithAnsi(command, commandWidth)
-				.map(line => `  ${theme.fg("dim", line)}`)
-				.join("\n");
-		};
-
-		if (snapshot.running.length > 0) {
-			info += `\n${theme.bold("Running Jobs")}\n`;
-			for (const job of snapshot.running) {
-				info += `${renderJobLine(job, now)}\n`;
-				info += `${describe(job)}\n`;
+		// Lines under a row hang off its tree rails. Full mode wraps here so
+		// every line, including heredoc lines and wrap continuations, keeps that
+		// indent inside the report box.
+		info += "\n";
+		for (const row of buildJobTree([...tree.running, ...tree.recent], tree.agents, tree.rootId)) {
+			const guide = theme.fg("dim", jobTreeGuide(row, theme));
+			if (row.kind === "agent") {
+				info += `${guide}${theme.bold(row.agent.id)}\n`;
+				continue;
 			}
-		}
-
-		if (snapshot.recent.length > 0) {
-			info += `\n${theme.bold("Recent Jobs")}\n`;
-			for (const job of snapshot.recent) {
-				info += `${renderJobLine(job, now)}\n`;
-				info += `${describe(job)}\n`;
+			const { job } = row;
+			// A spawned subagent's task job takes the agent's id as its id and label: name it once.
+			const agent = row.agent && row.agent.id !== job.id ? ` ${theme.bold(row.agent.id)}` : "";
+			info += `${guide}${renderJobLine(job, now)}${agent}\n`;
+			const text = full ? (job.command ?? job.label) : job.label;
+			if (text === job.id) continue;
+			const indent = jobTreeIndent(row, theme);
+			const prefix = theme.fg("dim", indent);
+			if (!full) {
+				const label = truncateJobLabel(text, Math.max(24, columns - 22 - visibleWidth(indent)));
+				info += `${prefix}${theme.fg("dim", label)}\n`;
+				continue;
+			}
+			for (const line of wrapTextWithAnsi(
+				replaceTabs(sanitizeText(text)),
+				Math.max(1, columns - 4 - visibleWidth(indent)),
+			)) {
+				info += `${prefix}${theme.fg("dim", line)}\n`;
 			}
 		}
 
@@ -1023,7 +1052,12 @@ export class CommandController {
 		const backend = await resolveMemoryBackend(this.ctx.settings);
 
 		if (action === "view") {
-			const payload = await backend.buildDeveloperInstructions(agentDir, this.ctx.settings, this.ctx.session);
+			const payload = await backend.buildDeveloperInstructions(
+				agentDir,
+				this.ctx.sessionManager.getCwd(),
+				this.ctx.settings,
+				this.ctx.session,
+			);
 			if (!payload) {
 				this.ctx.showWarning("Memory payload is empty (memory backend off, disabled, or no memory available).");
 				return;
@@ -2213,7 +2247,7 @@ export class CommandController {
 		}
 		this.ctx.rebuildChatFromMessages();
 		this.ctx.statusLine.invalidate();
-		this.ctx.ui.requestRender();
+		this.ctx.ui.requestRender(true, { clearScrollback: true });
 		this.ctx.showStatus(formatShakeSummary(result));
 	}
 

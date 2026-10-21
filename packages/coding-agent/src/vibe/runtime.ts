@@ -38,7 +38,7 @@ import { SessionManager, SessionPersistenceIndeterminateError } from "../session
 import { getBundledAgent } from "../task/agents";
 import { writeParentContextSnapshot } from "../task/context-snapshot";
 import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
-import { generateTaskName } from "../task/name-generator";
+import { generateTaskName, sanitizeAgentId } from "../task/name-generator";
 import { AgentOutputManager } from "../task/output-manager";
 import { type AgentDefinition } from "../task/types";
 import { type AgentProgress, oneLineLabel, type SingleResult } from "@oh-my-pi/pi-tui/tools/task";
@@ -823,8 +823,7 @@ export class VibeSessionRegistry {
 		const reservedIds = this.#persistedIds(session, scope);
 		for (const ref of AgentRegistry.global().list()) reservedIds.add(ref.id);
 		await session.agentOutputManager.reserve(reservedIds);
-		const requestedName = args.name?.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48);
-		const id = await session.agentOutputManager.allocate(requestedName || generateTaskName());
+		const id = await session.agentOutputManager.allocate(sanitizeAgentId(args.name) || generateTaskName());
 		const parentSessionFile = scope.parentSessionFile;
 		const childSessionName = `${id}.jsonl`;
 		const childSessionFile = parentSessionFile

@@ -141,6 +141,7 @@ function makeWedgeTab(scope: SharedTargetScope, options: WedgeOptions = {}): Tab
 		annotationWaiters: [],
 		pendingAnnotates: new Map(),
 		kindTag: "headless",
+		ownsPage: true,
 		ownerSessionId: "session-wedge",
 		persist: false,
 		lastActivityAt: Date.now(),

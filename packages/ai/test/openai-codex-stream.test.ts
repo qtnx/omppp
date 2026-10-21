@@ -758,6 +758,38 @@ describe.serial("openai-codex streaming", () => {
 		expect(capturedBody?.text).toBeUndefined();
 	});
 
+	it.each([
+		["lowest-effort", { effort: "low" }],
+		["none-effort", { effort: "none" }],
+	] as const)("honors disableReasoning over a requested effort on a %s model", async (disableMode, expected) => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const base = createCodexTestModel("https://chatgpt.com/backend-api");
+		const model = {
+			...base,
+			preferWebsockets: false,
+			compat: { ...base.compat, reasoningDisableMode: disableMode },
+		};
+		let capturedBody: Record<string, unknown> | undefined;
+		const fetchMock: FetchImpl = async (_input, init) => {
+			capturedBody = JSON.parse(decodeCodexRequestBody(init?.body)) as Record<string, unknown>;
+			return new Response(createCompletedCodexSse("Hello"), {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		};
+
+		const result = await streamSimple(model, createCodexTestContext(), {
+			apiKey: createCodexTestToken(),
+			fetch: fetchMock,
+			reasoning: Effort.High,
+			disableReasoning: true,
+		}).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(capturedBody?.reasoning).toEqual(expected);
+	});
+
 	async function runCodexSseEvents(events: unknown[]) {
 		const token = createCodexTestToken();
 		const context = createCodexTestContext();
@@ -3337,6 +3369,85 @@ describe.serial("openai-codex streaming", () => {
 		expect(result.errorMessage).toContain("server_error");
 	});
 
+	it("recovers an empty SSE watchdog timeout without inheriting the aborted transport", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		let requestCount = 0;
+		const fetchMock: FetchImpl = async (input, init) => {
+			requestCount += 1;
+			const signal = getRequestSignal(input, init);
+			if (signal?.aborted) throw signal.reason;
+			if (requestCount === 1) return createStalledErrorResponse(200, signal);
+			return new Response(createStatefulCodexSse("Recovered after empty SSE stall", "resp_empty_stall_retry"), {
+				headers: { "content-type": "text/event-stream" },
+			});
+		};
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+		const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			apiKey: createCodexTestToken(),
+			fetch: fetchMock,
+			streamFirstEventTimeoutMs: 10,
+		}).result();
+
+		expect(requestCount).toBe(2);
+		expect(result.stopReason).toBe("stop");
+		expect(result.content.find(block => block.type === "text")?.text).toBe("Recovered after empty SSE stall");
+	});
+
+	it("exhausts the provider retry budget on repeated empty SSE stalls", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		let requestCount = 0;
+		const fetchMock: FetchImpl = async (input, init) => {
+			requestCount += 1;
+			const signal = getRequestSignal(input, init);
+			if (signal?.aborted) throw signal.reason;
+			return createStalledErrorResponse(200, signal);
+		};
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+		const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			apiKey: createCodexTestToken(),
+			fetch: fetchMock,
+			streamFirstEventTimeoutMs: 10,
+		}).result();
+
+		expect(requestCount).toBe(6);
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("timed out while waiting for the first event");
+		expect(AIError.is(result.errorId, AIError.Flag.Timeout)).toBe(true);
+		expect(AIError.is(result.errorId, AIError.Flag.Transient)).toBe(true);
+	});
+
+	it("honors caller cancellation during backoff after an empty SSE stall", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const callerAbort = new AbortController();
+		const wait = scheduler.wait.bind(scheduler);
+		vi.spyOn(scheduler, "wait").mockImplementation((delay, options) => {
+			queueMicrotask(() => callerAbort.abort());
+			return wait(delay, options);
+		});
+		let requestCount = 0;
+		const fetchMock: FetchImpl = async (input, init) => {
+			requestCount += 1;
+			const signal = getRequestSignal(input, init);
+			if (signal?.aborted) throw signal.reason;
+			return createStalledErrorResponse(200, signal);
+		};
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+		const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			apiKey: createCodexTestToken(),
+			fetch: fetchMock,
+			signal: callerAbort.signal,
+			streamFirstEventTimeoutMs: 10,
+		}).result();
+
+		expect(requestCount).toBe(1);
+		expect(result.stopReason).toBe("aborted");
+	});
+
 	it.each([
 		["non-retryable 403 parsed by CodexApiError.fromResponse", 403],
 		["retryable 503 inspected by fetchWithRetry", 503],
@@ -3419,6 +3530,25 @@ describe.serial("openai-codex streaming", () => {
 			expect(result.stopReason).toBe("error");
 			expect(result.errorMessage).toContain("socket connection was closed unexpectedly");
 		}
+	});
+
+	it("names the host and cause when the Codex SSE transport rejects", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const token = createCodexTestToken();
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+		const fetchMock: FetchImpl = async () => {
+			throw Object.assign(new TypeError("getaddrinfo ETIMEOUT chatgpt.com"), { code: "ETIMEOUT" });
+		};
+
+		const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			apiKey: token,
+			fetch: fetchMock,
+			codexSseMaxAttempts: 1,
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("No internet connection: couldn't reach chatgpt.com");
 	});
 
 	it("does not retry a caller abort before response headers", async () => {

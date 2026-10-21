@@ -62,6 +62,7 @@ Current retryable categories include:
 - service unavailable / server/internal error
 - provider-suggested retry wording, including OpenAI `retry your request` failures
 - network/connection/socket failures, refused/closed connections, upstream connect/reset-before-headers, socket hang up, timeout/timed out, fetch failed, terminated, retry delay wording, and unexpected socket close messages
+- premature upstream WebSocket closure before `response.completed`, including gateway `stream_incomplete` failures delivered inside an HTTP 200 SSE response; terminal HTTP client errors and replay-unsafe output still prevent retry
 
 The normalized classifier recognizes the transient categories above from structured flags/status and provider-aware text patterns. Classifier refusals remain a separate typed `stopDetails` decision.
 
