@@ -47,3 +47,33 @@ reason = "paste 1.0.15 is an unmaintained compile-time proc-macro pulled in by g
 id = "GHSA-hp3w-g68c-fv3c"
 ignoreUntil = 2026-12-31
 reason = "sprintf-js 1.0.3/1.1.3 have no fixed version; reached only via mammoth -> argparse (mammoth CLI arg parsing) and onnxruntime-node -> global-agent -> roarr, which format their own fixed strings, never untrusted precision specifiers. Revisit when sprintf-js ships a fix."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0367"
+ignoreUntil = 2026-12-31
+reason = "zip 7.2.0 is transitive via candle-core (pi-predict), pinned ^7; it only opens local model weight archives we ship or the user chose, never untrusted uploads. Fix needs zip 9.0.0, which candle-core does not allow yet. Revisit when candle bumps zip."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0368"
+ignoreUntil = 2026-12-31
+reason = "zip 7.2.0 is transitive via candle-core (pi-predict), pinned ^7; it only opens local model weight archives we ship or the user chose, never untrusted uploads. Fix needs zip 9.0.0, which candle-core does not allow yet. Revisit when candle bumps zip."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0369"
+ignoreUntil = 2026-12-31
+reason = "zip 7.2.0 is transitive via candle-core (pi-predict), pinned ^7; it only opens local model weight archives we ship or the user chose, never untrusted uploads. Fix needs zip 9.0.0, which candle-core does not allow yet. Revisit when candle bumps zip."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+ignoreUntil = 2026-12-31
+reason = "zbus_names/zvariant 4.3.4/5.15.0 are transitive D-Bus crates; the advisory lists no fixed version. Revisit when zbus publishes a fix."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+ignoreUntil = 2026-12-31
+reason = "zbus_names/zvariant 4.3.4/5.15.0 are transitive D-Bus crates; the advisory lists no fixed version. Revisit when zbus publishes a fix."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+ignoreUntil = 2026-12-31
+reason = "zbus_names/zvariant 4.3.4/5.15.0 are transitive D-Bus crates; the advisory lists no fixed version. Revisit when zbus publishes a fix."
